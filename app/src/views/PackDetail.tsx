@@ -8,7 +8,7 @@ import { AlarmList, CellStrip, QUIET, Stat, StateMark, kw, median } from "../com
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 
-export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) {
+export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean; onBack: () => void }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
@@ -25,7 +25,7 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
         <div>
           <h1 className="font-display text-4xl font-semibold tracking-tight">
             {t("dash.pack")} {String(p.address).padStart(2, "0")}
-            {p.address === 0 && <span className="ml-3 text-2xl font-medium text-muted">{t("dash.master")}</span>}
+            {multi && p.address === 0 && <span className="ml-3 text-2xl font-medium text-muted">{t("dash.master")}</span>}
           </h1>
           <p className="mt-1 text-muted">{[p.device?.device_name, p.device?.firmware_version && `Firmware ${p.device.firmware_version}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
         </div>

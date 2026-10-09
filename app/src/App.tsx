@@ -34,7 +34,7 @@ export default function App() {
           {!connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
           ) : current ? (
-            <PackDetail p={current} onBack={() => setPack(null)} />
+            <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} />
           ) : (
             <Dashboard packs={live.packs} system={live.system} site={site} onOpen={setPack} />
           )}

@@ -68,7 +68,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
         </div>
-        <RackList groups={arranged} packs={packs} center={center} bankState={state} onOpen={onOpen} />
+        <RackList groups={arranged} packs={packs} center={center} bankState={state} multi={list.length > 1} onOpen={onOpen} />
         <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} />
       </section>
     </div>
@@ -90,7 +90,8 @@ function aggregate(entries: PackEntry[]): Agg {
   };
 }
 
-interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; bankState: PackState; onOpen: (a: number) => void }
+/** multi: more than one pack found, so address 0 is the master (a lone pack at 0 is standalone). */
+interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; bankState: PackState; multi: boolean; onOpen: (a: number) => void }
 
 function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
   const { t } = useTranslation();
@@ -106,7 +107,7 @@ function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
 }
 
 /** Column header once on top, then one panel per group with its summary above it. */
-function RackList({ groups, packs, center, bankState, onOpen }: RackProps) {
+function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps) {
   const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
@@ -128,7 +129,7 @@ function RackList({ groups, packs, center, bankState, onOpen }: RackProps) {
               <div key={g.name + g.packs.join()}>
                 {g.name && <div className="mb-2 px-1"><GroupSummary name={g.name} agg={aggregate(entries)} /></div>}
                 <div className="overflow-hidden rounded-md border border-line bg-surface">
-                  {entries.map((p, i) => <RackRow key={p.address} p={p} index={offset + i} center={center} bankState={bankState} onOpen={() => onOpen(p.address)} />)}
+                  {entries.map((p, i) => <RackRow key={p.address} p={p} index={offset + i} center={center} bankState={bankState} multi={multi} onOpen={() => onOpen(p.address)} />)}
                 </div>
               </div>
             );
@@ -139,7 +140,7 @@ function RackList({ groups, packs, center, bankState, onOpen }: RackProps) {
   );
 }
 
-function RackRow({ p, index, center, bankState, onOpen }: { p: PackEntry; index: number; center: number; bankState: PackState; onOpen: () => void }) {
+function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry; index: number; center: number; bankState: PackState; multi: boolean; onOpen: () => void }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
@@ -153,7 +154,7 @@ function RackRow({ p, index, center, bankState, onOpen }: { p: PackEntry; index:
       className={cn(ROW, "row-in group w-full border-b border-line px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-sunken/50 focus-visible:bg-sunken/50 focus-visible:outline-none")}>
       <span className="flex items-center gap-2">
         <span className="font-display text-2xl font-semibold leading-none">{String(p.address).padStart(2, "0")}</span>
-        {p.address === 0 && <span className="text-sm text-muted">{t("dash.master")}</span>}
+        {multi && p.address === 0 && <span className="text-sm text-muted">{t("dash.master")}</span>}
         {worst
           ? <span title={t("dash.alarmCount", { count: st!.alarms.length })}><SevIcon severity={worst} className="h-4 w-4" /></span>
           : differs && <span title={t(`state.${state}`)}><StateIcon state={state} soc={tm?.soc} className="h-4 w-4" /></span>}
