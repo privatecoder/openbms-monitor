@@ -2,11 +2,59 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --color-ok: oklch(0.72 0.17 150);
-  --color-warn: oklch(0.8 0.16 80);
-  --color-protect: oklch(0.63 0.22 27);
+/* Palette: cool mineral neutrals; petrol = charge, amber = discharge, signal red = protection. */
+:root {
+  --bg: #e9edf0;
+  --surface: #fafbfc;
+  --sunken: #dfe4e8;
+  --ink: #18212b;
+  --muted: #5b6875;
+  --line: #cfd6dc;
+  --charge: #0e7c86;
+  --discharge: #b7791f;
+  --alarm: #c23b2b;
+  --low: #3f6fb5;
+  --high: #8b4fb0;
+}
+.dark {
+  --bg: #1a2129;
+  --surface: #222b35;
+  --sunken: #151b21;
+  --ink: #e6ebef;
+  --muted: #93a0ad;
+  --line: #34404c;
+  --charge: #3fb6bf;
+  --discharge: #e0a548;
+  --alarm: #ef6a57;
+  --low: #7fa6e3;
+  --high: #c79be0;
+}
+
+@theme inline {
+  --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Barlow Semi Condensed", "Barlow", ui-sans-serif, sans-serif;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-charge: var(--charge);
+  --color-discharge: var(--discharge);
+  --color-alarm: var(--alarm);
+  --color-low: var(--low);
+  --color-high: var(--high);
 }
 
 html, body, #root { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--charge); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

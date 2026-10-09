@@ -1,0 +1,77 @@
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
+
+const resources = {
+  de: {
+    translation: {
+      app: "OpenBMS Monitor",
+      nav: { dashboard: "Übersicht", help: "Hilfe" },
+      conn: {
+        title: "Verbindung", tcp: "Netzwerk", serial: "USB", host: "Gateway (Host:Port)",
+        port: "Adapter wählen", bus: "Bus", busCan: "CAN-Buchse, 9600 Baud", busPack: "RS485-1/2, 19200 Baud",
+        connect: "Verbinden", reconnect: "Neu verbinden", disconnect: "Trennen", scanning: "Suche Packs …",
+        connected: "Verbunden", offline: "Nicht verbunden", found: "{{count}} Packs gefunden", none: "Keine Packs gefunden. Prüfe Bus, Baudrate und Verkabelung.",
+        demo: "Vorschau mit aufgezeichneten Werten",
+      },
+      dash: {
+        empty: "Wähle links Gateway oder Adapter und verbinde dich mit der Batterie.",
+        head: { charging: "Lädt mit {{p}}", discharging: "Entlädt mit {{p}}", standby: "Im Leerlauf", off: "Ausgeschaltet", unknown: "Wartet auf Daten" },
+        sub: "{{v}} und {{a}} über {{n}} Packs",
+        tank: "{{remain}} von {{total}} Ah",
+        chargeLimit: "Laden bis", dischargeLimit: "Entladen bis", at: "{{a}} bei {{v}}", blocked: "gesperrt",
+        cellRange: "Zellen", cellRangeVal: "{{lo}} bis {{hi}}", tempRange: "Temperatur",
+        rack: "Packs", pack: "Pack", master: "Master", strip: "Zellabweichung", soc: "Ladestand", voltage: "Spannung",
+        current: "Strom", power: "Leistung", delta: "Spreizung", temp: "Temperatur", cycles: "Zyklen", capacity: "Kapazität",
+        energy: "Energie", charged: "Geladen", dischargedNote: "{{v}} entladen", noAlarms: "Keine Meldungen", alarms: "Meldungen",
+        alarmCount_one: "{{count}} Meldung", alarmCount_other: "{{count}} Meldungen",
+        noData: "Keine Antwort von diesem Pack.", cells: "Zellspannungen", back: "Zur Übersicht", switches: "Schalter", port: "am Ausgang {{v}}",
+        median: "Mitte der Bank {{v}}", ambient: "Umgebung", packMedian: "Mitte des Packs {{v}}",
+      },
+      state: { charging: "Lädt", discharging: "Entlädt", standby: "Bereit", off: "Aus", unknown: "Unbekannt" },
+      sw: { discharge: "Entladen", charge: "Laden", limiter: "Strombegrenzer", heater: "Heizung", on: "an", off: "aus" },
+      sev: { info: "Hinweis", warning: "Warnung", protection: "Schutz", fault: "Fehler" },
+      help: { more: "Ganze Erklärung öffnen", title: "Hilfe", missing: "Für diesen Punkt gibt es noch keinen Hilfetext.", related: "Siehe auch" },
+    },
+  },
+  en: {
+    translation: {
+      app: "OpenBMS Monitor",
+      nav: { dashboard: "Overview", help: "Help" },
+      conn: {
+        title: "Connection", tcp: "Network", serial: "USB", host: "Gateway (host:port)",
+        port: "Select adapter", bus: "Bus", busCan: "CAN socket, 9600 baud", busPack: "RS485-1/2, 19200 baud",
+        connect: "Connect", reconnect: "Reconnect", disconnect: "Disconnect", scanning: "Searching packs …",
+        connected: "Connected", offline: "Not connected", found: "{{count}} packs found", none: "No packs found. Check bus, baud rate and wiring.",
+        demo: "Preview with recorded values",
+      },
+      dash: {
+        empty: "Choose a gateway or adapter on the left and connect to the battery.",
+        head: { charging: "Charging at {{p}}", discharging: "Discharging at {{p}}", standby: "Idle", off: "Switched off", unknown: "Waiting for data" },
+        sub: "{{v}} and {{a}} across {{n}} packs",
+        tank: "{{remain}} of {{total}} Ah",
+        chargeLimit: "Charge up to", dischargeLimit: "Discharge down to", at: "{{a}} at {{v}}", blocked: "blocked",
+        cellRange: "Cells", cellRangeVal: "{{lo}} to {{hi}}", tempRange: "Temperature",
+        rack: "Packs", pack: "Pack", master: "Master", strip: "Cell deviation", soc: "Charge", voltage: "Voltage",
+        current: "Current", power: "Power", delta: "Spread", temp: "Temperature", cycles: "Cycles", capacity: "Capacity",
+        energy: "Energy", charged: "Charged", dischargedNote: "{{v}} discharged", noAlarms: "No messages", alarms: "Messages",
+        alarmCount_one: "{{count}} message", alarmCount_other: "{{count}} messages",
+        noData: "No answer from this pack.", cells: "Cell voltages", back: "Back to overview", switches: "Switches", port: "{{v}} at the output",
+        median: "Bank median {{v}}", ambient: "Ambient", packMedian: "Pack median {{v}}",
+      },
+      state: { charging: "Charging", discharging: "Discharging", standby: "Standby", off: "Off", unknown: "Unknown" },
+      sw: { discharge: "Discharge", charge: "Charge", limiter: "Current limiter", heater: "Heater", on: "on", off: "off" },
+      sev: { info: "Info", warning: "Warning", protection: "Protection", fault: "Fault" },
+      help: { more: "Open full explanation", title: "Help", missing: "There is no help text for this item yet.", related: "See also" },
+    },
+  },
+};
+
+i18n.use(initReactI18next).init({
+  resources,
+  lng: (() => { try { return localStorage.getItem("lang"); } catch { return null; } })() ?? (navigator.language.toLowerCase().startsWith("de") ? "de" : "en"),
+  fallbackLng: "en",
+  interpolation: { escapeValue: false },
+});
+i18n.on("languageChanged", (l) => { try { localStorage.setItem("lang", l); } catch { /* ignore */ } });
+
+export default i18n;
