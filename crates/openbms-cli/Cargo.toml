@@ -1,0 +1,15 @@
+[package]
+name = "openbms-cli"
+description = "Command line tool for Seplos BMS V2.0 packs"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "openbms"
+path = "src/main.rs"
+
+[dependencies]
+openbms-proto = { path = "../openbms-proto" }
+openbms-transport = { path = "../openbms-transport" }
+clap = { version = "4", features = ["derive"] }
+serde_json.workspace = true

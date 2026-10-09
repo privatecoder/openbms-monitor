@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --color-ok: oklch(0.72 0.17 150);
+  --color-warn: oklch(0.8 0.16 80);
+  --color-protect: oklch(0.63 0.22 27);
+}
+
+html, body, #root { height: 100%; }

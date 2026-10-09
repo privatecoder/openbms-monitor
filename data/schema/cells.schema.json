@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/privatecoder/openbms-monitor/data/schema/cells.schema.json",
+  "title": "OpenBMS cell model",
+  "description": "One cell model of the cell database. Missing fields mean 'unknown'. Rates always carry their basis (C or P).",
+  "type": "object",
+  "required": ["schema_version", "id", "entry_version", "updated", "manufacturer", "model", "chemistry", "datasheet"],
+  "$defs": {
+    "rate": {
+      "type": "object",
+      "required": ["value", "basis"],
+      "properties": { "value": { "type": "number", "minimum": 0 }, "basis": { "enum": ["C", "P"] } },
+      "additionalProperties": false
+    },
+    "derating": {
+      "type": "object",
+      "required": ["min_c", "max_c", "max_charge"],
+      "properties": {
+        "min_c": { "type": "number" },
+        "max_c": { "type": "number" },
+        "min_inclusive": { "type": "boolean", "default": true },
+        "max_inclusive": { "type": "boolean", "default": false },
+        "max_charge": { "$ref": "#/$defs/rate" }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["verified"],
+      "properties": {
+        "verified": { "type": "boolean" },
+        "page": { "type": "integer" },
+        "table": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "entry_version": { "type": "integer", "minimum": 1 },
+    "updated": { "type": "string", "format": "date" },
+    "manufacturer": { "type": "string" },
+    "model": { "type": "string" },
+    "variant": { "type": "string" },
+    "chemistry": { "enum": ["LFP", "NMC", "LTO", "NA-ION", "OTHER"] },
+    "form_factor": { "enum": ["prismatic", "cylindrical", "pouch"] },
+    "datasheet": {
+      "type": "object",
+      "required": ["title", "source_type"],
+      "properties": {
+        "title": { "type": "string" },
+        "revision": { "type": "string" },
+        "document_date": { "type": "string" },
+        "source_type": { "enum": ["manufacturer_pdf", "distributor_pdf", "other"] },
+        "url": { "type": "string", "format": "uri" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "properties": {
+        "nominal_ah": { "type": "number", "exclusiveMinimum": 0 },
+        "minimum_ah": { "type": "number", "exclusiveMinimum": 0 },
+        "nominal_energy_wh": { "type": "number", "exclusiveMinimum": 0 },
+        "test_condition": {
+          "type": "object",
+          "properties": { "rate": { "$ref": "#/$defs/rate" }, "temperature_c": { "type": "number" } }
+        }
+      }
+    },
+    "voltage": {
+      "type": "object",
+      "properties": {
+        "nominal_v": { "type": "number" },
+        "charge_cutoff_v": { "type": "number" },
+        "discharge_cutoff_v": { "type": "number" },
+        "operating_min_v": { "type": "number" },
+        "operating_max_v": { "type": "number" },
+        "storage_v": { "type": "number" }
+      }
+    },
+    "current": {
+      "type": "object",
+      "properties": {
+        "standard_charge": { "$ref": "#/$defs/rate" },
+        "standard_discharge": { "$ref": "#/$defs/rate" },
+        "max_continuous_charge_a": { "type": "number", "minimum": 0 },
+        "max_continuous_discharge_a": { "type": "number", "minimum": 0 },
+        "charge_derating": { "type": "array", "items": { "$ref": "#/$defs/derating" } }
+      }
+    },
+    "temperature": {
+      "type": "object",
+      "properties": {
+        "charge_min_c": { "type": "number" },
+        "charge_max_c": { "type": "number" },
+        "discharge_min_c": { "type": "number" },
+        "discharge_max_c": { "type": "number" }
+      }
+    },
+    "provenance": { "type": "object", "additionalProperties": { "$ref": "#/$defs/provenance" } },
+    "notes": { "type": "string" }
+  }
+}

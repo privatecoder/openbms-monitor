@@ -1,0 +1,10 @@
+[package]
+name = "openbms-transport"
+description = "Serial and TCP transport with request/response handling for openbms-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+openbms-proto = { path = "../openbms-proto" }
+serialport = "4"
+thiserror.workspace = true
