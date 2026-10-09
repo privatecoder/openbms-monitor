@@ -25,7 +25,7 @@ const resources = {
         energy: "Energie", charged: "Geladen", dischargedNote: "{{v}} entladen", noAlarms: "Keine Meldungen", alarms: "Meldungen",
         alarmCount_one: "{{count}} Meldung", alarmCount_other: "{{count}} Meldungen",
         noData: "Keine Antwort von diesem Pack.", cells: "Zellspannungen", back: "Zur Übersicht", switches: "Schalter", port: "am Ausgang {{v}}",
-        median: "Mitte der Bank {{v}}", ambient: "Umgebung", packMedian: "Mitte des Packs {{v}}",
+        stripRef: "Abweichung von {{v}}", stripRefPack: "Striche bezogen auf {{v}}", ambient: "Umgebung",
       },
       groups: {
         title: "Packs gruppieren", intro: "Fasse Packs zu Gruppen zusammen, zum Beispiel je Turm. Ein Pack gehört zu höchstens einer Gruppe; nicht zugeordnete Packs erscheinen unter „Ohne Gruppe“. Die Gruppen werden für diese Anlage gespeichert.",
@@ -62,7 +62,7 @@ const resources = {
         energy: "Energy", charged: "Charged", dischargedNote: "{{v}} discharged", noAlarms: "No messages", alarms: "Messages",
         alarmCount_one: "{{count}} message", alarmCount_other: "{{count}} messages",
         noData: "No answer from this pack.", cells: "Cell voltages", back: "Back to overview", switches: "Switches", port: "{{v}} at the output",
-        median: "Bank median {{v}}", ambient: "Ambient", packMedian: "Pack median {{v}}",
+        stripRef: "Deviation from {{v}}", stripRefPack: "Ticks relative to {{v}}", ambient: "Ambient",
       },
       groups: {
         title: "Group packs", intro: "Combine packs into groups, for example one per tower. A pack belongs to at most one group; unassigned packs appear under “Ungrouped”. Groups are saved for this installation.",

@@ -60,7 +60,6 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
       <section>
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <h2 className="font-display text-2xl font-semibold">{t("dash.rack")}</h2>
-          {Number.isFinite(center) && <span className="text-sm text-muted">{t("dash.median", { v: fmt(center, 3, "V") })}</span>}
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
@@ -110,7 +109,7 @@ function RackList({ groups, packs, center, bankState, onOpen }: RackProps) {
       <div className="min-w-[56rem]">
         <div className={cn(ROW, "mb-5 border-b border-line px-4 pb-2 text-sm text-muted")}>
           <span>{t("dash.pack")}</span>
-          <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
+          <span className="flex items-center gap-1.5">{Number.isFinite(center) ? t("dash.stripRef", { v: fmt(center, 3, "V") }) : t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
           <span>{t("dash.soc")}</span>
           <span className="text-right">{t("dash.voltage")}</span>
           <span className="text-right">{t("dash.current")}</span>

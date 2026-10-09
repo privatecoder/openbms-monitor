@@ -57,15 +57,15 @@ TOPICS = {
  ("Energy", "Charged and discharged energy since the last reset, counted by the BMS.",
  "The BMS sums current × voltage every second while the pack charges or discharges (0.1 kWh steps). The counters survive restarts but are only saved on certain occasions (e.g. SOC change > 5 % in standby). Beyond 6,500 kWh the firmware reports a fixed 650.0 kWh.")),
 "value.cell_voltages": ("value.cell_delta, status.balancing", (
- "Zellspannungen", "Spannung jeder einzelnen Zelle in mV. Warm = höchste, blau = niedrigste Zelle.",
- "Die Striche zeigen die Abweichung von der Mitte der Zellen dieses Packs (volle Höhe ±20 mV). Ein farbiger Strich unten bedeutet: Zelle wird balanciert."),
- ("Cell voltages", "Voltage of every cell in mV. Warm = highest, blue = lowest cell.",
+ "Zellspannungen", "Spannung jeder einzelnen Zelle in mV. Violett = deutlich über, blau = deutlich unter dem Median dieses Packs.",
+ "Die Striche zeigen die Abweichung vom Median der Zellen dieses Packs (volle Höhe ±20 mV). Ein farbiger Strich unten bedeutet: Zelle wird balanciert."),
+ ("Cell voltages", "Voltage of every cell in mV. Violet = clearly above, blue = clearly below this pack's median.",
  "The ticks show the deviation from the median of this pack's cells (full height ±20 mV). A coloured mark at the bottom means the cell is being balanced.")),
 "value.cell_strip": ("value.cell_voltages, value.cell_delta", (
- "Zellabweichung", "Ein Strich pro Zelle: wie weit sie von der Mitte aller Zellen der Bank abweicht. Eine flache Linie heißt: gut ausbalanciert.",
- "- Nach oben (warm) = Zelle liegt über der Mitte, nach unten (blau) = darunter.\n- Die volle Höhe entspricht ±20 mV; größere Abweichungen stoßen an den Rand.\n- Abweichungen unter 4 mV bleiben grau.\n- Ein farbiger Strich unten zeigt, dass die Zelle gerade balanciert wird.\n\nSo fällt ein Pack oder eine einzelne Zelle, die aus der Reihe tanzt, sofort auf, auch wenn alle absoluten Werte normal aussehen."),
- ("Cell deviation", "One tick per cell: how far it is from the median of all cells in the bank. A flat line means well balanced.",
- "- Up (warm) = cell above the median, down (blue) = below.\n- Full height equals ±20 mV; larger deviations hit the edge.\n- Deviations below 4 mV stay grey.\n- A coloured mark at the bottom shows the cell is being balanced.\n\nThis way a pack or a single cell that is out of line stands out immediately, even when all absolute values look normal.")),
+ "Zellabweichung", "Ein Strich pro Zelle: wie weit ihre Spannung vom Median aller Zellen aller Packs abweicht (der Wert steht im Spaltenkopf). Eine flache Linie heißt: gut ausbalanciert.",
+ "- Der Median ist die mittlere Zellspannung: Die Hälfte aller Zellen liegt darüber, die Hälfte darunter. Anders als der Durchschnitt verschiebt er sich nicht durch eine einzelne Ausreißerzelle.\n- Nach oben (violett) = Zelle liegt über dem Median, nach unten (blau) = darunter.\n- Die volle Höhe entspricht ±20 mV; größere Abweichungen stoßen an den Rand.\n- Abweichungen unter 4 mV bleiben grau.\n- Ein farbiger Strich unten zeigt, dass die Zelle gerade balanciert wird.\n\nSo fällt ein Pack oder eine einzelne Zelle, die aus der Reihe tanzt, sofort auf, auch wenn alle absoluten Werte normal aussehen."),
+ ("Cell deviation", "One tick per cell: how far its voltage is from the median of all cells of all packs (shown in the column header). A flat line means well balanced.",
+ "- The median is the middle cell voltage: half of all cells are above it, half below. Unlike the average it is not pulled by a single outlier cell.\n- Up (violet) = cell above the median, down (blue) = below.\n- Full height equals ±20 mV; larger deviations hit the edge.\n- Deviations below 4 mV stay grey.\n- A coloured mark at the bottom shows the cell is being balanced.\n\nThis way a pack or a single cell that is out of line stands out immediately, even when all absolute values look normal.")),
 "value.cell_delta": ("value.cell_voltages", (
  "Zelldifferenz", "Abstand zwischen höchster und niedrigster Zelle.",
  "Ab Parameter 60 (z. B. 0,5 V) meldet das BMS einen Zelldifferenz-Fehler. Balancing startet erst, wenn die Differenz Parameter 62 überschreitet und eine Zelle über Parameter 8 liegt."),

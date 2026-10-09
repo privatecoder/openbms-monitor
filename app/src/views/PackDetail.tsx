@@ -47,7 +47,7 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
           <Panel className="p-5">
             <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="flex items-center gap-1.5 font-display text-2xl font-semibold">{t("dash.cells")}<InfoIcon id="value.cell_voltages" /></h2>
-              <span className="text-sm text-muted">{t("dash.delta")} {fmt((hi - lo) * 1000, 0, "mV")}, {t("dash.packMedian", { v: fmt(center, 3, "V") })}</span>
+              <span className="text-sm text-muted">{t("dash.delta")} {fmt((hi - lo) * 1000, 0, "mV")}, {t("dash.stripRefPack", { v: fmt(center, 3, "V") })}</span>
             </div>
             <CellStrip cells={cells} center={center} balancing={st?.balancing} height={64} />
             <div className="mt-3 grid" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
