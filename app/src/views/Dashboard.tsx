@@ -52,17 +52,18 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
         <div className="grid grid-cols-2 gap-6 pt-1 md:grid-cols-4">
           {s ? (
             <>
-              <Stat icon={ArrowUpToLine} label={t("dash.chargeLimit")} help="value.charge_limits" value={s.charge_allowed ? fmt(s.charge_voltage_limit, 1, "V") : t("dash.blocked")}
-                tone={s.charge_allowed ? undefined : "text-alarm"} note={fmt(s.charge_current_limit, 0, "A")} />
-              <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value={s.discharge_allowed ? fmt(s.discharge_voltage_limit, 1, "V") : t("dash.blocked")}
-                tone={s.discharge_allowed ? undefined : "text-alarm"} note={fmt(s.discharge_current_limit, 0, "A")} />
+              <Stat icon={ArrowUpToLine} label={t("dash.chargeLimit")} help="value.charge_limits" value={s.charge_allowed ? fmt(s.charge_current_limit, 0, "A") : t("dash.blocked")}
+                tone={s.charge_allowed ? undefined : "text-alarm"} note={t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })} />
+              <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value={s.discharge_allowed ? fmt(s.discharge_current_limit, 0, "A") : t("dash.blocked")}
+                tone={s.discharge_allowed ? undefined : "text-alarm"} note={t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })} />
             </>
           ) : <><div /><div /></>}
           <Stat icon={MoveVertical} label={t("dash.cellRange")} help="value.cell_delta"
             value={`${fmt(((s ? s.highest_cell_voltage - s.lowest_cell_voltage : Math.max(...allCells) - Math.min(...allCells))) * 1000, 0, "mV")}`}
             note={t("dash.cellRangeVal", { lo: fmt(s?.lowest_cell_voltage ?? Math.min(...allCells), 3), hi: fmt(s?.highest_cell_voltage ?? Math.max(...allCells), 3, "V") })} />
           <Stat icon={Thermometer} label={t("dash.tempRange")} help="value.temperatures"
-            value={t("dash.cellRangeVal", { lo: fmt(s?.lowest_cell_temperature ?? Math.min(...temps), 1), hi: fmt(s?.highest_cell_temperature ?? Math.max(...temps), 1, "°C") })} />
+            value={t("dash.cellRangeVal", { lo: fmt(s?.lowest_cell_temperature ?? Math.min(...temps), 1), hi: fmt(s?.highest_cell_temperature ?? Math.max(...temps), 1, "°C") })}
+            note={live.length ? t("dash.otherTemps", { amb: fmt(Math.max(...live.map((p) => p.telemetry!.ambient_temperature)), 1, "°C"), mos: fmt(Math.max(...live.map((p) => p.telemetry!.power_temperature)), 1, "°C") }) : undefined} />
         </div>
       </header>
 

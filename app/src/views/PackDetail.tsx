@@ -44,8 +44,14 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
             <Stat icon={Activity} label={t("dash.current")} help="value.current" value={fmt(current, 3, "A")} />
             <Stat icon={Gauge} label={t("dash.power")} help="value.power" value={kw(current * tm.pack_voltage)} />
             <Stat icon={RotateCw} label={t("dash.cycles")} help="value.cycles" value={String(tm.cycles)} />
-            <Stat icon={PlugZap} label={t("dash.charged")} help="value.energy" value={fmt(tm.energy_charged_kwh, 1, "kWh")}
-              note={t("dash.dischargedNote", { v: fmt(tm.energy_discharged_kwh, 1, "kWh") })} />
+            {/* the counter that is currently growing goes first */}
+            {packState(st?.system_status) === "discharging" ? (
+              <Stat icon={BatteryMedium} label={t("dash.dischargedLabel")} help="value.energy" value={fmt(tm.energy_discharged_kwh, 1, "kWh")}
+                note={t("dash.chargedNote", { v: fmt(tm.energy_charged_kwh, 1, "kWh") })} />
+            ) : (
+              <Stat icon={PlugZap} label={t("dash.charged")} help="value.energy" value={fmt(tm.energy_charged_kwh, 1, "kWh")}
+                note={t("dash.dischargedNote", { v: fmt(tm.energy_discharged_kwh, 1, "kWh") })} />
+            )}
           </div>
 
           <Panel className="p-5">
