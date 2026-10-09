@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { api, type DeviceInfo, type PackUpdate, type SystemUpdate } from "./api";
 
-export interface PackEntry extends PackUpdate { device?: DeviceInfo; updated: number }
+/** updated: time of the last successful answer; interval: smoothed time between two answers (ms). */
+export interface PackEntry extends PackUpdate { device?: DeviceInfo; updated: number; interval?: number }
+
+function smoothInterval(prev: PackEntry | undefined, ok: boolean): number | undefined {
+  if (!ok || !prev?.updated) return prev?.interval;
+  const dt = Date.now() - prev.updated;
+  return prev.interval ? prev.interval * 0.7 + dt * 0.3 : dt;
+}
 
 /** Live data of all packs and the system, fed by backend events. */
 export function useLiveData() {
@@ -20,6 +27,8 @@ export function useLiveData() {
           status: u.status ?? prev[u.address]?.status ?? null,
           // only a successful answer counts as fresh data; failed polls keep the old timestamp
           updated: u.telemetry ? Date.now() : prev[u.address]?.updated ?? 0,
+          // a full polling round takes longer with more packs and slower buses, so learn it per pack
+          interval: smoothInterval(prev[u.address], !!u.telemetry),
         },
       })),
     );

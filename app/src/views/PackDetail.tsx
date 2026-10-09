@@ -32,7 +32,7 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
         </div>
         <div className="flex flex-col items-end gap-1">
           <StateMark state={packState(st?.system_status)} />
-          <LiveIndicator updated={p.updated} />
+          <LiveIndicator updated={p.updated} expected={p.interval} />
         </div>
       </header>
 

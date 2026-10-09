@@ -19,12 +19,15 @@ export function useNow(intervalMs = 1000) {
  * Shows that data is flowing: a dot that pulses on every update and the age of the last update.
  * Turns amber when updates are late and red when they have stopped, so a frozen connection is obvious.
  */
-export function LiveIndicator({ updated, className }: { updated: number; className?: string }) {
+export function LiveIndicator({ updated, expected, className }: { updated: number; expected?: number; className?: string }) {
   const { t } = useTranslation();
   const now = useNow();
   if (!updated) return null;
   const age = Math.max(0, Math.round((now - updated) / 1000));
-  const state = now - updated < POLL_MS * 2.5 ? "live" : now - updated < 30_000 ? "late" : "stale";
+  // Thresholds follow the measured update interval (more packs = longer polling round).
+  const every = expected ?? POLL_MS;
+  const late = Math.max(5_000, every * 2.5), stale = Math.max(30_000, every * 6);
+  const state = now - updated < late ? "live" : now - updated < stale ? "late" : "stale";
   const tone = { live: "text-ok", late: "text-discharge", stale: "text-alarm" }[state];
   const dot = { live: "bg-ok", late: "bg-discharge", stale: "bg-alarm" }[state];
   return (
