@@ -2,6 +2,7 @@
 name = "openbms-monitor"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lib]
 name = "openbms_monitor_lib"

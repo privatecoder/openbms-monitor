@@ -3,6 +3,7 @@ name = "openbms-cli"
 description = "Command line tool for Seplos BMS V2.0 packs"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "openbms"

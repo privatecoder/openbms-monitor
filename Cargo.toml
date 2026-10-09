@@ -5,6 +5,7 @@ members = ["crates/openbms-proto", "crates/openbms-transport", "crates/openbms-c
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 repository = "https://github.com/privatecoder/openbms-monitor"
 
 [workspace.dependencies]

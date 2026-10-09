@@ -24,3 +24,7 @@ cd app && npm install && npm run tauri dev
 ```
 
 Targets: macOS (arm64/x64), Windows 11 (arm64/x64).
+
+## License
+
+MIT, see [LICENSE](LICENSE). Not affiliated with Seplos or SH Energy.
