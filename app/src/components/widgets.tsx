@@ -45,7 +45,7 @@ export function CellStrip({ cells, center, balancing = 0, height = 28, className
   );
 }
 
-const stateTone: Record<PackState, string> = {
+export const stateTone: Record<PackState, string> = {
   charging: "text-charge", discharging: "text-discharge", standby: "text-muted", off: "text-muted", unknown: "text-muted",
 };
 

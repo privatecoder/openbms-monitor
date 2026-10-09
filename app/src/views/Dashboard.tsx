@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
-import { CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone } from "../components/widgets";
+import { CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
 import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
@@ -75,7 +75,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
         </div>
-        <RackList groups={arranged} packs={packs} center={center} bankState={state} multi={list.length > 1} onOpen={onOpen} />
+        <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} />
         <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} />
       </section>
     </div>
@@ -98,7 +98,7 @@ function aggregate(entries: PackEntry[]): Agg {
 }
 
 /** multi: more than one pack found, so address 0 is the master (a lone pack at 0 is standalone). */
-interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; bankState: PackState; multi: boolean; onOpen: (a: number) => void }
+interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; multi: boolean; onOpen: (a: number) => void }
 
 function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
   const { t } = useTranslation();
@@ -114,7 +114,7 @@ function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
 }
 
 /** Column header once on top, then one panel per group with its summary above it. */
-function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps) {
+function RackList({ groups, packs, center, multi, onOpen }: RackProps) {
   const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
@@ -136,7 +136,7 @@ function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps
               <div key={g.name + g.packs.join()}>
                 {g.name && <div className="mb-2 px-1"><GroupSummary name={g.name} agg={aggregate(entries)} /></div>}
                 <div className="overflow-hidden rounded-md border border-line bg-surface">
-                  {entries.map((p, i) => <RackRow key={p.address} p={p} index={offset + i} center={center} bankState={bankState} multi={multi} onOpen={() => onOpen(p.address)} />)}
+                  {entries.map((p, i) => <RackRow key={p.address} p={p} index={offset + i} center={center} multi={multi} onOpen={() => onOpen(p.address)} />)}
                 </div>
               </div>
             );
@@ -147,14 +147,13 @@ function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps
   );
 }
 
-function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry; index: number; center: number; bankState: PackState; multi: boolean; onOpen: () => void }) {
+function RackRow({ p, index, center, multi, onOpen }: { p: PackEntry; index: number; center: number; multi: boolean; onOpen: () => void }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
   const delta = cells.length ? (Math.max(...cells) - Math.min(...cells)) * 1000 : null;
   const temps = tm?.cell_temperatures ?? [];
   const state = packState(st?.system_status);
-  const differs = state !== bankState && state !== "unknown";
   const alarms = st?.alarms;
   return (
     <button onClick={onOpen} style={{ animationDelay: `${index * 35}ms` }}
@@ -163,7 +162,6 @@ function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry;
         <span className="flex items-center gap-2">
           <span className="font-display text-2xl font-semibold leading-none">{String(p.address).padStart(2, "0")}</span>
           <MessagesMark alarms={alarms} compact />
-          {differs && <span title={t(`state.${state}`)}><StateIcon state={state} soc={tm?.soc} className="h-4 w-4" /></span>}
         </span>
         {(alarms?.length || (multi && p.address === 0)) ? (
           <span className="text-xs text-muted">
@@ -176,7 +174,10 @@ function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry;
         <span className="h-1.5 overflow-hidden rounded-full bg-sunken"><span className={cn("block h-full transition-[width,background-color] duration-700", socTone(tm?.soc))} style={{ width: `${tm?.soc ?? 0}%` }} /></span>
       </span>
       <span className="text-right">{fmt(tm?.pack_voltage, 2, "V")}</span>
-      <span className="text-right">{tm ? fmt(effectiveCurrent(tm), 2, "A") : "–"}</span>
+      <span className="flex flex-col items-end gap-0.5">
+        <span className={cn("font-medium", stateTone[state])}>{tm ? fmt(effectiveCurrent(tm), 2, "A") : "–"}</span>
+        {st && <span className="text-xs text-muted">{t(`stateShort.${state}`)}</span>}
+      </span>
       <span className="text-right">{temps.length ? fmt(Math.max(...temps), 1, "°C") : "–"}</span>
       <span className={cn("text-right", delta !== null && delta >= 30 && "font-medium text-high")}>{fmt(delta, 0, "mV")}</span>
       {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
