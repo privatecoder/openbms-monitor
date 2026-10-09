@@ -145,9 +145,16 @@ export function MessagesMark({ alarms, compact = false }: { alarms: ActiveAlarm[
     );
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-sm font-medium", sevTone[worst])} title={alarms.map((a) => a.key).join(", ")}>
-      <SevIcon severity={worst} className="h-4 w-4" />{compact ? alarms.length : t("dash.alarmCount", { count: alarms.length })}
+      <SevIcon severity={worst} className="h-4 w-4" />{!compact && t("dash.alarmCount", { count: alarms.length })}
     </span>
   );
+}
+
+/** Short text for a pack's messages in its worst severity colour, e.g. "2 Meldungen". */
+export function MessagesText({ alarms }: { alarms: ActiveAlarm[] }) {
+  const { t } = useTranslation();
+  const worst = worstSeverity(alarms);
+  return <span className={cn("font-medium", worst && sevTone[worst])}>{t("dash.alarmCount", { count: alarms.length })}</span>;
 }
 
 export const kw = (watts: number) => (Math.abs(watts) >= 1000 ? fmt(watts / 1000, 2, "kW") : fmt(watts, 0, "W"));

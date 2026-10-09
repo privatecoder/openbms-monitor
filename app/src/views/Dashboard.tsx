@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
-import { CellStrip, MessagesMark, Stat, StateIcon, Tank, kw, median, socTone } from "../components/widgets";
+import { CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone } from "../components/widgets";
 import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
@@ -11,7 +11,8 @@ import { arrange, useGroups, type Group } from "../groups";
 import { GroupEditor } from "./GroupEditor";
 import { cn, fmt } from "../lib/utils";
 
-const ROW = "grid grid-cols-[6.5rem_minmax(9rem,1fr)_8rem_5.5rem_5.5rem_4.5rem_5.5rem_8.5rem] items-center gap-x-5 whitespace-nowrap";
+// Pack (with messages), SOC, voltage, current, temperature, spread, deviation strip.
+const ROW = "grid grid-cols-[8rem_7.5rem_5.5rem_5.5rem_5.5rem_4.5rem_minmax(9rem,1fr)] items-center gap-x-6 whitespace-nowrap";
 
 export function Dashboard({ packs, system, site, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; site: string; onOpen: (a: number) => void }) {
   const { t } = useTranslation();
@@ -118,14 +119,13 @@ function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps
     <div className="overflow-x-auto">
       <div className="min-w-[56rem]">
         <div className={cn(ROW, "mb-5 border-b border-line px-4 pb-2 text-sm text-muted")}>
-          <span>{t("dash.pack")}</span>
-          <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
+          <span className="flex items-center gap-1.5">{t("dash.pack")}<InfoIcon id="topic.alarms" /></span>
           <span>{t("dash.soc")}</span>
           <span className="text-right">{t("dash.voltage")}</span>
           <span className="text-right">{t("dash.current")}</span>
-          <span className="text-right">{t("dash.delta")}</span>
           <span className="text-right">{t("dash.temp")}</span>
-          <span className="flex items-center gap-1.5">{t("dash.alarms")}<InfoIcon id="topic.alarms" /></span>
+          <span className="flex items-center justify-end gap-1.5">{t("dash.delta")}<InfoIcon id="value.cell_delta" /></span>
+          <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
         </div>
         <div className="space-y-6">
           {groups.map((g, gi) => {
@@ -154,24 +154,31 @@ function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry;
   const temps = tm?.cell_temperatures ?? [];
   const state = packState(st?.system_status);
   const differs = state !== bankState && state !== "unknown";
+  const alarms = st?.alarms;
   return (
     <button onClick={onOpen} style={{ animationDelay: `${index * 35}ms` }}
-      className={cn(ROW, "row-in group w-full border-b border-line px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-sunken/50 focus-visible:bg-sunken/50 focus-visible:outline-none")}>
-      <span className="flex items-center gap-2">
-        <span className="font-display text-2xl font-semibold leading-none">{String(p.address).padStart(2, "0")}</span>
-        {multi && p.address === 0 && <span className="text-sm text-muted">{t("dash.master")}</span>}
-        {differs && <span title={t(`state.${state}`)}><StateIcon state={state} soc={tm?.soc} className="h-4 w-4" /></span>}
+      className={cn(ROW, "row-in group w-full border-b border-line px-4 py-3.5 text-left transition-colors last:border-b-0 hover:bg-sunken/50 focus-visible:bg-sunken/50 focus-visible:outline-none")}>
+      <span className="flex flex-col gap-1">
+        <span className="flex items-center gap-2">
+          <span className="font-display text-2xl font-semibold leading-none">{String(p.address).padStart(2, "0")}</span>
+          <MessagesMark alarms={alarms} compact />
+          {differs && <span title={t(`state.${state}`)}><StateIcon state={state} soc={tm?.soc} className="h-4 w-4" /></span>}
+        </span>
+        {(alarms?.length || (multi && p.address === 0)) ? (
+          <span className="text-xs text-muted">
+            {alarms?.length ? <MessagesText alarms={alarms} /> : t("dash.master")}
+          </span>
+        ) : null}
       </span>
-      {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
-      <span className="flex items-center gap-2">
-        <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-sunken"><span className={cn("block h-full transition-[width,background-color] duration-700", socTone(tm?.soc))} style={{ width: `${tm?.soc ?? 0}%` }} /></span>
-        <span className="w-12 text-right font-medium">{fmt(tm?.soc, 1, "%")}</span>
+      <span className="flex flex-col gap-1.5">
+        <span className="font-medium">{fmt(tm?.soc, 1, "%")}</span>
+        <span className="h-1.5 overflow-hidden rounded-full bg-sunken"><span className={cn("block h-full transition-[width,background-color] duration-700", socTone(tm?.soc))} style={{ width: `${tm?.soc ?? 0}%` }} /></span>
       </span>
       <span className="text-right">{fmt(tm?.pack_voltage, 2, "V")}</span>
       <span className="text-right">{tm ? fmt(effectiveCurrent(tm), 2, "A") : "–"}</span>
-      <span className={cn("text-right", delta !== null && delta >= 30 && "font-medium text-high")}>{fmt(delta, 0, "mV")}</span>
       <span className="text-right">{temps.length ? fmt(Math.max(...temps), 1, "°C") : "–"}</span>
-      <span><MessagesMark alarms={st?.alarms} /></span>
+      <span className={cn("text-right", delta !== null && delta >= 30 && "font-medium text-high")}>{fmt(delta, 0, "mV")}</span>
+      {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
     </button>
   );
 }
