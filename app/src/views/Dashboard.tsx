@@ -3,14 +3,15 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
-import { CellStrip, SevIcon, Stat, StateIcon, Tank, kw, median, sevTone, worstSeverity } from "../components/widgets";
+import { CellStrip, MessagesMark, Stat, StateIcon, Tank, kw, median, socTone } from "../components/widgets";
+import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
 import { GroupEditor } from "./GroupEditor";
 import { cn, fmt } from "../lib/utils";
 
-const ROW = "grid grid-cols-[6.5rem_minmax(10rem,1fr)_8rem_5.5rem_5.5rem_5rem_6rem] items-center gap-x-5 whitespace-nowrap";
+const ROW = "grid grid-cols-[6.5rem_minmax(9rem,1fr)_8rem_5.5rem_5.5rem_4.5rem_5.5rem_8.5rem] items-center gap-x-5 whitespace-nowrap";
 
 export function Dashboard({ packs, system, site, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; site: string; onOpen: (a: number) => void }) {
   const { t } = useTranslation();
@@ -40,7 +41,11 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             <StateIcon state={state} soc={soc} className="h-9 w-9 shrink-0" strokeWidth={1.75} />
             {t(`dash.head.${state}`, { p: kw(Math.abs(voltage * current)) })}
           </h1>
-          <p className="mt-1 pl-12 text-muted">{t("dash.sub", { v: fmt(voltage, 1, "V"), a: fmt(current, 1, "A"), n: list.length })}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 pl-12">
+            <span className="text-muted">{t("dash.sub", { v: fmt(voltage, 1, "V"), a: fmt(current, 1, "A"), n: list.length })}</span>
+            {live.length > 0 && <MessagesMark alarms={list.flatMap((p) => p.status?.alarms ?? [])} />}
+            <LiveIndicator updated={Math.max(0, ...list.map((p) => p.updated))} />
+          </div>
         </div>
         <Tank soc={soc} state={state} caption={t("dash.tank", { remain: fmt(s ? (s.soc / 100) * s.total_capacity_ah : remainAh, 0), total: fmt(s?.total_capacity_ah ?? fullAh, 0) })} />
         <div className="grid grid-cols-2 gap-6 pt-1 md:grid-cols-4">
@@ -120,6 +125,7 @@ function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps
           <span className="text-right">{t("dash.current")}</span>
           <span className="text-right">{t("dash.delta")}</span>
           <span className="text-right">{t("dash.temp")}</span>
+          <span className="flex items-center gap-1.5">{t("dash.alarms")}<InfoIcon id="topic.alarms" /></span>
         </div>
         <div className="space-y-6">
           {groups.map((g, gi) => {
@@ -146,7 +152,6 @@ function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry;
   const cells = tm?.cell_voltages ?? [];
   const delta = cells.length ? (Math.max(...cells) - Math.min(...cells)) * 1000 : null;
   const temps = tm?.cell_temperatures ?? [];
-  const worst = st ? worstSeverity(st.alarms) : undefined;
   const state = packState(st?.system_status);
   const differs = state !== bankState && state !== "unknown";
   return (
@@ -155,19 +160,18 @@ function RackRow({ p, index, center, bankState, multi, onOpen }: { p: PackEntry;
       <span className="flex items-center gap-2">
         <span className="font-display text-2xl font-semibold leading-none">{String(p.address).padStart(2, "0")}</span>
         {multi && p.address === 0 && <span className="text-sm text-muted">{t("dash.master")}</span>}
-        {worst
-          ? <span title={t("dash.alarmCount", { count: st!.alarms.length })}><SevIcon severity={worst} className="h-4 w-4" /></span>
-          : differs && <span title={t(`state.${state}`)}><StateIcon state={state} soc={tm?.soc} className="h-4 w-4" /></span>}
+        {differs && <span title={t(`state.${state}`)}><StateIcon state={state} soc={tm?.soc} className="h-4 w-4" /></span>}
       </span>
       {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
       <span className="flex items-center gap-2">
-        <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-sunken"><span className="block h-full bg-ink/60 transition-[width] duration-700" style={{ width: `${tm?.soc ?? 0}%` }} /></span>
+        <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-sunken"><span className={cn("block h-full transition-[width,background-color] duration-700", socTone(tm?.soc))} style={{ width: `${tm?.soc ?? 0}%` }} /></span>
         <span className="w-12 text-right font-medium">{fmt(tm?.soc, 1, "%")}</span>
       </span>
       <span className="text-right">{fmt(tm?.pack_voltage, 2, "V")}</span>
       <span className="text-right">{tm ? fmt(effectiveCurrent(tm), 2, "A") : "–"}</span>
       <span className={cn("text-right", delta !== null && delta >= 30 && "font-medium text-high")}>{fmt(delta, 0, "mV")}</span>
       <span className="text-right">{temps.length ? fmt(Math.max(...temps), 1, "°C") : "–"}</span>
+      <span><MessagesMark alarms={st?.alarms} /></span>
     </button>
   );
 }

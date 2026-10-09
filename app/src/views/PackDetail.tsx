@@ -5,6 +5,7 @@ import type { PackEntry } from "../store";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { AlarmList, CellStrip, QUIET, Stat, StateMark, kw, median } from "../components/widgets";
+import { LiveIndicator, Tick } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 
@@ -29,7 +30,10 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
           </h1>
           <p className="mt-1 text-muted">{[p.device?.device_name, p.device?.firmware_version && `Firmware ${p.device.firmware_version}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
         </div>
-        <StateMark state={packState(st?.system_status)} />
+        <div className="flex flex-col items-end gap-1">
+          <StateMark state={packState(st?.system_status)} />
+          <LiveIndicator updated={p.updated} />
+        </div>
       </header>
 
       {!tm ? <p className="text-muted">{t("dash.noData")}</p> : (
@@ -53,7 +57,7 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
             <div className="mt-3 grid" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
               {cells.map((v, i) => (
                 <div key={i} className="text-center leading-tight">
-                  <div className={cn("text-sm font-medium", v - center >= QUIET && "text-high", center - v >= QUIET && "text-low")}>{(v * 1000).toFixed(0)}</div>
+                  <div className={cn("text-sm font-medium", v - center >= QUIET && "text-high", center - v >= QUIET && "text-low")}><Tick value={v}>{(v * 1000).toFixed(0)}</Tick></div>
                   <div className="text-xs text-muted">{i + 1}</div>
                 </div>
               ))}
@@ -65,9 +69,9 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
             <Panel className="p-5">
               <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold"><Thermometer className="h-5 w-5 text-muted" aria-hidden />{t("dash.temp")}<InfoIcon id="value.temperatures" /></h2>
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5">
-                {tm.cell_temperatures.map((v, i) => <Row key={i} k={`T${i + 1}`} v={fmt(v, 1, "°C")} />)}
-                <Row k={t("dash.ambient")} v={fmt(tm.ambient_temperature, 1, "°C")} />
-                <Row k="MOSFET" v={fmt(tm.power_temperature, 1, "°C")} />
+                {tm.cell_temperatures.map((v, i) => <Row key={i} k={`T${i + 1}`} v={<Tick value={v}>{fmt(v, 1, "°C")}</Tick>} />)}
+                <Row k={t("dash.ambient")} v={<Tick value={tm.ambient_temperature}>{fmt(tm.ambient_temperature, 1, "°C")}</Tick>} />
+                <Row k="MOSFET" v={<Tick value={tm.power_temperature}>{fmt(tm.power_temperature, 1, "°C")}</Tick>} />
               </dl>
             </Panel>
             <Panel className="p-5">

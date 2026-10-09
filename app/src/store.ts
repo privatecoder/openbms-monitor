@@ -18,7 +18,8 @@ export function useLiveData() {
           // keep the last good values if a single poll fails
           telemetry: u.telemetry ?? prev[u.address]?.telemetry ?? null,
           status: u.status ?? prev[u.address]?.status ?? null,
-          updated: Date.now(),
+          // only a successful answer counts as fresh data; failed polls keep the old timestamp
+          updated: u.telemetry ? Date.now() : prev[u.address]?.updated ?? 0,
         },
       })),
     );

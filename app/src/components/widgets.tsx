@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Info, OctagonX, PowerOff, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import { BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Info, OctagonX, PowerOff, ShieldAlert, ShieldCheck, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { Tick } from "./live";
 import { cn, fmt } from "../lib/utils";
 import { InfoIcon, useHelpEntry } from "../help";
 import type { ActiveAlarm, PackState, Severity } from "../api";
@@ -90,7 +91,7 @@ export function Stat({ label, help, value, note, tone, icon: I }: { label: strin
   return (
     <div>
       <div className="flex items-center gap-1.5 text-sm text-muted">{I && <I className="h-4 w-4" aria-hidden />}{label}<InfoIcon id={help} /></div>
-      <div className={cn("mt-0.5 font-display text-xl font-medium", tone)}>{value}</div>
+      <div className={cn("mt-0.5 font-display text-xl font-medium", tone)}><Tick value={value}>{value}</Tick></div>
       {note && <div className="text-sm text-muted">{note}</div>}
     </div>
   );
@@ -125,6 +126,28 @@ function AlarmItem({ alarm }: { alarm: ActiveAlarm }) {
 export function SevIcon({ severity, className }: { severity: Severity; className?: string }) {
   const I = sevIcon[severity];
   return <I className={cn(sevTone[severity], className)} aria-hidden />;
+}
+
+/** Colour for a state of charge: red when nearly empty, amber when low, green otherwise. */
+export const socTone = (soc: number | null | undefined) =>
+  soc === null || soc === undefined || Number.isNaN(soc) ? "bg-line" : soc < 15 ? "bg-alarm" : soc < 30 ? "bg-discharge" : "bg-ok";
+
+/** Messages of one pack (or a group) as icon + short text; green shield when there are none. */
+export function MessagesMark({ alarms, compact = false }: { alarms: ActiveAlarm[] | undefined; compact?: boolean }) {
+  const { t } = useTranslation();
+  if (!alarms) return <span className="text-sm text-muted">–</span>;
+  const worst = worstSeverity(alarms);
+  if (!worst)
+    return (
+      <span className="inline-flex items-center gap-1.5 text-sm text-ok" title={t("dash.noAlarms")}>
+        <ShieldCheck className="h-4 w-4" aria-hidden />{!compact && t("dash.noAlarms")}
+      </span>
+    );
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 text-sm font-medium", sevTone[worst])} title={alarms.map((a) => a.key).join(", ")}>
+      <SevIcon severity={worst} className="h-4 w-4" />{compact ? alarms.length : t("dash.alarmCount", { count: alarms.length })}
+    </span>
+  );
 }
 
 export const kw = (watts: number) => (Math.abs(watts) >= 1000 ? fmt(watts / 1000, 2, "kW") : fmt(watts, 0, "W"));

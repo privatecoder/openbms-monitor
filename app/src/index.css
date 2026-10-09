@@ -15,6 +15,7 @@
   --alarm: #c23b2b;
   --low: #3f6fb5;
   --high: #8b4fb0;
+  --ok: #1f9d55;
 }
 .dark {
   --bg: #1a2129;
@@ -28,6 +29,7 @@
   --alarm: #ef6a57;
   --low: #7fa6e3;
   --high: #c79be0;
+  --ok: #4cc47e;
 }
 
 @theme inline {
@@ -44,6 +46,7 @@
   --color-alarm: var(--alarm);
   --color-low: var(--low);
   --color-high: var(--high);
+  --color-ok: var(--ok);
 }
 
 html, body, #root { height: 100%; }
@@ -91,3 +94,7 @@ body {
 
 @keyframes balance { 50% { opacity: 0.35; } }
 .balancing { animation: balance 1.4s ease-in-out infinite; }
+
+/* A changed value briefly takes the accent colour, so updates are visible. */
+@keyframes value-tick { from { color: var(--charge); } }
+.value-tick { animation: value-tick 1.2s ease-out; }

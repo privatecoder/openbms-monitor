@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Languages, LayoutDashboard, Moon, Network, Sun, Usb } from "lucide-react";
+import { BatteryCharging, Languages, LayoutDashboard, Moon, Network, Sun, Usb } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { Logo } from "../components/Logo";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
@@ -51,7 +50,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
       <div className="flex items-center gap-2.5 px-5 pb-4 pt-6">
-        <Logo className="h-7 w-7" />
+        <BatteryCharging className="h-6 w-6 text-ok" aria-hidden />
         <span className="font-display text-xl font-semibold">{t("app")}</span>
       </div>
       <nav className="space-y-1 px-3">
