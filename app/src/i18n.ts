@@ -29,7 +29,7 @@ const resources = {
       },
       groups: {
         title: "Packs gruppieren", intro: "Fasse Packs zu Gruppen zusammen, zum Beispiel je Turm. Ein Pack gehört zu höchstens einer Gruppe; nicht zugeordnete Packs erscheinen unter „Ohne Gruppe“. Die Gruppen werden für diese Anlage gespeichert.",
-        splitPre: "Aufteilen in Gruppen zu", splitPost: "Packs", split: "Aufteilen", defaultName: "Turm", name: "Name der Gruppe",
+        splitPre: "Aufteilen in", splitPost_one: "Gruppen, je {{count}} Pack", splitPost_other: "Gruppen, je {{count}} Packs", split: "Aufteilen", defaultName: "Turm", name: "Name der Gruppe",
         remove: "Gruppe entfernen", add: "Gruppe hinzufügen", save: "Gruppen speichern", cancel: "Abbrechen", clear: "Alle Gruppen entfernen",
         edit: "Gruppen bearbeiten", summary: "{{soc}}, {{a}}, {{p}}, Spreizung {{d}}", unassigned: "Ohne Gruppe",
       },
@@ -66,7 +66,7 @@ const resources = {
       },
       groups: {
         title: "Group packs", intro: "Combine packs into groups, for example one per tower. A pack belongs to at most one group; unassigned packs appear under “Ungrouped”. Groups are saved for this installation.",
-        splitPre: "Split into groups of", splitPost: "packs", split: "Split", defaultName: "Tower", name: "Group name",
+        splitPre: "Split into", splitPost_one: "groups of {{count}} pack", splitPost_other: "groups of {{count}} packs", split: "Split", defaultName: "Tower", name: "Group name",
         remove: "Remove group", add: "Add group", save: "Save groups", cancel: "Cancel", clear: "Remove all groups",
         edit: "Edit groups", summary: "{{soc}}, {{a}}, {{p}}, spread {{d}}", unassigned: "Ungrouped",
       },

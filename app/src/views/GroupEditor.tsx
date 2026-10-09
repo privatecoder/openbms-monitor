@@ -13,7 +13,8 @@ export function GroupEditor({ open, onOpenChange, groups, packs, onSave }: {
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<Group[]>(groups);
-  const [size, setSize] = useState(4);
+  const [count, setCount] = useState(3);
+  const perGroup = Math.ceil(packs.length / Math.max(1, count));
   useEffect(() => { if (open) setDraft(groups.length ? groups : []); }, [open, groups]);
 
   const owner = (a: number) => draft.findIndex((g) => g.packs.includes(a));
@@ -32,10 +33,10 @@ export function GroupEditor({ open, onOpenChange, groups, packs, onSave }: {
           <p className="text-sm text-muted">{t("groups.intro")}</p>
           <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunken p-3">
             <span className="text-sm">{t("groups.splitPre")}</span>
-            <input type="number" min={1} max={16} value={size} onChange={(e) => setSize(Math.max(1, Number(e.target.value) || 1))}
+            <input type="number" min={1} max={Math.max(1, packs.length)} value={count} onChange={(e) => setCount(Math.max(1, Math.min(packs.length || 1, Number(e.target.value) || 1)))}
               className={cn(input, "w-16 text-center")} aria-label={t("groups.splitPre")} />
-            <span className="text-sm">{t("groups.splitPost")}</span>
-            <Button size="sm" onClick={() => setDraft(splitEvenly(packs, size, t("groups.defaultName")))}>{t("groups.split")}</Button>
+            <span className="text-sm">{t("groups.splitPost", { count: perGroup })}</span>
+            <Button size="sm" className="ml-auto" onClick={() => setDraft(splitEvenly(packs, perGroup, t("groups.defaultName")))}>{t("groups.split")}</Button>
           </div>
 
           {draft.map((g, gi) => (
