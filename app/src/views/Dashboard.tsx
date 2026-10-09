@@ -123,7 +123,7 @@ function RackList({ groups, packs, center, bankState, multi, onOpen }: RackProps
           <span>{t("dash.soc")}</span>
           <span className="text-right">{t("dash.voltage")}</span>
           <span className="text-right">{t("dash.current")}</span>
-          <span className="text-right">{t("dash.temp")}</span>
+          <span className="flex items-center justify-end gap-1.5">{t("dash.cellTempMax")}<InfoIcon id="value.cell_temp_max" /></span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.delta")}<InfoIcon id="value.cell_delta" /></span>
           <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
         </div>

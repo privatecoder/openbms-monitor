@@ -66,6 +66,11 @@ TOPICS = {
  "- Der Median ist die mittlere Zellspannung: Die Hälfte aller Zellen liegt darüber, die Hälfte darunter. Anders als der Durchschnitt verschiebt er sich nicht durch eine einzelne Ausreißerzelle.\n- Nach oben (violett) = Zelle liegt über dem Median, nach unten (blau) = darunter.\n- Die volle Höhe entspricht ±20 mV; größere Abweichungen stoßen an den Rand.\n- Abweichungen unter 4 mV bleiben grau.\n- Ein farbiger Strich unten zeigt, dass die Zelle gerade balanciert wird.\n\nSo fällt ein Pack oder eine einzelne Zelle, die aus der Reihe tanzt, sofort auf, auch wenn alle absoluten Werte normal aussehen."),
  ("Deviation from median", "One tick per cell: how far its voltage is from the median of all cells of all packs (shown next to “Packs”). A flat line means well balanced.",
  "- The median is the middle cell voltage: half of all cells are above it, half below. Unlike the average it is not pulled by a single outlier cell.\n- Up (violet) = cell above the median, down (blue) = below.\n- Full height equals ±20 mV; larger deviations hit the edge.\n- Deviations below 4 mV stay grey.\n- A coloured mark at the bottom shows the cell is being balanced.\n\nThis way a pack or a single cell that is out of line stands out immediately, even when all absolute values look normal.")),
+"value.cell_temp_max": ("value.temperatures", (
+ "Zelle max.", "Die höchste der vier Zelltemperaturen (Fühler T1–T4) dieses Packs.",
+ "Umgebungs- und MOSFET-Temperatur sind nicht enthalten; alle Einzelwerte stehen in der Pack-Ansicht. Für die Temperaturgrenzen beim Laden und Entladen zählen die Zelltemperaturen."),
+ ("Cell max.", "The highest of the four cell temperatures (sensors T1–T4) of this pack.",
+ "Ambient and MOSFET temperature are not included; all individual values are shown in the pack view. The charge and discharge temperature limits are based on the cell temperatures.")),
 "value.cell_delta": ("value.cell_voltages", (
  "Zelldifferenz", "Abstand zwischen höchster und niedrigster Zelle.",
  "Ab Parameter 60 (z. B. 0,5 V) meldet das BMS einen Zelldifferenz-Fehler. Balancing startet erst, wenn die Differenz Parameter 62 überschreitet und eine Zelle über Parameter 8 liegt."),
