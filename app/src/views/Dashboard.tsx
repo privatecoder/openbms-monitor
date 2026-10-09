@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Columns3, Rows3, Layers } from "lucide-react";
+import { Layers } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
 import { CellStrip, Stat, StateMark, Tank, kw, median, sevTone, worstSeverity } from "../components/widgets";
@@ -16,8 +16,6 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const { t } = useTranslation();
   const { groups, save } = useGroups(site);
   const [editing, setEditing] = useState(false);
-  const [layout, setLayout] = useState<"towers" | "list">(() => { try { return (localStorage.getItem("layout") as "towers" | "list") ?? "towers"; } catch { return "towers"; } });
-  const pickLayout = (l: "towers" | "list") => { setLayout(l); try { localStorage.setItem("layout", l); } catch { /* ignore */ } };
   const list = Object.values(packs).sort((a, b) => a.address - b.address);
   const live = list.filter((p) => p.telemetry);
   const allCells = live.flatMap((p) => p.telemetry!.cell_voltages);
@@ -64,20 +62,10 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
           <h2 className="font-display text-2xl font-semibold">{t("dash.rack")}</h2>
           {Number.isFinite(center) && <span className="text-sm text-muted">{t("dash.median", { v: fmt(center, 3, "V") })}</span>}
           <div className="ml-auto flex items-center gap-2">
-            <div className="flex rounded-md bg-sunken p-0.5" role="group">
-              {([["towers", Columns3], ["list", Rows3]] as const).map(([k, I]) => (
-                <button key={k} onClick={() => pickLayout(k)} aria-pressed={layout === k}
-                  className={cn("flex items-center gap-1.5 rounded px-2.5 py-1 text-sm", layout === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
-                  <I className="h-4 w-4" />{t(`groups.${k}`)}
-                </button>
-              ))}
-            </div>
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
         </div>
-        {layout === "towers"
-          ? <Towers groups={arranged} packs={packs} center={center} bankState={state} onOpen={onOpen} />
-          : <RackList groups={arranged} packs={packs} center={center} bankState={state} onOpen={onOpen} />}
+        <RackList groups={arranged} packs={packs} center={center} bankState={state} onOpen={onOpen} />
         <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} />
       </section>
     </div>
@@ -114,56 +102,13 @@ function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
   );
 }
 
-function Towers({ groups, packs, center, bankState, onOpen }: RackProps) {
-  return (
-    <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(19rem, 1fr))" }}>
-      {groups.map((g) => {
-        const entries = g.packs.map((a) => packs[a]).filter(Boolean);
-        const agg = aggregate(entries);
-        return (
-          <div key={g.name + g.packs.join()} className="flex flex-col">
-            <div className="mb-2"><GroupSummary name={g.name} agg={agg} /></div>
-            <div className="overflow-hidden rounded-md border border-line bg-surface">
-              <div className="h-1 bg-sunken"><div className="h-full bg-ink/50" style={{ width: `${agg.soc || 0}%` }} /></div>
-              {entries.map((p) => <Slab key={p.address} p={p} center={center} bankState={bankState} onOpen={() => onOpen(p.address)} />)}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** A pack in a tower: number, cell strip, charge and current. */
-function Slab({ p, center, bankState, onOpen }: { p: PackEntry; center: number; bankState: PackState; onOpen: () => void }) {
-  const { t } = useTranslation();
-  const tm = p.telemetry, st = p.status;
-  const worst = st ? worstSeverity(st.alarms) : undefined;
-  const state = packState(st?.system_status);
-  return (
-    <button onClick={onOpen}
-      className="grid w-full grid-cols-[3.25rem_1fr_4rem_4.5rem] min-h-14 items-center gap-x-3 border-t border-line px-3 py-2 text-left first-of-type:border-t-0 hover:bg-sunken/50 focus-visible:bg-sunken/50 focus-visible:outline-none">
-      <span className="flex flex-col leading-none">
-        <span className="font-display text-xl font-semibold">{String(p.address).padStart(2, "0")}</span>
-        {(p.address === 0 || worst || state !== bankState) && (
-          <span className={cn("pt-0.5 text-xs", worst ? sevTone[worst] : "text-muted")}>
-            {worst ? t(`sev.${worst}`) : state !== bankState ? t(`state.${state}`) : t("dash.master")}
-          </span>
-        )}
-      </span>
-      {tm ? <CellStrip cells={tm.cell_voltages} center={center} balancing={st?.balancing} height={24} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
-      <span className="text-right font-medium">{fmt(tm?.soc, 1, "%")}</span>
-      <span className="text-right text-muted">{tm ? fmt(effectiveCurrent(tm), 2, "A") : "–"}</span>
-    </button>
-  );
-}
-
+/** Column header once on top, then one panel per group with its summary above it. */
 function RackList({ groups, packs, center, bankState, onOpen }: RackProps) {
   const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[56rem] overflow-hidden rounded-md border border-line bg-surface">
-        <div className={cn(ROW, "border-b border-line bg-sunken/60 px-4 py-2 text-sm text-muted")}>
+      <div className="min-w-[56rem]">
+        <div className={cn(ROW, "mb-5 border-b border-line px-4 pb-2 text-sm text-muted")}>
           <span>{t("dash.pack")}</span>
           <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
           <span>{t("dash.soc")}</span>
@@ -173,15 +118,19 @@ function RackList({ groups, packs, center, bankState, onOpen }: RackProps) {
           <span className="text-right">{t("dash.temp")}</span>
           <span />
         </div>
-        {groups.map((g) => {
-          const entries = g.packs.map((a) => packs[a]).filter(Boolean);
-          return (
-            <div key={g.name + g.packs.join()}>
-              {g.name && <div className="border-b border-line bg-sunken/30 px-4 pb-2 pt-4"><GroupSummary name={g.name} agg={aggregate(entries)} /></div>}
-              {entries.map((p) => <RackRow key={p.address} p={p} center={center} bankState={bankState} onOpen={() => onOpen(p.address)} />)}
-            </div>
-          );
-        })}
+        <div className="space-y-6">
+          {groups.map((g) => {
+            const entries = g.packs.map((a) => packs[a]).filter(Boolean);
+            return (
+              <div key={g.name + g.packs.join()}>
+                {g.name && <div className="mb-2 px-1"><GroupSummary name={g.name} agg={aggregate(entries)} /></div>}
+                <div className="overflow-hidden rounded-md border border-line bg-surface">
+                  {entries.map((p) => <RackRow key={p.address} p={p} center={center} bankState={bankState} onOpen={() => onOpen(p.address)} />)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
