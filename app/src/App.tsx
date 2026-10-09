@@ -13,6 +13,7 @@ export default function App() {
   const { t } = useTranslation();
   const live = useLiveData();
   const [connected, setConnected] = useState(false);
+  const [site, setSite] = useState("");
   const [view, setView] = useState("dashboard");
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
   const current = pack !== null ? live.packs[pack] : undefined;
@@ -24,7 +25,7 @@ export default function App() {
           connected={connected}
           view={view}
           setView={(v) => { setView(v); setPack(null); }}
-          onConnected={(found) => { live.setDevices(found); setConnected(true); if (!isDemo) setPack(null); }}
+          onConnected={(found, s) => { live.setDevices(found); setSite(s); setConnected(true); if (!isDemo) setPack(null); }}
           onDisconnected={() => { live.reset(); setConnected(false); setPack(null); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
@@ -33,7 +34,7 @@ export default function App() {
           ) : current ? (
             <PackDetail p={current} onBack={() => setPack(null)} />
           ) : (
-            <Dashboard packs={live.packs} system={live.system} onOpen={setPack} />
+            <Dashboard packs={live.packs} system={live.system} site={site} onOpen={setPack} />
           )}
         </main>
       </div>

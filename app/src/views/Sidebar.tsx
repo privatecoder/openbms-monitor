@@ -10,7 +10,7 @@ const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm 
 
 export function Sidebar({ connected, onConnected, onDisconnected, view, setView }: {
   connected: boolean;
-  onConnected: (found: [number, DeviceInfo][]) => void;
+  onConnected: (found: [number, DeviceInfo][], site: string) => void;
   onDisconnected: () => void;
   view: string;
   setView: (v: string) => void;
@@ -34,7 +34,7 @@ export function Sidebar({ connected, onConnected, onDisconnected, view, setView 
       await api.connect(kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus });
       const found = await api.scan();
       setMsg(found.length ? t("conn.found", { count: found.length }) : t("conn.none"));
-      onConnected(found);
+      onConnected(found, target);
       if (found.length) await api.startPolling(found.map(([a]) => a), 2000);
     } catch (e) {
       setMsg(String(e));
