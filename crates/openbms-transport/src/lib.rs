@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{frame, modbus, DeviceInfo, Frame, Parameters, SystemValues, Telemetry};
+use openbms_proto::{frame, modbus, DeviceInfo, Frame, Parameters, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
@@ -154,6 +154,11 @@ impl Connection {
     pub fn telemetry(&mut self, address: u8) -> Result<Telemetry> {
         let f = self.ascii(&Telemetry::request(address)?, address)?;
         Ok(Telemetry::parse(&f.info)?)
+    }
+
+    pub fn status(&mut self, address: u8) -> Result<Status> {
+        let f = self.ascii(&Status::request(address)?, address)?;
+        Ok(Status::parse(&f.info)?)
     }
 
     pub fn device_info(&mut self, address: u8) -> Result<DeviceInfo> {

@@ -1,6 +1,6 @@
 //! Tests against frames captured from a real 12-pack system (firmware 16.06).
 
-use openbms_proto::{frame, IntraPackRecord, Telemetry};
+use openbms_proto::{frame, IntraPackRecord, Status, Telemetry};
 
 #[test]
 fn telemetry_frame_pack1() {
@@ -37,4 +37,16 @@ fn intra_pack_record_charging_above_3a() {
     assert_eq!(r.soc, 98.2);
     assert_eq!(r.alarm_events, [0x00, 0x11, 0x00, 0x00, 0x00, 0x00]);
     assert_eq!(r.system_status, 0x82); // charging + charge current >= 3 A
+}
+
+#[test]
+fn status_frame_charging_no_alarms() {
+    let raw = b"~20014600806200011000000000000000000000000000000000060000000000000000140000000000000300000200000000000000000002EB2F\r";
+    let f = frame::parse(raw).unwrap();
+    let s = Status::parse(&f.info).unwrap();
+    assert_eq!(s.cell_limits.len(), 16);
+    assert!(s.discharge_mosfet_on() && s.charge_mosfet_on() && !s.heater_on());
+    assert_eq!(s.system_status, 0x02);
+    assert_eq!(s.balancing, 0);
+    assert!(s.alarms.is_empty());
 }

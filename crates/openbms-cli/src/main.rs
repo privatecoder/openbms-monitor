@@ -33,6 +33,8 @@ enum Cmd {
     Scan,
     /// Telemetry (0x42) of one pack
     Telemetry { #[arg(default_value_t = 0)] address: u8 },
+    /// Alarms and status (0x44) of one pack
+    Status { #[arg(default_value_t = 0)] address: u8 },
     /// Device info (0x51) of one pack
     Info { #[arg(default_value_t = 0)] address: u8 },
     /// All parameters (0x47), pack bus only
@@ -72,6 +74,7 @@ fn main() {
         Cmd::Ports => unreachable!(),
         Cmd::Scan => Ok(serde_json::to_value(c.scan(0..=15).into_iter().map(|(a, d)| serde_json::json!({"address": a, "device": d})).collect::<Vec<_>>()).unwrap()),
         Cmd::Telemetry { address } => c.telemetry(address).map(|v| serde_json::to_value(v).unwrap()),
+        Cmd::Status { address } => c.status(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Info { address } => c.device_info(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Params { address } => c.parameters(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::System => c.system_values().map(|v| serde_json::to_value(v).unwrap()),
