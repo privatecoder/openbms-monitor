@@ -1,6 +1,6 @@
 ---
-title: Cell deviation
-short: One tick per cell: how far its voltage is from the median of all cells of all packs (shown in the column header). A flat line means well balanced.
+title: Deviation from median
+short: One tick per cell: how far its voltage is from the median of all cells of all packs (shown next to “Packs”). A flat line means well balanced.
 related: value.cell_voltages, value.cell_delta
 ---
 - The median is the middle cell voltage: half of all cells are above it, half below. Unlike the average it is not pulled by a single outlier cell.

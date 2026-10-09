@@ -1,6 +1,6 @@
 ---
-title: Zellabweichung
-short: Ein Strich pro Zelle: wie weit ihre Spannung vom Median aller Zellen aller Packs abweicht (der Wert steht im Spaltenkopf). Eine flache Linie heißt: gut ausbalanciert.
+title: Abweichung vom Median
+short: Ein Strich pro Zelle: wie weit ihre Spannung vom Median aller Zellen aller Packs abweicht (der Wert steht neben „Packs“). Eine flache Linie heißt: gut ausbalanciert.
 related: value.cell_voltages, value.cell_delta
 ---
 - Der Median ist die mittlere Zellspannung: Die Hälfte aller Zellen liegt darüber, die Hälfte darunter. Anders als der Durchschnitt verschiebt er sich nicht durch eine einzelne Ausreißerzelle.

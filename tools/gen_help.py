@@ -62,9 +62,9 @@ TOPICS = {
  ("Cell voltages", "Voltage of every cell in mV. Violet = clearly above, blue = clearly below this pack's median.",
  "The ticks show the deviation from the median of this pack's cells (full height ±20 mV). A coloured mark at the bottom means the cell is being balanced.")),
 "value.cell_strip": ("value.cell_voltages, value.cell_delta", (
- "Zellabweichung", "Ein Strich pro Zelle: wie weit ihre Spannung vom Median aller Zellen aller Packs abweicht (der Wert steht im Spaltenkopf). Eine flache Linie heißt: gut ausbalanciert.",
+ "Abweichung vom Median", "Ein Strich pro Zelle: wie weit ihre Spannung vom Median aller Zellen aller Packs abweicht (der Wert steht neben „Packs“). Eine flache Linie heißt: gut ausbalanciert.",
  "- Der Median ist die mittlere Zellspannung: Die Hälfte aller Zellen liegt darüber, die Hälfte darunter. Anders als der Durchschnitt verschiebt er sich nicht durch eine einzelne Ausreißerzelle.\n- Nach oben (violett) = Zelle liegt über dem Median, nach unten (blau) = darunter.\n- Die volle Höhe entspricht ±20 mV; größere Abweichungen stoßen an den Rand.\n- Abweichungen unter 4 mV bleiben grau.\n- Ein farbiger Strich unten zeigt, dass die Zelle gerade balanciert wird.\n\nSo fällt ein Pack oder eine einzelne Zelle, die aus der Reihe tanzt, sofort auf, auch wenn alle absoluten Werte normal aussehen."),
- ("Cell deviation", "One tick per cell: how far its voltage is from the median of all cells of all packs (shown in the column header). A flat line means well balanced.",
+ ("Deviation from median", "One tick per cell: how far its voltage is from the median of all cells of all packs (shown next to “Packs”). A flat line means well balanced.",
  "- The median is the middle cell voltage: half of all cells are above it, half below. Unlike the average it is not pulled by a single outlier cell.\n- Up (violet) = cell above the median, down (blue) = below.\n- Full height equals ±20 mV; larger deviations hit the edge.\n- Deviations below 4 mV stay grey.\n- A coloured mark at the bottom shows the cell is being balanced.\n\nThis way a pack or a single cell that is out of line stands out immediately, even when all absolute values look normal.")),
 "value.cell_delta": ("value.cell_voltages", (
  "Zelldifferenz", "Abstand zwischen höchster und niedrigster Zelle.",
