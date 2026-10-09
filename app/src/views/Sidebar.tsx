@@ -5,11 +5,13 @@ import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
+import { Logo } from "../components/Logo";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, onConnected, onDisconnected, view, setView }: {
+export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, view, setView }: {
   connected: boolean;
+  lastUpdate: number;
   onConnected: (found: [number, DeviceInfo][], site: string) => void;
   onDisconnected: () => void;
   view: string;
@@ -48,7 +50,8 @@ export function Sidebar({ connected, onConnected, onDisconnected, view, setView 
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
-      <div className="px-5 pb-4 pt-6">
+      <div className="flex items-center gap-2.5 px-5 pb-4 pt-6">
+        <Logo className="h-7 w-7" />
         <span className="font-display text-xl font-semibold">{t("app")}</span>
       </div>
       <nav className="space-y-1 px-3">
@@ -66,7 +69,10 @@ export function Sidebar({ connected, onConnected, onDisconnected, view, setView 
         <div className="flex items-center justify-between text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("conn.title")}<InfoIcon id="topic.connection" /></span>
           <span className={cn("flex items-center gap-1.5", connected ? "text-charge" : "text-muted")}>
-            <span className={cn("h-2 w-2 rounded-full", connected ? "bg-charge" : "border border-muted")} />
+            <span className="relative flex h-2 w-2">
+              {connected && lastUpdate > 0 && <span key={lastUpdate} className="ping-once absolute inset-0 rounded-full bg-charge" />}
+              <span className={cn("relative h-2 w-2 rounded-full", connected ? "bg-charge" : "border border-muted")} />
+            </span>
             {connected ? t("conn.connected") : t("conn.offline")}
           </span>
         </div>

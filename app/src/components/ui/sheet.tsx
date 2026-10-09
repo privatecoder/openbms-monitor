@@ -8,9 +8,9 @@ export const Sheet = D.Root;
 export function SheetContent({ className, title, children, ...props }: ComponentProps<typeof D.Content> & { title: ReactNode }) {
   return (
     <D.Portal>
-      <D.Overlay className="fixed inset-0 z-40 bg-ink/20" />
+      <D.Overlay className="anim-overlay fixed inset-0 z-40 bg-ink/20" />
       <D.Content
-        className={cn("fixed inset-y-0 right-0 z-50 flex w-[28rem] max-w-full flex-col border-l border-line bg-surface text-ink shadow-2xl outline-none", className)}
+        className={cn("anim-sheet fixed inset-y-0 right-0 z-50 flex w-[28rem] max-w-full flex-col border-l border-line bg-surface text-ink shadow-2xl outline-none", className)}
         {...props}
       >
         <div className="flex items-center justify-between border-b border-line px-6 py-4">

@@ -1,4 +1,6 @@
 import { useTranslation } from "react-i18next";
+import { BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Info, OctagonX, PowerOff, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { cn, fmt } from "../lib/utils";
 import { InfoIcon, useHelpEntry } from "../help";
 import type { ActiveAlarm, PackState, Severity } from "../api";
@@ -22,39 +24,46 @@ export const median = (xs: number[]) => {
 export function CellStrip({ cells, center, balancing = 0, height = 28, className }: {
   cells: number[]; center: number; balancing?: number; height?: number; className?: string;
 }) {
-  const n = cells.length || 16, w = 100 / n, mid = height / 2;
   return (
-    <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" className={cn("block w-full", className)} style={{ height }} role="img"
+    <div className={cn("relative flex w-full", className)} style={{ height }} role="img"
       aria-label={cells.map((v, i) => `${i + 1}: ${v.toFixed(3)} V`).join(", ")}>
-      <line x1="0" x2="100" y1={mid} y2={mid} className="stroke-line" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+      <div className="absolute inset-x-0 top-1/2 h-px bg-line" />
       {cells.map((v, i) => {
         const d = Math.max(-1, Math.min(1, (v - center) / SPAN));
-        const len = Math.max(1.5, Math.abs(d) * (mid - 1));
+        const pct = Math.max(3, Math.abs(d) * 48);
         const up = d >= 0;
-        const tone = Math.abs(v - center) < QUIET ? "fill-muted/45" : up ? "fill-high" : "fill-low";
+        const tone = Math.abs(v - center) < QUIET ? "bg-muted/45" : up ? "bg-high" : "bg-low";
         return (
-          <g key={i}>
-            <rect x={i * w + w * 0.2} width={w * 0.6} y={up ? mid - len : mid} height={len} className={tone} />
-            {(balancing >> i) & 1 ? <rect x={i * w + w * 0.2} width={w * 0.6} y={height - 2} height={2} className="fill-charge" /> : null}
-          </g>
+          <div key={i} className="relative flex-1">
+            <div className={cn("absolute inset-x-[20%] transition-[height] duration-700 ease-out", tone, up ? "bottom-1/2" : "top-1/2")} style={{ height: `${pct}%` }} />
+            {(balancing >> i) & 1 ? <div className="balancing absolute inset-x-[20%] bottom-0 h-0.5 bg-charge" /> : null}
+          </div>
         );
       })}
-    </svg>
+    </div>
   );
 }
 
 const stateTone: Record<PackState, string> = {
   charging: "text-charge", discharging: "text-discharge", standby: "text-muted", off: "text-muted", unknown: "text-muted",
 };
-const stateDot: Record<PackState, string> = {
-  charging: "bg-charge", discharging: "bg-discharge", standby: "bg-muted/50", off: "border border-muted bg-transparent", unknown: "bg-line",
+
+const stateIcon: Record<PackState, LucideIcon | null> = {
+  charging: BatteryCharging, discharging: BatteryMedium, standby: BatteryFull, off: PowerOff, unknown: null,
 };
+
+/** Battery icon that follows the state and, when discharging or idle, the charge level. */
+export function StateIcon({ state, soc, className, strokeWidth }: { state: PackState; soc?: number; className?: string; strokeWidth?: number }) {
+  let I = stateIcon[state];
+  if (I && (state === "discharging" || state === "standby") && soc !== undefined) I = soc < 20 ? BatteryLow : soc < 70 ? BatteryMedium : BatteryFull;
+  return I ? <I className={cn(stateTone[state], className)} strokeWidth={strokeWidth} aria-hidden /> : null;
+}
 
 export function StateMark({ state }: { state: PackState }) {
   const { t } = useTranslation();
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-sm font-medium", stateTone[state])}>
-      <span className={cn("h-2 w-2 rounded-full", stateDot[state])} />{t(`state.${state}`)}
+      <StateIcon state={state} className="h-4 w-4" />{t(`state.${state}`)}
     </span>
   );
 }
@@ -66,7 +75,7 @@ export function Tank({ soc, state, caption }: { soc: number; state: PackState; c
   return (
     <div>
       <div className="relative h-14 overflow-hidden rounded-md bg-sunken" role="meter" aria-valuenow={v} aria-valuemin={0} aria-valuemax={100}>
-        <div className={cn("absolute inset-y-0 left-0 transition-[width] duration-700", fill)} style={{ width: `${v}%` }} />
+        <div className={cn("absolute inset-y-0 left-0 transition-[width] duration-700", fill, state === "charging" && "flow-charge", state === "discharging" && "flow-discharge")} style={{ width: `${v}%` }} />
         {[25, 50, 75].map((x) => <div key={x} className="absolute inset-y-0 w-px bg-surface/40" style={{ left: `${x}%` }} />)}
         <div className="absolute inset-y-0 flex items-center pl-4 font-display text-3xl font-semibold text-surface" style={{ left: 0 }}>
           {fmt(v, 1)} %
@@ -77,10 +86,10 @@ export function Tank({ soc, state, caption }: { soc: number; state: PackState; c
   );
 }
 
-export function Stat({ label, help, value, note, tone }: { label: string; help: string; value: string; note?: string; tone?: string }) {
+export function Stat({ label, help, value, note, tone, icon: I }: { label: string; help: string; value: string; note?: ReactNode; tone?: string; icon?: LucideIcon }) {
   return (
     <div>
-      <div className="flex items-center gap-1.5 text-sm text-muted">{label}<InfoIcon id={help} /></div>
+      <div className="flex items-center gap-1.5 text-sm text-muted">{I && <I className="h-4 w-4" aria-hidden />}{label}<InfoIcon id={help} /></div>
       <div className={cn("mt-0.5 font-display text-xl font-medium", tone)}>{value}</div>
       {note && <div className="text-sm text-muted">{note}</div>}
     </div>
@@ -90,7 +99,7 @@ export function Stat({ label, help, value, note, tone }: { label: string; help: 
 const sevOrder: Severity[] = ["fault", "protection", "warning", "info"];
 export const worstSeverity = (alarms: ActiveAlarm[]) => sevOrder.find((s) => alarms.some((a) => a.severity === s));
 export const sevTone: Record<Severity, string> = { fault: "text-alarm", protection: "text-alarm", warning: "text-discharge", info: "text-low" };
-const sevBar: Record<Severity, string> = { fault: "bg-alarm", protection: "bg-alarm", warning: "bg-discharge", info: "bg-low" };
+export const sevIcon: Record<Severity, LucideIcon> = { fault: OctagonX, protection: ShieldAlert, warning: TriangleAlert, info: Info };
 
 export function AlarmList({ alarms }: { alarms: ActiveAlarm[] }) {
   const { t } = useTranslation();
@@ -104,13 +113,18 @@ function AlarmItem({ alarm }: { alarm: ActiveAlarm }) {
   const e = useHelpEntry(alarm.id);
   return (
     <li className="flex items-start gap-3 py-2.5">
-      <span className={cn("mt-1 h-4 w-1 shrink-0 rounded-full", sevBar[alarm.severity])} />
+      <SevIcon severity={alarm.severity} className="mt-0.5 h-4 w-4 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 font-medium">{e?.title ?? alarm.key}<InfoIcon id={alarm.id} /></div>
         <div className={cn("text-sm", sevTone[alarm.severity])}>{t(`sev.${alarm.severity}`)}</div>
       </div>
     </li>
   );
+}
+
+export function SevIcon({ severity, className }: { severity: Severity; className?: string }) {
+  const I = sevIcon[severity];
+  return <I className={cn(sevTone[severity], className)} aria-hidden />;
 }
 
 export const kw = (watts: number) => (Math.abs(watts) >= 1000 ? fmt(watts / 1000, 2, "kW") : fmt(watts, 0, "W"));

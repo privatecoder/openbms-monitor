@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Cable } from "lucide-react";
 import { Sidebar } from "./views/Sidebar";
 import { Dashboard } from "./views/Dashboard";
 import { PackDetail } from "./views/PackDetail";
@@ -23,6 +24,7 @@ export default function App() {
       <div className="flex h-full bg-bg text-ink">
         <Sidebar
           connected={connected}
+          lastUpdate={Math.max(0, ...Object.values(live.packs).map((p) => p.updated))}
           view={view}
           setView={(v) => { setView(v); setPack(null); }}
           onConnected={(found, s) => { live.setDevices(found); setSite(s); setConnected(true); if (!isDemo) setPack(null); }}
@@ -30,7 +32,7 @@ export default function App() {
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
           {!connected ? (
-            <div className="flex h-full max-w-md items-center text-lg text-muted">{t("dash.empty")}</div>
+            <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
           ) : current ? (
             <PackDetail p={current} onBack={() => setPack(null)} />
           ) : (

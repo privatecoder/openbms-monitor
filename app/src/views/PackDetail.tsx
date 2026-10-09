@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ArrowLeft } from "lucide-react";
+import { Activity, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
 import { effectiveCurrent, packState } from "../api";
 import type { PackEntry } from "../store";
 import { Button } from "../components/ui/button";
@@ -15,11 +15,11 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
   const center = median(cells);
   const hi = Math.max(...cells), lo = Math.min(...cells);
   const sw = st?.switch_state ?? 0;
-  const switches: [string, boolean][] = [["discharge", !!(sw & 1)], ["charge", !!(sw & 2)], ["limiter", !!(sw & 4)], ["heater", !!(sw & 8)]];
+  const switches: [string, boolean, LucideIcon][] = [["discharge", !!(sw & 1), ArrowDownFromLine], ["charge", !!(sw & 2), ArrowUpToLine], ["limiter", !!(sw & 4), ShieldHalf], ["heater", !!(sw & 8), Flame]];
   const current = tm ? effectiveCurrent(tm) : NaN;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-8">
+    <div className="view-in mx-auto max-w-6xl space-y-8">
       <Button variant="ghost" size="sm" className="-ml-3" onClick={onBack}><ArrowLeft className="h-4 w-4" />{t("dash.back")}</Button>
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -35,12 +35,12 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
       {!tm ? <p className="text-muted">{t("dash.noData")}</p> : (
         <>
           <div className="grid grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-6">
-            <Stat label={t("dash.soc")} help="value.soc" value={fmt(tm.soc, 1, "%")} note={`${fmt(tm.remaining_capacity_ah, 1)} / ${fmt(tm.full_capacity_ah, 1, "Ah")}`} />
-            <Stat label={t("dash.voltage")} help="value.pack_voltage" value={fmt(tm.pack_voltage, 2, "V")} note={t("dash.port", { v: fmt(tm.port_voltage, 2, "V") })} />
-            <Stat label={t("dash.current")} help="value.current" value={fmt(current, 3, "A")} />
-            <Stat label={t("dash.power")} help="value.power" value={kw(current * tm.pack_voltage)} />
-            <Stat label={t("dash.cycles")} help="value.cycles" value={String(tm.cycles)} />
-            <Stat label={t("dash.charged")} help="value.energy" value={fmt(tm.energy_charged_kwh, 1, "kWh")}
+            <Stat icon={BatteryMedium} label={t("dash.soc")} help="value.soc" value={fmt(tm.soc, 1, "%")} note={`${fmt(tm.remaining_capacity_ah, 1)} / ${fmt(tm.full_capacity_ah, 1, "Ah")}`} />
+            <Stat icon={Zap} label={t("dash.voltage")} help="value.pack_voltage" value={fmt(tm.pack_voltage, 2, "V")} note={t("dash.port", { v: fmt(tm.port_voltage, 2, "V") })} />
+            <Stat icon={Activity} label={t("dash.current")} help="value.current" value={fmt(current, 3, "A")} />
+            <Stat icon={Gauge} label={t("dash.power")} help="value.power" value={kw(current * tm.pack_voltage)} />
+            <Stat icon={RotateCw} label={t("dash.cycles")} help="value.cycles" value={String(tm.cycles)} />
+            <Stat icon={PlugZap} label={t("dash.charged")} help="value.energy" value={fmt(tm.energy_charged_kwh, 1, "kWh")}
               note={t("dash.dischargedNote", { v: fmt(tm.energy_discharged_kwh, 1, "kWh") })} />
           </div>
 
@@ -63,7 +63,7 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <Panel className="p-5">
-              <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold">{t("dash.temp")}<InfoIcon id="value.temperatures" /></h2>
+              <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold"><Thermometer className="h-5 w-5 text-muted" aria-hidden />{t("dash.temp")}<InfoIcon id="value.temperatures" /></h2>
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5">
                 {tm.cell_temperatures.map((v, i) => <Row key={i} k={`T${i + 1}`} v={fmt(v, 1, "°C")} />)}
                 <Row k={t("dash.ambient")} v={fmt(tm.ambient_temperature, 1, "°C")} />
@@ -71,12 +71,12 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
               </dl>
             </Panel>
             <Panel className="p-5">
-              <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold">{t("dash.switches")}<InfoIcon id="status.mosfets" /></h2>
+              <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold"><ToggleRight className="h-5 w-5 text-muted" aria-hidden />{t("dash.switches")}<InfoIcon id="status.mosfets" /></h2>
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5">
-                {switches.map(([k, on]) => (
-                  <Row key={k} k={t(`sw.${k}`)} v={
+                {switches.map(([k, on, I]) => (
+                  <Row key={k} k={<span className="flex items-center gap-2"><I className="h-4 w-4" aria-hidden />{t(`sw.${k}`)}</span>} v={
                     <span className={cn("inline-flex items-center gap-1.5", on ? "text-charge" : "text-muted")}>
-                      <span className={cn("h-2 w-2 rounded-full", on ? "bg-charge" : "border border-muted")} />{on ? t("sw.on") : t("sw.off")}
+                      <span className={cn("h-2 w-2 rounded-full transition-colors", on ? "bg-charge" : "border border-muted")} />{on ? t("sw.on") : t("sw.off")}
                     </span>} />
                 ))}
               </dl>
@@ -92,6 +92,6 @@ export function PackDetail({ p, onBack }: { p: PackEntry; onBack: () => void }) 
   );
 }
 
-function Row({ k, v }: { k: string; v: React.ReactNode }) {
+function Row({ k, v }: { k: React.ReactNode; v: React.ReactNode }) {
   return <><dt className="text-muted">{k}</dt><dd className="text-right font-medium">{v}</dd></>;
 }

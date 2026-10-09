@@ -147,10 +147,18 @@ ALARMS = {
 "alarm.ev8.b5": ("Uhrzeit ungültig", "Die Uhr des BMS war gestoppt (z. B. Pufferbatterie leer); Uhrzeit neu setzen.", "Clock time invalid", "The BMS clock was stopped (e.g. backup battery empty); set the time again."),
 }
 
+written = set()
+
 def write(lang, id, title, short, body, related):
+    # Only touch files whose content changed, so a running dev server does not reload everything.
     os.makedirs(os.path.join(ROOT, lang), exist_ok=True)
-    with open(os.path.join(ROOT, lang, f"{id}.md"), "w", encoding="utf-8") as f:
-        f.write(f"---\ntitle: {title}\nshort: {short}\nrelated: {related}\n---\n{body}\n")
+    path = os.path.join(ROOT, lang, f"{id}.md")
+    text = f"---\ntitle: {title}\nshort: {short}\nrelated: {related}\n---\n{body}\n"
+    written.add(path)
+    if os.path.exists(path) and open(path, encoding="utf-8").read() == text:
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 for id, (related, de, en) in TOPICS.items():
     write("de", id, *de, related)
@@ -158,4 +166,9 @@ for id, (related, de, en) in TOPICS.items():
 for id, (dt, ds, et, es) in ALARMS.items():
     write("de", id, dt, ds, "", "topic.alarms")
     write("en", id, et, es, "", "topic.alarms")
+for lang in ("de", "en"):
+    for name in os.listdir(os.path.join(ROOT, lang)):
+        path = os.path.join(ROOT, lang, name)
+        if path not in written:
+            os.remove(path)
 print(len(TOPICS) + len(ALARMS), "entries per language")

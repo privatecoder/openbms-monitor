@@ -58,3 +58,36 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Motion: only where it carries information or answers an action. */
+@keyframes flow { to { background-position: 28px 0; } }
+@keyframes flow-back { to { background-position: -28px 0; } }
+.flow-charge, .flow-discharge {
+  background-image: repeating-linear-gradient(115deg, transparent 0 10px, rgb(255 255 255 / 0.13) 10px 14px);
+  background-size: 28px 100%;
+}
+.flow-charge { animation: flow 1.1s linear infinite; }
+.flow-discharge { animation: flow-back 1.1s linear infinite; }
+
+@keyframes ping-once { from { transform: scale(1); opacity: 0.7; } to { transform: scale(2.6); opacity: 0; } }
+.ping-once { animation: ping-once 0.9s ease-out 1 both; }
+
+@keyframes row-in { from { opacity: 0; transform: translateY(6px); } }
+.row-in { animation: row-in 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+@keyframes slide-in { from { transform: translateX(100%); } }
+@keyframes slide-out { to { transform: translateX(100%); } }
+@keyframes view-in { from { opacity: 0; transform: translateX(10px); } }
+.anim-pop[data-state="open"] { animation: pop-in 0.16s ease-out; }
+.anim-pop[data-state="closed"] { animation: fade-out 0.1s ease-in; }
+.anim-sheet[data-state="open"] { animation: slide-in 0.26s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.anim-sheet[data-state="closed"] { animation: slide-out 0.18s ease-in; }
+.anim-overlay[data-state="open"] { animation: fade-in 0.2s ease-out; }
+.anim-overlay[data-state="closed"] { animation: fade-out 0.15s ease-in; }
+.view-in { animation: view-in 0.24s ease-out; }
+
+@keyframes balance { 50% { opacity: 0.35; } }
+.balancing { animation: balance 1.4s ease-in-out infinite; }
