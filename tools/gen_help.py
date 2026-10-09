@@ -78,9 +78,9 @@ TOPICS = {
  "From parameter 60 (e.g. 0.5 V) the BMS reports a cell difference fault. Balancing only starts once the difference exceeds parameter 62 and a cell is above parameter 8.")),
 "value.temperatures": ("topic.alarms", (
  "Temperaturen", "Vier Zellfühler, Umgebung (BMS-Platine) und Leistungsteil (MOSFET).",
- "Bei Packs mit höchstens 8 Zellen übernehmen Fühler 3 und 4 den Wert von Fühler 2. Die Lade-Temperaturgrenzen gelten nur beim Laden, die Entlade-Grenzen nur beim Entladen."),
+ "In der Übersicht: groß die Spanne aller Zelltemperaturen, darunter die jeweils höchste Umgebungs- und MOSFET-Temperatur aller Packs. Bei Packs mit höchstens 8 Zellen übernehmen Fühler 3 und 4 den Wert von Fühler 2. Die Lade-Temperaturgrenzen gelten nur beim Laden, die Entlade-Grenzen nur beim Entladen."),
  ("Temperatures", "Four cell sensors, ambient (BMS board) and power stage (MOSFET).",
- "On packs with 8 cells or fewer, sensors 3 and 4 copy sensor 2. Charge temperature limits apply only while charging, discharge limits only while discharging.")),
+ "In the overview: the range of all cell temperatures in large type, below it the highest ambient and MOSFET temperature of all packs. On packs with 8 cells or fewer, sensors 3 and 4 copy sensor 2. Charge temperature limits apply only while charging, discharge limits only while discharging.")),
 "status.mosfets": ("topic.alarms", (
  "Schaltzustand", "Welche Leistungsschalter des Packs gerade eingeschaltet sind.",
  "- **Entlade-/Lade-MOSFET:** aus, solange ein Schutz aktiv ist.\n- **Strombegrenzer:** Hardware-Stufe, über die bei Lade-Überstrom (bzw. optional ab 10 A) geladen wird.\n- **Heizung:** nur bei angeforderter Heizung und Laden bzw. erkanntem Ladegerät."),

@@ -62,7 +62,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             value={`${fmt(((s ? s.highest_cell_voltage - s.lowest_cell_voltage : Math.max(...allCells) - Math.min(...allCells))) * 1000, 0, "mV")}`}
             note={t("dash.cellRangeVal", { lo: fmt(s?.lowest_cell_voltage ?? Math.min(...allCells), 3), hi: fmt(s?.highest_cell_voltage ?? Math.max(...allCells), 3, "V") })} />
           <Stat icon={Thermometer} label={t("dash.tempRange")} help="value.temperatures"
-            value={t("dash.cellRangeVal", { lo: fmt(s?.lowest_cell_temperature ?? Math.min(...temps), 1), hi: fmt(s?.highest_cell_temperature ?? Math.max(...temps), 1, "°C") })}
+            value={t("dash.tempRangeVal", { lo: fmt(s?.lowest_cell_temperature ?? Math.min(...temps), 1), hi: fmt(s?.highest_cell_temperature ?? Math.max(...temps), 1, "°C") })}
             note={live.length ? t("dash.otherTemps", { amb: fmt(Math.max(...live.map((p) => p.telemetry!.ambient_temperature)), 1, "°C"), mos: fmt(Math.max(...live.map((p) => p.telemetry!.power_temperature)), 1, "°C") }) : undefined} />
         </div>
       </header>
