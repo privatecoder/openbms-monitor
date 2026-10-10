@@ -36,4 +36,19 @@ describe("pairs", () => {
     expect(windowMean([{ t: 0, i: 100 }, { t: 50_000, i: 10 }, { t: 60_000, i: 20 }], 70_000, 60_000)).toBe(15);
     expect(windowMean([], 0, 60_000)).toBeUndefined();
   });
+  it("reports equalizing instead of a weak pack when the states of charge explain it (2026-10-10 16:18)", () => {
+    const I: Record<number, number> = { 0: -19.7, 1: -6.3, 2: -21, 3: -20, 4: -21, 5: -22, 6: -21, 7: -21, 8: -21, 9: -22, 10: -22, 11: -23 };
+    const soc: Record<number, number> = { 0: 74.4, 1: 67.6 };
+    const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a], undefined, (a) => soc[a] ?? 79);
+    expect(res[0]).toMatchObject({ weak: undefined, equalizing: { pack: 1, soc: [74.4, 67.6] } });
+    // charging, the emptier pack taking less is not explained by equalizing
+    const C = Object.fromEntries(Object.entries(I).map(([k, v]) => [k, -v]));
+    expect(checkPairs(neighbourPairs(Object.keys(C).map(Number)), (a) => C[Number(a)], undefined, (a) => soc[a] ?? 79)[0].weak).toBe(1);
+  });
+  it("flags a large output voltage gap inside a pair, at any load", () => {
+    const pairs = [{ plus: 0, minus: 1 }];
+    const port = (gap: number) => (a: number) => (a === 0 ? 53.5 : 53.5 - gap);
+    expect(checkPairs(pairs, () => 2, undefined, undefined, port(0.27))[0]).toMatchObject({ judged: false, gapHigh: true });
+    expect(checkPairs(pairs, () => 2, undefined, undefined, port(0.02))[0].gapHigh).toBe(false);
+  });
 });

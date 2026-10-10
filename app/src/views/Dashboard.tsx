@@ -221,6 +221,7 @@ const PAIR_WINDOW_MS = 60_000;
  */
 function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairCheck[] {
   const samples = useRef(new Map<number, { t: number; i: number }[]>());
+  const ports = useRef(new Map<number, { t: number; i: number }[]>());
   const last = useRef<PairCheck[]>([]);
   const seen = useRef("");
   const now = Date.now();
@@ -229,13 +230,17 @@ function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairChe
     const s = samples.current.get(p.address) ?? [];
     if (s[s.length - 1]?.t !== p.updated) s.push({ t: p.updated, i: effectiveCurrent(p.telemetry) });
     samples.current.set(p.address, s.filter((x) => now - x.t <= PAIR_WINDOW_MS));
+    const u = ports.current.get(p.address) ?? [];
+    if (u[u.length - 1]?.t !== p.updated) u.push({ t: p.updated, i: p.telemetry.port_voltage });
+    ports.current.set(p.address, u.filter((x) => now - x.t <= PAIR_WINDOW_MS));
   }
   if (!Object.values(packs).every((p) => p.telemetry)) return [];
   // recompute only when new data arrived, so re-renders do not step the hysteresis
   const key = Object.values(packs).map((p) => p.updated).join();
   if (key !== seen.current) {
     seen.current = key;
-    last.current = checkPairs(pairs, (a) => windowMean(samples.current.get(a) ?? [], now, PAIR_WINDOW_MS), last.current);
+    last.current = checkPairs(pairs, (a) => windowMean(samples.current.get(a) ?? [], now, PAIR_WINDOW_MS), last.current,
+      (a) => packs[a]?.telemetry?.soc, (a) => windowMean(ports.current.get(a) ?? [], now, PAIR_WINDOW_MS));
   }
   return last.current;
 }
@@ -243,7 +248,7 @@ function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairChe
 /** Two rows joined by a bar on the left, with the pair's total current below. */
 function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; children: ReactNode }) {
   const { t } = useTranslation();
-  const warn = !!check && (check.lowTotal || check.weak !== undefined);
+  const warn = !!check && (check.lowTotal || check.weak !== undefined || !!check.gapHigh);
   const no = (a: number) => String(a).padStart(2, "0");
   return (
     <div className="relative border-b border-line last:border-b-0 [&>button:last-of-type]:border-b-0">
@@ -253,7 +258,13 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
         {t("pairs.footer", { a: no(pair.plus), b: no(pair.minus), sum: check ? fmt(check.total, 1, "A") : "–" })}
         {check?.lowTotal && <>; {t("diag.pairLow")}</>}
         {check?.weak !== undefined && <>; {t("diag.pairWeak", { p: no(check.weak), bridge: check.weak === pair.minus ? "+" : "−" })}</>}
+        {check?.equalizing && <span className="text-muted">; {t("pairs.equalizing", { p: no(check.equalizing.pack), a: fmt(check.equalizing.soc[0], 1, "%"), b: fmt(check.equalizing.soc[1], 1, "%") })}</span>}
         {check && !check.judged && <span className="text-muted/70">; {t("pairs.notJudged", { a: PAIR_MIN_A })}</span>}
+        {check?.gap !== undefined && (
+          <span className={check.gapHigh ? "text-alarm" : "text-muted"}>
+            ; {t(check.gapHigh ? "pairs.gapHigh" : "pairs.gap", { v: fmt(Math.abs(check.gap) * 1000, 0, "mV") })}
+          </span>
+        )}
       </div>
     </div>
   );

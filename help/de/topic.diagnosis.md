@@ -10,3 +10,5 @@ related: topic.pairs
 - **Grenzen:** Die Spannungen haben 10 mV Auflösung, deshalb nur bei genug Strom und nur im Vergleich deuten. Wo genau das BMS den Ausgang abgreift, zeigt die Firmware nicht; je nachdem steckt ein Teil des inneren Pfads im Wert „außen“. Bei Paaren enthält „außen“ auch die gemeinsamen Hauptkabel, die den Strom beider Packs führen.
 
 Ausführliche Anleitung mit Stromzange und Messprotokoll: Messanleitung in der Projekt-Dokumentation.
+- **Ausgleich:** Liegen die Ladestände eines Paares 3 Prozentpunkte oder mehr auseinander, gibt beim Entladen der leerere Pack weniger ab und nimmt beim Laden der vollere weniger auf. Dann steht „Ladestände gleichen sich an“ statt einer Warnung.
+- **Ausgänge auseinander:** Beide Packs eines Paares hängen an denselben Brücken; ihre Ausgangsspannungen unterscheiden sich nur um den Spannungsfall an Brücken und Steckern (plus einige 10 mV Messabweichung). Ab 100 mV (Mittel über 60 s) wird das rot: Übergangswiderstand in Brücke oder Stecker. Gesunde Paare liegen unter 50 mV; der defekte Stecker am 2026-10-10 zeigte 170–390 mV. Gilt unabhängig von der Last.

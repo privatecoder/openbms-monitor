@@ -47,8 +47,25 @@ export function usePairs(site: string) {
   return { pairs, save };
 }
 
-/** judged: false while the load is too low for a statement (see PAIR_MIN_A). */
-export interface PairCheck { pair: Pair; total: number; share: number; judged: boolean; lowTotal: boolean; weak?: number }
+/**
+ * judged: false while the load is too low for a statement (see PAIR_MIN_A).
+ * equalizing: the smaller share is explained by the states of charge (lower SOC gives less when discharging,
+ * higher SOC takes less when charging), so it is reported as equalizing instead of a weak pack.
+ * gap: output (port) voltage of the first minus the second pack in V, see PORT_GAP_V.
+ */
+export interface PairCheck {
+  pair: Pair; total: number; share: number; judged: boolean; lowTotal: boolean; weak?: number;
+  equalizing?: { pack: number; soc: [number, number] }; gap?: number; gapHigh?: boolean;
+}
+
+/**
+ * Both packs of a pair sit on the same bridges, so their output voltages differ only by the drop across
+ * bridges and connectors (plus a few 10 mV of sensor offset). Logged 2026-10-10: 0.17–0.39 V with the bad
+ * plug on pack 00's plus bridge, 0.01–0.04 V after re-plugging, under 0.05 V in all healthy pairs.
+ */
+export const PORT_GAP_V = 0.1;
+/** SOC difference (points) from which a smaller share counts as equalizing. */
+export const EQUALIZE_SOC = 3;
 
 /**
  * The check needs this much current per pack (median over all packs). Packs at different states of charge
@@ -67,7 +84,10 @@ export const PAIR_MIN_A = 20;
  * `prev` (the last result) provides the hysteresis so values near a threshold do not flicker.
  * Only judged when the median pack current is at least PAIR_MIN_A.
  */
-export function checkPairs(pairs: Pair[], current: (a: number) => number | undefined, prev?: PairCheck[]): PairCheck[] {
+export function checkPairs(
+  pairs: Pair[], current: (a: number) => number | undefined, prev?: PairCheck[],
+  soc?: (a: number) => number | undefined, port?: (a: number) => number | undefined,
+): PairCheck[] {
   const last = new Map((prev ?? []).map((c) => [c.pair.plus, c]));
   const rows = pairs.flatMap((pair) => {
     const a = current(pair.plus), b = current(pair.minus);
@@ -82,12 +102,25 @@ export function checkPairs(pairs: Pair[], current: (a: number) => number | undef
     const lo = Math.min(Math.abs(a), Math.abs(b)), hi = Math.max(Math.abs(a), Math.abs(b));
     const share = hi ? lo / hi : 1;
     const was = last.get(pair.plus);
-    if (!loaded) return { pair, total, share, judged: false, lowTotal: false };
-    const weak = share < (was?.weak !== undefined ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
+    const pa = port?.(pair.plus), pb = port?.(pair.minus);
+    const gap = pa !== undefined && pb !== undefined ? pa - pb : undefined;
+    const gapHigh = gap !== undefined && Math.abs(gap) >= (was?.gapHigh ? PORT_GAP_V * 0.8 : PORT_GAP_V);
+    if (!loaded) return { pair, total, share, judged: false, lowTotal: false, gap, gapHigh };
+    const small = share < (was?.weak !== undefined || was?.equalizing ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
+    const sa = soc?.(pair.plus), sb = soc?.(pair.minus);
+    let weak = small, equalizing: PairCheck["equalizing"];
+    if (small !== undefined && sa !== undefined && sb !== undefined && Math.abs(sa - sb) >= EQUALIZE_SOC) {
+      const mine = small === pair.plus ? sa : sb, other = small === pair.plus ? sb : sa;
+      // discharging: the emptier pack gives less; charging: the fuller pack takes less
+      if ((total < 0 && mine < other) || (total > 0 && mine > other)) {
+        weak = undefined;
+        equalizing = { pack: small, soc: [sa, sb] };
+      }
+    }
     const below = totals.length > 1 && Math.abs(total) < m * (was?.lowTotal ? 0.9 : 0.85);
     // a strong partner at or above an average pack's share means the missing current is the weak pack's alone
     const lowTotal = below && !(weak !== undefined && hi >= (m / 2) * 0.95);
-    return { pair, total, share, judged: true, lowTotal, weak };
+    return { pair, total, share, judged: true, lowTotal, weak, equalizing, gap, gapHigh };
   });
 }
 
