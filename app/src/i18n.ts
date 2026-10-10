@@ -5,7 +5,22 @@ const resources = {
   de: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Übersicht", diag: "Diagnose", params: "Parameter", cells: "Zellen", help: "Hilfe" },
+      nav: { dashboard: "Übersicht", diag: "Diagnose", history: "Verlauf", params: "Parameter", cells: "Zellen", help: "Hilfe" },
+      hist: {
+        title: "Verlauf", intro: "Aufzeichnungen über die Zeit ansehen: Strom, SOC, Spannungen und Temperaturen je Pack, die Werte des Masters und die Zellen eines Packs.",
+        openFile: "Datei öffnen", loading: "Lese {{name}} … {{pct}} %", error: "Lesen fehlgeschlagen: {{err}}",
+        noFiles: "Noch keine Aufzeichnungen. Starte eine unter Aufzeichnung in der Seitenleiste.",
+        empty: "Wähle eine Aufzeichnung aus der Liste oder öffne eine Datei.", noData: "{{name}} enthält keine Messwerte.",
+        packs_one: "1 Pack", packs_other: "{{count}} Packs", withSystem: "Master", every: "alle {{s}} s", everyPoll: "jede Abfrage",
+        gaps: "{{e}} Antworten ohne Werte, {{s}} unlesbare Zeilen",
+        show: "Diagramme", master: "Master:", packsTitle: "Packs", all: "alle", none: "keine", cellPack: "Zellen von",
+        zoomHint: "Zum Vergrößern im Diagramm einen Bereich ziehen, Doppelklick setzt zurück.", zoomed: "Ausschnitt {{from}} – {{to}}", reset: "Ganze Aufzeichnung",
+        resolution: "ein Punkt je {{s}}", time: "Zeit", shareHint: "1,00 = Durchschnitt aller Packs; nur ab 5 A je Pack", noChart: "Wähle oben mindestens ein Diagramm.", noPacks: "Kein Pack ausgewählt.",
+        m: { current: "Strom", share: "Stromanteil", soc: "SOC", voltage: "Pack-Spannung", cellMax: "Höchste Zelle", cellMin: "Niedrigste Zelle",
+          delta: "Zelldifferenz", tempMax: "Wärmste Zelle", tempMin: "Kälteste Zelle", cellsChip: "Zellen eines Packs", cells: "Zellen von Pack {{pack}}",
+          sysCurrent: "Strom und Grenzen", sysSoc: "SOC", sysVoltage: "Spannung und Ladespannung", sysCells: "Zellextreme" },
+        l: { current: "Strom", ccl: "Ladegrenze", dcl: "Entladegrenze", voltage: "Spannung", cvl: "Ladespannung", highest: "höchste Zelle", lowest: "niedrigste Zelle" },
+      },
       ca: {
         title: "Zelltypen", intro: "Welche Zellen in den Packs stecken. Damit vergleicht die App die Live-Werte mit dem Datenblatt.",
         current: "Zuordnung", none: "Ohne Zelltyp: {{list}}", packsList: "Packs {{list}}", missing: "Zelltyp {{id}} nicht in der Datenbank",
@@ -149,7 +164,22 @@ const resources = {
   en: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Overview", diag: "Diagnosis", params: "Parameters", cells: "Cells", help: "Help" },
+      nav: { dashboard: "Overview", diag: "Diagnosis", history: "History", params: "Parameters", cells: "Cells", help: "Help" },
+      hist: {
+        title: "History", intro: "Look at recordings over time: current, SOC, voltages and temperatures per pack, the master's values and the cells of one pack.",
+        openFile: "Open file", loading: "Reading {{name}} … {{pct}} %", error: "Reading failed: {{err}}",
+        noFiles: "No recordings yet. Start one under Recording in the sidebar.",
+        empty: "Choose a recording from the list or open a file.", noData: "{{name}} contains no readings.",
+        packs_one: "1 pack", packs_other: "{{count}} packs", withSystem: "master", every: "every {{s}} s", everyPoll: "every poll",
+        gaps: "{{e}} answers without values, {{s}} unreadable lines",
+        show: "Charts", master: "Master:", packsTitle: "Packs", all: "all", none: "none", cellPack: "Cells of",
+        zoomHint: "Drag across a chart to zoom in, double-click resets.", zoomed: "Span {{from}} – {{to}}", reset: "Whole recording",
+        resolution: "one point per {{s}}", time: "Time", shareHint: "1.00 = average of all packs; only from 5 A per pack", noChart: "Choose at least one chart above.", noPacks: "No pack selected.",
+        m: { current: "Current", share: "Current share", soc: "SOC", voltage: "Pack voltage", cellMax: "Highest cell", cellMin: "Lowest cell",
+          delta: "Cell difference", tempMax: "Warmest cell", tempMin: "Coldest cell", cellsChip: "Cells of one pack", cells: "Cells of pack {{pack}}",
+          sysCurrent: "Current and limits", sysSoc: "SOC", sysVoltage: "Voltage and charge voltage", sysCells: "Cell extremes" },
+        l: { current: "Current", ccl: "Charge limit", dcl: "Discharge limit", voltage: "Voltage", cvl: "Charge voltage", highest: "highest cell", lowest: "lowest cell" },
+      },
       ca: {
         title: "Cell types", intro: "Which cells are in the packs. With this the app compares the live values with the datasheet.",
         current: "Assignment", none: "Without cell type: {{list}}", packsList: "Packs {{list}}", missing: "Cell type {{id}} not in the database",

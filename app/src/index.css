@@ -102,3 +102,12 @@ body {
 /* A changed value briefly takes the accent colour, so updates are visible. */
 @keyframes value-tick { from { color: var(--charge); } }
 .value-tick { animation: value-tick 1.2s ease-out; }
+
+/* History charts: uPlot's legend in the app's type and colours. */
+.history-chart .u-legend { font: 13px/1.4 var(--font-sans); color: var(--ink); text-align: left; padding-top: 4px; }
+.history-chart .u-legend .u-series { padding: 1px 8px 1px 0; }
+.history-chart .u-legend .u-series > * { padding: 2px; }
+.history-chart .u-legend .u-label { color: var(--muted); }
+.history-chart .u-legend .u-value { font-variant-numeric: tabular-nums; }
+.history-chart .u-legend .u-off > * { opacity: 0.35; }
+.history-chart .u-select { background: color-mix(in srgb, var(--charge) 18%, transparent); }

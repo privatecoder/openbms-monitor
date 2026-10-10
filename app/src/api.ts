@@ -63,6 +63,8 @@ export interface PackUpdate { address: number; telemetry: Telemetry | null; stat
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 /** packs: addresses to record, empty = all; interval_s: minimum seconds between two lines per pack (0 = every poll). */
 export interface RecordOptions { packs: number[]; system: boolean; interval_s: number }
+/** A recording in the app's recordings folder. */
+export interface RecordingFile { name: string; bytes: number; modified_ms: number }
 export interface RecordingStatus {
   active: boolean; path: string | null; started_ms: number; lines: number; bytes: number;
   options: RecordOptions | null; error: string | null;
@@ -85,6 +87,9 @@ const tauriApi = {
   stopRecording: () => invoke<RecordingStatus>("stop_recording"),
   recordingStatus: () => invoke<RecordingStatus>("recording_status"),
   revealRecording: (path: string | null) => invoke<void>("reveal_recording", { path }),
+  listRecordings: () => invoke<RecordingFile[]>("list_recordings"),
+  /** Raw bytes of a recording in the app's folder. */
+  readRecording: (name: string) => invoke<ArrayBuffer>("read_recording", { name }),
   parameters: (address: number) => invoke<Parameters>("parameters", { address }),
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
@@ -145,6 +150,9 @@ function demoApi(): typeof tauriApi {
       return rec;
     },
     revealRecording: async () => {},
+    // preview: no recordings folder; files are opened with the file picker
+    listRecordings: async () => [],
+    readRecording: async () => { throw new Error("preview"); },
     // preview: the same configuration in every pack, pack 05 with a different balancing start and switch byte
     parameters: async (address) => {
       await new Promise((r) => setTimeout(r, 250));

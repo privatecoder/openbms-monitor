@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb } from "lucide-react";
+import { BatteryCharging, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -82,7 +82,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
         <span className="font-display text-xl font-semibold">{t("app")}</span>
       </div>
       <nav className="space-y-1 px-3">
-        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["params", SlidersHorizontal], ["cells", Database]].map(([id, Icon]) => {
+        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["history", ChartLine], ["params", SlidersHorizontal], ["cells", Database]].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
             <button key={id as string} onClick={() => setView(id as string)}
