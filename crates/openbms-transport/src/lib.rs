@@ -3,7 +3,7 @@
 
 use openbms_proto::{frame, modbus, DeviceInfo, Frame, Parameters, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +21,22 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Time to establish a TCP connection. Without it a gateway that is not reachable yet (Wi-Fi still coming
+/// up after sleep) blocks a connection attempt for the operating system's timeout, over a minute on macOS.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Connect to the first address of `addr` that answers within CONNECT_TIMEOUT.
+fn connect_tcp(addr: &str) -> Result<TcpStream> {
+    let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, format!("{addr}: no address"));
+    for a in addr.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = e,
+        }
+    }
+    Err(last.into())
+}
 
 /// Which RS485 bus the adapter is connected to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,8 +106,10 @@ impl Connection {
         let port: Box<dyn Port> = match endpoint {
             Endpoint::Serial { path, baud } => Box::new(serialport::new(path, *baud).timeout(Duration::from_millis(100)).open()?),
             Endpoint::Tcp { addr } => {
-                let s = TcpStream::connect(addr)?;
+                let s = connect_tcp(addr)?;
                 s.set_read_timeout(Some(Duration::from_millis(100)))?;
+                // a dead link (e.g. after the computer slept) must not block a write either
+                s.set_write_timeout(Some(Duration::from_millis(1500)))?;
                 s.set_nodelay(true)?;
                 Box::new(s)
             }
