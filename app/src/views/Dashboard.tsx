@@ -11,8 +11,8 @@ import { arrange, useGroups, type Group } from "../groups";
 import { GroupEditor } from "./GroupEditor";
 import { cn, fmt } from "../lib/utils";
 
-// Pack (with messages), SOC, voltage, current, temperature, spread, deviation strip.
-const ROW = "grid grid-cols-[8rem_7.5rem_5.5rem_5.5rem_5.5rem_4.5rem_minmax(9rem,1fr)] items-center gap-x-6 whitespace-nowrap";
+// Pack (with messages), SOC, voltage, current, temperature, cycles, spread, deviation strip.
+const ROW = "grid grid-cols-[8rem_7.5rem_5.5rem_5.5rem_5.5rem_4rem_4.5rem_minmax(9rem,1fr)] items-center gap-x-6 whitespace-nowrap";
 
 export function Dashboard({ packs, system, site, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; site: string; onOpen: (a: number) => void }) {
   const { t } = useTranslation();
@@ -146,6 +146,7 @@ function RackList({ groups, packs, center, multi, onOpen }: RackProps) {
           <span className="text-right">{t("dash.voltage")}</span>
           <span className="text-right">{t("dash.current")}</span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.cellTempMax")}<InfoIcon id="value.cell_temp_max" /></span>
+          <span className="flex items-center justify-end gap-1.5">{t("dash.cycles")}<InfoIcon id="value.cycles" /></span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.delta")}<InfoIcon id="value.cell_delta" /></span>
           <span className="flex flex-col leading-tight">
             <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
@@ -204,6 +205,7 @@ function RackRow({ p, index, center, multi, onOpen }: { p: PackEntry; index: num
         {st && <span className="text-xs text-muted">{t(`stateShort.${state}`)}</span>}
       </span>
       <span className="text-right">{temps.length ? fmt(Math.max(...temps), 1, "°C") : "–"}</span>
+      <span className="text-right">{tm ? tm.cycles : "–"}</span>
       <span className={cn("text-right", delta !== null && delta >= 30 && "font-medium text-high")}>{fmt(delta, 0, "mV")}</span>
       {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
     </button>
