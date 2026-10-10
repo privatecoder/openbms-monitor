@@ -4,18 +4,42 @@ import { Download, FileUp, FolderOpen, SlidersHorizontal, TriangleAlert, X } fro
 import { api, isDemo, type Bus } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
-import { InfoIcon, useHelpEntry } from "../help";
+import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, parseExport, toExport, type Source } from "../params";
+import { useCellDb } from "../cells/store";
+import { useAssignments, type Assignment } from "../cells/packCheck";
+import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
+import { Segmented } from "../components/PackPicker";
+import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
 
 // kept while the app runs, so switching views does not drop what was read
 let kept: Source[] = [];
+// the datasheet chosen for the check; null = follow the packs' cell type
+let keptRef: Assignment | "none" | null = null;
+
+/** The cell type most packs have, as the default datasheet for the check. */
+function commonAssignment(assigned: Record<number, Assignment>): Assignment | undefined {
+  const count = new Map<string, { a: Assignment; n: number }>();
+  for (const a of Object.values(assigned)) {
+    const k = `${a.cell}|${a.parallel}`;
+    count.set(k, { a, n: (count.get(k)?.n ?? 0) + 1 });
+  }
+  return [...count.values()].sort((x, y) => y.n - x.n)[0]?.a;
+}
 
 /** Read the packs' parameters (RS485-1/2) or open BatteryMonitor exports, and compare them side by side. */
-export function ParametersView({ connected, bus, packs }: { connected: boolean; bus: Bus | null; packs: number[] }) {
+export function ParametersView({ connected, bus, packs, site }: { connected: boolean; bus: Bus | null; packs: number[]; site: string }) {
   const { t, i18n } = useTranslation();
+  const db = useCellDb();
+  const { assigned } = useAssignments(site);
+  const [refChoice, setRefChoiceState] = useState(keptRef);
+  const setRef = (r: Assignment | "none" | null) => { keptRef = r; setRefChoiceState(r); };
+  const common = commonAssignment(assigned);
+  const ref = refChoice === "none" ? undefined : refChoice ?? common;
+  const refCell = ref ? db.entries.find((e) => e.cell.id === ref.cell)?.cell : undefined;
   const [sources, setSourcesState] = useState<Source[]>(kept);
   const setSources = (f: (s: Source[]) => Source[]) => setSourcesState((s) => (kept = f(s)));
   const [reading, setReading] = useState<{ address: number; n: number; of: number } | null>(null);
@@ -66,6 +90,12 @@ export function ParametersView({ connected, bus, packs }: { connected: boolean; 
   const suspect = cols.filter((c) => c.suspectFrom !== undefined && c.suspectFrom !== null);
   const broken = cols.filter((c) => c.kind === "file" && c.error);
 
+  // datasheet check: limits for the series count most sources have, findings per column
+  const series = Math.round(mode(cols.flatMap((c) => (c.values ? [c.values[SERIES]] : []))) ?? 0);
+  const limits = refCell && ref ? paramLimits(refCell, ref.parallel, series) : new Map<number, ParamLimit>();
+  const findings = cols.map((c) => (refCell && ref && c.values ? paramFindings(refCell, ref.parallel, c.values) : new Map<number, ParamLevel>()));
+  const outside = KEYS.map((_, i) => i).filter((i) => findings.some((f) => f.has(i)));
+  const lang = i18n.language;
   return (
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
@@ -92,6 +122,22 @@ export function ParametersView({ connected, bus, packs }: { connected: boolean; 
             : bus === "can" && !isDemo ? t("par.canBus")
             : t("par.packBus")}
         </p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
+          <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
+          <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}
+            onChange={(e) => setRef(e.target.value ? { cell: e.target.value, parallel: ref?.parallel ?? common?.parallel ?? 1 } : "none")}
+            className="h-8 min-w-60 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
+            <option value="">{t("par.noCheck")}</option>
+            {db.entries.map((e) => <option key={e.cell.id} value={e.cell.id}>{cellName(e.cell)}</option>)}
+          </select>
+          {ref && <Segmented value={String(ref.parallel)} onChange={(v) => setRef({ ...ref, parallel: Number(v) })} items={[1, 2, 3, 4].map((n) => [String(n), `${n}P`] as [string, string])} />}
+          <span className="text-muted">
+            {!ref ? (common ? "" : t("par.checkHint"))
+              : refChoice === null ? t("par.fromAssignment")
+              : common && (common.cell !== ref.cell || common.parallel !== ref.parallel) ? t("par.notAssignment") : ""}
+          </span>
+          {refChoice !== null && common && <Button size="sm" variant="ghost" onClick={() => setRef(null)}>{t("par.useAssignment")}</Button>}
+        </div>
         {saved && (
           "path" in saved ? (
             <p className="flex flex-wrap items-center gap-2 text-sm text-ok">
@@ -101,6 +147,29 @@ export function ParametersView({ connected, bus, packs }: { connected: boolean; 
           ) : <p className="text-sm text-alarm">{t("par.saveError", { err: saved.error })}</p>
         )}
       </Panel>
+
+      {refCell && ref && withValues > 0 && (
+        outside.length ? (
+          <div className="flex items-start gap-2 rounded-md border border-alarm/40 bg-alarm/10 px-4 py-3 text-sm">
+            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-alarm" aria-hidden />
+            <div className="space-y-1">
+              <p>{t("par.outside", { cell: `${cellName(refCell)} ${config(series || undefined, ref.parallel)}`, count: outside.length })}</p>
+              <ul className="list-disc pl-5">
+                {outside.map((i) => {
+                  const n = findings.filter((f) => f.has(i)).length, l = limits.get(i);
+                  return (
+                    <li key={i}>
+                      {helpTitle(`param.${KEYS[i]}`, lang)} (P{i}): {l && limitText(t, l, i, lang)}
+                      {findings.some((f) => f.get(i) === "note") ? ` ${t("par.ratedNote")}` : ""}
+                      <span className="text-muted"> · {n === withValues ? t("par.inAll", { count: n }) : t("par.inSome", { list: cols.filter((_, ci) => findings[ci].has(i)).map((c) => c.label).join(", ") })}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </div>
+        ) : <p className="text-sm text-ok">{t("par.inside", { cell: `${cellName(refCell)} ${config(series || undefined, ref.parallel)}` })}</p>
+      )}
 
       {(suspect.length > 0 || broken.length > 0) && (
         <div className="space-y-2">
@@ -135,21 +204,35 @@ export function ParametersView({ connected, bus, packs }: { connected: boolean; 
               <thead>
                 <tr>
                   <th className="sticky left-0 z-10 min-w-80 border-b border-line bg-surface px-4 py-3 text-left font-normal text-muted">{t("par.parameter")}</th>
+                  {refCell && (
+                    <th className="min-w-24 border-b border-l border-line bg-sunken/40 px-3 py-2 text-right align-bottom font-normal">
+                      <div className="font-medium text-ink">{t("par.datasheet")}</div>
+                      <div className="max-w-36 truncate text-xs text-muted" title={cellName(refCell)}>{refCell.model} {config(series || undefined, ref!.parallel)}</div>
+                    </th>
+                  )}
                   {cols.map((c) => <ColumnHead key={c.id} c={c} busy={!!reading} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))} />)}
                 </tr>
               </thead>
               <tbody>
                 {GROUPS.map((g) => {
-                  const rows = g.indices.filter((i) => !onlyDiff || diffParams[i].size);
+                  const rows = g.indices.filter((i) => !onlyDiff || diffParams[i].size || outside.includes(i));
                   if (!rows.length) return null;
                   return (
                     <Fragment key={g.id}>
-                      <GroupRow span={cols.length + 1} title={t(`par.group.${g.id}`)} />
+                      <GroupRow span={cols.length + 1 + (refCell ? 1 : 0)} title={t(`par.group.${g.id}`)} />
                       {rows.map((i) => (
                         <tr key={i} className="group">
                           <NameCell id={`param.${KEYS[i]}`} sub={`P${i}${UNITS[i] ? ` · ${UNITS[i]}` : ""}`} original={BM_NAMES[i]} />
+                          {refCell && (
+                            <td className="border-b border-l border-line bg-sunken/40 px-3 py-1.5 text-right whitespace-nowrap text-muted">
+                              {limits.has(i) ? limitText(t, limits.get(i)!, i, lang, true) : ""}
+                            </td>
+                          )}
                           {cols.map((c, ci) => (
-                            <ValueCell key={c.id} c={c} off={diffParams[i].has(ci)}>{c.values ? nf(i).format(c.values[i]) : null}</ValueCell>
+                            <ValueCell key={c.id} c={c} off={diffParams[i].has(ci)} level={findings[ci].get(i)}
+                              title={findings[ci].has(i) && limits.has(i) ? `${t("par.datasheet")}: ${limitText(t, limits.get(i)!, i, lang)}` : undefined}>
+                              {c.values ? nf(i).format(c.values[i]) : null}
+                            </ValueCell>
                           ))}
                         </tr>
                       ))}
@@ -160,9 +243,10 @@ export function ParametersView({ connected, bus, packs }: { connected: boolean; 
                   .filter((g) => !onlyDiff || diffSwitches[g].size)
                   .map((g, n) => (
                     <Fragment key={`bg${g}`}>
-                      <GroupRow span={cols.length + 1} title={t(`par.switchGroup.${g}`, { g })} help={n === 0 ? "topic.switches" : undefined} first={n === 0} />
+                      <GroupRow span={cols.length + 1 + (refCell ? 1 : 0)} title={t(`par.switchGroup.${g}`, { g })} help={n === 0 ? "topic.switches" : undefined} first={n === 0} />
                       <tr>
                         <td className="sticky left-0 z-10 border-b border-line bg-surface px-4 py-1.5 text-muted">{t("par.byte", { g })}</td>
+                        {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                         {cols.map((c, ci) => (
                           <ValueCell key={c.id} c={c} off={diffSwitches[g].has(ci)}>{c.switches ? c.switches[g].toString(16).toUpperCase().padStart(2, "0") : null}</ValueCell>
                         ))}
@@ -174,6 +258,7 @@ export function ParametersView({ connected, bus, packs }: { connected: boolean; 
                           return (
                             <tr key={b}>
                               <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />
+                              {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                               {cols.map((c, ci) => (
                                 <ValueCell key={c.id} c={c} off={off.has(ci)}>{c.switches ? <OnOff on={((c.switches[g] >> b) & 1) === 1} /> : null}</ValueCell>
                               ))}
@@ -241,10 +326,11 @@ function NameCell({ id, sub, original }: { id: string; sub: string; original?: s
   );
 }
 
-function ValueCell({ c, off, children }: { c: Source; off: boolean; children: React.ReactNode }) {
+function ValueCell({ c, off, level, title, children }: { c: Source; off: boolean; level?: ParamLevel; title?: string; children: React.ReactNode }) {
   return (
-    <td className={cn("border-b border-l border-line px-3 py-1.5 text-right whitespace-nowrap group-hover:bg-sunken/40",
-      off ? "bg-discharge/12 font-semibold text-discharge" : children === null ? "text-muted/50" : "")}>
+    <td title={title} className={cn("border-b border-l border-line px-3 py-1.5 text-right whitespace-nowrap group-hover:bg-sunken/40",
+      level === "over" ? "bg-alarm/12 font-semibold text-alarm" : level === "note" ? "font-semibold text-charge underline decoration-dotted underline-offset-4"
+      : off ? "bg-discharge/12 font-semibold text-discharge" : children === null ? "text-muted/50" : "")}>
       {children ?? (c.error ? "–" : "…")}
     </td>
   );
@@ -257,4 +343,19 @@ function OnOff({ on }: { on: boolean }) {
       <span className={cn("h-2 w-2 rounded-full", on ? "bg-ok" : "border border-muted")} aria-hidden />{on ? t("par.on") : t("par.off")}
     </span>
   );
+}
+
+/** Most frequent value, undefined for none. */
+function mode(xs: number[]): number | undefined {
+  const n = new Map<number, number>();
+  for (const x of xs) n.set(x, (n.get(x) ?? 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+/** "≤ 3.650 V", "≥ 0.0 °C", "≈ 280.00 Ah"; short leaves out the unit (the row shows it). */
+function limitText(t: (k: string) => string, l: ParamLimit, i: number, lang: string, short = false): string {
+  const v = new Intl.NumberFormat(lang, { minimumFractionDigits: decimals(i), maximumFractionDigits: decimals(i) }).format(l.limit);
+  const sign = l.kind === "min" ? "≥" : l.kind === "rated" ? "≈" : "≤";
+  const abs = l.kind === "maxAbs" ? ` ${t("par.magnitude")}` : "";
+  return `${sign} ${v}${short || !UNITS[i] ? "" : ` ${UNITS[i]}`}${short ? "" : abs}`;
 }
