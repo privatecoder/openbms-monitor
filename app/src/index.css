@@ -69,6 +69,7 @@ body {
   background-image: repeating-linear-gradient(115deg, transparent 0 10px, rgb(255 255 255 / 0.13) 10px 14px);
   background-size: 28px 100%;
 }
+.soc-gradient { background: linear-gradient(90deg, var(--alarm) 0%, var(--alarm) 8%, var(--discharge) 28%, var(--ok) 60%, var(--ok) 100%); }
 .flow-charge { animation: flow 1.1s linear infinite; }
 .flow-discharge { animation: flow-back 1.1s linear infinite; }
 

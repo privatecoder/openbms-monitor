@@ -72,11 +72,15 @@ export function StateMark({ state }: { state: PackState }) {
 /** State of charge as a full-width tank: the one large shape on the overview. */
 export function Tank({ soc, state, caption }: { soc: number; state: PackState; caption: string }) {
   const v = Math.max(0, Math.min(100, soc));
-  const fill = v < 15 ? "bg-alarm" : state === "charging" ? "bg-charge" : state === "discharging" ? "bg-discharge" : "bg-muted";
   return (
     <div>
       <div className="relative h-14 overflow-hidden rounded-md bg-sunken" role="meter" aria-valuenow={v} aria-valuemin={0} aria-valuemax={100}>
-        <div className={cn("absolute inset-y-0 left-0 transition-[width] duration-700", fill, state === "charging" && "flow-charge", state === "discharging" && "flow-discharge")} style={{ width: `${v}%` }} />
+        {/* the colour follows the charge level: one red-to-green gradient over the whole bar, uncovered up to the SOC;
+            the stripes show the direction */}
+        <div className="absolute inset-y-0 left-0 overflow-hidden transition-[width] duration-700" style={{ width: `${v}%` }}>
+          <div className="soc-gradient absolute inset-y-0 left-0" style={{ width: v > 0 ? `${(100 / v) * 100}%` : 0 }} />
+          <div className={cn("absolute inset-0", state === "charging" && "flow-charge", state === "discharging" && "flow-discharge")} />
+        </div>
         {[25, 50, 75].map((x) => <div key={x} className="absolute inset-y-0 w-px bg-surface/40" style={{ left: `${x}%` }} />)}
         <div className="absolute inset-y-0 flex items-center pl-4 font-display text-3xl font-semibold text-surface" style={{ left: 0 }}>
           {fmt(v, 1)} %
