@@ -1,4 +1,4 @@
-use openbms_proto::{DeviceInfo, Status, SystemValues, Telemetry};
+use openbms_proto::{DeviceInfo, Parameters, Status, SystemValues, Telemetry};
 use openbms_transport::{list_serial_ports, Bus, Connection, Endpoint};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -107,6 +107,16 @@ async fn scan(state: State<'_, AppState>) -> Result<Vec<(u8, DeviceInfo)>, Strin
 #[tauri::command]
 async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry, String> {
     with_conn(&state.conn, |c| c.telemetry(address))
+}
+
+/// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
+/// master of a multi-pack bank does not answer.
+#[tauri::command]
+async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameters, String> {
+    if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
+        return Err("parameters can only be read on RS485-1/2".into());
+    }
+    with_conn(&state.conn, |c| c.parameters(address))
 }
 
 /// Poll the given packs in a loop and emit "pack" (and on the CAN socket bus "system") events.
@@ -235,30 +245,58 @@ fn recording_status(state: State<AppState>) -> Result<RecordingStatus, String> {
     Ok(state.recorder.lock().map_err(|e| e.to_string())?.status())
 }
 
-/// Show a recording (or the recordings folder) in the file manager.
+fn parameters_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("parameters"))
+}
+
+/// Save a parameter export (BatteryMonitor XML, built by the UI) and return its path.
 #[tauri::command]
-fn reveal_recording(app: AppHandle, path: Option<String>) -> Result<(), String> {
-    let dir = recordings_dir(&app)?;
+fn save_parameters(app: AppHandle, name: String, content: String) -> Result<String, String> {
+    // the name comes from the UI: keep it a plain file name
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
+        return Err(format!("invalid file name: {name}"));
+    }
+    let dir = parameters_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // only paths inside the recordings folder, so the UI cannot open arbitrary files
+    let path = dir.join(name);
+    std::fs::write(&path, content).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// Show a file (or the folder itself) in the file manager. Only paths inside `dir`, so the UI cannot open
+/// arbitrary files.
+fn reveal(dir: &std::path::Path, path: Option<String>) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let target = match path.map(std::path::PathBuf::from) {
-        Some(p) if p.starts_with(&dir) && p.exists() => p,
-        _ => dir.clone(),
+        Some(p) if p.starts_with(dir) && p.exists() => p,
+        _ => dir.to_path_buf(),
     };
     #[cfg(target_os = "macos")]
     let r = std::process::Command::new("open").arg("-R").arg(&target).spawn();
     #[cfg(target_os = "windows")]
     let r = std::process::Command::new("explorer").arg(format!("/select,{}", target.display())).spawn();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let r = std::process::Command::new("xdg-open").arg(if target.is_dir() { &target } else { &dir }).spawn();
+    let r = std::process::Command::new("xdg-open").arg(if target.is_dir() { &target } else { dir }).spawn();
     r.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Show a recording (or the recordings folder) in the file manager.
+#[tauri::command]
+fn reveal_recording(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    reveal(&recordings_dir(&app)?, path)
+}
+
+/// Show a saved parameter export (or the parameters folder) in the file manager.
+#[tauri::command]
+fn reveal_parameters(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    reveal(&parameters_dir(&app)?, path)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, start_recording, stop_recording, recording_status, reveal_recording])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, start_recording, stop_recording, recording_status, reveal_recording, parameters, save_parameters, reveal_parameters])
         .run(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor");
 }

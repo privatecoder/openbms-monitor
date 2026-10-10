@@ -1,6 +1,8 @@
 """Generate help/<lang>/<id>.md from the tables below (source of truth for v0.x help content)."""
 import os
 
+from param_help import PARAMS, SWITCHES
+
 ROOT = os.path.join(os.path.dirname(__file__), "..", "help")
 
 # id: (related, de(title, short, body), en(title, short, body))
@@ -10,6 +12,16 @@ TOPICS = {
  "- **Netzwerk (TCP):** Adresse des Gateways im Format `Host:Port`, z. B. `192.168.1.10:4196`. Die Baudrate stellst du am Gateway ein (CAN-Buchse 9600, RS485-1/2 19200).\n- **USB/Seriell:** Port des Adapters wählen; die Baudrate ergibt sich aus dem gewählten Bus.\n- Nach dem Verbinden sucht die App die Adressen 0–15 ab und fragt danach alle gefundenen Packs alle 2 s ab.\n- Kommt **60 s** lang keine gültige Antwort, gilt die Verbindung als getrennt („Verbindung verloren“). Die App verbindet dann alle 30 s automatisch neu, bis wieder Packs antworten.\n- Nur ein Programm darf gleichzeitig auf dem Bus fragen. Läuft z. B. das Home-Assistant-Add-on am selben Gateway, kollidieren die Anfragen."),
  ("Connection", "How the app connects to the batteries: via a USB-RS485 adapter or an RS485-to-Ethernet gateway (TCP).",
  "- **Network (TCP):** gateway address as `host:port`, e.g. `192.168.1.10:4196`. The baud rate is configured on the gateway (CAN socket 9600, RS485-1/2 19200).\n- **USB/serial:** select the adapter's port; the baud rate follows the selected bus.\n- After connecting, the app scans addresses 0–15 and then polls all packs found every 2 s.\n- Without a valid answer for **60 s**, the connection counts as lost (“Connection lost”). The app then reconnects automatically every 30 s until packs answer again.\n- Only one program may poll the bus at a time. If e.g. the Home Assistant add-on uses the same gateway, requests collide.")),
+"topic.params": ("topic.buses, topic.switches", (
+ "Parameter", "Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest sie nur, sie ändert nichts.",
+ "- **Aus den Packs lesen:** nur über RS485-1/2 (19200 Baud). Die CAN-Buchse kennt den Befehl nicht. Der **Master** (DIP 0 mit Slaves) antwortet auf RS485-1/2 nicht; seine Werte bekommst du über einen BatteryMonitor-Export oder wenn er kurz allein am Bus hängt.\n- **Export öffnen:** XML-Dateien aus BatteryMonitor (Parameter exportieren). Die Werte zählen nach Position, nicht nach Namen. Passen die Namen nicht zur bekannten Reihenfolge, warnt die App: Ein solcher Export stammt aus einer anderen BatteryMonitor-Version und darf nicht zurückgespielt werden.\n- **Vergleich:** Jede Quelle ist eine Spalte. Werte, die von der Mehrheit abweichen, sind markiert; „Nur Abweichungen“ blendet alles Gleiche aus.\n- **Speichern:** Die gelesenen Werte eines Packs lassen sich als BatteryMonitor-XML sichern (Ordner `parameters` der App-Daten).\n- Die Bezeichnungen sind korrigiert: BatteryMonitor übersetzt maschinell aus dem Chinesischen („Monomer“ = Zelle, „pressure“ = Spannung, „Equalization“ = Balancing). Den Originalnamen aus BatteryMonitor zeigt die App, wenn du mit der Maus auf einen Namen zeigst."),
+ ("Parameters", "The packs' settings: limits, delays, balancing and function switches. The app only reads them, it changes nothing.",
+ "- **Read from packs:** only via RS485-1/2 (19200 baud). The CAN socket does not know the command. The **master** (DIP 0 with slaves) does not answer on RS485-1/2; get its values from a BatteryMonitor export or while it is alone on the bus.\n- **Open export:** XML files from BatteryMonitor (export parameters). Values count by position, not by name. If the names do not match the known order, the app warns: such an export comes from another BatteryMonitor version and must not be written back.\n- **Comparison:** every source is a column. Values that differ from the majority are marked; “Only differences” hides everything equal.\n- **Save:** a pack's read values can be saved as BatteryMonitor XML (folder `parameters` in the app data).\n- The names are corrected: BatteryMonitor machine-translates from Chinese (“Monomer” = cell, “pressure” = voltage, “Equalization” = balancing). Hover a name to see the original BatteryMonitor name.")),
+"topic.switches": ("topic.params", (
+ "Funktionsschalter", "Acht Bytes (BitGroup0–7) mit je acht Schaltern.",
+ "- **BitGroup1–5** geben die Meldungen frei: Ein Bit auf 0 schaltet die Meldung **und ihre Reaktion** ab (kein MOSFET-Abschalten, keine Folge für Ladegrenze oder SOC).\n- **BitGroup0** ist keine Maske; nur Bit 1 (Prüfung der Temperaturfühler) wirkt.\n- **BitGroup6/7** sind Funktionen: Balancing, Ladeaktivierung, Strombegrenzung, Selbstabschaltung, Ladegrenze.\n- Bits ohne Funktion zeigt die App ausgegraut."),
+ ("Function switches", "Eight bytes (BitGroup0–7) with eight switches each.",
+ "- **BitGroup1–5** enable the messages: a bit at 0 switches the message **and its reaction** off (no MOSFET switching, no effect on charge limit or SOC).\n- **BitGroup0** is not a mask; only bit 1 (temperature sensor check) has an effect.\n- **BitGroup6/7** are functions: balancing, charge activation, current limiting, shutdown, charge limit.\n- The app greys out bits without a function.")),
 "topic.recording": ("topic.connection", (
  "Aufzeichnung", "Schreibt die abgefragten Werte in eine Datei, ähnlich dem Debug-Log in Home Assistant.",
  "- **Was:** alle Packs oder eine Auswahl nach Gruppen bzw. einzelnen Packs; dazu wahlweise die Systemwerte des Masters (Modbus, nur über die CAN-Buchse).\n- **Wie oft:** jede Abfrage (Fehlersuche, z. B. Stromaufteilung in Paaren, Ausgleichsströme) oder 1× pro Minute bzw. alle 5 Minuten (Langzeitbeobachtung). Die App schätzt die Dateigröße vorab.\n- **Datei:** im Ordner `recordings` der App-Daten, Name mit Startzeit (UTC). Format JSON Lines: eine Zeile je Antwort, `{\"t\": Unix-ms, \"pack\": {…}}` bzw. `\"system\"`; die erste Zeile beschreibt die Einstellungen. Fehler (keine Antwort) werden mitgeschrieben.\n- Die Aufzeichnung läuft weiter, wenn die Verbindung abbricht und die App neu verbindet, und endet mit „Beenden“ oder beim Schließen der App.\n- Zum Ändern der Auswahl die Aufzeichnung beenden und neu starten (neue Datei)."),
@@ -201,9 +213,15 @@ for id, (related, de, en) in TOPICS.items():
 for id, (dt, ds, et, es) in ALARMS.items():
     write("de", id, dt, ds, "", "topic.alarms")
     write("en", id, et, es, "", "topic.alarms")
+for id, (dt, ds, et, es) in PARAMS.items():
+    write("de", id, dt, ds, "", "topic.params")
+    write("en", id, et, es, "", "topic.params")
+for id, (dt, ds, et, es) in SWITCHES.items():
+    write("de", id, dt, ds, "", "topic.switches")
+    write("en", id, et, es, "", "topic.switches")
 for lang in ("de", "en"):
     for name in os.listdir(os.path.join(ROOT, lang)):
         path = os.path.join(ROOT, lang, name)
         if path not in written:
             os.remove(path)
-print(len(TOPICS) + len(ALARMS), "entries per language")
+print(len(TOPICS) + len(ALARMS) + len(PARAMS) + len(SWITCHES), "entries per language")

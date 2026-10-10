@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { KEYS, UNITS, type Parameters } from "./params";
 
 export type Bus = "pack" | "can";
 export type Endpoint = { kind: "serial"; path: string; bus: Bus } | { kind: "tcp"; addr: string; bus: Bus };
@@ -84,6 +85,10 @@ const tauriApi = {
   stopRecording: () => invoke<RecordingStatus>("stop_recording"),
   recordingStatus: () => invoke<RecordingStatus>("recording_status"),
   revealRecording: (path: string | null) => invoke<void>("reveal_recording", { path }),
+  parameters: (address: number) => invoke<Parameters>("parameters", { address }),
+  /** Saves into the app's parameters folder and returns the full path. */
+  saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
+  revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -140,8 +145,30 @@ function demoApi(): typeof tauriApi {
       return rec;
     },
     revealRecording: async () => {},
+    // preview: the same configuration in every pack, pack 05 with a different balancing start and switch byte
+    parameters: async (address) => {
+      await new Promise((r) => setTimeout(r, 250));
+      if (address === 0) throw new Error("timeout after 1000 ms");
+      const values = DEMO_PARAMS.map((v, i) => (address === 5 && i === 8 ? 3.45 : v));
+      return {
+        address, device_name: "1101-SP75",
+        function_switches: address === 5 ? [0xff, 0xff, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f] : [0xff, 0xdf, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f],
+        parameters: values.map((value, index) => ({ index, key: KEYS[index], raw: 0, value, unit: UNITS[index] })),
+      };
+    },
+    saveParameters: async (name, content) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([content], { type: "application/xml" }));
+      a.download = name; a.click(); URL.revokeObjectURL(a.href);
+      return name;
+    },
+    revealParameters: async () => {},
   };
 }
+const DEMO_PARAMS = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
+  50, 47, 2, 5, 55, 50, -10, 0, 52, 47, -10, 3, 55, 50, -15, 0, 0, 10, 50, 47, 0, 3, 60, 55, -10, 0, 90, 85, 100, 85,
+  150, 145, -155, -153, 160, -160, -300, 2000, 280, 75, 0.5, 0.3, 0.03, 0.02, 10, 16, 10, 10, 30, 60, 5, 5, 1, 10, 10,
+  30, 240, 48, 15, 5, 96, 80, 10, 9, 0, 13, 0];
 let rec: RecordingStatus = { active: false, path: null, started_ms: 0, lines: 0, bytes: 0, options: null, error: null };
 
 /** Best available current: regular value, or the 1 mA resolution idle current while idle. */

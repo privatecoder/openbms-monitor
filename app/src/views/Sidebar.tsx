@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Database, Gauge, Languages, LayoutDashboard, Moon, Network, Sun, Usb } from "lucide-react";
+import { BatteryCharging, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -15,7 +15,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
   site: string;
   packs: number[];
   lastUpdate: number;
-  onConnected: (found: [number, DeviceInfo][], site: string) => void;
+  onConnected: (found: [number, DeviceInfo][], site: string, bus: Bus) => void;
   onDisconnected: () => void;
   view: string;
   setView: (v: string) => void;
@@ -46,7 +46,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
       const found = await api.scan();
       if (retry && !found.length) throw new Error(t("conn.none"));
       setMsg(found.length ? t("conn.found", { count: found.length }) : t("conn.none"));
-      onConnected(found, target);
+      onConnected(found, target, bus);
       setSince(Date.now()); setLost(false);
       if (found.length) await api.startPolling(found.map(([a]) => a), 2000);
     } catch (e) {
@@ -82,7 +82,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
         <span className="font-display text-xl font-semibold">{t("app")}</span>
       </div>
       <nav className="space-y-1 px-3">
-        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["cells", Database]].map(([id, Icon]) => {
+        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["params", SlidersHorizontal], ["cells", Database]].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
             <button key={id as string} onClick={() => setView(id as string)}
