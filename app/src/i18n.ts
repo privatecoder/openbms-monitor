@@ -5,7 +5,7 @@ const resources = {
   de: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Übersicht", cells: "Zellen", help: "Hilfe" },
+      nav: { dashboard: "Übersicht", diag: "Diagnose", cells: "Zellen", help: "Hilfe" },
       conn: {
         title: "Verbindung", tcp: "Netzwerk", serial: "USB", host: "Gateway (Host:Port)",
         port: "Adapter wählen", bus: "Bus", busCan: "CAN-Buchse, 9600 Baud", busPack: "RS485-1/2, 19200 Baud",
@@ -59,6 +59,24 @@ const resources = {
         importTitle: "Zellen importieren", exportTitle: "Zellen exportieren", importHint: "JSON einfügen: ein Zellmodell oder ein Array. Gleiche ID ersetzt den eigenen Eintrag; ein mitgelieferter wird damit angepasst.",
         imported: "{{count}} Einträge importiert.", scope: { mine: "Nur eigene und angepasste", all: "Ganze Datenbank" }, copy: "In die Zwischenablage", copied: "Kopiert.",
       },
+      diag: {
+        title: "Widerstands-Diagnose", intro: "Findet Packs mit erhöhtem Widerstand im Pack oder auf dem Weg zur Sammelschiene. Jedes BMS meldet die Summe seiner Zellen und die Spannung an seinem Ausgang; unter Last ergibt der Unterschied den Spannungsfall. Ein Nullabgleich in Ruhe nimmt die Messfehler der BMS heraus.",
+        step1: "1. Nullabgleich in Ruhe", step1Text: "Alle Packs nahezu stromlos (Wechselrichter kurz auf Standby). Für die Messung außen die Spannung an der Sammelschiene (+ gegen −) mit dem Multimeter messen und eintragen.",
+        busRest: "Sammelschiene in Ruhe", zero: "Nullabgleich", atRest: "Alle Packs in Ruhe.", notAtRest: "Noch {{a}} Strom (nötig: unter {{max}} je Pack).",
+        zeroDone: "Abgleich vom {{at}}, Sammelschiene {{bus}}.", zeroMissing: "Noch kein Nullabgleich.", noBus: "nicht eingetragen",
+        step2: "2. Außen messen unter Last", step2Text: "Bei möglichst hohem, gleichmäßigem Strom (mindestens {{a}} A je Pack) die Sammelschiene messen, eintragen und sofort übernehmen.",
+        busNow: "Sammelschiene jetzt", measure: "Außen messen", loaded: "{{n}} von {{total}} Packs mit genug Strom", needBusRest: "Für die Messung außen den Nullabgleich mit eingetragener Sammelschienen-Spannung wiederholen.",
+        inner: "Im Pack (live)", outer: "Außen (letzte Messung)", rating: "Bewertung", ok: "unauffällig",
+        flagInner: "im Pack erhöht", flagOuter: "außen erhöht", ruleNote: "Auffällig heißt: über dem 1,5-Fachen des Medians aller Packs und mindestens 1 mΩ darüber. Werte nur im Vergleich zwischen den Packs deuten; die Spannungsauflösung des BMS ist 10 mV.",
+        pairs: "Paare", pair: "Paar", currents: "Ströme", sum: "Summe", pairLow: "Summe niedrig: Hauptkabel des Paares prüfen", pairWeak: "Pack {{p}} deutlich schwächer: Brücke {{bridge}} und seine Stecker prüfen",
+        noPairs: "Keine Paare festgelegt. Paare legst du unter Übersicht → Gruppen bearbeiten fest.",
+        history: "Verlauf der Messungen außen (mΩ)", clear: "Verlauf löschen", when: "Zeitpunkt", bus: "Sammelschiene", historyNote: "Rot: in dieser Messung auffällig. Ein Pack, der in mehreren Messungen auffällt, ist der Kandidat.",
+      },
+      pairs: {
+        title: "Paare", intro: "Zwei Packs mit diagonalem Anschluss: das Hauptkabel + am ersten, das Hauptkabel − am zweiten, dazwischen zwei kurze Brücken. Die App zeigt dann die Paare zusammen und prüft ihre Ströme.",
+        neighbours: "Benachbarte Packs zu Paaren zusammenfassen", plus: "Hauptkabel + an", minus: "Hauptkabel − an", remove: "Paar entfernen", add: "Paar hinzufügen", clear: "Alle Paare entfernen",
+        invalid: "Ungültige Paare (gleicher Pack zweimal oder in zwei Paaren) werden beim Speichern weggelassen.", footer: "Paar {{a}}/{{b}}: {{sum}}",
+      },
       bal: { active: "Balancing aktiv", cells_one: "Balancing: Zelle {{list}}", cells_other: "Balancing: Zellen {{list}}", off: "Balancing: aus", packs_one: "Balancing in {{count}} Pack", packs_other: "Balancing in {{count}} Packs", whyDischarging: "Der Pack entlädt; dabei wird nie balanciert.", whyThresholds: "Höchste Zelle {{v}}, Spreizung {{d}}. Balancing beginnt erst ab der Startspannung (Parameter 8, oft 3,40 V) und einer Spreizung über Parameter 62 (oft 30 mV)." },
       live: { live: "Live, vor {{s}} s aktualisiert", stale: "Keine neuen Daten seit {{s}} s" },
       state: { charging: "Lädt", discharging: "Entlädt", standby: "Standby", off: "Aus", unknown: "Unbekannt" },
@@ -71,7 +89,7 @@ const resources = {
   en: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Overview", cells: "Cells", help: "Help" },
+      nav: { dashboard: "Overview", diag: "Diagnosis", cells: "Cells", help: "Help" },
       conn: {
         title: "Connection", tcp: "Network", serial: "USB", host: "Gateway (host:port)",
         port: "Select adapter", bus: "Bus", busCan: "CAN socket, 9600 baud", busPack: "RS485-1/2, 19200 baud",
@@ -124,6 +142,24 @@ const resources = {
         form: { prismatic: "prismatic", cylindrical: "cylindrical", pouch: "pouch" },
         importTitle: "Import cells", exportTitle: "Export cells", importHint: "Paste JSON: one cell model or an array. The same id replaces your own entry; a bundled one is adapted by it.",
         imported: "{{count}} entries imported.", scope: { mine: "Own and adapted only", all: "Whole database" }, copy: "Copy to clipboard", copied: "Copied.",
+      },
+      diag: {
+        title: "Resistance diagnosis", intro: "Finds packs with increased resistance inside the pack or on the way to the busbar. Every BMS reports the sum of its cells and the voltage at its output; under load the difference is the voltage drop. A zero reading at rest removes the BMS measurement errors.",
+        step1: "1. Zero at rest", step1Text: "All packs nearly without current (inverter briefly on standby). For the outside measurement, measure the busbar voltage (+ to −) with a multimeter and enter it.",
+        busRest: "Busbar at rest", zero: "Zero", atRest: "All packs at rest.", notAtRest: "Still {{a}} current (needed: below {{max}} per pack).",
+        zeroDone: "Zeroed on {{at}}, busbar {{bus}}.", zeroMissing: "No zero reading yet.", noBus: "not entered",
+        step2: "2. Measure outside under load", step2Text: "At a high, steady current (at least {{a}} A per pack) measure the busbar, enter it and take it over at once.",
+        busNow: "Busbar now", measure: "Measure outside", loaded: "{{n}} of {{total}} packs with enough current", needBusRest: "For the outside measurement, repeat the zero reading with the busbar voltage entered.",
+        inner: "Inside (live)", outer: "Outside (last measurement)", rating: "Rating", ok: "inconspicuous",
+        flagInner: "high inside", flagOuter: "high outside", ruleNote: "Conspicuous means: above 1.5 × the median of all packs and at least 1 mΩ above it. Read the values only in comparison between packs; the BMS voltage resolution is 10 mV.",
+        pairs: "Pairs", pair: "Pair", currents: "Currents", sum: "Total", pairLow: "low total: check the pair's main cables", pairWeak: "pack {{p}} clearly weaker: check bridge {{bridge}} and its connectors",
+        noPairs: "No pairs defined. Define pairs under Overview → Edit groups.",
+        history: "History of outside measurements (mΩ)", clear: "Clear history", when: "Time", bus: "Busbar", historyNote: "Red: conspicuous in this measurement. A pack that stands out in several measurements is the candidate.",
+      },
+      pairs: {
+        title: "Pairs", intro: "Two packs with diagonal wiring: main + cable at the first, main − cable at the second, two short bridges in between. The app then shows the pairs together and checks their currents.",
+        neighbours: "Pair neighbouring packs", plus: "main + at", minus: "main − at", remove: "Remove pair", add: "Add pair", clear: "Remove all pairs",
+        invalid: "Invalid pairs (same pack twice or in two pairs) are left out when saving.", footer: "Pair {{a}}/{{b}}: {{sum}}",
       },
       bal: { active: "Balancing active", cells_one: "Balancing: cell {{list}}", cells_other: "Balancing: cells {{list}}", off: "Balancing: off", packs_one: "Balancing in {{count}} pack", packs_other: "Balancing in {{count}} packs", whyDischarging: "The pack is discharging; it never balances then.", whyThresholds: "Highest cell {{v}}, spread {{d}}. Balancing only starts from the start voltage (parameter 8, often 3.40 V) and a spread above parameter 62 (often 30 mV)." },
       live: { live: "Live, updated {{s}} s ago", stale: "No new data for {{s}} s" },

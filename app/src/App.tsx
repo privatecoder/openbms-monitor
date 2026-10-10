@@ -5,6 +5,7 @@ import { Sidebar } from "./views/Sidebar";
 import { Dashboard } from "./views/Dashboard";
 import { PackDetail } from "./views/PackDetail";
 import { Cells } from "./views/Cells";
+import { Diagnosis } from "./views/Diagnosis";
 import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { isDemo } from "./api";
@@ -37,6 +38,8 @@ export default function App() {
             <Cells />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
+          ) : view === "diag" ? (
+            <Diagnosis packs={live.packs} site={site} />
           ) : current ? (
             <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} />
           ) : (

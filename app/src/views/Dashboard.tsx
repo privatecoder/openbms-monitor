@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
@@ -8,6 +8,7 @@ import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
+import { checkPairs, usePairs, validPairs, type Pair, type PairCheck } from "../pairs";
 import { GroupEditor } from "./GroupEditor";
 import { cn, fmt } from "../lib/utils";
 
@@ -17,6 +18,7 @@ const ROW = "grid grid-cols-[8rem_7.5rem_5.5rem_5.5rem_5.5rem_4rem_4.5rem_minmax
 export function Dashboard({ packs, system, site, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; site: string; onOpen: (a: number) => void }) {
   const { t } = useTranslation();
   const { groups, save } = useGroups(site);
+  const { pairs, save: savePairs } = usePairs(site);
   const [editing, setEditing] = useState(false);
   const list = Object.values(packs).sort((a, b) => a.address - b.address);
   const live = list.filter((p) => p.telemetry);
@@ -96,8 +98,8 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
         </div>
-        <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} />
-        <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} />
+        <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} pairs={validPairs(pairs, list.map((p) => p.address))} />
+        <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} pairs={pairs} onSavePairs={savePairs} />
       </section>
     </div>
   );
@@ -119,7 +121,7 @@ function aggregate(entries: PackEntry[]): Agg {
 }
 
 /** multi: more than one pack found, so address 0 is the master (a lone pack at 0 is standalone). */
-interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; multi: boolean; onOpen: (a: number) => void }
+interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; multi: boolean; onOpen: (a: number) => void; pairs: Pair[] }
 
 function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
   const { t } = useTranslation();
@@ -135,8 +137,10 @@ function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
 }
 
 /** Column header once on top, then one panel per group with its summary above it. */
-function RackList({ groups, packs, center, multi, onOpen }: RackProps) {
+function RackList({ groups, packs, center, multi, onOpen, pairs }: RackProps) {
   const { t } = useTranslation();
+  const checks = new Map(checkPairs(pairs, (a) => (packs[a]?.telemetry ? effectiveCurrent(packs[a].telemetry!) : undefined)).map((c) => [c.pair.plus, c]));
+  const partner = new Map(pairs.flatMap((p) => [[p.plus, p], [p.minus, p]] as [number, Pair][]));
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[56rem]">
@@ -161,12 +165,53 @@ function RackList({ groups, packs, center, multi, onOpen }: RackProps) {
               <div key={g.name + g.packs.join()}>
                 {g.name && <div className="mb-2 px-1"><GroupSummary name={g.name} agg={aggregate(entries)} /></div>}
                 <div className="overflow-hidden rounded-md border border-line bg-surface">
-                  {entries.map((p, i) => <RackRow key={p.address} p={p} index={offset + i} center={center} multi={multi} onOpen={() => onOpen(p.address)} />)}
+                  {blocks(entries, partner).map((b, bi) => b.pair ? (
+                    <PairBlock key={b.pair.plus} pair={b.pair} check={checks.get(b.pair.plus)}>
+                      {b.rows.map((p, i) => <RackRow key={p.address} p={p} index={offset + bi + i} center={center} multi={multi} onOpen={() => onOpen(p.address)} />)}
+                    </PairBlock>
+                  ) : <RackRow key={b.rows[0].address} p={b.rows[0]} index={offset + bi} center={center} multi={multi} onOpen={() => onOpen(b.rows[0].address)} />)}
                 </div>
               </div>
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Rows of a group, with the two packs of a pair (both in this group) kept together: plus pack first. */
+function blocks(entries: PackEntry[], partner: Map<number, Pair>): { pair?: Pair; rows: PackEntry[] }[] {
+  const byAddr = new Map(entries.map((p) => [p.address, p]));
+  const done = new Set<number>();
+  const out: { pair?: Pair; rows: PackEntry[] }[] = [];
+  for (const p of entries) {
+    if (done.has(p.address)) continue;
+    const pair = partner.get(p.address);
+    if (pair && byAddr.has(pair.plus) && byAddr.has(pair.minus)) {
+      out.push({ pair, rows: [byAddr.get(pair.plus)!, byAddr.get(pair.minus)!] });
+      done.add(pair.plus); done.add(pair.minus);
+    } else {
+      out.push({ rows: [p] });
+      done.add(p.address);
+    }
+  }
+  return out;
+}
+
+/** Two rows joined by a bar on the left, with the pair's total current below. */
+function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; children: ReactNode }) {
+  const { t } = useTranslation();
+  const warn = !!check && (check.lowTotal || check.weak !== undefined);
+  const no = (a: number) => String(a).padStart(2, "0");
+  return (
+    <div className="relative border-b border-line last:border-b-0 [&>button:last-of-type]:border-b-0">
+      <span className={cn("absolute bottom-7 left-1.5 top-3 w-1 rounded-full", warn ? "bg-alarm/60" : "bg-charge/40")} aria-hidden />
+      {children}
+      <div className={cn("border-t border-line/60 bg-sunken/30 px-4 py-1 pl-9 text-xs", warn ? "text-alarm" : "text-muted")}>
+        {t("pairs.footer", { a: no(pair.plus), b: no(pair.minus), sum: check ? fmt(check.total, 1, "A") : "–" })}
+        {check?.lowTotal && <>; {t("diag.pairLow")}</>}
+        {check?.weak !== undefined && <>; {t("diag.pairWeak", { p: no(check.weak), bridge: check.weak === pair.minus ? "+" : "−" })}</>}
       </div>
     </div>
   );
