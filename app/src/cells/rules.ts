@@ -81,31 +81,67 @@ function probes(bounds: number[], lo: number, hi: number): number[] {
   return out;
 }
 
-export interface ChargeRange { min: number; max: number; openLow: boolean; openHigh: boolean }
+/**
+ * One temperature interval in which charging is allowed. min/max are the bounds; minExcl/maxExcl
+ * mark a bound that itself is excluded (e.g. "above 0 °C"); openLow/openHigh mark an open table end.
+ */
+export interface ChargeInterval { min: number; max: number; minExcl: boolean; maxExcl: boolean; openLow: boolean; openHigh: boolean }
+
+/** Where a linear segment between (t0, v0) and (t1, v1) crosses zero, if it does inside the segment. */
+function crossings(cell: Cell): number[] {
+  const d = cell.charge_derating;
+  if (!d || d.interpolation !== "linear") return [];
+  const temps = [...new Set(d.points.map((p) => p.temp_c).filter((x): x is number => x !== undefined))].sort((a, b) => a - b);
+  const out: number[] = [];
+  for (let i = 1; i < temps.length; i++) {
+    // the value is linear in between, so it is positive on the whole open segment if one end is
+    out.push(temps[i - 1] + (temps[i] - temps[i - 1]) * 0.001, temps[i] - (temps[i] - temps[i - 1]) * 0.001);
+  }
+  return out;
+}
 
 /**
- * Temperature range in which the table allows charging (> 0) at some SOC. Evaluated exactly at
- * every table bound and between them (the value is constant between two bounds under the lower
- * rule). openLow/openHigh: an open band keeps charging allowed beyond min/max.
- * (A full cell may not be chargeable at all; that is a SOC limit, not a temperature one.)
+ * Temperature intervals in which the table allows charging (> 0) at some SOC. Under the lower rule
+ * the value is constant between two table bounds, so evaluating every bound and the midpoints between
+ * them is exact; linear tables are also probed just inside each segment. Gaps between intervals mean
+ * no charging. (A full cell may not be chargeable at all; that is a SOC limit, not a temperature one.)
  */
-export function effectiveChargeRange(cell: Cell): ChargeRange | undefined {
+export function chargeIntervals(cell: Cell): ChargeInterval[] | undefined {
   const d = cell.charge_derating;
   if (!d) return undefined;
   const tb = d.points.flatMap((p) => [p.temp_c, p.temp_min_c, p.temp_max_c]).filter((x): x is number => x !== undefined);
-  if (!tb.length) return undefined;
+  if (!tb.length) return [];
   const tLo = Math.min(...tb), tHi = Math.max(...tb);
-  const temps = [tLo - 1, ...probes(tb, tLo, tHi), tHi + 1];
+  const bounds = new Set(tb);
+  const temps = [...new Set([tLo - 1, ...probes(tb, tLo, tHi), ...crossings(cell), tHi + 1])].sort((a, b) => a - b);
   const socs = probes([0, 100, ...d.points.flatMap((p) => [p.soc_min_pct, p.soc_max_pct]).filter((x): x is number => x !== undefined)], 0, 100);
-  const ok = temps.filter((t) => socs.some((s) => (allowedChargeRate(cell, t, s) ?? 0) > 0));
-  if (!ok.length) return undefined;
-  const inner = ok.filter((t) => t >= tLo && t <= tHi);
-  return {
-    min: inner.length ? Math.min(...inner) : tLo,
-    max: inner.length ? Math.max(...inner) : tHi,
-    openLow: ok.includes(tLo - 1),
-    openHigh: ok.includes(tHi + 1),
-  };
+  const pos = temps.map((t) => socs.some((s) => (allowedChargeRate(cell, t, s) ?? 0) > 0));
+  const out: ChargeInterval[] = [];
+  for (let i = 0; i < temps.length; i++) {
+    if (!pos[i] || (i > 0 && pos[i - 1])) continue;
+    let j = i;
+    while (j + 1 < temps.length && pos[j + 1]) j++;
+    const first = temps[i], last = temps[j];
+    // an interval that starts or ends between two bounds excludes the neighbouring bound
+    const startsInside = !bounds.has(first) && first !== tLo - 1;
+    const endsInside = !bounds.has(last) && last !== tHi + 1;
+    out.push({
+      min: startsInside ? temps[i - 1] : first === tLo - 1 ? tLo : first,
+      max: endsInside ? temps[j + 1] : last === tHi + 1 ? tHi : last,
+      minExcl: startsInside,
+      maxExcl: endsInside,
+      openLow: first === tLo - 1,
+      openHigh: last === tHi + 1,
+    });
+  }
+  return out;
+}
+
+/** Outer bounds of all charge intervals (for summaries); undefined if charging is never allowed. */
+export function effectiveChargeRange(cell: Cell): { min: number; max: number } | undefined {
+  const iv = chargeIntervals(cell);
+  if (!iv?.length) return undefined;
+  return { min: iv[0].min, max: iv[iv.length - 1].max };
 }
 
 /** Required values that are missing or not verified. A value that is absent but has a verified provenance note ("not specified in datasheet", "no derating table") counts as checked. */

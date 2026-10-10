@@ -34,6 +34,11 @@ describe("review guards", () => {
     next.datasheet.url = "https://example.com/other.pdf";
     expect(Object.values(unverifyChanged(next, lf280k).provenance!).every((p) => !p.verified)).toBe(true);
   });
+  it("invalidates untouched proofs when the datasheet revision or hash changes", () => {
+    const next = structuredClone(lf280k);
+    next.datasheet.revision = "C";
+    expect(unverifyChanged(next, lf280k).provenance!["voltage.nominal_v"].verified).toBe(false);
+  });
   it("compares JSON independent of key order", () => {
     expect(sameJson({ a: 1, b: [1, { c: 2 }] }, { b: [1, { c: 2 }], a: 1 })).toBe(true);
     expect(sameJson({ a: 1 }, { a: 1, b: undefined })).toBe(false);

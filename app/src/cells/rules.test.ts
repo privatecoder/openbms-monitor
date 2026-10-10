@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import cells from "../../../data/cells/cells.json";
-import { allowedChargeRate, effectiveChargeRange, missingRequired, toAmps } from "./rules";
+import { allowedChargeRate, chargeIntervals, effectiveChargeRange, missingRequired, toAmps } from "./rules";
 import { REQUIRED_FOR_CHECKS, type Cell } from "./types";
 
 const db = cells as unknown as Cell[];
@@ -70,14 +70,24 @@ describe("review edge cases", () => {
   it("interpolates linear tables without SOC columns when SOC is known", () => {
     const c = mk([{ temp_c: 0, value: 0.2 }, { temp_c: 10, value: 0.8 }], true);
     expect(allowedChargeRate(c, 5, 50)).toBeCloseTo(0.5);
-    expect(effectiveChargeRange(c)).toMatchObject({ min: 0, max: 10 });
+    expect(effectiveChargeRange(c)).toMatchObject({ max: 10 });
   });
   it("honours temperature bands in linear tables", () => {
     expect(allowedChargeRate(mk([{ temp_min_c: 0, temp_max_c: 10, value: 0.4 }], true), 5, 50)).toBe(0.4);
   });
   it("finds narrow bands and open ends", () => {
-    expect(effectiveChargeRange(mk([{ temp_min_c: 0.1, temp_max_c: 0.2, value: 0.3 }]))).toEqual({ min: 0.1, max: 0.2, openLow: false, openHigh: false });
+    expect(effectiveChargeRange(mk([{ temp_min_c: 0.1, temp_max_c: 0.2, value: 0.3 }]))).toEqual({ min: 0.1, max: 0.2 });
     expect(effectiveChargeRange(mk([{ temp_c: 0, soc_min_pct: 10.2, soc_max_pct: 10.8, value: 0.3 }]))).toMatchObject({ min: 0, max: 0 });
-    expect(effectiveChargeRange(mk([{ temp_max_c: 0, value: 0 }, { temp_min_c: 0, value: 0.5 }]))).toMatchObject({ min: 0, openHigh: true });
+    expect(chargeIntervals(mk([{ temp_max_c: 0, value: 0 }, { temp_min_c: 0, value: 0.5 }]))).toEqual([{ min: 0, max: 0, minExcl: true, maxExcl: false, openLow: false, openHigh: true }]);
+  });
+  it("reports the exact start of a linear segment and gaps between bands", () => {
+    const lin = chargeIntervals(mk([{ temp_c: 0, value: 0 }, { temp_c: 10, value: 1 }], true))!;
+    expect(lin).toHaveLength(1);
+    expect(lin[0]).toMatchObject({ min: 0, minExcl: true, max: 10, maxExcl: false });
+    expect(chargeIntervals(mk([{ temp_min_c: 0, temp_max_c: 10, value: 0.5 }, { temp_min_c: 30, temp_max_c: 40, value: 0.5 }]))!.map((i) => [i.min, i.max]))
+      .toEqual([[0, 10], [30, 40]]);
+  });
+  it("marks a shared bound with 0 on one side as excluded (Envision: above 0 °C)", () => {
+    expect(chargeIntervals(byId("envision-aesc-hc-l315a-rev-1-0"))![0]).toMatchObject({ min: 0, minExcl: true });
   });
 });

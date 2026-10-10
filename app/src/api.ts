@@ -108,8 +108,9 @@ function demoApi(): typeof tauriApi {
     onPack: (f) => sub(packL, f),
     onSystem: (f) => sub(sysL, f),
     // preview: keep own cells in browser storage
-    loadUserCells: async () => { try { return JSON.parse(localStorage.getItem("cells.user") ?? "[]"); } catch { return []; } },
-    saveUserCells: async (cells) => { try { localStorage.setItem("cells.user", JSON.stringify(cells)); } catch { /* storage unavailable */ } },
+    // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
+    loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),
+    saveUserCells: async (cells) => { localStorage.setItem("cells.user", JSON.stringify(cells)); },
   };
 }
 

@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { Cell, DeratingPoint } from "./types";
-import { effectiveChargeRange, toAmps } from "./rules";
+import { chargeIntervals, toAmps, type ChargeInterval } from "./rules";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 
@@ -14,6 +14,18 @@ const socLabel = (p: DeratingPoint) =>
   p.soc_min_pct === undefined && p.soc_max_pct === undefined ? "–"
     : p.soc_min_pct === p.soc_max_pct ? `${p.soc_min_pct} %`
     : `${p.soc_min_pct ?? 0}–${p.soc_max_pct ?? 100} %`;
+
+const deg = (v: number) => fmt(v, Number.isInteger(v) ? 0 : 1);
+
+/** "ab 0 bis 55 °C", "über 0 bis 60 °C", "ab 0 °C" (open end), … */
+function describe(iv: ChargeInterval, t: (k: string, o?: Record<string, unknown>) => string): string {
+  const lo = t(iv.minExcl ? "cells.above" : "cells.from", { v: deg(iv.min) });
+  const hi = t(iv.maxExcl ? "cells.below" : "cells.to", { v: deg(iv.max) });
+  if (iv.openLow && iv.openHigh) return t("cells.anyTemp");
+  if (iv.openLow) return `${hi} °C`;
+  if (iv.openHigh) return `${lo} °C`;
+  return `${lo} ${hi} °C`;
+}
 
 /** Shade by share of the table maximum: 0 = no charging. */
 function tone(v: number, max: number) {
@@ -34,12 +46,12 @@ export function DeratingTable({ cell }: { cell: Cell }) {
   const cols = [...new Set(d.points.map(socLabel))];
   const cell2 = (row: DeratingPoint, col: string) => d.points.find((p) => tempLabel(p) === tempLabel(row) && socLabel(p) === col);
   const max = Math.max(...d.points.map((p) => p.value), 0.0001);
-  const range = effectiveChargeRange(cell);
+  const intervals = chargeIntervals(cell) ?? [];
   const amps = (v: number) => toAmps(cell, v, d.basis);
   return (
     <div className="space-y-3">
       <p className="text-sm">
-        {range ? t("cells.effective", { min: fmt(range.min, Number.isInteger(range.min) ? 0 : 1), max: fmt(range.max, Number.isInteger(range.max) ? 0 : 1) }) : t("cells.neverCharge")}
+        {intervals.length ? t("cells.effectiveList", { list: intervals.map((iv) => describe(iv, t)).join(t("cells.and")) }) : t("cells.neverCharge")}
         {cell.temperature?.charge_min_c !== undefined && (
           <span className="text-muted"> {t("cells.datasheetRange", { min: cell.temperature.charge_min_c, max: cell.temperature.charge_max_c })}</span>
         )}

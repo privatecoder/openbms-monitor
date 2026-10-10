@@ -194,13 +194,14 @@ function ProvenanceNote({ p }: { p?: { verified: boolean; note?: string } }) {
 /** Import (paste JSON, preview, then apply) and export (copy JSON) without file dialogs. */
 function Transfer({ mode, onClose, user, all, plan, apply }: {
   mode: "import" | "export" | null; onClose: () => void; user: Cell[]; all: Cell[];
-  plan: (c: Cell[]) => ImportPlan; apply: (p: ImportPlan) => Promise<unknown>;
+  plan: (c: Cell[]) => ImportPlan; apply: (p: ImportPlan, includeBundled: boolean) => Promise<unknown>;
 }) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
   const [scope, setScope] = useState<"mine" | "all">("mine");
   const [msg, setMsg] = useState<string | null>(null);
   const [preview, setPreview] = useState<ImportPlan | null>(null);
+  const [withBundled, setWithBundled] = useState(false);
   const exported = JSON.stringify(scope === "mine" ? user : all, null, 2);
   const check = () => {
     setPreview(null);
@@ -210,13 +211,14 @@ function Transfer({ mode, onClose, user, all, plan, apply }: {
     const errs = dbErrors(arr);
     if (errs.length) { setMsg(`${t("cells.invalid")} ${errs.join("; ")}`); return; }
     setMsg(null);
+    setWithBundled(false);
     setPreview(plan(arr as Cell[]));
   };
   const doApply = async () => {
     if (!preview) return;
     try {
-      await apply(preview);
-      setMsg(t("cells.imported", { count: preview.create.length + preview.replace.length }));
+      await apply(preview, withBundled);
+      setMsg(t("cells.imported", { count: preview.create.length + preview.replace.length + (withBundled ? preview.bundledChanged.length : 0) }));
       setPreview(null); setText("");
     } catch (e) { setMsg(String(e instanceof Error ? e.message : e)); }
   };
@@ -248,8 +250,17 @@ function Transfer({ mode, onClose, user, all, plan, apply }: {
               <div className="space-y-2 rounded-md border border-line p-3 text-sm">
                 <PlanList label={t("cells.plan.create")} cells={preview.create} />
                 <PlanList label={t("cells.plan.replace")} cells={preview.replace} tone="text-discharge" />
+                {preview.bundledChanged.length > 0 && (
+                  <div className="rounded-md bg-sunken p-2">
+                    <PlanList label={t("cells.plan.bundledChanged")} cells={preview.bundledChanged} tone="text-discharge" />
+                    <label className="mt-1 flex items-start gap-2 text-sm">
+                      <input type="checkbox" className="mt-1" checked={withBundled} onChange={(e) => setWithBundled(e.target.checked)} />
+                      <span>{t("cells.plan.bundledHint")}</span>
+                    </label>
+                  </div>
+                )}
                 <PlanList label={t("cells.plan.unchanged")} cells={preview.unchanged} tone="text-muted" />
-                <Button variant="primary" disabled={!preview.create.length && !preview.replace.length} onClick={doApply}><Upload className="h-4 w-4" />{t("cells.applyImport")}</Button>
+                <Button variant="primary" disabled={!preview.create.length && !preview.replace.length && !(withBundled && preview.bundledChanged.length)} onClick={doApply}><Upload className="h-4 w-4" />{t("cells.applyImport")}</Button>
               </div>
             )}
           </div>

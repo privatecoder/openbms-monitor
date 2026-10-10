@@ -19,10 +19,11 @@ export function sameJson(a: unknown, b: unknown): boolean {
  */
 export function unverifyChanged(next: Cell, before: Cell): Cell {
   const prov = { ...(next.provenance ?? {}) };
-  const urlChanged = next.datasheet.url !== before.datasheet.url;
+  // a different document (location, hash, revision or date) invalidates every proof that was not redone
+  const docChanged = (["url", "sha256", "revision", "document_date"] as const).some((k) => next.datasheet[k] !== before.datasheet[k]);
   for (const [key, p] of Object.entries(prov)) {
     const untouched = sameJson(p, before.provenance?.[key]);
-    if (p.verified && untouched && (urlChanged || !sameJson(get(next, key), get(before, key)))) prov[key] = { ...p, verified: false };
+    if (p.verified && untouched && (docChanged || !sameJson(get(next, key), get(before, key)))) prov[key] = { ...p, verified: false };
   }
   return { ...next, provenance: prov };
 }

@@ -13,7 +13,8 @@ const bundledById = new Map(bundled.map((c) => [c.id, c]));
 export type Origin = "bundled" | "overridden" | "own";
 export interface DbEntry { cell: Cell; origin: Origin; original?: Cell }
 
-export interface ImportPlan { create: Cell[]; replace: Cell[]; unchanged: Cell[] }
+/** bundledChanged: differs from a bundled entry you have not adapted (e.g. an export from an older version); applied only on request. */
+export interface ImportPlan { create: Cell[]; replace: Cell[]; bundledChanged: Cell[]; unchanged: Cell[] }
 
 /**
  * Bundled cells merged with the user's own and overridden entries (same id = override).
@@ -39,10 +40,15 @@ export function useCellDb() {
       .catch((e) => { setState("broken"); setError(String(e)); });
   }, []);
 
-  /** Writes are serialized; state changes only after the file was written. */
-  const persist = useCallback((next: Cell[]) => {
+  /**
+   * Writes are serialized, and each change is computed from the latest stored list inside the queue,
+   * so overlapping save/delete/import calls cannot overwrite each other. State changes only after
+   * the file was written.
+   */
+  const persist = useCallback((change: (current: Cell[]) => Cell[]) => {
     const run = queue.current.then(async () => {
       if (state !== "ready") throw new Error(state === "loading" ? "still loading" : "the user database could not be read; not overwriting it");
+      const next = change(userRef.current);
       await api.saveUserCells(next);
       userRef.current = next;
       setUser(next);
@@ -60,24 +66,26 @@ export function useCellDb() {
     return merged.sort((a, b) => `${a.cell.manufacturer} ${a.cell.model} ${a.cell.variant ?? ""}`.localeCompare(`${b.cell.manufacturer} ${b.cell.model} ${b.cell.variant ?? ""}`));
   }, [user]);
 
-  const save = (cell: Cell) => persist([...userRef.current.filter((c) => c.id !== cell.id), cell]);
-  const remove = (id: string) => persist(userRef.current.filter((c) => c.id !== id));
+  const save = (cell: Cell) => persist((cur) => [...cur.filter((c) => c.id !== cell.id), cell]);
+  const remove = (id: string) => persist((cur) => cur.filter((c) => c.id !== id));
 
   /** What an import would do; entries identical to their bundled or stored version are skipped. */
   const planImport = (cells: Cell[]): ImportPlan => {
-    const plan: ImportPlan = { create: [], replace: [], unchanged: [] };
+    const plan: ImportPlan = { create: [], replace: [], bundledChanged: [], unchanged: [] };
     const mine = new Map(userRef.current.map((c) => [c.id, c]));
     for (const c of cells) {
-      const current = mine.get(c.id) ?? bundledById.get(c.id);
-      if (current && sameJson(current, c)) plan.unchanged.push(c);
-      else (current ? plan.replace : plan.create).push(c);
+      const own = mine.get(c.id), base = bundledById.get(c.id);
+      if (sameJson(own ?? base, c)) plan.unchanged.push(c);
+      else if (own) plan.replace.push(c);
+      else if (base) plan.bundledChanged.push(c);
+      else plan.create.push(c);
     }
     return plan;
   };
-  const applyImport = (plan: ImportPlan) => {
-    const changed = [...plan.create, ...plan.replace];
+  const applyImport = (plan: ImportPlan, includeBundled: boolean) => {
+    const changed = [...plan.create, ...plan.replace, ...(includeBundled ? plan.bundledChanged : [])];
     const ids = new Set(changed.map((c) => c.id));
-    return persist([...userRef.current.filter((c) => !ids.has(c.id)), ...changed]);
+    return persist((cur) => [...cur.filter((c) => !ids.has(c.id)), ...changed]);
   };
 
   return {
