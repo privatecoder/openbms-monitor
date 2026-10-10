@@ -16,6 +16,7 @@ Status: **pre-release (0.1)**. Monitoring of multi-pack banks is in daily use; t
 - **Pair check** for packs wired in pairs: compares the current split and the output voltages inside each pair (60 s mean, with hysteresis, judged from 20 A per pack), explains equalizing currents by state of charge and flags contact resistance from 100 mV output difference.
 - **Resistance diagnosis:** zero at rest, then inner and outer resistance per pack under load against the busbar or the pair's load switch.
 - **Recording:** writes the polled data of all packs, a selection (groups, towers, single packs) and optionally the master's system values to a JSON Lines file; every poll, once a minute or every 5 minutes. Started and stopped in the UI.
+- **Parameters:** reads all parameters and function switches of the packs (RS485-1/2) or opens BatteryMonitor exports, and compares them side by side with the differences marked. Corrected names and help for every parameter and switch bit, detection of exports whose order does not fit, saving as BatteryMonitor XML. Read only.
 - **Cell database:** bundled data of common LiFePO4 cells plus own entries.
 
 ## The two buses
@@ -47,7 +48,7 @@ npm run dev                     # browser preview with a recorded 12-pack system
 npm run tauri dev               # desktop app
 ```
 
-App data (own cells, recordings) lives in the platform's app data folder under `io.github.privatecoder.openbms-monitor`.
+App data (own cells, recordings, saved parameters) lives in the platform's app data folder under `io.github.privatecoder.openbms-monitor`.
 
 Targets: macOS (arm64/x64), Windows 11 (arm64/x64). So far developed and tested on macOS.
 
