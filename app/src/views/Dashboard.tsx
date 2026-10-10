@@ -1,6 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Settings, Thermometer } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
 import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
@@ -24,6 +25,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const { pairs, save: savePairs } = usePairs(site);
   const [editing, setEditing] = useState(false);
   const [cellTypes, setCellTypes] = useState(false);
+  const [menu, setMenu] = useState(false);
   const db = useCellDb();
   const { assigned } = useAssignments(site);
   const list = Object.values(packs).sort((a, b) => a.address - b.address);
@@ -95,7 +97,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
                   <span className="block">{t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })}</span>
                   {series > 0 && <span className="block">{t("dash.perCellMax", { v: fmt(s.charge_voltage_limit / series, 3, "V") })}</span>}
                   {cellAllowed !== undefined && (
-                    <span className={cn("block", s.charge_allowed && s.charge_current_limit > cellAllowed + 0.5 && "text-alarm")}>{t("dash.cellsAllow", { a: fmt(cellAllowed, 0, "A") })}</span>
+                    <span className={cn("block whitespace-nowrap", s.charge_allowed && s.charge_current_limit > cellAllowed + 0.5 && "text-alarm")} title={t("dash.cellsAllowHint")}>{t("dash.cellsAllow", { a: fmt(cellAllowed, 0, "A") })}</span>
                   )}
                 </>} />
               <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value={s.discharge_allowed ? fmt(s.discharge_current_limit, 0, "A") : t("dash.blocked")}
@@ -129,10 +131,19 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
       <section>
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <h2 className="font-display text-2xl font-semibold">{t("dash.rack")}</h2>
-          <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" onClick={() => setCellTypes(true)}><Database className="h-4 w-4" />{t("ca.title")}</Button>
-            <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
-          </div>
+          <Popover open={menu} onOpenChange={setMenu}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="ghost" className="ml-auto" aria-label={t("dash.settings")} title={t("dash.settings")}><Settings className="h-4 w-4" /></Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-1">
+              {([[Layers, "groups.edit", () => setEditing(true)], [Database, "ca.title", () => setCellTypes(true)]] as const).map(([I, k, f]) => (
+                <button key={k} onClick={() => { setMenu(false); f(); }}
+                  className="flex w-full items-center gap-2.5 rounded px-3 py-2 text-left text-sm hover:bg-sunken">
+                  <I className="h-4 w-4 text-muted" />{t(k)}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
         </div>
         <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} pairs={validPairs(pairs, list.map((p) => p.address))} />
         <CellAssignSheet open={cellTypes} onOpenChange={setCellTypes} site={site} packs={packs} />
@@ -189,8 +200,8 @@ function RackList({ groups, packs, center, multi, onOpen, pairs }: RackProps) {
           <span className="flex items-center justify-end gap-1.5">{t("dash.cellTempMax")}<InfoIcon id="value.cell_temp_max" /></span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.cycles")}<InfoIcon id="value.cycles" /></span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.delta")}<InfoIcon id="value.cell_delta" /></span>
-          <span className="flex flex-col leading-tight">
-            <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
+          <span className="flex items-center gap-1.5 whitespace-nowrap">
+            {t("dash.strip")}<InfoIcon id="value.cell_strip" />
             {Number.isFinite(center) && <span className="text-xs">{t("dash.medianShort", { v: fmt(center, 3, "V") })}</span>}
           </span>
         </div>

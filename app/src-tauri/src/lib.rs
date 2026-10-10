@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-mod recorder;
-use recorder::{RecordOptions, RecordingStatus, SharedRecorder};
+mod history;
+use history::{Format, Settings, SharedHistory};
 
 #[derive(Default)]
 struct AppState {
@@ -15,7 +15,7 @@ struct AppState {
     bus: Mutex<Option<Bus>>,
     /// Run flag of the current polling thread; each start gets a fresh one, so an old thread cannot stop a new one.
     polling: Mutex<Arc<AtomicBool>>,
-    recorder: SharedRecorder,
+    history: SharedHistory,
 }
 
 #[derive(Deserialize)]
@@ -80,13 +80,17 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
-    let (ep, bus) = match endpoint {
-        EndpointArg::Serial { path, bus } => (Endpoint::Serial { path, baud: Bus::from(bus).baud() }, Bus::from(bus)),
-        EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr }, Bus::from(bus)),
+    // the installation is named by its gateway address or port, like the groups in the UI
+    let (ep, bus, site) = match endpoint {
+        EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), path),
+        EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr: addr.clone() }, Bus::from(bus), addr),
     };
     let conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     *lock(&state.conn)? = Some(conn);
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
+    if let Ok(mut h) = state.history.lock() {
+        h.connected(&site, if bus == Bus::CanSocketBus { "can" } else { "pack" });
+    }
     Ok(())
 }
 
@@ -96,6 +100,9 @@ fn disconnect(state: State<AppState>) -> Result<(), String> {
         p.store(false, Ordering::SeqCst);
     }
     *lock(&state.conn)? = None;
+    if let Ok(mut h) = state.history.lock() {
+        h.disconnected();
+    }
     Ok(())
 }
 
@@ -132,15 +139,15 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     }
     std::thread::sleep(Duration::from_millis(50));
     let conn = state.conn.clone();
-    let rec = state.recorder.clone();
+    let rec = state.history.clone();
     std::thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             let started = std::time::Instant::now();
             if bus == Bus::CanSocketBus {
                 let r = with_conn(&conn, |c| c.system_values());
                 let update = SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() };
-                if let Ok(mut rec) = rec.lock() {
-                    rec.system(&update);
+                if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
+                    rec.system(history::now_ms(), &v);
                 }
                 let _ = app.emit("system", update);
             }
@@ -163,8 +170,8 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     break;
                 }
                 let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error };
-                if let Ok(mut rec) = rec.lock() {
-                    rec.pack(address, &update);
+                if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
+                    rec.pack(history::now_ms(), address, &v);
                 }
                 let _ = app.emit("pack", update);
             }
@@ -223,68 +230,84 @@ fn recordings_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings"))
 }
 
-/// Start recording the polled data to a new file (see recorder.rs for the format).
-#[tauri::command]
-fn start_recording(app: AppHandle, state: State<AppState>, options: RecordOptions) -> Result<RecordingStatus, String> {
-    let bus = match *state.bus.lock().map_err(|e| e.to_string())? {
-        Some(Bus::CanSocketBus) => "can",
-        Some(Bus::PackBus) => "pack",
-        None => "",
-    };
-    let dir = recordings_dir(&app)?;
-    state.recorder.lock().map_err(|e| e.to_string())?.start(&dir, options, bus)
+fn history_path(state: &State<AppState>) -> Result<std::path::PathBuf, String> {
+    state.history.lock().map_err(|e| e.to_string())?.path().ok_or_else(|| "history database not open".into())
 }
 
 #[tauri::command]
-fn stop_recording(state: State<AppState>) -> Result<RecordingStatus, String> {
-    Ok(state.recorder.lock().map_err(|e| e.to_string())?.stop())
+fn history_status(state: State<AppState>) -> Result<history::Status, String> {
+    Ok(state.history.lock().map_err(|e| e.to_string())?.status())
 }
 
 #[tauri::command]
-fn recording_status(state: State<AppState>) -> Result<RecordingStatus, String> {
-    Ok(state.recorder.lock().map_err(|e| e.to_string())?.status())
+fn history_settings(state: State<AppState>, settings: Settings) -> Result<history::Status, String> {
+    state.history.lock().map_err(|e| e.to_string())?.set_settings(settings)
 }
 
-#[derive(Serialize)]
-struct RecordingFile {
-    name: String,
-    bytes: u64,
-    modified_ms: u64,
-}
-
-/// The recordings in the app's folder, newest first.
+/// Installations in the database with their time span and packs.
 #[tauri::command]
-fn list_recordings(app: AppHandle) -> Result<Vec<RecordingFile>, String> {
-    let dir = recordings_dir(&app)?;
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(vec![]) };
-    let mut out: Vec<RecordingFile> = entries
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let meta = e.metadata().ok()?;
-            (meta.is_file() && name.ends_with(".jsonl")).then(|| RecordingFile {
-                name,
-                bytes: meta.len(),
-                modified_ms: meta
-                    .modified()
-                    .ok()
-                    .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_millis() as u64),
-            })
-        })
-        .collect();
-    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
-    Ok(out)
+async fn history_sites(state: State<'_, AppState>) -> Result<Vec<history::SiteSpan>, String> {
+    let path = history_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || history::sites(&history::reader(&path)?)).await.map_err(|e| e.to_string())?
 }
 
-/// The raw content of a recording in the app's folder, sent as bytes (no JSON encoding of a large string).
+/// Chart data for a span: packs and master on a common grid, the cells of one pack, the alarms.
 #[tauri::command]
-fn read_recording(app: AppHandle, name: String) -> Result<tauri::ipc::Response, String> {
-    if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
-        return Err(format!("invalid file name: {name}"));
-    }
-    let path = recordings_dir(&app)?.join(name);
-    std::fs::read(&path).map(tauri::ipc::Response::new).map_err(|e| format!("{}: {e}", path.display()))
+#[allow(clippy::too_many_arguments)]
+async fn history_series(
+    state: State<'_, AppState>,
+    site: String,
+    from: i64,
+    to: i64,
+    packs: Vec<u8>,
+    cells_pack: Option<u8>,
+    max_points: usize,
+) -> Result<history::Series, String> {
+    let path = history_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || history::series(&history::reader(&path)?, &site, from, to, &packs, cells_pack, max_points))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Export a span to a file the user picked (JSON Lines or CSV).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn history_export(
+    state: State<'_, AppState>,
+    site: String,
+    from: i64,
+    to: i64,
+    packs: Vec<u8>,
+    format: Format,
+    path: String,
+) -> Result<history::ExportStats, String> {
+    let db = history_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || history::export(&history::reader(&db)?, &site, from, to, &packs, format, std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Import a JSON Lines recording (earlier versions, exports) for an installation.
+#[tauri::command]
+async fn history_import(state: State<'_, AppState>, path: String, site: String) -> Result<history::ImportStats, String> {
+    let h = state.history.clone();
+    tauri::async_runtime::spawn_blocking(move || h.lock().map_err(|e| e.to_string())?.import(std::path::Path::new(&path), &site))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Delete the data of one installation, or all of it.
+#[tauri::command]
+fn history_clear(state: State<AppState>, site: Option<String>) -> Result<(), String> {
+    state.history.lock().map_err(|e| e.to_string())?.clear(site.as_deref())
+}
+
+/// Folders the file dialogs start in: old recordings (to import) and exports.
+#[tauri::command]
+fn history_dirs(app: AppHandle) -> Result<(String, String), String> {
+    let exports = app.path().app_data_dir().map_err(|e| e.to_string())?.join("exports");
+    std::fs::create_dir_all(&exports).map_err(|e| e.to_string())?;
+    Ok((recordings_dir(&app)?.display().to_string(), exports.display().to_string()))
 }
 
 fn parameters_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -322,10 +345,10 @@ fn reveal(dir: &std::path::Path, path: Option<String>) -> Result<(), String> {
     r.map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Show a recording (or the recordings folder) in the file manager.
+/// Show the history database (or the app data folder) in the file manager.
 #[tauri::command]
-fn reveal_recording(app: AppHandle, path: Option<String>) -> Result<(), String> {
-    reveal(&recordings_dir(&app)?, path)
+fn reveal_history(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    reveal(&app.path().app_data_dir().map_err(|e| e.to_string())?, path)
 }
 
 /// Show a saved parameter export (or the parameters folder) in the file manager.
@@ -337,8 +360,19 @@ fn reveal_parameters(app: AppHandle, path: Option<String>) -> Result<(), String>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, start_recording, stop_recording, recording_status, reveal_recording, list_recordings, read_recording, parameters, save_parameters, reveal_parameters])
+        .setup(|app| {
+            let path = app.path().app_data_dir()?.join("history.sqlite");
+            let state = app.state::<AppState>();
+            if let Ok(mut h) = state.history.lock() {
+                if let Err(e) = h.open(&path) {
+                    eprintln!("history: {e}");
+                }
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters])
         .run(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor");
 }

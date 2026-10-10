@@ -137,7 +137,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
         {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
       </div>
       <div className="mt-5 border-t border-line px-3 pt-3">
-        <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} />
+        <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
       </div>
       <div className="mt-auto flex items-center gap-1 border-t border-line px-3 py-3">
         <Button variant="ghost" size="sm" onClick={() => i18n.changeLanguage(i18n.language === "de" ? "en" : "de")}>

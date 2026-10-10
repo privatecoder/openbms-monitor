@@ -61,14 +61,31 @@ export interface SystemValues {
 }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
-/** packs: addresses to record, empty = all; interval_s: minimum seconds between two lines per pack (0 = every poll). */
-export interface RecordOptions { packs: number[]; system: boolean; interval_s: number }
-/** A recording in the app's recordings folder. */
-export interface RecordingFile { name: string; bytes: number; modified_ms: number }
-export interface RecordingStatus {
-  active: boolean; path: string | null; started_ms: number; lines: number; bytes: number;
-  options: RecordOptions | null; error: string | null;
+/** Recording into the history database. Off by default; changes apply at once. */
+export interface HistorySettings {
+  enabled: boolean;
+  /** addresses to record, empty = every polled pack */
+  packs: number[];
+  system: boolean;
+  /** minimum seconds between two rows per pack (0 = every poll) */
+  interval_s: number;
+  /** days every answer is kept; older ones become minute values */
+  keep_full_days: number;
+  /** days minute values are kept after that, 0 = forever */
+  keep_minutes_days: number;
 }
+export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; error: string | null }
+export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
+type Col = (number | null)[];
+export interface PackCols { current: Col; soc: Col; voltage: Col; cell_max: Col; cell_min: Col; delta: Col; temp_max: Col; temp_min: Col }
+export interface SystemCols { current: Col; soc: Col; voltage: Col; ccl: Col; dcl: Col; cvl: Col; cell_max: Col; cell_min: Col }
+export interface HistoryEvent { pack: number; key: string; severity: Severity | ""; start: number; end: number | null }
+export interface Series {
+  from: number; to: number; step: number; x: number[];
+  packs: Record<string, PackCols>; system: SystemCols | null; cells: Col[]; events: HistoryEvent[];
+}
+export interface ExportStats { rows: number; files: string[] }
+export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -83,13 +100,18 @@ const tauriApi = {
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
-  startRecording: (options: RecordOptions) => invoke<RecordingStatus>("start_recording", { options }),
-  stopRecording: () => invoke<RecordingStatus>("stop_recording"),
-  recordingStatus: () => invoke<RecordingStatus>("recording_status"),
-  revealRecording: (path: string | null) => invoke<void>("reveal_recording", { path }),
-  listRecordings: () => invoke<RecordingFile[]>("list_recordings"),
-  /** Raw bytes of a recording in the app's folder. */
-  readRecording: (name: string) => invoke<ArrayBuffer>("read_recording", { name }),
+  historyStatus: () => invoke<HistoryStatus>("history_status"),
+  setHistorySettings: (settings: HistorySettings) => invoke<HistoryStatus>("history_settings", { settings }),
+  historySites: () => invoke<SiteSpan[]>("history_sites"),
+  historySeries: (site: string, from: number, to: number, packs: number[], cellsPack: number | null, maxPoints: number) =>
+    invoke<Series>("history_series", { site, from, to, packs, cellsPack, maxPoints }),
+  historyExport: (site: string, from: number, to: number, packs: number[], format: "jsonl" | "csv", path: string) =>
+    invoke<ExportStats>("history_export", { site, from, to, packs, format, path }),
+  historyImport: (path: string, site: string) => invoke<ImportStats>("history_import", { path, site }),
+  historyClear: (site: string | null) => invoke<void>("history_clear", { site }),
+  /** Folders the file dialogs start in: [old recordings, exports]. */
+  historyDirs: () => invoke<[string, string]>("history_dirs"),
+  revealHistory: (path: string | null) => invoke<void>("reveal_history", { path }),
   parameters: (address: number) => invoke<Parameters>("parameters", { address }),
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
@@ -135,24 +157,20 @@ function demoApi(): typeof tauriApi {
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),
     saveUserCells: async (cells) => { localStorage.setItem("cells.user", JSON.stringify(cells)); },
-    // preview: a simulated recording that only counts, nothing is written
-    startRecording: async (options) => {
-      rec = { active: true, path: "~/Library/Application Support/OpenBMS Monitor/recordings/openbms_preview.jsonl", started_ms: Date.now(), lines: 1, bytes: 90, options, error: null };
-      return rec;
+    // preview: settings in memory, a synthetic day of history for the packs of the capture
+    historyStatus: async () => ({ ...demoHistory, active: demoHistory.settings.enabled }),
+    setHistorySettings: async (settings) => { demoHistory = { ...demoHistory, settings }; return { ...demoHistory, active: settings.enabled }; },
+    historySites: async () => {
+      const c = await load();
+      const now = Date.now();
+      return [{ site: "demo:4196", from: now - 86_400_000, to: now, packs: c.packs.map((p) => p.address), has_system: true }];
     },
-    stopRecording: async () => { rec = { ...rec, active: false }; return rec; },
-    recordingStatus: async () => {
-      if (rec.active) {
-        const n = rec.options?.packs.length || 12, every = Math.max(10, rec.options?.interval_s ?? 0);
-        const lines = 1 + Math.floor(((Date.now() - rec.started_ms) / 1000 / every) * n);
-        rec = { ...rec, lines, bytes: lines * 1600 };
-      }
-      return rec;
-    },
-    revealRecording: async () => {},
-    // preview: no recordings folder; files are opened with the file picker
-    listRecordings: async () => [],
-    readRecording: async () => { throw new Error("preview"); },
+    historySeries: async (_site, from, to, packs, cellsPack, maxPoints) => demoSeries(from, to, packs, cellsPack, maxPoints),
+    historyExport: async () => { throw new Error("preview"); },
+    historyImport: async () => { throw new Error("preview"); },
+    historyClear: async () => {},
+    historyDirs: async () => ["", ""],
+    revealHistory: async () => {},
     // preview: the same configuration in every pack, pack 05 with a different balancing start and switch byte
     parameters: async (address) => {
       await new Promise((r) => setTimeout(r, 250));
@@ -177,7 +195,35 @@ const DEMO_PARAMS = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2,
   50, 47, 2, 5, 55, 50, -10, 0, 52, 47, -10, 3, 55, 50, -15, 0, 0, 10, 50, 47, 0, 3, 60, 55, -10, 0, 90, 85, 100, 85,
   150, 145, -155, -153, 160, -160, -300, 2000, 280, 75, 0.5, 0.3, 0.03, 0.02, 10, 16, 10, 10, 30, 60, 5, 5, 1, 10, 10,
   30, 240, 48, 15, 5, 96, 80, 10, 9, 0, 13, 0];
-let rec: RecordingStatus = { active: false, path: null, started_ms: 0, lines: 0, bytes: 0, options: null, error: null };
+let demoHistory: HistoryStatus = {
+  settings: { enabled: false, packs: [], system: true, interval_s: 0, keep_full_days: 30, keep_minutes_days: 0 },
+  active: false, path: "~/Library/Application Support/io.github.privatecoder.openbms-monitor/history.sqlite", bytes: 48_300_000, rows: 0, error: null,
+};
+
+/** Preview: a day of a 12-pack bank (charging by day, discharging at night), pack 01 with a weak share. */
+function demoSeries(from: number, to: number, packs: number[], cellsPack: number | null, maxPoints: number): Series {
+  const step = Math.max((to - from) / maxPoints, 15_000), n = Math.max(1, Math.ceil((to - from) / step));
+  const x = Array.from({ length: n }, (_, i) => from + i * step);
+  const hour = (t: number) => ((t / 3_600_000) % 24 + 24) % 24;
+  const total = (t: number) => { const h = hour(t); return h > 9 && h < 16 ? 160 * Math.sin(((h - 9) / 7) * Math.PI) : h > 18 || h < 6 ? -45 : 5; };
+  const soc = (t: number) => { const h = hour(t); return h > 9 && h < 16 ? 30 + ((h - 9) / 7) * 65 : h >= 16 && h <= 18 ? 95 : 95 - (((h - 18 + 24) % 24) / 12) * 60; };
+  const r = (a: number, i: number) => Math.sin(a * 12.9898 + i * 78.233) * 0.5;
+  const out: Series["packs"] = {};
+  for (const a of packs) {
+    const share = a === 1 ? 0.55 : 1 + r(a, 0) * 0.08;
+    const cur = x.map((t) => (total(t) / packs.length) * share);
+    const cmax = x.map((t, i) => 3.3 + soc(t) / 1000 + (soc(t) > 90 ? (soc(t) - 90) / 40 : 0) + r(a, i) * 0.004);
+    out[a] = {
+      current: cur, soc: x.map((t) => soc(t) + r(a, 1) * 4), voltage: cmax.map((v) => v * 16 - 0.05),
+      cell_max: cmax, cell_min: cmax.map((v, i) => v - 0.006 - Math.abs(r(a, i)) * 0.006), delta: cmax.map((_, i) => 6 + Math.abs(r(a, i)) * 6),
+      temp_max: x.map((t) => 22 + Math.abs(total(t)) / 40 + r(a, 2)), temp_min: x.map((t) => 20 + Math.abs(total(t)) / 60 + r(a, 3)),
+    };
+  }
+  const sys = { current: x.map(total), soc: x.map(soc), voltage: x.map((t) => 52.8 + soc(t) / 50), ccl: x.map((t) => (soc(t) > 95 ? 60 : 300)),
+    dcl: x.map(() => 300), cvl: x.map(() => 56.8), cell_max: x.map((t) => 3.31 + soc(t) / 1000), cell_min: x.map((t) => 3.29 + soc(t) / 1000) };
+  const cells = cellsPack === null ? [] : Array.from({ length: 16 }, (_, c) => x.map((t) => 3.3 + soc(t) / 1000 + r(c, 4) * 0.01));
+  return { from, to, step, x, packs: out, system: sys, cells, events: [{ pack: 1, key: "alarm.ev3.b1", severity: "warning", start: from + (to - from) * 0.6, end: from + (to - from) * 0.63 }] };
+}
 
 /** Best available current: regular value, or the 1 mA resolution idle current while idle. */
 export const effectiveCurrent = (t: Telemetry) => (t.current !== 0 ? t.current : (t.idle_current_ma ?? 0) / 1000);
