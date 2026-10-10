@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Telemetry } from "../api";
-import { allowedChargeA, checkPack, suggestParallel } from "./packCheck";
+import { allowedChargeA, allowedDischargeA, checkPack, suggestParallel } from "./packCheck";
 import type { Cell } from "./types";
 
 const base = {
@@ -20,6 +20,14 @@ const derated: Cell = {
   charge_derating: { basis: "C", points: [{ temp_min_c: 0, temp_max_c: 10, value: 0.1 }, { temp_min_c: 10, temp_max_c: 45, value: 0.5 }] },
 };
 const tm = (cells: number[], temps: number[], soc = 60) => ({ cell_voltages: cells, cell_temperatures: temps, soc } as unknown as Telemetry);
+
+describe("allowedDischargeA", () => {
+  it("uses the continuous discharge current inside the discharge range", () => {
+    expect(allowedDischargeA(plain, 2, [-5, 30])).toBe(560);
+    expect(allowedDischargeA(plain, 1, [-25, 20])).toBe(0);
+    expect(allowedDischargeA({ ...plain, current: undefined }, 1, [20])).toBeUndefined();
+  });
+});
 
 describe("allowedChargeA", () => {
   it("uses the continuous current inside the charge range when there is no table", () => {

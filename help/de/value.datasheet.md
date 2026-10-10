@@ -7,4 +7,4 @@ related: topic.cellAssign
 - **Temperatur:** kälteste und wärmste Zelle gegen den Bereich fürs Laden bzw. Entladen (nahe ab 5 K vor der Grenze). Außerhalb des Ladebereichs ist das nur ein Verstoß, solange geladen wird; sonst steht dort „Laden jetzt nicht erlaubt“.
 - **Ladestrom:** erlaubt ist der Wert der Derating-Tabelle des Datenblatts bei der kältesten und der wärmsten Zelle (der niedrigere zählt), höchstens der Dauerstrom. Ohne Tabelle gilt der Dauerstrom innerhalb des Ladebereichs. „Empfohlen“ ist der Standard-Ladestrom. Nahe ab 80 %.
 - **Entladestrom** gegen den Dauerstrom, mal Zellen parallel.
-- Bei der Ladegrenze in der Übersicht addiert die App die erlaubten Ladeströme aller Packs. Steht dort rot, meldet der Master dem Wechselrichter mehr, als die Zellen jetzt erlauben.
+- Bei Lade- und Entladegrenze in der Übersicht addiert die App die laut Datenblatt erlaubten Ströme aller Packs („Datenblatt erlaubt …“). Steht dort rot, meldet der Master dem Wechselrichter mehr, als die Zellen jetzt erlauben.
