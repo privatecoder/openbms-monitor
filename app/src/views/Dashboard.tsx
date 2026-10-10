@@ -85,8 +85,8 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             value={tempLo && tempHi ? t("dash.tempRangeVal", { lo: fmt(tempLo.v, 1), hi: fmt(tempHi.v, 1, "°C") }) : "–"}
             note={tempLo && tempHi ? <>
               <span className="block">{t("dash.coldHot", { lo: packNo(tempLo.a), hi: packNo(tempHi.a) })}</span>
-              {ambHi && mosHi && <span className="block" title={t("dash.ambMosWhere", { pa: packNo(ambHi.a), pm: packNo(mosHi.a) })}>
-                {t("dash.otherTemps", { amb: fmt(ambHi.v, 1, "°C"), mos: fmt(mosHi.v, 1, "°C") })}</span>}
+              {ambHi && <span className="block">{t("dash.otherTemps", { amb: fmt(ambHi.v, 1, "°C"), pa: packNo(ambHi.a) })}</span>}
+              {mosHi && <span className="block">{t("dash.ambMosWhere", { mos: fmt(mosHi.v, 1, "°C"), pm: packNo(mosHi.a) })}</span>}
             </> : undefined} />
         </div>
       </header>
