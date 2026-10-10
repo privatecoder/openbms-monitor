@@ -109,6 +109,9 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     let running = state.polling.clone();
     running.store(true, Ordering::SeqCst);
     let conn = state.conn.clone();
+    // Diagnostics: with OPENBMS_POLL_LOG=<file>, every event is appended there as one JSON line.
+    let mut log = std::env::var_os("OPENBMS_POLL_LOG")
+        .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     std::thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             let started = std::time::Instant::now();
@@ -127,7 +130,13 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
-                let _ = app.emit("pack", PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error });
+                let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error };
+                if let Some(f) = log.as_mut() {
+                    use std::io::Write;
+                    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                    let _ = writeln!(f, "{{\"t\":{ms},\"pack\":{}}}", serde_json::to_string(&update).unwrap_or_default());
+                }
+                let _ = app.emit("pack", update);
             }
             let wait = Duration::from_millis(interval_ms).saturating_sub(started.elapsed());
             std::thread::sleep(wait.max(Duration::from_millis(100)));

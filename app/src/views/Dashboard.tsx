@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
@@ -8,7 +8,7 @@ import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
-import { checkPairs, usePairs, validPairs, type Pair, type PairCheck } from "../pairs";
+import { checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck } from "../pairs";
 import { GroupEditor } from "./GroupEditor";
 import { cn, fmt } from "../lib/utils";
 
@@ -139,7 +139,7 @@ function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
 /** Column header once on top, then one panel per group with its summary above it. */
 function RackList({ groups, packs, center, multi, onOpen, pairs }: RackProps) {
   const { t } = useTranslation();
-  const checks = new Map(checkPairs(pairs, (a) => (packs[a]?.telemetry ? effectiveCurrent(packs[a].telemetry!) : undefined)).map((c) => [c.pair.plus, c]));
+  const checks = new Map(usePairChecks(pairs, packs).map((c) => [c.pair.plus, c]));
   const partner = new Map(pairs.flatMap((p) => [[p.plus, p], [p.minus, p]] as [number, Pair][]));
   return (
     <div className="overflow-x-auto">
@@ -197,6 +197,34 @@ function blocks(entries: PackEntry[], partner: Map<number, Pair>): { pair?: Pair
     }
   }
   return out;
+}
+
+const PAIR_WINDOW_MS = 60_000;
+
+/**
+ * Pair check on each pack's mean current over the last minute, with hysteresis against the last result.
+ * A polling round over many packs takes ~10 s and the inverter's current swings by a few amperes between
+ * rounds, so single readings made the notes flicker. Waits until every pack has answered once.
+ */
+function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairCheck[] {
+  const samples = useRef(new Map<number, { t: number; i: number }[]>());
+  const last = useRef<PairCheck[]>([]);
+  const seen = useRef("");
+  const now = Date.now();
+  for (const p of Object.values(packs)) {
+    if (!p.telemetry || !p.updated) continue;
+    const s = samples.current.get(p.address) ?? [];
+    if (s[s.length - 1]?.t !== p.updated) s.push({ t: p.updated, i: effectiveCurrent(p.telemetry) });
+    samples.current.set(p.address, s.filter((x) => now - x.t <= PAIR_WINDOW_MS));
+  }
+  if (!Object.values(packs).every((p) => p.telemetry)) return [];
+  // recompute only when new data arrived, so re-renders do not step the hysteresis
+  const key = Object.values(packs).map((p) => p.updated).join();
+  if (key !== seen.current) {
+    seen.current = key;
+    last.current = checkPairs(pairs, (a) => windowMean(samples.current.get(a) ?? [], now, PAIR_WINDOW_MS), last.current);
+  }
+  return last.current;
 }
 
 /** Two rows joined by a bar on the left, with the pair's total current below. */
