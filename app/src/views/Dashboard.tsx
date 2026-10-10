@@ -48,6 +48,8 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const ambHi = extreme((p) => [p.telemetry!.ambient_temperature], true);
   const mosHi = extreme((p) => [p.telemetry!.power_temperature], true);
   const packNo = (a: number) => String(a).padStart(2, "0");
+  // cells in series per pack, to show the voltage limits per cell
+  const series = live[0]?.telemetry?.cell_voltages.length ?? 0;
   const balancingPacks = list.filter((p) => (p.status?.balancing ?? 0) !== 0).length;
 
   return (
@@ -70,9 +72,15 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
           {s ? (
             <>
               <Stat icon={ArrowUpToLine} label={t("dash.chargeLimit")} help="value.charge_limits" value={s.charge_allowed ? fmt(s.charge_current_limit, 0, "A") : t("dash.blocked")}
-                tone={s.charge_allowed ? undefined : "text-alarm"} note={t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })} />
+                tone={s.charge_allowed ? undefined : "text-alarm"} note={<>
+                  <span className="block">{t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })}</span>
+                  {series > 0 && <span className="block">{t("dash.perCellMax", { v: fmt(s.charge_voltage_limit / series, 3, "V") })}</span>}
+                </>} />
               <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value={s.discharge_allowed ? fmt(s.discharge_current_limit, 0, "A") : t("dash.blocked")}
-                tone={s.discharge_allowed ? undefined : "text-alarm"} note={t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })} />
+                tone={s.discharge_allowed ? undefined : "text-alarm"} note={<>
+                  <span className="block">{t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })}</span>
+                  {series > 0 && <span className="block">{t("dash.perCellMin", { v: fmt(s.discharge_voltage_limit / series, 3, "V") })}</span>}
+                </>} />
             </>
           ) : <><div /><div /></>}
           <Stat icon={MoveVertical} label={t("dash.cellRange")} help="value.bank_cell_delta"
