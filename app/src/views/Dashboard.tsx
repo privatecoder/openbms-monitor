@@ -97,16 +97,18 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
             <>
               <Stat icon={ArrowUpToLine} label={t("dash.chargeLimit")} help="value.charge_limits" value={s.charge_allowed ? fmt(s.charge_current_limit, 0, "A") : t("dash.blocked")}
                 tone={s.charge_allowed ? undefined : "text-alarm"} note={<>
-                  <span className="block">{t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })}</span>
-                  {series > 0 && <span className="block">{t("dash.perCellMax", { v: fmt(s.charge_voltage_limit / series, 3, "V") })}</span>}
+                  <span className="block whitespace-nowrap">{series > 0
+                    ? t("dash.maxVCell", { v: fmt(s.charge_voltage_limit, 1, "V"), c: fmt(s.charge_voltage_limit / series, 3, "V") })
+                    : t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })}</span>
                   {cellAllowed !== undefined && (
                     <span className={cn("block whitespace-nowrap", s.charge_allowed && s.charge_current_limit > cellAllowed + 0.5 && "text-alarm")} title={t("dash.cellsAllowHint")}>{t("dash.cellsAllow", { a: fmt(cellAllowed, 0, "A") })}</span>
                   )}
                 </>} />
               <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value={s.discharge_allowed ? fmt(s.discharge_current_limit, 0, "A") : t("dash.blocked")}
                 tone={s.discharge_allowed ? undefined : "text-alarm"} note={<>
-                  <span className="block">{t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })}</span>
-                  {series > 0 && <span className="block">{t("dash.perCellMin", { v: fmt(s.discharge_voltage_limit / series, 3, "V") })}</span>}
+                  <span className="block whitespace-nowrap">{series > 0
+                    ? t("dash.minVCell", { v: fmt(s.discharge_voltage_limit, 1, "V"), c: fmt(s.discharge_voltage_limit / series, 3, "V") })
+                    : t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })}</span>
                   {cellAllowedDischarge !== undefined && (
                     <span className={cn("block whitespace-nowrap", s.discharge_allowed && s.discharge_current_limit > cellAllowedDischarge + 0.5 && "text-alarm")} title={t("dash.cellsAllowDischargeHint")}>{t("dash.cellsAllow", { a: fmt(cellAllowedDischarge, 0, "A") })}</span>
                   )}
