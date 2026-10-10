@@ -47,7 +47,7 @@ export default function App() {
           ) : view === "diag" ? (
             <Diagnosis packs={live.packs} site={site} />
           ) : current ? (
-            <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} />
+            <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} site={site} packs={live.packs} />
           ) : (
             <Dashboard packs={live.packs} system={live.system} site={site} onOpen={setPack} />
           )}

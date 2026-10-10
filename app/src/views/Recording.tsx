@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Circle, FolderOpen, Minus, Square } from "lucide-react";
+import { Circle, FolderOpen, Square } from "lucide-react";
 import { api, type RecordOptions, type RecordingStatus } from "../api";
 import { Sheet, SheetContent } from "../components/ui/sheet";
 import { Button } from "../components/ui/button";
+import { PackPicker, Segmented, Switch, packSections } from "../components/PackPicker";
 import { useGroups } from "../groups";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 
 const INTERVALS = [0, 60, 300] as const;
 const OPTIONS_KEY = "recording.options";
-const no = (a: number) => String(a).padStart(2, "0");
 
 /** Backend recording state, refreshed every second while the app is open. */
 export function useRecording() {
@@ -114,12 +114,7 @@ function RecordingSheet({ open, onOpenChange, rec, site, packs, systemAvailable,
   };
   const fileName = s?.path?.split(/[\\/]/).pop();
 
-  // groups as shown on the dashboard, plus everything not in a group
-  const grouped = groups.flatMap((g) => g.packs.filter((a) => packs.includes(a)));
-  const sections = [
-    ...groups.map((g) => ({ name: g.name, packs: g.packs.filter((a) => packs.includes(a)) })).filter((g) => g.packs.length),
-    ...(packs.some((a) => !grouped.includes(a)) ? [{ name: groups.length ? t("rec.ungrouped") : t("rec.packs"), packs: packs.filter((a) => !grouped.includes(a)) }] : []),
-  ];
+  const sections = packSections(groups, packs, t("rec.ungrouped"), t("rec.packs"));
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -161,35 +156,7 @@ function RecordingSheet({ open, onOpenChange, rec, site, packs, systemAvailable,
                 <Segmented value={all ? "all" : "pick"} onChange={(v) => update({ ...opts, packs: v === "all" ? [] : [...packs] })}
                   items={[["all", t("rec.allPacks")], ["pick", t("rec.pick")]]} />
               </div>
-              {!all && (
-                <div className="space-y-2">
-                  {sections.map((g) => {
-                    const on = g.packs.filter((a) => chosen.includes(a)).length;
-                    const state = on === 0 ? "none" : on === g.packs.length ? "all" : "some";
-                    return (
-                      <div key={g.name} className="rounded-md border border-line p-3">
-                        <button type="button" onClick={() => toggle(g.packs, state !== "all")} className="flex w-full items-center gap-2.5 text-left text-sm">
-                          <Tick state={state} />
-                          <span className="font-medium">{g.name}</span>
-                          <span className="ml-auto text-muted tabular-nums">{t("rec.ofCount", { a: on, b: g.packs.length })}</span>
-                        </button>
-                        <div className="mt-2.5 flex flex-wrap gap-1.5 pl-7">
-                          {g.packs.map((a) => {
-                            const sel = chosen.includes(a);
-                            return (
-                              <button type="button" key={a} onClick={() => toggle([a], !sel)} aria-pressed={sel}
-                                className={cn("h-8 min-w-11 rounded-md border px-2 font-display text-sm tabular-nums transition-colors",
-                                  sel ? "border-ink bg-ink text-surface" : "border-line text-muted hover:border-ink/40 hover:text-ink")}>
-                                {no(a)}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              {!all && <PackPicker sections={sections} chosen={chosen} onToggle={toggle} count={(a, b) => t("rec.ofCount", { a, b })} />}
               <label className={cn("flex items-start gap-3 rounded-md border border-line p-3 text-sm", !systemAvailable && "opacity-50")}>
                 <Switch checked={opts.system && systemAvailable} disabled={!systemAvailable} onChange={(v) => update({ ...opts, system: v })} />
                 <span>
@@ -214,37 +181,5 @@ function RecordingSheet({ open, onOpenChange, rec, site, packs, systemAvailable,
         </div>
       </SheetContent>
     </Sheet>
-  );
-}
-
-function Segmented({ value, onChange, items }: { value: string; onChange: (v: string) => void; items: [string, string][] }) {
-  return (
-    <div role="radiogroup" className="inline-flex rounded-md bg-sunken p-0.5">
-      {items.map(([v, label]) => (
-        <button type="button" role="radio" aria-checked={value === v} key={v} onClick={() => onChange(v)}
-          className={cn("rounded px-3 py-1 text-sm transition-colors", value === v ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function Tick({ state }: { state: "none" | "some" | "all" }) {
-  return (
-    <span className={cn("flex h-4.5 w-4.5 items-center justify-center rounded border",
-      state === "none" ? "border-line" : "border-ink bg-ink text-surface")} aria-hidden>
-      {state === "all" && <Check className="h-3 w-3" strokeWidth={3} />}
-      {state === "some" && <Minus className="h-3 w-3" strokeWidth={3} />}
-    </span>
-  );
-}
-
-function Switch({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
-  return (
-    <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
-      className={cn("relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors", checked ? "bg-ink" : "bg-line")}>
-      <span className={cn("absolute left-0 top-0.5 h-4 w-4 rounded-full bg-surface shadow transition-transform", checked ? "translate-x-4.5" : "translate-x-0.5")} />
-    </button>
   );
 }

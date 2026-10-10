@@ -17,7 +17,7 @@ Status: **pre-release (0.1)**. Monitoring of multi-pack banks is in daily use; t
 - **Resistance diagnosis:** zero at rest, then inner and outer resistance per pack under load against the busbar or the pair's load switch.
 - **Recording:** writes the polled data of all packs, a selection (groups, towers, single packs) and optionally the master's system values to a JSON Lines file; every poll, once a minute or every 5 minutes. Started and stopped in the UI.
 - **Parameters:** reads all parameters and function switches of the packs (RS485-1/2) or opens BatteryMonitor exports, and compares them side by side with the differences marked. Corrected names and help for every parameter and switch bit, detection of exports whose order does not fit, saving as BatteryMonitor XML. Read only.
-- **Cell database:** bundled data of common LiFePO4 cells plus own entries.
+- **Cell database and cell types:** bundled datasheet data of common LiFePO4 cells plus own entries. Packs get a cell type (all, by group or single, with cells in parallel); each pack then shows its live values against the datasheet (cut-off voltages, charge and discharge temperature, continuous and temperature-derated charge current), and the overview shows the charge current the cells allow next to the master's charge limit.
 
 ## The two buses
 

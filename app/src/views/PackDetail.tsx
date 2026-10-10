@@ -8,8 +8,9 @@ import { AlarmList, CellStrip, QUIET, Stat, StateMark, balancedCells, kw, median
 import { LiveIndicator, Tick } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
+import { DatasheetPanel } from "./DatasheetPanel";
 
-export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean; onBack: () => void }) {
+export function PackDetail({ p, multi, onBack, site, packs }: { p: PackEntry; multi: boolean; onBack: () => void; site: string; packs: Record<number, PackEntry> }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
@@ -98,6 +99,8 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
               <AlarmList alarms={st?.alarms ?? []} />
             </Panel>
           </div>
+
+          <DatasheetPanel p={p} site={site} packs={packs} />
         </>
       )}
     </div>
