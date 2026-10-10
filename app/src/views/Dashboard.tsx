@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpToLine, Cpu, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
 import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
@@ -10,6 +10,9 @@ import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
 import { PAIR_MIN_A, checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck } from "../pairs";
 import { GroupEditor } from "./GroupEditor";
+import { CellAssignSheet } from "./CellAssign";
+import { useCellDb } from "../cells/store";
+import { allowedChargeA, useAssignments } from "../cells/packCheck";
 import { cn, fmt } from "../lib/utils";
 
 // Pack (with messages), SOC, voltage, current, temperature, cycles, spread, deviation strip.
@@ -20,6 +23,9 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const { groups, save } = useGroups(site);
   const { pairs, save: savePairs } = usePairs(site);
   const [editing, setEditing] = useState(false);
+  const [cellTypes, setCellTypes] = useState(false);
+  const db = useCellDb();
+  const { assigned } = useAssignments(site);
   const list = Object.values(packs).sort((a, b) => a.address - b.address);
   const live = list.filter((p) => p.telemetry);
   const allCells = live.flatMap((p) => p.telemetry!.cell_voltages);
@@ -50,6 +56,19 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const packNo = (a: number) => String(a).padStart(2, "0");
   // cells in series per pack, to show the voltage limits per cell
   const series = live[0]?.telemetry?.cell_voltages.length ?? 0;
+  // charge current the cells of all packs allow at their temperatures; only when every pack has a cell type
+  const cellAllowed = (() => {
+    if (!live.length) return undefined;
+    let sum = 0;
+    for (const p of live) {
+      const a = assigned[p.address];
+      const cell = a && db.entries.find((e) => e.cell.id === a.cell)?.cell;
+      const x = cell ? allowedChargeA(cell, a.parallel, p.telemetry!.cell_temperatures, p.telemetry!.soc) : undefined;
+      if (x === undefined) return undefined;
+      sum += x;
+    }
+    return sum;
+  })();
   const balancingPacks = list.filter((p) => (p.status?.balancing ?? 0) !== 0).length;
 
   return (
@@ -75,6 +94,9 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
                 tone={s.charge_allowed ? undefined : "text-alarm"} note={<>
                   <span className="block">{t("dash.atMaxV", { v: fmt(s.charge_voltage_limit, 1, "V") })}</span>
                   {series > 0 && <span className="block">{t("dash.perCellMax", { v: fmt(s.charge_voltage_limit / series, 3, "V") })}</span>}
+                  {cellAllowed !== undefined && (
+                    <span className={cn("block", s.charge_allowed && s.charge_current_limit > cellAllowed + 0.5 && "text-alarm")}>{t("dash.cellsAllow", { a: fmt(cellAllowed, 0, "A") })}</span>
+                  )}
                 </>} />
               <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value={s.discharge_allowed ? fmt(s.discharge_current_limit, 0, "A") : t("dash.blocked")}
                 tone={s.discharge_allowed ? undefined : "text-alarm"} note={<>
@@ -108,10 +130,12 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <h2 className="font-display text-2xl font-semibold">{t("dash.rack")}</h2>
           <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" onClick={() => setCellTypes(true)}><Database className="h-4 w-4" />{t("ca.title")}</Button>
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
         </div>
         <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} pairs={validPairs(pairs, list.map((p) => p.address))} />
+        <CellAssignSheet open={cellTypes} onOpenChange={setCellTypes} site={site} packs={packs} />
         <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} pairs={pairs} onSavePairs={savePairs} />
       </section>
     </div>
