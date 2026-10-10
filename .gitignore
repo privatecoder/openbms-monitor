@@ -5,3 +5,4 @@ dist/
 *.log
 *.tsbuildinfo
 app/src-tauri/gen/
+.orch/

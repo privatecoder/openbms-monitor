@@ -163,11 +163,19 @@ fn save_user_cells(app: AppHandle, cells: serde_json::Value) -> Result<(), Strin
     if !cells.is_array() {
         return Err("expected an array of cells".into());
     }
+    // one write at a time, each through its own temporary file, renamed into place, so neither a
+    // crash nor two overlapping saves can leave a half-written or mixed database
+    static WRITE: Mutex<()> = Mutex::new(());
+    let _guard = WRITE.lock().map_err(|e| e.to_string())?;
     let path = user_cells_path(&app)?;
-    // write to a temporary file first so a crash never leaves a half-written database
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&cells).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let tmp = path.with_extension(format!("json.{}.{nanos}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(&cells).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

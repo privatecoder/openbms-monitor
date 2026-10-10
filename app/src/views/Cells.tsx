@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Copy, Download, Pencil, Plus, RotateCcw, Search, Trash2, Upload } from "lucide-react";
-import { useCellDb, type DbEntry, type Origin } from "../cells/store";
+import { useCellDb, type DbEntry, type ImportPlan, type Origin } from "../cells/store";
 import { CellEditor, FIELDS } from "../cells/CellEditor";
 import { DeratingTable } from "../cells/DeratingTable";
 import { missingRequired, toAmps } from "../cells/rules";
@@ -39,7 +39,8 @@ export function Cells() {
       (filter === "all" || (filter === "bundled" ? e.origin !== "own" : e.origin !== "bundled")) &&
       (!q || `${name(e.cell)} ${e.cell.capacity?.nominal_ah ?? ""}ah ${e.cell.id}`.toLowerCase().includes(q)));
   }, [db.entries, query, filter]);
-  const current = db.entries.find((e) => e.cell.id === selected) ?? list[0];
+  // the detail always shows a visible row, so filter and search never leave a hidden cell on screen
+  const current = list.find((e) => e.cell.id === selected) ?? list[0];
 
   return (
     <div className="view-in mx-auto flex h-full max-w-6xl flex-col gap-5">
@@ -49,8 +50,8 @@ export function Cells() {
           <p className="mt-1 text-muted">{t("cells.count", { total: db.entries.length, mine: db.user.length })}</p>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" onClick={() => setEditing({ cell: blankCell(), isNew: true })}><Plus className="h-4 w-4" />{t("cells.new")}</Button>
-          <Button size="sm" variant="ghost" onClick={() => setTransfer("import")}><Upload className="h-4 w-4" />{t("cells.import")}</Button>
+          <Button size="sm" disabled={!db.ready} onClick={() => setEditing({ cell: blankCell(), isNew: true })}><Plus className="h-4 w-4" />{t("cells.new")}</Button>
+          <Button size="sm" variant="ghost" disabled={!db.ready} onClick={() => setTransfer("import")}><Upload className="h-4 w-4" />{t("cells.import")}</Button>
           <Button size="sm" variant="ghost" onClick={() => setTransfer("export")}><Download className="h-4 w-4" />{t("cells.export")}</Button>
         </div>
       </header>
@@ -92,11 +93,11 @@ export function Cells() {
 
         <div className="min-h-0 overflow-y-auto">
           {current ? (
-            <Detail entry={current}
+            <Detail entry={current} ready={db.ready}
               onEdit={() => setEditing({ cell: current.cell, isNew: false })}
               onDuplicate={() => setEditing({ cell: { ...structuredClone(current.cell), id: `${current.cell.id}-copy`, entry_version: 1 }, isNew: true })}
-              onRestore={() => db.remove(current.cell.id)}
-              onDelete={() => { db.remove(current.cell.id); setSelected(null); }} />
+              onRestore={() => db.remove(current.cell.id).catch((e) => db.setError(String(e)))}
+              onDelete={() => db.remove(current.cell.id).then(() => setSelected(null), (e) => db.setError(String(e)))} />
           ) : <p className="text-muted">{t("cells.none")}</p>}
         </div>
       </div>
@@ -108,12 +109,12 @@ export function Cells() {
             await db.save(c); setSelected(c.id);
           }} />
       )}
-      <Transfer mode={transfer} onClose={() => setTransfer(null)} user={db.user} all={db.entries.map((e) => e.cell)} onImport={db.importCells} />
+      <Transfer mode={transfer} onClose={() => setTransfer(null)} user={db.user} all={db.entries.map((e) => e.cell)} plan={db.planImport} apply={db.applyImport} />
     </div>
   );
 }
 
-function Detail({ entry, onEdit, onDuplicate, onRestore, onDelete }: { entry: DbEntry; onEdit: () => void; onDuplicate: () => void; onRestore: () => void; onDelete: () => void }) {
+function Detail({ entry, ready, onEdit, onDuplicate, onRestore, onDelete }: { entry: DbEntry; ready: boolean; onEdit: () => void; onDuplicate: () => void; onRestore: () => void; onDelete: () => void }) {
   const { t } = useTranslation();
   const c = entry.cell;
   const missing = missingRequired(c, REQUIRED_FOR_CHECKS);
@@ -127,10 +128,10 @@ function Detail({ entry, onEdit, onDuplicate, onRestore, onDelete }: { entry: Db
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={onEdit}><Pencil className="h-4 w-4" />{entry.origin === "bundled" ? t("cells.adapt") : t("cells.edit")}</Button>
-          <Button size="sm" variant="ghost" onClick={onDuplicate}><Copy className="h-4 w-4" />{t("cells.duplicate")}</Button>
-          {entry.origin === "overridden" && <Button size="sm" variant="ghost" onClick={onRestore}><RotateCcw className="h-4 w-4" />{t("cells.restore")}</Button>}
-          {entry.origin === "own" && <Button size="sm" variant="ghost" onClick={onDelete}><Trash2 className="h-4 w-4" />{t("cells.delete")}</Button>}
+          <Button size="sm" disabled={!ready} onClick={onEdit}><Pencil className="h-4 w-4" />{entry.origin === "bundled" ? t("cells.adapt") : t("cells.edit")}</Button>
+          <Button size="sm" variant="ghost" disabled={!ready} onClick={onDuplicate}><Copy className="h-4 w-4" />{t("cells.duplicate")}</Button>
+          {entry.origin === "overridden" && <Button size="sm" variant="ghost" disabled={!ready} onClick={onRestore}><RotateCcw className="h-4 w-4" />{t("cells.restore")}</Button>}
+          {entry.origin === "own" && <Button size="sm" variant="ghost" disabled={!ready} onClick={onDelete}><Trash2 className="h-4 w-4" />{t("cells.delete")}</Button>}
         </div>
       </div>
 
@@ -190,25 +191,38 @@ function ProvenanceNote({ p }: { p?: { verified: boolean; note?: string } }) {
   return <p className="mt-2 text-xs text-muted">{p.verified ? `${t("cells.verified")}: ` : ""}{p.note}</p>;
 }
 
-/** Import (paste JSON) and export (copy JSON) without file dialogs. */
-function Transfer({ mode, onClose, user, all, onImport }: { mode: "import" | "export" | null; onClose: () => void; user: Cell[]; all: Cell[]; onImport: (c: Cell[]) => Promise<void> }) {
+/** Import (paste JSON, preview, then apply) and export (copy JSON) without file dialogs. */
+function Transfer({ mode, onClose, user, all, plan, apply }: {
+  mode: "import" | "export" | null; onClose: () => void; user: Cell[]; all: Cell[];
+  plan: (c: Cell[]) => ImportPlan; apply: (p: ImportPlan) => Promise<unknown>;
+}) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
   const [scope, setScope] = useState<"mine" | "all">("mine");
   const [msg, setMsg] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ImportPlan | null>(null);
   const exported = JSON.stringify(scope === "mine" ? user : all, null, 2);
-  const doImport = async () => {
+  const check = () => {
+    setPreview(null);
     let data: unknown;
     try { data = JSON.parse(text); } catch (e) { setMsg(String(e)); return; }
     const arr = Array.isArray(data) ? data : [data];
     const errs = dbErrors(arr);
     if (errs.length) { setMsg(`${t("cells.invalid")} ${errs.join("; ")}`); return; }
-    await onImport(arr as Cell[]);
-    setMsg(t("cells.imported", { count: arr.length }));
-    setText("");
+    setMsg(null);
+    setPreview(plan(arr as Cell[]));
   };
+  const doApply = async () => {
+    if (!preview) return;
+    try {
+      await apply(preview);
+      setMsg(t("cells.imported", { count: preview.create.length + preview.replace.length }));
+      setPreview(null); setText("");
+    } catch (e) { setMsg(String(e instanceof Error ? e.message : e)); }
+  };
+  const close = () => { onClose(); setMsg(null); setPreview(null); };
   return (
-    <Sheet open={mode !== null} onOpenChange={(o) => { if (!o) { onClose(); setMsg(null); } }}>
+    <Sheet open={mode !== null} onOpenChange={(o) => { if (!o) close(); }}>
       <SheetContent title={mode === "import" ? t("cells.importTitle") : t("cells.exportTitle")} className="w-[40rem]">
         {mode === "export" ? (
           <div className="space-y-3">
@@ -226,13 +240,27 @@ function Transfer({ mode, onClose, user, all, onImport }: { mode: "import" | "ex
         ) : (
           <div className="space-y-3">
             <p className="text-sm text-muted">{t("cells.importHint")}</p>
-            <textarea value={text} onChange={(e) => setText(e.target.value)} spellCheck={false}
-              className="h-[55vh] w-full rounded-md border border-line bg-surface p-3 font-mono text-xs text-ink outline-none focus:border-charge" />
-            <Button variant="primary" disabled={!text.trim()} onClick={doImport}><Upload className="h-4 w-4" />{t("cells.import")}</Button>
+            <textarea value={text} onChange={(e) => { setText(e.target.value); setPreview(null); }} spellCheck={false}
+              className="h-[45vh] w-full rounded-md border border-line bg-surface p-3 font-mono text-xs text-ink outline-none focus:border-charge" />
+            {!preview ? (
+              <Button variant="primary" disabled={!text.trim()} onClick={check}>{t("cells.checkImport")}</Button>
+            ) : (
+              <div className="space-y-2 rounded-md border border-line p-3 text-sm">
+                <PlanList label={t("cells.plan.create")} cells={preview.create} />
+                <PlanList label={t("cells.plan.replace")} cells={preview.replace} tone="text-discharge" />
+                <PlanList label={t("cells.plan.unchanged")} cells={preview.unchanged} tone="text-muted" />
+                <Button variant="primary" disabled={!preview.create.length && !preview.replace.length} onClick={doApply}><Upload className="h-4 w-4" />{t("cells.applyImport")}</Button>
+              </div>
+            )}
           </div>
         )}
         {msg && <p className="mt-3 text-sm text-muted">{msg}</p>}
       </SheetContent>
     </Sheet>
   );
+}
+
+function PlanList({ label, cells, tone }: { label: string; cells: Cell[]; tone?: string }) {
+  if (!cells.length) return null;
+  return <p className={tone}><span className="font-medium">{label} ({cells.length}):</span> {cells.map(name).join(", ")}</p>;
 }

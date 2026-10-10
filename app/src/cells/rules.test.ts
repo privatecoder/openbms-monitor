@@ -41,9 +41,9 @@ describe("allowedChargeRate (lower value between points)", () => {
 
 describe("effectiveChargeRange", () => {
   it("matches the documented ranges", () => {
-    expect(effectiveChargeRange(byId("eve-lf105-pbri-rev-d"))).toEqual({ min: 10, max: 55 });
-    expect(effectiveChargeRange(byId("eve-lf304-pbri-rev-e-2023"))).toEqual({ min: -5, max: 60 });
-    expect(effectiveChargeRange(byId("eve-lf280k-pbri-rev-c-v3"))).toEqual({ min: 0, max: 55 });
+    expect(effectiveChargeRange(byId("eve-lf105-pbri-rev-d"))).toMatchObject({ min: 10, max: 55 });
+    expect(effectiveChargeRange(byId("eve-lf304-pbri-rev-e-2023"))).toMatchObject({ min: -5, max: 60 });
+    expect(effectiveChargeRange(byId("eve-lf280k-pbri-rev-c-v3"))).toMatchObject({ min: 0, max: 55 });
   });
 });
 
@@ -55,5 +55,29 @@ describe("toAmps and required values", () => {
   });
   it("finds no missing required values in the bundled set", () => {
     for (const c of db) expect([c.id, missingRequired(c, REQUIRED_FOR_CHECKS)]).toEqual([c.id, []]);
+  });
+});
+
+const mk = (points: Cell["charge_derating"] extends infer D ? D extends { points: infer P } ? P : never : never, linear = false): Cell =>
+  ({ ...byId("eve-lf280k-pbri-rev-c-v3"), charge_derating: { basis: "C", points, ...(linear ? { interpolation: "linear" as const } : {}) } });
+
+describe("review edge cases", () => {
+  it("keeps rows without SOC bounds for every SOC (lower value wins)", () => {
+    const c = mk([{ temp_c: 25, value: 0.1 }, { temp_c: 25, soc_min_pct: 0, soc_max_pct: 50, value: 0.5 }]);
+    expect(allowedChargeRate(c, 25, 25)).toBe(0.1);
+    expect(allowedChargeRate(c, 25, 75)).toBe(0.1);
+  });
+  it("interpolates linear tables without SOC columns when SOC is known", () => {
+    const c = mk([{ temp_c: 0, value: 0.2 }, { temp_c: 10, value: 0.8 }], true);
+    expect(allowedChargeRate(c, 5, 50)).toBeCloseTo(0.5);
+    expect(effectiveChargeRange(c)).toMatchObject({ min: 0, max: 10 });
+  });
+  it("honours temperature bands in linear tables", () => {
+    expect(allowedChargeRate(mk([{ temp_min_c: 0, temp_max_c: 10, value: 0.4 }], true), 5, 50)).toBe(0.4);
+  });
+  it("finds narrow bands and open ends", () => {
+    expect(effectiveChargeRange(mk([{ temp_min_c: 0.1, temp_max_c: 0.2, value: 0.3 }]))).toEqual({ min: 0.1, max: 0.2, openLow: false, openHigh: false });
+    expect(effectiveChargeRange(mk([{ temp_c: 0, soc_min_pct: 10.2, soc_max_pct: 10.8, value: 0.3 }]))).toMatchObject({ min: 0, max: 0 });
+    expect(effectiveChargeRange(mk([{ temp_max_c: 0, value: 0 }, { temp_min_c: 0, value: 0.5 }]))).toMatchObject({ min: 0, openHigh: true });
   });
 });

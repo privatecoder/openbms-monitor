@@ -4,6 +4,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Sheet, SheetContent } from "../components/ui/sheet";
 import { Button } from "../components/ui/button";
 import { cellErrors } from "./validate";
+import { unverifyChanged } from "./json";
 import type { Basis, Cell, DeratingPoint, Provenance } from "./types";
 import { cn } from "../lib/utils";
 
@@ -38,6 +39,7 @@ function set(o: Record<string, unknown>, path: string, value: unknown) {
   if (keys.length === 2 && Object.keys(o[keys[0]] as object).length === 0) delete o[keys[0]];
 }
 const today = () => new Date().toISOString().slice(0, 10);
+
 const input = "h-8 w-full rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge";
 
 export function CellEditor({ open, onOpenChange, initial, isNew, onSave }: {
@@ -65,7 +67,8 @@ export function CellEditor({ open, onOpenChange, initial, isNew, onSave }: {
   const save = async () => {
     const c = mode === "json" ? fromJson() : draft;
     if (!c) return;
-    const next = { ...c, updated: today(), entry_version: isNew ? c.entry_version : (initial.entry_version ?? 0) + 1 };
+    if (!isNew && c.id !== initial.id) { setErrors([t("cells.idFixed")]); return; }
+    const next = unverifyChanged({ ...c, updated: today(), entry_version: isNew ? c.entry_version : (initial.entry_version ?? 0) + 1 }, initial);
     const errs = cellErrors(next);
     if (errs.length) { setErrors(errs); return; }
     try { await onSave(next); } catch (e) { setErrors([String(e instanceof Error ? e.message : e)]); return; }
