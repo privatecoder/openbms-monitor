@@ -60,8 +60,9 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   // cells in series per pack, to show the voltage limits per cell
   const series = live[0]?.telemetry?.cell_voltages.length ?? 0;
   // charge and discharge current the cells of all packs allow at their temperatures; only when every pack has a cell type
+  // waits for every found pack: right after connecting, a partial sum would look like a violation
   const cellSum = (f: (cell: Cell, parallel: number, tm: Telemetry) => number | undefined) => {
-    if (!live.length) return undefined;
+    if (!live.length || live.length < list.length) return undefined;
     let sum = 0;
     for (const p of live) {
       const a = assigned[p.address];
