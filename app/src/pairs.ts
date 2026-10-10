@@ -120,7 +120,7 @@ export function checkPairs(
     const below = totals.length > 1 && Math.abs(total) < m * (was?.lowTotal ? 0.9 : 0.85);
     // a strong partner at or above an average pack's share means the missing current is the weak pack's alone
     // also when the smaller share is only equalizing: the partner then still carries a normal share
-    const lowTotal = below && !(small !== undefined && hi >= (m / 2) * 0.95);
+    const lowTotal = below && !(small !== undefined && hi >= (m / 2) * 0.85);
     return { pair, total, share, judged: true, lowTotal, weak, equalizing, gap, gapHigh };
   });
 }
