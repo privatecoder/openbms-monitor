@@ -10,7 +10,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     conn: Arc<Mutex<Option<Connection>>>,
     bus: Mutex<Option<Bus>>,
-    polling: Arc<AtomicBool>,
+    /// Run flag of the current polling thread; each start gets a fresh one, so an old thread cannot stop a new one.
+    polling: Mutex<Arc<AtomicBool>>,
 }
 
 #[derive(Deserialize)]
@@ -72,7 +73,9 @@ fn list_ports() -> Vec<String> {
 
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<(), String> {
-    state.polling.store(false, Ordering::SeqCst);
+    if let Ok(p) = state.polling.lock() {
+        p.store(false, Ordering::SeqCst);
+    }
     let (ep, bus) = match endpoint {
         EndpointArg::Serial { path, bus } => (Endpoint::Serial { path, baud: Bus::from(bus).baud() }, Bus::from(bus)),
         EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr }, Bus::from(bus)),
@@ -85,7 +88,9 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
 
 #[tauri::command]
 fn disconnect(state: State<AppState>) -> Result<(), String> {
-    state.polling.store(false, Ordering::SeqCst);
+    if let Ok(p) = state.polling.lock() {
+        p.store(false, Ordering::SeqCst);
+    }
     *lock(&state.conn)? = None;
     Ok(())
 }
@@ -104,10 +109,14 @@ async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry,
 #[tauri::command]
 fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, interval_ms: u64) -> Result<(), String> {
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
-    state.polling.store(false, Ordering::SeqCst);
+    let running = Arc::new(AtomicBool::new(true));
+    {
+        // stop the previous thread and install the new flag
+        let mut current = state.polling.lock().map_err(|e| e.to_string())?;
+        current.store(false, Ordering::SeqCst);
+        *current = running.clone();
+    }
     std::thread::sleep(Duration::from_millis(50));
-    let running = state.polling.clone();
-    running.store(true, Ordering::SeqCst);
     let conn = state.conn.clone();
     // Diagnostics: with OPENBMS_POLL_LOG=<file>, every event is appended there as one JSON line.
     let mut log = std::env::var_os("OPENBMS_POLL_LOG")
@@ -126,7 +135,14 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 let telemetry = with_conn(&conn, |c| c.telemetry(address));
                 let status = with_conn(&conn, |c| c.status(address));
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
-                if error.as_deref() == Some("not connected") {
+                // A dead link (gateway closed the socket, broken pipe) does not heal by retrying: drop it and
+                // stop polling. The UI then sees no fresh data and reconnects after its timeout.
+                if error.as_deref().is_some_and(|e| e == "not connected" || e.starts_with("I/O") || e.starts_with("connection closed")) {
+                    if running.load(Ordering::SeqCst) {
+                        if let Ok(mut c) = conn.lock() {
+                            *c = None;
+                        }
+                    }
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
@@ -147,7 +163,9 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
 
 #[tauri::command]
 fn stop_polling(state: State<AppState>) {
-    state.polling.store(false, Ordering::SeqCst);
+    if let Ok(p) = state.polling.lock() {
+        p.store(false, Ordering::SeqCst);
+    }
 }
 
 /// User cell entries (own and overridden models) as one JSON array in the app data directory.
