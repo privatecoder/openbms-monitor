@@ -27,6 +27,8 @@ export default function App() {
       <div className="flex h-full bg-bg text-ink">
         <Sidebar
           connected={connected}
+          site={site}
+          packs={Object.keys(live.packs).map(Number)}
           lastUpdate={Math.max(0, ...Object.values(live.packs).map((p) => p.updated))}
           view={view}
           setView={(v) => { setView(v); setPack(null); }}

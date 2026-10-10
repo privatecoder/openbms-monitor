@@ -6,11 +6,14 @@ import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
+import { RecordingEntry } from "./Recording";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, view, setView }: {
+export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, view, setView, site, packs }: {
   connected: boolean;
+  site: string;
+  packs: number[];
   lastUpdate: number;
   onConnected: (found: [number, DeviceInfo][], site: string) => void;
   onDisconnected: () => void;
@@ -132,6 +135,9 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
         {msg && <p className={cn("text-sm", lost ? "text-alarm" : "text-muted")}>{msg}</p>}
         {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
         {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
+      </div>
+      <div className="mt-5 border-t border-line px-3 pt-3">
+        <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} />
       </div>
       <div className="mt-auto flex items-center gap-1 border-t border-line px-3 py-3">
         <Button variant="ghost" size="sm" onClick={() => i18n.changeLanguage(i18n.language === "de" ? "en" : "de")}>

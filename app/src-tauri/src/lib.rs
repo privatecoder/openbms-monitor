@@ -6,12 +6,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod recorder;
+use recorder::{RecordOptions, RecordingStatus, SharedRecorder};
+
 #[derive(Default)]
 struct AppState {
     conn: Arc<Mutex<Option<Connection>>>,
     bus: Mutex<Option<Bus>>,
     /// Run flag of the current polling thread; each start gets a fresh one, so an old thread cannot stop a new one.
     polling: Mutex<Arc<AtomicBool>>,
+    recorder: SharedRecorder,
 }
 
 #[derive(Deserialize)]
@@ -118,15 +122,17 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     }
     std::thread::sleep(Duration::from_millis(50));
     let conn = state.conn.clone();
-    // Diagnostics: with OPENBMS_POLL_LOG=<file>, every event is appended there as one JSON line.
-    let mut log = std::env::var_os("OPENBMS_POLL_LOG")
-        .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    let rec = state.recorder.clone();
     std::thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             let started = std::time::Instant::now();
             if bus == Bus::CanSocketBus {
                 let r = with_conn(&conn, |c| c.system_values());
-                let _ = app.emit("system", SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() });
+                let update = SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() };
+                if let Ok(mut rec) = rec.lock() {
+                    rec.system(&update);
+                }
+                let _ = app.emit("system", update);
             }
             for &address in &addresses {
                 if !running.load(Ordering::SeqCst) {
@@ -147,10 +153,8 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     break;
                 }
                 let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error };
-                if let Some(f) = log.as_mut() {
-                    use std::io::Write;
-                    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
-                    let _ = writeln!(f, "{{\"t\":{ms},\"pack\":{}}}", serde_json::to_string(&update).unwrap_or_default());
+                if let Ok(mut rec) = rec.lock() {
+                    rec.pack(address, &update);
                 }
                 let _ = app.emit("pack", update);
             }
@@ -205,11 +209,56 @@ fn save_user_cells(app: AppHandle, cells: serde_json::Value) -> Result<(), Strin
     Ok(())
 }
 
+fn recordings_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings"))
+}
+
+/// Start recording the polled data to a new file (see recorder.rs for the format).
+#[tauri::command]
+fn start_recording(app: AppHandle, state: State<AppState>, options: RecordOptions) -> Result<RecordingStatus, String> {
+    let bus = match *state.bus.lock().map_err(|e| e.to_string())? {
+        Some(Bus::CanSocketBus) => "can",
+        Some(Bus::PackBus) => "pack",
+        None => "",
+    };
+    let dir = recordings_dir(&app)?;
+    state.recorder.lock().map_err(|e| e.to_string())?.start(&dir, options, bus)
+}
+
+#[tauri::command]
+fn stop_recording(state: State<AppState>) -> Result<RecordingStatus, String> {
+    Ok(state.recorder.lock().map_err(|e| e.to_string())?.stop())
+}
+
+#[tauri::command]
+fn recording_status(state: State<AppState>) -> Result<RecordingStatus, String> {
+    Ok(state.recorder.lock().map_err(|e| e.to_string())?.status())
+}
+
+/// Show a recording (or the recordings folder) in the file manager.
+#[tauri::command]
+fn reveal_recording(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    let dir = recordings_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // only paths inside the recordings folder, so the UI cannot open arbitrary files
+    let target = match path.map(std::path::PathBuf::from) {
+        Some(p) if p.starts_with(&dir) && p.exists() => p,
+        _ => dir.clone(),
+    };
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg("-R").arg(&target).spawn();
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("explorer").arg(format!("/select,{}", target.display())).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let r = std::process::Command::new("xdg-open").arg(if target.is_dir() { &target } else { &dir }).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, start_recording, stop_recording, recording_status, reveal_recording])
         .run(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor");
 }

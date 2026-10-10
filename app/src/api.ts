@@ -60,6 +60,12 @@ export interface SystemValues {
 }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
+/** packs: addresses to record, empty = all; interval_s: minimum seconds between two lines per pack (0 = every poll). */
+export interface RecordOptions { packs: number[]; system: boolean; interval_s: number }
+export interface RecordingStatus {
+  active: boolean; path: string | null; started_ms: number; lines: number; bytes: number;
+  options: RecordOptions | null; error: string | null;
+}
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -74,6 +80,10 @@ const tauriApi = {
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
+  startRecording: (options: RecordOptions) => invoke<RecordingStatus>("start_recording", { options }),
+  stopRecording: () => invoke<RecordingStatus>("stop_recording"),
+  recordingStatus: () => invoke<RecordingStatus>("recording_status"),
+  revealRecording: (path: string | null) => invoke<void>("reveal_recording", { path }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -115,8 +125,24 @@ function demoApi(): typeof tauriApi {
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),
     saveUserCells: async (cells) => { localStorage.setItem("cells.user", JSON.stringify(cells)); },
+    // preview: a simulated recording that only counts, nothing is written
+    startRecording: async (options) => {
+      rec = { active: true, path: "~/Library/Application Support/OpenBMS Monitor/recordings/openbms_preview.jsonl", started_ms: Date.now(), lines: 1, bytes: 90, options, error: null };
+      return rec;
+    },
+    stopRecording: async () => { rec = { ...rec, active: false }; return rec; },
+    recordingStatus: async () => {
+      if (rec.active) {
+        const n = rec.options?.packs.length || 12, every = Math.max(10, rec.options?.interval_s ?? 0);
+        const lines = 1 + Math.floor(((Date.now() - rec.started_ms) / 1000 / every) * n);
+        rec = { ...rec, lines, bytes: lines * 1600 };
+      }
+      return rec;
+    },
+    revealRecording: async () => {},
   };
 }
+let rec: RecordingStatus = { active: false, path: null, started_ms: 0, lines: 0, bytes: 0, options: null, error: null };
 
 /** Best available current: regular value, or the 1 mA resolution idle current while idle. */
 export const effectiveCurrent = (t: Telemetry) => (t.current !== 0 ? t.current : (t.idle_current_ma ?? 0) / 1000);
