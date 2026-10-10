@@ -1,10 +1,10 @@
 ---
 title: Aufzeichnung
-short: Schreibt die abgefragten Werte in eine Datei, ähnlich dem Debug-Log in Home Assistant.
-related: topic.connection
+short: Speichert die abgefragten Werte in der Verlaufs-Datenbank der App, solange sie verbunden ist. Standardmäßig aus.
+related: topic.history, topic.connection
 ---
-- **Was:** alle Packs oder eine Auswahl nach Gruppen bzw. einzelnen Packs; dazu wahlweise die Systemwerte des Masters (Modbus, nur über die CAN-Buchse).
-- **Wie oft:** jede Abfrage (Fehlersuche, z. B. Stromaufteilung in Paaren, Ausgleichsströme) oder 1× pro Minute bzw. alle 5 Minuten (Langzeitbeobachtung). Die App schätzt die Dateigröße vorab.
-- **Datei:** im Ordner `recordings` der App-Daten, Name mit Startzeit (UTC). Format JSON Lines: eine Zeile je Antwort, `{"t": Unix-ms, "pack": {…}}` bzw. `"system"`; die erste Zeile beschreibt die Einstellungen. Fehler (keine Antwort) werden mitgeschrieben.
-- Die Aufzeichnung läuft weiter, wenn die Verbindung abbricht und die App neu verbindet, und endet mit „Beenden“ oder beim Schließen der App.
-- Zum Ändern der Auswahl die Aufzeichnung beenden und neu starten (neue Datei).
+- **Aufzeichnen, solange verbunden:** Einmal eingeschaltet, bleibt die Einstellung über Neustarts erhalten. Die App schreibt dann bei jeder Verbindung mit, ohne dass du etwas starten musst.
+- **Was:** alle Packs oder eine Auswahl, dazu auf der CAN-Buchse die Systemwerte des Masters. Meldungen werden immer mit Beginn und Ende gespeichert.
+- **Wie oft:** jede Abfrage (für Fehlersuche, etwa 11 MB pro Tag bei 12 Packs), einmal pro Minute oder alle 5 Minuten.
+- **Aufbewahren:** Jede Abfrage bleibt zunächst erhalten (Standard 30 Tage). Danach fasst die App sie zu einem Wert je Minute zusammen: Mittelwert für Strom, SOC und Spannung, der Extremwert für höchste und niedrigste Zelle und die Temperaturen, die niedrigere Grenze bei Lade- und Entladegrenze. Minutenwerte bleiben für immer oder werden nach der gewählten Zeit gelöscht.
+- **Wo:** eine SQLite-Datei `history.sqlite` im Datenordner der App. Ansehen, exportieren und ältere Aufzeichnungen (.jsonl) importieren unter **Verlauf**.
