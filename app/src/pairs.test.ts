@@ -40,7 +40,7 @@ describe("pairs", () => {
     const I: Record<number, number> = { 0: -19.7, 1: -6.3, 2: -21, 3: -20, 4: -21, 5: -22, 6: -21, 7: -21, 8: -21, 9: -22, 10: -22, 11: -23 };
     const soc: Record<number, number> = { 0: 74.4, 1: 67.6 };
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a], undefined, (a) => soc[a] ?? 79);
-    expect(res[0]).toMatchObject({ weak: undefined, equalizing: { pack: 1, soc: [74.4, 67.6] } });
+    expect(res[0]).toMatchObject({ weak: undefined, lowTotal: false, equalizing: { pack: 1, soc: [74.4, 67.6] } });
     // charging, the emptier pack taking less is not explained by equalizing
     const C = Object.fromEntries(Object.entries(I).map(([k, v]) => [k, -v]));
     expect(checkPairs(neighbourPairs(Object.keys(C).map(Number)), (a) => C[Number(a)], undefined, (a) => soc[a] ?? 79)[0].weak).toBe(1);
@@ -50,5 +50,11 @@ describe("pairs", () => {
     const port = (gap: number) => (a: number) => (a === 0 ? 53.5 : 53.5 - gap);
     expect(checkPairs(pairs, () => 2, undefined, undefined, port(0.27))[0]).toMatchObject({ judged: false, gapHigh: true });
     expect(checkPairs(pairs, () => 2, undefined, undefined, port(0.02))[0].gapHigh).toBe(false);
+  });
+  it("no cable note for a pair whose low total is equalizing (2026-10-10 evening)", () => {
+    const I: Record<number, number> = { 0: -21.91, 1: -7.57, 2: -22.64, 3: -20.78, 4: -21.5, 5: -22, 6: -21.8, 7: -21.6, 8: -21.7, 9: -22.1, 10: -22, 11: -22.3 };
+    const soc: Record<number, number> = { 0: 71.7, 1: 67.9 };
+    const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a], undefined, (a) => soc[a] ?? 74);
+    expect(res[0]).toMatchObject({ lowTotal: false, weak: undefined, equalizing: { pack: 1 } });
   });
 });
