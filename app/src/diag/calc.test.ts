@@ -12,6 +12,11 @@ describe("resistance diagnosis", () => {
     expect(innerMilliohm({ current: -10, pack_voltage: 52.90, port_voltage: 52.90 }, off)).toBeCloseTo(2);
     expect(outerMilliohm({ current: -10, pack_voltage: 52.90, port_voltage: 52.90 }, off, 52.90)).toBeCloseTo(3);
   });
+  it("keeps the offsets per reference point", () => {
+    const sw = zeroOffset(rest, 53.03, "switch");
+    expect(outerMilliohm({ current: 10, pack_voltage: 53.10, port_voltage: 53.14 }, sw, 53.17, "switch")).toBeCloseTo(2);
+    expect(outerMilliohm({ current: 10, pack_voltage: 53.10, port_voltage: 53.14 }, sw, 53.20, "bus")).toBeUndefined();
+  });
   it("refuses small currents and missing busbar offsets", () => {
     expect(innerMilliohm({ current: 1, pack_voltage: 53, port_voltage: 53 }, off)).toBeUndefined();
     expect(outerMilliohm({ current: 10, pack_voltage: 53, port_voltage: 53 }, zeroOffset(rest), 53)).toBeUndefined();

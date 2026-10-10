@@ -14,11 +14,16 @@ export const MIN_CURRENT_A = 3;
 export const REST_CURRENT_A = 0.5;
 
 export interface Reading { current: number; pack_voltage: number; port_voltage: number }
-export interface Offset { inner: number; outer?: number }
+/**
+ * Where "outside" ends: the busbar (one value for all packs) or the pack-side input of the pair's
+ * load switch (one value per pair). The outer offset is kept per reference point.
+ */
+export type RefPoint = "bus" | "switch";
+export interface Offset { inner: number; outer?: Partial<Record<RefPoint, number>> }
 
-/** Offsets at rest: port − pack, and (if the busbar voltage is known) busbar − port. */
-export function zeroOffset(r: Reading, busRest?: number): Offset {
-  return { inner: r.port_voltage - r.pack_voltage, outer: busRest === undefined ? undefined : busRest - r.port_voltage };
+/** Offsets at rest: port − pack, and (if the reference voltage is known) reference − port. */
+export function zeroOffset(r: Reading, ref?: number, point: RefPoint = "bus"): Offset {
+  return { inner: r.port_voltage - r.pack_voltage, outer: ref === undefined ? undefined : { [point]: ref - r.port_voltage } };
 }
 
 /** Resistance inside the pack in mΩ, or undefined if the current is too small. */
@@ -27,10 +32,11 @@ export function innerMilliohm(r: Reading, off: Offset): number | undefined {
   return ((r.port_voltage - r.pack_voltage - off.inner) / r.current) * 1000;
 }
 
-/** Resistance outside the pack (to the busbar) in mΩ. */
-export function outerMilliohm(r: Reading, off: Offset, bus: number): number | undefined {
-  if (Math.abs(r.current) < MIN_CURRENT_A || off.outer === undefined) return undefined;
-  return ((bus - r.port_voltage - off.outer) / r.current) * 1000;
+/** Resistance outside the pack (to the reference point) in mΩ. */
+export function outerMilliohm(r: Reading, off: Offset, ref: number, point: RefPoint = "bus"): number | undefined {
+  const o = off.outer?.[point];
+  if (Math.abs(r.current) < MIN_CURRENT_A || o === undefined) return undefined;
+  return ((ref - r.port_voltage - o) / r.current) * 1000;
 }
 
 export const median = (xs: number[]) => {
