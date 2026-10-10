@@ -41,7 +41,7 @@ export default function App() {
           {view === "cells" ? (
             <Cells />
           ) : view === "params" ? (
-            <ParametersView connected={connected} bus={bus} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
+            <ParametersView connected={connected} bus={bus} site={site} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
           ) : view === "diag" ? (

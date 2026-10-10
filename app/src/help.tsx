@@ -34,6 +34,9 @@ export function useHelpEntry(id: string): Entry | undefined {
   return entries[i18n.language]?.[id] ?? entries.en?.[id];
 }
 
+/** Title of a help entry outside of components (e.g. for lists built in a loop). */
+export const helpTitle = (id: string, lang: string) => (entries[lang]?.[id] ?? entries.en?.[id])?.title ?? id;
+
 const HelpCtx = createContext<(id: string) => void>(() => {});
 export const useOpenHelp = () => useContext(HelpCtx);
 
