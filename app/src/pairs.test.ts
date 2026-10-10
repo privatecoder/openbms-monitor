@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkPairs, neighbourPairs, validPairs, windowMean } from "./pairs";
+import { checkPairs, gapTrend, neighbourPairs, validPairs, windowMean } from "./pairs";
 
 describe("pairs", () => {
   it("builds neighbour pairs and drops invalid ones", () => {
@@ -56,5 +56,22 @@ describe("pairs", () => {
     const soc: Record<number, number> = { 0: 71.7, 1: 67.9 };
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a], undefined, (a) => soc[a] ?? 74);
     expect(res[0]).toMatchObject({ lowTotal: false, weak: undefined, equalizing: { pack: 1 } });
+  });
+});
+
+describe("gapTrend", () => {
+  const at = (f: (i: number) => number) => Array.from({ length: 30 }, (_, k) => { const i = -25 + k * 2; return { i, g: f(i) }; });
+  it("calls a gap that stays the same over the current a measurement offset", () => {
+    const t = gapTrend(at((i) => 0.042 + (i % 3) * 0.001))!;
+    expect(t.kind).toBe("offset");
+    expect(t.offset).toBeCloseTo(0.042, 2);
+  });
+  it("calls a gap that grows with the current a resistance", () => {
+    const t = gapTrend(at((i) => 0.01 + i * 0.004))!;
+    expect(t.kind).toBe("resistance");
+    expect(t.milliohm).toBeCloseTo(4);
+  });
+  it("says nothing before the current has varied enough", () => {
+    expect(gapTrend(Array.from({ length: 30 }, (_, k) => ({ i: 5 + (k % 10), g: 0.04 })))).toBeUndefined();
   });
 });

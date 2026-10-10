@@ -10,7 +10,7 @@ import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
-import { PAIR_MIN_A, checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck } from "../pairs";
+import { PAIR_MIN_A, checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck, gapTrend } from "../pairs";
 import { GroupEditor } from "./GroupEditor";
 import { CellAssignSheet } from "./CellAssign";
 import { useCellDb } from "../cells/store";
@@ -256,6 +256,8 @@ function blocks(entries: PackEntry[], partner: Map<number, Pair>): { pair?: Pair
 }
 
 const PAIR_WINDOW_MS = 60_000;
+const TREND_EVERY_MS = 20_000;
+const TREND_KEEP_MS = 6 * 3_600_000;
 
 /**
  * Pair check on each pack's mean current over the last minute, with hysteresis against the last result.
@@ -267,6 +269,8 @@ function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairChe
   const ports = useRef(new Map<number, { t: number; i: number }[]>());
   const last = useRef<PairCheck[]>([]);
   const seen = useRef("");
+  // per pair: mean current per pack and output gap, every TREND_EVERY_MS, for the trend of the gap
+  const trend = useRef(new Map<number, { t: number; i: number; g: number }[]>());
   const now = Date.now();
   for (const p of Object.values(packs)) {
     if (!p.telemetry || !p.updated) continue;
@@ -282,8 +286,17 @@ function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairChe
   const key = Object.values(packs).map((p) => p.updated).join();
   if (key !== seen.current) {
     seen.current = key;
-    last.current = checkPairs(pairs, (a) => windowMean(samples.current.get(a) ?? [], now, PAIR_WINDOW_MS), last.current,
+    const checks = checkPairs(pairs, (a) => windowMean(samples.current.get(a) ?? [], now, PAIR_WINDOW_MS), last.current,
       (a) => packs[a]?.telemetry?.soc, (a) => windowMean(ports.current.get(a) ?? [], now, PAIR_WINDOW_MS));
+    last.current = checks.map((c) => {
+      if (c.gap === undefined) return c;
+      const list = (trend.current.get(c.pair.plus) ?? []).filter((x) => now - x.t <= TREND_KEEP_MS);
+      if (!list.length || now - list[list.length - 1].t >= TREND_EVERY_MS) list.push({ t: now, i: c.total / 2, g: c.gap });
+      trend.current.set(c.pair.plus, list);
+      const tr = gapTrend(list);
+      // a constant gap is one BMS measuring differently, not a resistance
+      return { ...c, trend: tr, gapHigh: c.gapHigh && tr?.kind !== "offset" };
+    });
   }
   return last.current;
 }
@@ -306,6 +319,8 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
         {check?.gap !== undefined && (
           <span className={check.gapHigh ? "text-alarm" : "text-muted"}>
             ; {t(check.gapHigh ? "pairs.gapHigh" : "pairs.gap", { v: fmt(Math.abs(check.gap) * 1000, 0, "mV") })}
+            {check.trend?.kind === "offset" && `, ${t("pairs.gapOffset")}`}
+            {check.trend?.kind === "resistance" && `, ${t("pairs.gapGrows", { r: fmt(Math.abs(check.trend.milliohm), 1, "mΩ") })}`}
           </span>
         )}
       </div>

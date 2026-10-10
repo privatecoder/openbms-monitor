@@ -56,6 +56,8 @@ export function usePairs(site: string) {
 export interface PairCheck {
   pair: Pair; total: number; share: number; judged: boolean; lowTotal: boolean; weak?: number;
   equalizing?: { pack: number; soc: [number, number] }; gap?: number; gapHigh?: boolean;
+  /** how the gap behaves over the current, once known (see gapTrend) */
+  trend?: ReturnType<typeof gapTrend>;
 }
 
 /**
@@ -123,6 +125,31 @@ export function checkPairs(
     const lowTotal = below && !(small !== undefined && hi >= (m / 2) * 0.85);
     return { pair, total, share, judged: true, lowTotal, weak, equalizing, gap, gapHigh };
   });
+}
+
+/** Current range (A, mean per pack of the pair) the trend needs before it says anything. */
+export const TREND_MIN_RANGE_A = 20;
+/** Change of the gap over that range (V) below which the gap counts as constant. */
+export const TREND_FLAT_V = 0.02;
+
+/**
+ * How a pair's output gap behaves over the current: a resistance in bridges or plugs makes it grow with
+ * the current (and turn round between charging and discharging), a voltage measurement offset of one BMS
+ * keeps it constant. Least-squares line gap = offset + slope × current over the samples (60 s means).
+ * Logged 2026-10-10, pair 04/05: 40–47 mV from −24 A to +35 A, i.e. an offset.
+ * undefined until the samples span TREND_MIN_RANGE_A.
+ */
+export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" | "resistance"; offset: number; milliohm: number } | undefined {
+  if (samples.length < 10) return undefined;
+  const is = samples.map((s) => s.i);
+  const range = Math.max(...is) - Math.min(...is);
+  if (range < TREND_MIN_RANGE_A) return undefined;
+  const n = samples.length;
+  const mi = is.reduce((a, b) => a + b, 0) / n, mg = samples.reduce((a, s) => a + s.g, 0) / n;
+  let sxy = 0, sxx = 0;
+  for (const s of samples) { sxy += (s.i - mi) * (s.g - mg); sxx += (s.i - mi) ** 2; }
+  const slope = sxx ? sxy / sxx : 0;
+  return { kind: Math.abs(slope) * range < TREND_FLAT_V ? "offset" : "resistance", offset: mg - slope * mi, milliohm: slope * 1000 };
 }
 
 /** Mean of each pack's current over the last `windowMs`, so the pair check follows the trend, not single polls. */
