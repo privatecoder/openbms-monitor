@@ -25,7 +25,8 @@
     "react-dom": "^19.3.0",
     "react-i18next": "^17.0.16",
     "react-markdown": "^10.1.0",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

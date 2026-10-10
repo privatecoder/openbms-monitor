@@ -7,6 +7,7 @@ import { PackDetail } from "./views/PackDetail";
 import { Cells } from "./views/Cells";
 import { Diagnosis } from "./views/Diagnosis";
 import { ParametersView } from "./views/Parameters";
+import { History } from "./views/History";
 import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { isDemo, type Bus } from "./api";
@@ -40,6 +41,8 @@ export default function App() {
         <main className="flex-1 overflow-y-auto px-10 py-10">
           {view === "cells" ? (
             <Cells />
+          ) : view === "history" ? (
+            <History />
           ) : view === "params" ? (
             <ParametersView connected={connected} bus={bus} site={site} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
           ) : !connected ? (

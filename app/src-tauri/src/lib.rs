@@ -245,6 +245,48 @@ fn recording_status(state: State<AppState>) -> Result<RecordingStatus, String> {
     Ok(state.recorder.lock().map_err(|e| e.to_string())?.status())
 }
 
+#[derive(Serialize)]
+struct RecordingFile {
+    name: String,
+    bytes: u64,
+    modified_ms: u64,
+}
+
+/// The recordings in the app's folder, newest first.
+#[tauri::command]
+fn list_recordings(app: AppHandle) -> Result<Vec<RecordingFile>, String> {
+    let dir = recordings_dir(&app)?;
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(vec![]) };
+    let mut out: Vec<RecordingFile> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let meta = e.metadata().ok()?;
+            (meta.is_file() && name.ends_with(".jsonl")).then(|| RecordingFile {
+                name,
+                bytes: meta.len(),
+                modified_ms: meta
+                    .modified()
+                    .ok()
+                    .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_millis() as u64),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    Ok(out)
+}
+
+/// The raw content of a recording in the app's folder, sent as bytes (no JSON encoding of a large string).
+#[tauri::command]
+fn read_recording(app: AppHandle, name: String) -> Result<tauri::ipc::Response, String> {
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
+        return Err(format!("invalid file name: {name}"));
+    }
+    let path = recordings_dir(&app)?.join(name);
+    std::fs::read(&path).map(tauri::ipc::Response::new).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 fn parameters_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("parameters"))
 }
@@ -296,7 +338,7 @@ fn reveal_parameters(app: AppHandle, path: Option<String>) -> Result<(), String>
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, start_recording, stop_recording, recording_status, reveal_recording, parameters, save_parameters, reveal_parameters])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, start_recording, stop_recording, recording_status, reveal_recording, list_recordings, read_recording, parameters, save_parameters, reveal_parameters])
         .run(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor");
 }
