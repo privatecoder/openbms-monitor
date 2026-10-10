@@ -33,6 +33,19 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const state: PackState = s ? packState(s.state) : current >= 1 ? "charging" : current <= -0.8 ? "discharging" : live.length ? "standby" : "unknown";
   const temps = live.flatMap((p) => p.telemetry!.cell_temperatures);
   const arranged = arrange(groups, list.map((p) => p.address), t("groups.unassigned"));
+  // Where the bank's extremes sit: from the master's system values, else from the packs themselves.
+  const extreme = (pick: (p: PackEntry) => number[], hi: boolean) => {
+    let best: { v: number; a: number } | undefined;
+    for (const p of live) for (const v of pick(p)) if (!best || (hi ? v > best.v : v < best.v)) best = { v, a: p.address };
+    return best;
+  };
+  const cellLo = s?.lowest_cell_voltage_pack != null ? { v: s.lowest_cell_voltage, a: s.lowest_cell_voltage_pack } : extreme((p) => p.telemetry!.cell_voltages, false);
+  const cellHi = s?.highest_cell_voltage_pack != null ? { v: s.highest_cell_voltage, a: s.highest_cell_voltage_pack } : extreme((p) => p.telemetry!.cell_voltages, true);
+  const tempLo = s?.lowest_cell_temperature_pack != null ? { v: s.lowest_cell_temperature, a: s.lowest_cell_temperature_pack } : extreme((p) => p.telemetry!.cell_temperatures, false);
+  const tempHi = s?.highest_cell_temperature_pack != null ? { v: s.highest_cell_temperature, a: s.highest_cell_temperature_pack } : extreme((p) => p.telemetry!.cell_temperatures, true);
+  const ambHi = extreme((p) => [p.telemetry!.ambient_temperature], true);
+  const mosHi = extreme((p) => [p.telemetry!.power_temperature], true);
+  const packNo = (a: number) => String(a).padStart(2, "0");
 
   return (
     <div className="mx-auto max-w-6xl space-y-10">
@@ -58,19 +71,25 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
                 tone={s.discharge_allowed ? undefined : "text-alarm"} note={t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })} />
             </>
           ) : <><div /><div /></>}
-          <Stat icon={MoveVertical} label={t("dash.cellRange")} help="value.cell_delta"
-            value={`${fmt(((s ? s.highest_cell_voltage - s.lowest_cell_voltage : Math.max(...allCells) - Math.min(...allCells))) * 1000, 0, "mV")}`}
-            note={t("dash.cellRangeVal", { lo: fmt(s?.lowest_cell_voltage ?? Math.min(...allCells), 3), hi: fmt(s?.highest_cell_voltage ?? Math.max(...allCells), 3, "V") })} />
+          <Stat icon={MoveVertical} label={t("dash.cellRange")} help="value.bank_cell_delta"
+            value={cellLo && cellHi ? fmt((cellHi.v - cellLo.v) * 1000, 0, "mV") : "–"}
+            note={cellLo && cellHi ? <>
+              <span className="block">{t("dash.minIn", { v: fmt(cellLo.v, 3, "V"), p: packNo(cellLo.a) })}</span>
+              <span className="block">{t("dash.maxIn", { v: fmt(cellHi.v, 3, "V"), p: packNo(cellHi.a) })}</span>
+            </> : undefined} />
           <Stat icon={Thermometer} label={t("dash.tempRange")} help="value.temperatures"
-            value={t("dash.tempRangeVal", { lo: fmt(s?.lowest_cell_temperature ?? Math.min(...temps), 1), hi: fmt(s?.highest_cell_temperature ?? Math.max(...temps), 1, "°C") })}
-            note={live.length ? t("dash.otherTemps", { amb: fmt(Math.max(...live.map((p) => p.telemetry!.ambient_temperature)), 1, "°C"), mos: fmt(Math.max(...live.map((p) => p.telemetry!.power_temperature)), 1, "°C") }) : undefined} />
+            value={tempLo && tempHi ? t("dash.tempRangeVal", { lo: fmt(tempLo.v, 1), hi: fmt(tempHi.v, 1, "°C") }) : "–"}
+            note={tempLo && tempHi ? <>
+              <span className="block">{t("dash.coldHot", { lo: packNo(tempLo.a), hi: packNo(tempHi.a) })}</span>
+              {ambHi && mosHi && <span className="block" title={t("dash.ambMosWhere", { pa: packNo(ambHi.a), pm: packNo(mosHi.a) })}>
+                {t("dash.otherTemps", { amb: fmt(ambHi.v, 1, "°C"), mos: fmt(mosHi.v, 1, "°C") })}</span>}
+            </> : undefined} />
         </div>
       </header>
 
       <section>
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <h2 className="font-display text-2xl font-semibold">{t("dash.rack")}</h2>
-          {Number.isFinite(center) && <span className="text-sm text-muted">{t("dash.median", { v: fmt(center, 3, "V") })}</span>}
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" onClick={() => setEditing(true)}><Layers className="h-4 w-4" />{t("groups.edit")}</Button>
           </div>
@@ -126,7 +145,10 @@ function RackList({ groups, packs, center, multi, onOpen }: RackProps) {
           <span className="text-right">{t("dash.current")}</span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.cellTempMax")}<InfoIcon id="value.cell_temp_max" /></span>
           <span className="flex items-center justify-end gap-1.5">{t("dash.delta")}<InfoIcon id="value.cell_delta" /></span>
-          <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
+          <span className="flex flex-col leading-tight">
+            <span className="flex items-center gap-1.5">{t("dash.strip")}<InfoIcon id="value.cell_strip" /></span>
+            {Number.isFinite(center) && <span className="text-xs">{t("dash.medianShort", { v: fmt(center, 3, "V") })}</span>}
+          </span>
         </div>
         <div className="space-y-6">
           {groups.map((g, gi) => {

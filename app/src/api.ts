@@ -49,7 +49,9 @@ export interface SystemValues {
   lowest_cell_voltage: number;
   lowest_cell_voltage_pack: number | null;
   highest_cell_temperature: number;
+  highest_cell_temperature_pack: number | null;
   lowest_cell_temperature: number;
+  lowest_cell_temperature_pack: number | null;
   charge_voltage_limit: number;
   charge_current_limit: number;
   discharge_current_limit: number;
