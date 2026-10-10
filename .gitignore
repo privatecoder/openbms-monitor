@@ -6,3 +6,4 @@ dist/
 *.tsbuildinfo
 app/src-tauri/gen/
 .orch/
+__pycache__/
