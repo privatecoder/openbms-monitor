@@ -47,10 +47,16 @@ export function usePairs(site: string) {
   return { pairs, save };
 }
 
-export interface PairCheck { pair: Pair; total: number; share: number; lowTotal: boolean; weak?: number }
+/** judged: false while the load is too low for a statement (see PAIR_MIN_A). */
+export interface PairCheck { pair: Pair; total: number; share: number; judged: boolean; lowTotal: boolean; weak?: number }
 
-/** Below this current per pack, state-of-charge differences dominate the split and the check says nothing. */
-export const PAIR_MIN_A = 8;
+/**
+ * The check needs this much current per pack (median over all packs). Packs at different states of charge
+ * equalize through their bridges: logged 2026-10-10, pack 00 (70 %) fed pack 01 (61 %) with ~5 A while the
+ * bank was idle. That offset is independent of the load and decides the split at low currents (at 10 A per
+ * pack, 00 looked like the weak pack), so only a load well above it shows the resistances.
+ */
+export const PAIR_MIN_A = 20;
 
 /**
  * Pair currents: a low total against the other pairs points at the shared main cables; one pack
@@ -59,7 +65,7 @@ export const PAIR_MIN_A = 8;
  * lowTotal: total below 85 % of the median pair total (cleared above 90 %), but only when the stronger
  * pack is itself below normal; otherwise the weak pack alone explains the low total.
  * `prev` (the last result) provides the hysteresis so values near a threshold do not flicker.
- * Only judged when the stronger pack carries at least PAIR_MIN_A.
+ * Only judged when the median pack current is at least PAIR_MIN_A.
  */
 export function checkPairs(pairs: Pair[], current: (a: number) => number | undefined, prev?: PairCheck[]): PairCheck[] {
   const last = new Map((prev ?? []).map((c) => [c.pair.plus, c]));
@@ -69,17 +75,19 @@ export function checkPairs(pairs: Pair[], current: (a: number) => number | undef
     return [{ pair, a, b, total: a + b }];
   });
   const totals = rows.map((r) => Math.abs(r.total)).sort((x, y) => x - y);
+  const each = rows.flatMap((r) => [Math.abs(r.a), Math.abs(r.b)]).sort((x, y) => x - y);
+  const loaded = each.length > 0 && each[each.length >> 1] >= PAIR_MIN_A;
   const m = totals.length ? (totals.length % 2 ? totals[totals.length >> 1] : (totals[totals.length / 2 - 1] + totals[totals.length / 2]) / 2) : NaN;
   return rows.map(({ pair, a, b, total }) => {
     const lo = Math.min(Math.abs(a), Math.abs(b)), hi = Math.max(Math.abs(a), Math.abs(b));
     const share = hi ? lo / hi : 1;
     const was = last.get(pair.plus);
-    if (hi < PAIR_MIN_A) return { pair, total, share, lowTotal: false };
+    if (!loaded) return { pair, total, share, judged: false, lowTotal: false };
     const weak = share < (was?.weak !== undefined ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
     const below = totals.length > 1 && Math.abs(total) < m * (was?.lowTotal ? 0.9 : 0.85);
     // a strong partner at or above an average pack's share means the missing current is the weak pack's alone
     const lowTotal = below && !(weak !== undefined && hi >= (m / 2) * 0.95);
-    return { pair, total, share, lowTotal, weak };
+    return { pair, total, share, judged: true, lowTotal, weak };
   });
 }
 

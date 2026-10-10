@@ -9,4 +9,4 @@ related: topic.diagnosis
 - The check only runs under load (total from 3 A).
 
 Define pairs under Overview → Edit groups; "Pair neighbouring packs" forms 00/01, 02/03 and so on.
-- **Evaluation:** on the mean current of the last 60 s, only from 8 A in the stronger pack (below that, state-of-charge differences decide the split) and only once every pack has answered. A note appears below 70 % or 85 % and disappears only above 75 % or 90 %, so it does not flicker near the limit.
+- **Evaluation:** on the mean current of the last 60 s, only from 20 A per pack (median of all packs). Below that, equalizing currents decide the split: packs at different states of charge equalize through their bridges, up to ~5 A were measured with the bank idle. At 10 A per pack this even made the wrong pack look weak and only once every pack has answered. A note appears below 70 % or 85 % and disappears only above 75 % or 90 %, so it does not flicker near the limit.

@@ -8,7 +8,7 @@ import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
-import { checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck } from "../pairs";
+import { PAIR_MIN_A, checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck } from "../pairs";
 import { GroupEditor } from "./GroupEditor";
 import { cn, fmt } from "../lib/utils";
 
@@ -253,6 +253,7 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
         {t("pairs.footer", { a: no(pair.plus), b: no(pair.minus), sum: check ? fmt(check.total, 1, "A") : "–" })}
         {check?.lowTotal && <>; {t("diag.pairLow")}</>}
         {check?.weak !== undefined && <>; {t("diag.pairWeak", { p: no(check.weak), bridge: check.weak === pair.minus ? "+" : "−" })}</>}
+        {check && !check.judged && <span className="text-muted/70">; {t("pairs.notJudged", { a: PAIR_MIN_A })}</span>}
       </div>
     </div>
   );

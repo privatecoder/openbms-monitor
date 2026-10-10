@@ -9,4 +9,4 @@ related: topic.diagnosis
 - Die Prüfung läuft nur unter Last (Summe ab 3 A).
 
 Paare legst du unter Übersicht → Gruppen bearbeiten fest; „Benachbarte Packs zu Paaren zusammenfassen“ bildet 00/01, 02/03 usw.
-- **Bewertung:** über den mittleren Strom der letzten 60 s, erst ab 8 A im stärkeren Pack (darunter bestimmen Ladestands-Unterschiede die Aufteilung) und erst, wenn alle Packs einmal geantwortet haben. Ein Hinweis erscheint unter 70 % bzw. 85 % und verschwindet erst über 75 % bzw. 90 %, damit er bei Werten nahe der Grenze nicht springt.
+- **Bewertung:** über den mittleren Strom der letzten 60 s, erst ab 20 A je Pack (Median aller Packs). Darunter bestimmen Ausgleichsströme die Aufteilung: Packs mit unterschiedlichem Ladestand gleichen sich über die Brücken aus, gemessen wurden bis ~5 A bei ruhender Anlage. Bei 10 A je Pack wirkte dadurch sogar der falsche Pack schwach und erst, wenn alle Packs einmal geantwortet haben. Ein Hinweis erscheint unter 70 % bzw. 85 % und verschwindet erst über 75 % bzw. 90 %, damit er bei Werten nahe der Grenze nicht springt.

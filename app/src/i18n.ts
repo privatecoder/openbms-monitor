@@ -75,7 +75,7 @@ const resources = {
       pairs: {
         title: "Paare", intro: "Zwei Packs mit diagonalem Anschluss: das Hauptkabel + am ersten, das Hauptkabel − am zweiten, dazwischen zwei kurze Brücken. Die App zeigt dann die Paare zusammen und prüft ihre Ströme.",
         neighbours: "Benachbarte Packs zu Paaren zusammenfassen", plus: "Hauptkabel + an", minus: "Hauptkabel − an", remove: "Paar entfernen", add: "Paar hinzufügen", clear: "Alle Paare entfernen",
-        invalid: "Ungültige Paare (gleicher Pack zweimal oder in zwei Paaren) werden beim Speichern weggelassen.", footer: "Paar {{a}}/{{b}}: {{sum}}",
+        invalid: "Ungültige Paare (gleicher Pack zweimal oder in zwei Paaren) werden beim Speichern weggelassen.", notJudged: "Bewertung ab {{a}} A je Pack", footer: "Paar {{a}}/{{b}}: {{sum}}",
       },
       bal: { active: "Balancing aktiv", cells_one: "Balancing: Zelle {{list}}", cells_other: "Balancing: Zellen {{list}}", off: "Balancing: aus", packs_one: "Balancing in {{count}} Pack", packs_other: "Balancing in {{count}} Packs", whyDischarging: "Der Pack entlädt; dabei wird nie balanciert.", whyThresholds: "Höchste Zelle {{v}}, Spreizung {{d}}. Balancing beginnt erst ab der Startspannung (Parameter 8, oft 3,40 V) und einer Spreizung über Parameter 62 (oft 30 mV)." },
       live: { live: "Live, vor {{s}} s aktualisiert", stale: "Keine neuen Daten seit {{s}} s" },
@@ -159,7 +159,7 @@ const resources = {
       pairs: {
         title: "Pairs", intro: "Two packs with diagonal wiring: main + cable at the first, main − cable at the second, two short bridges in between. The app then shows the pairs together and checks their currents.",
         neighbours: "Pair neighbouring packs", plus: "main + at", minus: "main − at", remove: "Remove pair", add: "Add pair", clear: "Remove all pairs",
-        invalid: "Invalid pairs (same pack twice or in two pairs) are left out when saving.", footer: "Pair {{a}}/{{b}}: {{sum}}",
+        invalid: "Invalid pairs (same pack twice or in two pairs) are left out when saving.", notJudged: "rated from {{a}} A per pack", footer: "Pair {{a}}/{{b}}: {{sum}}",
       },
       bal: { active: "Balancing active", cells_one: "Balancing: cell {{list}}", cells_other: "Balancing: cells {{list}}", off: "Balancing: off", packs_one: "Balancing in {{count}} pack", packs_other: "Balancing in {{count}} packs", whyDischarging: "The pack is discharging; it never balances then.", whyThresholds: "Highest cell {{v}}, spread {{d}}. Balancing only starts from the start voltage (parameter 8, often 3.40 V) and a spread above parameter 62 (often 30 mV)." },
       live: { live: "Live, updated {{s}} s ago", stale: "No new data for {{s}} s" },
