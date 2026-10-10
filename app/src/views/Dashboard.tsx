@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Cpu, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
 import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
@@ -66,7 +66,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
           </div>
         </div>
         <Tank soc={soc} state={state} caption={t("dash.tank", { remain: fmt(s ? (s.soc / 100) * s.total_capacity_ah : remainAh, 0), total: fmt(s?.total_capacity_ah ?? fullAh, 0) })} />
-        <div className="grid grid-cols-2 gap-6 pt-1 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-6 pt-1 md:grid-cols-3 xl:grid-cols-5">
           {s ? (
             <>
               <Stat icon={ArrowUpToLine} label={t("dash.chargeLimit")} help="value.charge_limits" value={s.charge_allowed ? fmt(s.charge_current_limit, 0, "A") : t("dash.blocked")}
@@ -84,9 +84,14 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
           <Stat icon={Thermometer} label={t("dash.tempRange")} help="value.temperatures"
             value={tempLo && tempHi ? t("dash.tempRangeVal", { lo: fmt(tempLo.v, 1), hi: fmt(tempHi.v, 1, "°C") }) : "–"}
             note={tempLo && tempHi ? <>
-              <span className="block">{t("dash.coldHot", { lo: packNo(tempLo.a), hi: packNo(tempHi.a) })}</span>
-              {ambHi && <span className="block">{t("dash.otherTemps", { amb: fmt(ambHi.v, 1, "°C"), pa: packNo(ambHi.a) })}</span>}
-              {mosHi && <span className="block">{t("dash.ambMosWhere", { mos: fmt(mosHi.v, 1, "°C"), pm: packNo(mosHi.a) })}</span>}
+              <span className="block">{t("dash.minIn", { v: fmt(tempLo.v, 1, "°C"), p: packNo(tempLo.a) })}</span>
+              <span className="block">{t("dash.maxIn", { v: fmt(tempHi.v, 1, "°C"), p: packNo(tempHi.a) })}</span>
+            </> : undefined} />
+          <Stat icon={Cpu} label={t("dash.boardTemp")} help="value.temperatures"
+            value={ambHi && mosHi ? t("dash.boardTempVal", { amb: fmt(ambHi.v, 1), mos: fmt(mosHi.v, 1, "°C") }) : "–"}
+            note={ambHi && mosHi ? <>
+              <span className="block">{t("dash.otherTemps", { pa: packNo(ambHi.a) })}</span>
+              <span className="block">{t("dash.ambMosWhere", { pm: packNo(mosHi.a) })}</span>
             </> : undefined} />
         </div>
       </header>
