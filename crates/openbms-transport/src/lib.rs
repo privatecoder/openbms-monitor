@@ -16,6 +16,8 @@ pub enum Error {
     Proto(#[from] openbms_proto::Error),
     #[error("no answer within {0:?}")]
     Timeout(Duration),
+    #[error("connection closed by the gateway")]
+    Closed,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -77,11 +79,14 @@ pub struct Connection {
     pub timeout: Duration,
     /// Pause after each exchange; the BMS needs a short gap between requests.
     pub gap: Duration,
+    /// A TCP read of 0 bytes means the gateway closed the connection; on serial ports it does not.
+    tcp: bool,
 }
 
 impl Connection {
     pub fn open(endpoint: &Endpoint) -> Result<Self> {
         let timeout = Duration::from_millis(1500);
+        let tcp = matches!(endpoint, Endpoint::Tcp { .. });
         let port: Box<dyn Port> = match endpoint {
             Endpoint::Serial { path, baud } => Box::new(serialport::new(path, *baud).timeout(Duration::from_millis(100)).open()?),
             Endpoint::Tcp { addr } => {
@@ -91,7 +96,7 @@ impl Connection {
                 Box::new(s)
             }
         };
-        Ok(Self { port, timeout, gap: Duration::from_millis(100) })
+        Ok(Self { port, timeout, gap: Duration::from_millis(100), tcp })
     }
 
     fn read_until<F: Fn(&[u8]) -> bool>(&mut self, done: F) -> Result<Vec<u8>> {
@@ -100,6 +105,7 @@ impl Connection {
         let mut buf = [0u8; 256];
         while start.elapsed() < self.timeout {
             match self.port.read(&mut buf) {
+                Ok(0) if self.tcp => return Err(Error::Closed),
                 Ok(0) => {}
                 Ok(n) => {
                     out.extend_from_slice(&buf[..n]);

@@ -6,7 +6,7 @@ const resources = {
     translation: {
       app: "OpenBMS Monitor",
       nav: { dashboard: "Übersicht", diag: "Diagnose", cells: "Zellen", help: "Hilfe" },
-      conn: {
+      conn: { lostShort: "Verbindung verloren", lost: "Seit {{s}} s keine Daten. Die Verbindung gilt als getrennt; es wird automatisch neu verbunden.", retryIn: "Nächster Versuch in {{s}} s.", retryFailed: "Neu verbinden fehlgeschlagen: {{err}}", 
         title: "Verbindung", tcp: "Netzwerk", serial: "USB", host: "Gateway (Host:Port)",
         port: "Adapter wählen", bus: "Bus", busCan: "CAN-Buchse, 9600 Baud", busPack: "RS485-1/2, 19200 Baud",
         connect: "Verbinden", reconnect: "Neu verbinden", disconnect: "Trennen", scanning: "Suche Packs …",
@@ -90,7 +90,7 @@ const resources = {
     translation: {
       app: "OpenBMS Monitor",
       nav: { dashboard: "Overview", diag: "Diagnosis", cells: "Cells", help: "Help" },
-      conn: {
+      conn: { lostShort: "Connection lost", lost: "No data for {{s}} s. The connection counts as lost; reconnecting automatically.", retryIn: "Next attempt in {{s}} s.", retryFailed: "Reconnect failed: {{err}}", 
         title: "Connection", tcp: "Network", serial: "USB", host: "Gateway (host:port)",
         port: "Select adapter", bus: "Bus", busCan: "CAN socket, 9600 baud", busPack: "RS485-1/2, 19200 baud",
         connect: "Connect", reconnect: "Reconnect", disconnect: "Disconnect", scanning: "Searching packs …",

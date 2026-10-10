@@ -32,7 +32,8 @@ export function useLiveData() {
         },
       })),
     );
-    const s = api.onSystem((u) => setSystem(u));
+    // like the packs: a failed poll keeps the last good values instead of blanking the limits
+    const s = api.onSystem((u) => setSystem((prev) => ({ ...u, values: u.values ?? prev?.values ?? null })));
     return () => { p.then((f) => f()); s.then((f) => f()); };
   }, []);
 

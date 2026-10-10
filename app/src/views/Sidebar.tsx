@@ -5,6 +5,7 @@ import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
+import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
@@ -23,29 +24,53 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
   const [ports, setPorts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // lost: no data for CONN_TIMEOUT_MS; then the connection is dropped and retried every RECONNECT_MS
+  const [lost, setLost] = useState(false);
+  const [since, setSince] = useState(0);
+  const [lastTry, setLastTry] = useState(0);
+  const now = useNow();
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
 
   useEffect(() => { api.listPorts().then(setPorts).catch(() => setPorts([])); }, [kind]);
   useEffect(() => { document.documentElement.classList.toggle("dark", dark); try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
 
-  const connect = async () => {
-    setBusy(true); setMsg(null);
+  const connect = async (retry = false) => {
+    setBusy(true); if (!retry) { setMsg(null); setLost(false); }
+    setLastTry(Date.now());
     try {
       localStorage.setItem("conn.kind", kind); localStorage.setItem("conn.target", target); localStorage.setItem("conn.bus", bus);
       await api.connect(kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus });
       const found = await api.scan();
+      if (retry && !found.length) throw new Error(t("conn.none"));
       setMsg(found.length ? t("conn.found", { count: found.length }) : t("conn.none"));
       onConnected(found, target);
+      setSince(Date.now()); setLost(false);
       if (found.length) await api.startPolling(found.map(([a]) => a), 2000);
     } catch (e) {
-      setMsg(String(e));
+      if (retry) await api.disconnect().catch(() => {});
+      setMsg(retry ? t("conn.retryFailed", { err: String(e) }) : String(e));
     } finally { setBusy(false); }
   };
 
   // Browser preview: connect straight away so the recorded system is visible.
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const disconnect = async () => { await api.disconnect(); onDisconnected(); setMsg(null); };
+  const disconnect = async () => { await api.disconnect(); onDisconnected(); setMsg(null); setLost(false); };
+
+  // Fixed timeout: no successful answer for CONN_TIMEOUT_MS (since connecting or since the last data) = disconnected.
+  useEffect(() => {
+    if (isDemo || busy || !connected || !since) return;
+    if (now - Math.max(lastUpdate, since) < CONN_TIMEOUT_MS) return;
+    setLost(true);
+    setMsg(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
+    api.disconnect().catch(() => {}).finally(onDisconnected);
+  }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While lost, reconnect automatically with the last settings.
+  useEffect(() => {
+    if (lost && !busy && !connected && now - lastTry >= RECONNECT_MS) connect(true);
+  }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
+
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
@@ -67,12 +92,12 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
       <div className="mt-6 space-y-3 border-t border-line px-5 pt-5">
         <div className="flex items-center justify-between text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("conn.title")}<InfoIcon id="topic.connection" /></span>
-          <span className={cn("flex items-center gap-1.5", connected ? "text-charge" : "text-muted")}>
+          <span className={cn("flex items-center gap-1.5", connected ? "text-charge" : lost ? "text-alarm" : "text-muted")}>
             <span className="relative flex h-2 w-2">
               {connected && lastUpdate > 0 && <span key={lastUpdate} className="ping-once absolute inset-0 rounded-full bg-charge" />}
-              <span className={cn("relative h-2 w-2 rounded-full", connected ? "bg-charge" : "border border-muted")} />
+              <span className={cn("relative h-2 w-2 rounded-full", connected ? "bg-charge" : lost ? "bg-alarm" : "border border-muted")} />
             </span>
-            {connected ? t("conn.connected") : t("conn.offline")}
+            {connected ? t("conn.connected") : lost ? t("conn.lostShort") : t("conn.offline")}
           </span>
         </div>
         <div className="grid grid-cols-2 gap-1 rounded-md bg-sunken p-1">
@@ -99,12 +124,13 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
           </select>
         </label>
         <div className="flex gap-2">
-          <Button variant="primary" className="flex-1" disabled={busy || !target} onClick={connect}>
+          <Button variant="primary" className="flex-1" disabled={busy || !target} onClick={() => connect()}>
             {busy ? t("conn.scanning") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
-          {connected && <Button variant="ghost" onClick={disconnect}>{t("conn.disconnect")}</Button>}
+          {(connected || lost) && <Button variant="ghost" onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
-        {msg && <p className="text-sm text-muted">{msg}</p>}
+        {msg && <p className={cn("text-sm", lost ? "text-alarm" : "text-muted")}>{msg}</p>}
+        {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
         {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
       </div>
       <div className="mt-auto flex items-center gap-1 border-t border-line px-3 py-3">
