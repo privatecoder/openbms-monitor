@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Thermometer } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Layers, MoveVertical, Scale, Thermometer } from "lucide-react";
 import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
 import type { PackEntry } from "../store";
-import { CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
+import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
 import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
@@ -46,6 +46,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const ambHi = extreme((p) => [p.telemetry!.ambient_temperature], true);
   const mosHi = extreme((p) => [p.telemetry!.power_temperature], true);
   const packNo = (a: number) => String(a).padStart(2, "0");
+  const balancingPacks = list.filter((p) => (p.status?.balancing ?? 0) !== 0).length;
 
   return (
     <div className="mx-auto max-w-6xl space-y-10">
@@ -58,6 +59,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
           <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 pl-12">
             <span className="text-muted">{t("dash.sub", { v: fmt(voltage, 1, "V"), a: fmt(current, 1, "A"), n: list.length })}</span>
             {live.length > 0 && <MessagesMark alarms={list.flatMap((p) => p.status?.alarms ?? [])} />}
+            {balancingPacks > 0 && <span className="inline-flex items-center gap-1.5 text-sm text-charge"><Scale className="h-4 w-4" aria-hidden />{t("bal.packs", { count: balancingPacks })}</span>}
             <LiveIndicator updated={Math.max(0, ...list.map((p) => p.updated))} />
           </div>
         </div>
@@ -184,6 +186,7 @@ function RackRow({ p, index, center, multi, onOpen }: { p: PackEntry; index: num
         <span className="flex items-center gap-2">
           <span className="font-display text-2xl font-semibold leading-none">{String(p.address).padStart(2, "0")}</span>
           <MessagesMark alarms={alarms} compact />
+          <BalancingMark mask={st?.balancing} count={cells.length} />
         </span>
         {(alarms?.length || (multi && p.address === 0)) ? (
           <span className="text-xs text-muted">

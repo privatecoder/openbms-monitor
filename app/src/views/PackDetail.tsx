@@ -1,10 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { Activity, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
+import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
 import { effectiveCurrent, packState } from "../api";
 import type { PackEntry } from "../store";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
-import { AlarmList, CellStrip, QUIET, Stat, StateMark, kw, median } from "../components/widgets";
+import { AlarmList, CellStrip, QUIET, Stat, StateMark, balancedCells, kw, median } from "../components/widgets";
 import { LiveIndicator, Tick } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
@@ -18,6 +18,7 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
   const sw = st?.switch_state ?? 0;
   const switches: [string, boolean, LucideIcon][] = [["discharge", !!(sw & 1), ArrowDownFromLine], ["charge", !!(sw & 2), ArrowUpToLine], ["limiter", !!(sw & 4), ShieldHalf], ["heater", !!(sw & 8), Flame]];
   const current = tm ? effectiveCurrent(tm) : NaN;
+  const balanced = new Set(balancedCells(st?.balancing, cells.length));
 
   return (
     <div className="view-in mx-auto max-w-6xl space-y-8">
@@ -59,12 +60,13 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
               <h2 className="flex items-center gap-1.5 font-display text-2xl font-semibold">{t("dash.cells")}<InfoIcon id="value.cell_voltages" /></h2>
               <span className="text-sm text-muted">{t("dash.delta")} {fmt((hi - lo) * 1000, 0, "mV")}, {t("dash.stripRefPack", { v: fmt(center, 3, "V") })}</span>
             </div>
+            <BalancingLine cells={cells} mask={st?.balancing} discharging={packState(st?.system_status) === "discharging"} />
             <CellStrip cells={cells} center={center} balancing={st?.balancing} height={64} />
             <div className="mt-3 grid" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
               {cells.map((v, i) => (
-                <div key={i} className="text-center leading-tight">
+                <div key={i} className={cn("rounded text-center leading-tight", balanced.has(i + 1) && "bg-charge/15 ring-1 ring-charge")}>
                   <div className={cn("text-sm font-medium", v - center >= QUIET && "text-high", center - v >= QUIET && "text-low")}><Tick value={v}>{(v * 1000).toFixed(0)}</Tick></div>
-                  <div className="text-xs text-muted">{i + 1}</div>
+                  <div className={cn("text-xs", balanced.has(i + 1) ? "font-medium text-charge" : "text-muted")}>{i + 1}</div>
                 </div>
               ))}
             </div>
@@ -104,4 +106,27 @@ export function PackDetail({ p, multi, onBack }: { p: PackEntry; multi: boolean;
 
 function Row({ k, v }: { k: React.ReactNode; v: React.ReactNode }) {
   return <><dt className="text-muted">{k}</dt><dd className="text-right font-medium">{v}</dd></>;
+}
+
+/**
+ * Whether the pack balances right now and, if not, the usual reason. On the CAN socket bus only the
+ * cell mask is readable; the thresholds (parameters 8 and 62) are named, not evaluated.
+ */
+function BalancingLine({ cells, mask, discharging }: { cells: number[]; mask: number | undefined; discharging: boolean }) {
+  const { t } = useTranslation();
+  const on = balancedCells(mask, cells.length);
+  const hi = Math.max(...cells), lo = Math.min(...cells);
+  return (
+    <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+      <span className={cn("inline-flex items-center gap-1.5 font-medium", on.length ? "text-charge" : "text-muted")}>
+        <Scale className="h-4 w-4" aria-hidden />{on.length ? t("bal.cells", { list: on.join(", "), count: on.length }) : t("bal.off")}
+        <InfoIcon id="status.balancing" />
+      </span>
+      {!on.length && (
+        <span className="text-muted">
+          {discharging ? t("bal.whyDischarging") : t("bal.whyThresholds", { v: fmt(hi, 3, "V"), d: fmt((hi - lo) * 1000, 0, "mV") })}
+        </span>
+      )}
+    </div>
+  );
 }

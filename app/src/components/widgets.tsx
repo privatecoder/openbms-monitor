@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Info, OctagonX, PowerOff, ShieldAlert, ShieldCheck, TriangleAlert, type LucideIcon } from "lucide-react";
+import { BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Info, OctagonX, PowerOff, Scale, ShieldAlert, ShieldCheck, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Tick } from "./live";
 import { cn, fmt } from "../lib/utils";
@@ -155,6 +155,18 @@ export function MessagesText({ alarms }: { alarms: ActiveAlarm[] }) {
   const { t } = useTranslation();
   const worst = worstSeverity(alarms);
   return <span className={cn("font-medium", worst && sevTone[worst])}>{t("dash.alarmCount", { count: alarms.length })}</span>;
+}
+
+/** Cell numbers (1-based) set in the 0x44 balancing mask. */
+export const balancedCells = (mask: number | undefined, count: number) =>
+  Array.from({ length: count }, (_, i) => i + 1).filter((n) => ((mask ?? 0) >> (n - 1)) & 1);
+
+/** Small balance icon for a pack that is balancing right now. */
+export function BalancingMark({ mask, count }: { mask: number | undefined; count: number }) {
+  const { t } = useTranslation();
+  const cells = balancedCells(mask, count);
+  if (!cells.length) return null;
+  return <span title={t("bal.cells", { list: cells.join(", "), count: cells.length })}><Scale className="h-4 w-4 text-charge" aria-label={t("bal.active")} /></span>;
 }
 
 export const kw = (watts: number) => (Math.abs(watts) >= 1000 ? fmt(watts / 1000, 2, "kW") : fmt(watts, 0, "W"));

@@ -79,6 +79,9 @@ const tauriApi = {
 export const api = inTauri ? tauriApi : demoApi();
 export const isDemo = !inTauri;
 
+/** Preview only: ?balance=<pack> shows cells 3 and 7 of that pack as balancing. */
+const balanceDemo = new URLSearchParams(location.search).get("balance");
+
 /** Browser preview without Tauri: replays a recorded capture of a 12-pack system. */
 function demoApi(): typeof tauriApi {
   const packL = new Set<(u: PackUpdate) => void>();
@@ -100,7 +103,8 @@ function demoApi(): typeof tauriApi {
       const tick = () => {
         sysL.forEach((f) => f({ values: c.system, error: null }));
         for (const p of c.packs.filter((p) => addresses.includes(p.address)))
-          packL.forEach((f) => f({ address: p.address, telemetry: p.telemetry, status: p.status, error: null }));
+          packL.forEach((f) => f({ address: p.address, telemetry: p.telemetry, error: null,
+            status: String(p.address) === balanceDemo ? { ...p.status, balancing: 0b1000100 } : p.status }));
       };
       clearInterval(timer); tick(); timer = window.setInterval(tick, intervalMs);
     },
