@@ -2,7 +2,8 @@ import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Settings, Thermometer } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
-import { effectiveCurrent, packState, type PackState, type SystemUpdate } from "../api";
+import { effectiveCurrent, packState, type PackState, type SystemUpdate, type Telemetry } from "../api";
+import type { Cell } from "../cells/types";
 import type { PackEntry } from "../store";
 import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
 import { LiveIndicator } from "../components/live";
@@ -13,7 +14,7 @@ import { PAIR_MIN_A, checkPairs, usePairs, validPairs, windowMean, type Pair, ty
 import { GroupEditor } from "./GroupEditor";
 import { CellAssignSheet } from "./CellAssign";
 import { useCellDb } from "../cells/store";
-import { allowedChargeA, useAssignments } from "../cells/packCheck";
+import { allowedChargeA, allowedDischargeA, useAssignments } from "../cells/packCheck";
 import { cn, fmt } from "../lib/utils";
 
 // Pack (with messages), SOC, voltage, current, temperature, cycles, spread, deviation strip.
@@ -58,19 +59,21 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
   const packNo = (a: number) => String(a).padStart(2, "0");
   // cells in series per pack, to show the voltage limits per cell
   const series = live[0]?.telemetry?.cell_voltages.length ?? 0;
-  // charge current the cells of all packs allow at their temperatures; only when every pack has a cell type
-  const cellAllowed = (() => {
+  // charge and discharge current the cells of all packs allow at their temperatures; only when every pack has a cell type
+  const cellSum = (f: (cell: Cell, parallel: number, tm: Telemetry) => number | undefined) => {
     if (!live.length) return undefined;
     let sum = 0;
     for (const p of live) {
       const a = assigned[p.address];
       const cell = a && db.entries.find((e) => e.cell.id === a.cell)?.cell;
-      const x = cell ? allowedChargeA(cell, a.parallel, p.telemetry!.cell_temperatures, p.telemetry!.soc) : undefined;
+      const x = cell ? f(cell, a.parallel, p.telemetry!) : undefined;
       if (x === undefined) return undefined;
       sum += x;
     }
     return sum;
-  })();
+  };
+  const cellAllowed = cellSum((c, n, tm) => allowedChargeA(c, n, tm.cell_temperatures, tm.soc));
+  const cellAllowedDischarge = cellSum((c, n, tm) => allowedDischargeA(c, n, tm.cell_temperatures));
   const balancingPacks = list.filter((p) => (p.status?.balancing ?? 0) !== 0).length;
 
   return (
@@ -104,6 +107,9 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
                 tone={s.discharge_allowed ? undefined : "text-alarm"} note={<>
                   <span className="block">{t("dash.downToMinV", { v: fmt(s.discharge_voltage_limit, 1, "V") })}</span>
                   {series > 0 && <span className="block">{t("dash.perCellMin", { v: fmt(s.discharge_voltage_limit / series, 3, "V") })}</span>}
+                  {cellAllowedDischarge !== undefined && (
+                    <span className={cn("block whitespace-nowrap", s.discharge_allowed && s.discharge_current_limit > cellAllowedDischarge + 0.5 && "text-alarm")} title={t("dash.cellsAllowDischargeHint")}>{t("dash.cellsAllow", { a: fmt(cellAllowedDischarge, 0, "A") })}</span>
+                  )}
                 </>} />
             </>
           ) : <><div /><div /></>}

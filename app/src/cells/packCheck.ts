@@ -70,6 +70,16 @@ export function allowedChargeA(cell: Cell, parallel: number, temps: number[], so
   return lo >= t.charge_min_c && hi <= t.charge_max_c ? cap * parallel : 0;
 }
 
+/**
+ * Discharge current per pack the datasheet allows at these cell temperatures: the continuous discharge
+ * current inside the discharge temperature range, 0 outside it. undefined: the datasheet gives no basis.
+ */
+export function allowedDischargeA(cell: Cell, parallel: number, temps: number[]): number | undefined {
+  const t = cell.temperature, cap = cell.current?.max_continuous_discharge_a;
+  if (!temps.length || cap === undefined || t?.discharge_min_c === undefined || t.discharge_max_c === undefined) return undefined;
+  return Math.min(...temps) >= t.discharge_min_c && Math.max(...temps) <= t.discharge_max_c ? cap * parallel : 0;
+}
+
 export type Level = "ok" | "near" | "over";
 /** One comparison against the datasheet. value and limit in the unit of the check; dir: whether the value must stay below or above. */
 export interface Check { id: "cellHigh" | "cellLow" | "tempCharge" | "tempDischarge" | "chargeCurrent" | "dischargeCurrent"; level: Level; value: number; limit: number; limit2?: number }
