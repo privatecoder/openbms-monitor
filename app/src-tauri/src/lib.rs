@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
 struct AppState {
@@ -141,11 +141,40 @@ fn stop_polling(state: State<AppState>) {
     state.polling.store(false, Ordering::SeqCst);
 }
 
+/// User cell entries (own and overridden models) as one JSON array in the app data directory.
+fn user_cells_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("cells.user.json"))
+}
+
+#[tauri::command]
+fn load_user_cells(app: AppHandle) -> Result<serde_json::Value, String> {
+    let path = user_cells_path(&app)?;
+    if !path.exists() {
+        return Ok(serde_json::Value::Array(vec![]));
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[tauri::command]
+fn save_user_cells(app: AppHandle, cells: serde_json::Value) -> Result<(), String> {
+    if !cells.is_array() {
+        return Err("expected an array of cells".into());
+    }
+    let path = user_cells_path(&app)?;
+    // write to a temporary file first so a crash never leaves a half-written database
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&cells).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells])
         .run(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor");
 }

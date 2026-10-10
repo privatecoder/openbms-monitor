@@ -4,18 +4,20 @@ import { Cable } from "lucide-react";
 import { Sidebar } from "./views/Sidebar";
 import { Dashboard } from "./views/Dashboard";
 import { PackDetail } from "./views/PackDetail";
+import { Cells } from "./views/Cells";
 import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { isDemo } from "./api";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
+const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
 
 export default function App() {
   const { t } = useTranslation();
   const live = useLiveData();
   const [connected, setConnected] = useState(false);
   const [site, setSite] = useState("");
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState(demoView ?? "dashboard");
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
   const current = pack !== null ? live.packs[pack] : undefined;
 
@@ -31,7 +33,9 @@ export default function App() {
           onDisconnected={() => { live.reset(); setConnected(false); setPack(null); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
-          {!connected ? (
+          {view === "cells" ? (
+            <Cells />
+          ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
           ) : current ? (
             <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} />

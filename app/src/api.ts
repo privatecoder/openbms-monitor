@@ -70,6 +70,8 @@ const tauriApi = {
   stopPolling: () => invoke<void>("stop_polling"),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
+  loadUserCells: () => invoke<unknown[]>("load_user_cells"),
+  saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -103,6 +105,9 @@ function demoApi(): typeof tauriApi {
     stopPolling: async () => { clearInterval(timer); },
     onPack: (f) => sub(packL, f),
     onSystem: (f) => sub(sysL, f),
+    // preview: keep own cells in browser storage
+    loadUserCells: async () => { try { return JSON.parse(localStorage.getItem("cells.user") ?? "[]"); } catch { return []; } },
+    saveUserCells: async (cells) => { try { localStorage.setItem("cells.user", JSON.stringify(cells)); } catch { /* storage unavailable */ } },
   };
 }
 
