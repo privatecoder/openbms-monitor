@@ -87,7 +87,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
   };
 
   const start = async () => {
-    if (!path) return;
+    if (!path || !image) return;
     // the backend stops the monitor here too (it may have been reconnected since the check)
     if (connected) onMonitorStopped();
     const confirmation = typed;
@@ -95,7 +95,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     setError(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
     try {
       setRunning(true); onRunning(true); startedAt.current = Date.now();
-      await api.firmwareStart(port, address, path, allowCustom, confirmation, lang);
+      await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang);
     } catch (e) { setRunning(false); onRunning(false); setError(String(e)); }
   };
 

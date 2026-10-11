@@ -19,6 +19,8 @@ struct AppState {
     history: SharedHistory,
     /// Set while a firmware update runs; the monitor must not touch the bus then.
     flashing: Arc<AtomicBool>,
+    /// Exclusive reservation while opening or using the pack bus for firmware operations.
+    port_busy: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +70,21 @@ fn lock(m: &Mutex<Option<Connection>>) -> Result<std::sync::MutexGuard<'_, Optio
 }
 
 const FLASHING: &str = "a firmware update is running";
+const PORT_BUSY: &str = "the port is busy with another operation";
+
+struct PortSlot(Arc<AtomicBool>);
+
+impl Drop for PortSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
+    flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| PortSlot(flag.clone()))
+}
 
 /// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
 fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
@@ -86,6 +103,7 @@ fn list_ports() -> Vec<String> {
 
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<(), String> {
+    let _port_slot = reserve_port(&state.port_busy).ok_or(PORT_BUSY)?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
     }
@@ -462,4 +480,18 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod port_reservation_tests {
+    use super::*;
+
+    #[test]
+    fn only_one_operation_can_reserve_the_port_until_its_guard_drops() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let slot = reserve_port(&busy).expect("first operation owns the port");
+        assert!(reserve_port(&busy).is_none());
+        drop(slot);
+        assert!(reserve_port(&busy).is_some());
+    }
 }

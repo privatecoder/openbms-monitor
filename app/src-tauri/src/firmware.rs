@@ -2,7 +2,7 @@
 //! the vendor allowlist; other images only after an explicit opt-in and their own confirmation phrase.
 //! The flash runs on its own thread and reports progress as events.
 
-use crate::{reveal, stop_monitor, AppState};
+use crate::{reserve_port, reveal, stop_monitor, AppState};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
 use openbms_proto::DeviceInfo;
 use openbms_transport::{Connection, Endpoint};
@@ -138,6 +138,16 @@ pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(eh
     Ok((image, info))
 }
 
+fn confirmed_image(info: &ImageInfo, expected_sha256: &str, l: Lang) -> Result<(), String> {
+    if info.sha256 != expected_sha256 {
+        return Err(l.pick(
+            "Firmware-Datei wurde seit der Prüfung geändert; bitte erneut auswählen",
+            "firmware image changed since validation; choose it again",
+        ).into());
+    }
+    Ok(())
+}
+
 fn read_image(path: &str, allow_custom: bool, l: Lang) -> Result<(ehex::Image, ImageInfo), String> {
     if !path.to_ascii_lowercase().ends_with(".ehex") {
         return Err(l.pick("Erwartet wird eine .ehex-Datei", "expected a .ehex file").into());
@@ -173,6 +183,8 @@ pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String
 #[tauri::command]
 pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String) -> Result<DeviceInfo, String> {
     let l = self::lang(&lang);
+    let _port_slot = reserve_port(&state.port_busy)
+        .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(l.pick("Ein Firmware-Update läuft", "a firmware update is running").into());
     }
@@ -185,20 +197,23 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
 /// Validates everything again, then flashes on its own thread and returns at once.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, confirmation: String, lang: String) -> Result<(), String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<(), String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
     }
-    // the file may have changed since it was checked; the phrase must match what it is now
+    // Re-read the file and bind the confirmation to the exact code hash shown in the UI.
     let (image, info) = read_image(&path, allow_custom, l)?;
+    confirmed_image(&info, &expected_sha256, l)?;
     if !confirmation_ok(address, info.custom, &confirmation) {
         return Err(openbms_flash::Error::Cancelled.text(l));
     }
+    let port_slot = reserve_port(&state.port_busy)
+        .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
-    let flashing = state.flashing.clone();
+    let slot = FlashSlot(state.flashing.clone());
     let prepared = (|| {
         stop_monitor(&state)?;
         let link = open_port(&port, l)?;
@@ -206,14 +221,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
         Ok::<_, String>((link, log, log_path))
     })();
-    let (mut link, mut log, log_path) = match prepared {
-        Ok(v) => v,
-        Err(e) => {
-            flashing.store(false, Ordering::SeqCst);
-            return Err(e);
-        }
-    };
-    let slot = FlashSlot(flashing);
+    let (mut link, mut log, log_path) = prepared?;
     std::thread::spawn(move || {
         let mut last = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -230,6 +238,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log },
         };
         drop(slot);
+        drop(port_slot);
         let _ = app.emit("firmware-done", done);
     });
     Ok(())
@@ -343,5 +352,7 @@ mod tests {
         assert!(info.custom);
         assert_eq!(info.release, "custom");
         assert_eq!(info.device, "EMU1101_10D_HW16");
+        assert!(confirmed_image(&info, &info.sha256, Lang::En).is_ok());
+        assert!(confirmed_image(&info, &"0".repeat(64), Lang::En).is_err());
     }
 }
