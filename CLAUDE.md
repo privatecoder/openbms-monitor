@@ -7,7 +7,7 @@ Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor i
 - `crates/openbms-proto`: frames, checksums, Seplos ASCII commands (telemetry 0x42, status 0x44, params 0x47, intra-pack 0x5A), Modbus RTU (master system values), parameter decoding.
 - `crates/openbms-transport`: serial and TCP transport (5 s connect timeout, write timeout).
 - `crates/openbms-cli`: read-only command-line poller for debugging.
-- `crates/openbms-flash`: standalone EMU1101 updater (probe, `.ehex` validation and dry-run, confirmed flash); it is not part of the monitor UI.
+- `crates/openbms-flash`: standalone EMU1101 updater (probe, `.ehex` validation and dry-run, confirmed flash); the app's firmware view uses it as a library (`app/src-tauri/src/firmware.rs`).
 - `app/src-tauri`: Tauri 2 backend. `lib.rs` holds connection, polling thread, watchdog and all commands; `history.rs` the SQLite history (recording, retention/compaction, series, export/import); `firmware.rs` firmware commands, progress events, flash guard.
 - `app/src`: React 19 + Tailwind 4 frontend.
   - `views/Firmware.tsx` and `firmware.ts`: firmware update view (behind maintenance functions) and its step logic.
