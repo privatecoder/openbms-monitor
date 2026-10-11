@@ -18,5 +18,6 @@ related: topic.pairs, topic.diagnosis
 - Abstand wächst mit dem Strom, ein Pack bekommt weniger → die Brücke im Pfad dieses Packs prüfen: beim ersten Pack des Paares (Hauptkabel +) die Minus-Brücke, beim zweiten (Hauptkabel −) die Plus-Brücke. Unter Last ist ein schlechter Stecker oft spürbar warm.
 
 **Beispiele**
-- Paar 04/05 (2026-10-10): 38–47 mV von −24 A bis +35 A, gleichbleibend. Beim Laden zeigt 05 die niedrigere Spannung, bekommt aber mehr Strom (10,0 A gegen 9,0 A). Ergebnis: Messversatz.
-- Defekter Brückenstecker an Pack 00 (2026-10-10): 170–390 mV, mit dem Strom wachsend. Nach der Reparatur lag das Paar 00/01 bei 10 mV; Pack 00 nahm danach als leerster Pack den meisten Ladestrom.
+- Laden mit je etwa 10 A: Pack A zeigt 40 mV mehr als Pack B, B bekommt aber 10 A und A nur 9 A. Ein Widerstand vor B würde B weniger Strom geben, nicht mehr. Bleiben die 40 mV auch bei 30 A und beim Entladen gleich: Messversatz.
+- Laden: 50 mV Abstand bei 10 A, 150 mV bei 30 A, beim Entladen umgekehrt. Der Pack mit der niedrigeren Spannung bekommt deutlich weniger Strom. Das sind rund 5 mΩ Übergangswiderstand in Brücke oder Stecker dieses Packs.
+- Ladestände 42 % und 45 %, Ausgänge gleich: Beim Laden nimmt der leerere Pack etwas mehr Strom. Normal; die Werte gleichen sich beim Vollladen an.

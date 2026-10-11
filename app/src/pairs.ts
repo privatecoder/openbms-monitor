@@ -62,8 +62,8 @@ export interface PairCheck {
 
 /**
  * Both packs of a pair sit on the same bridges, so their output voltages differ only by the drop across
- * bridges and connectors (plus a few 10 mV of sensor offset). Logged 2026-10-10: 0.17–0.39 V with the bad
- * plug on pack 00's plus bridge, 0.01–0.04 V after re-plugging, under 0.05 V in all healthy pairs.
+ * bridges and connectors (plus a few 10 mV of sensor offset). Healthy pairs stay below
+ * 0.05 V; a bad plug on a bridge produces several 100 mV.
  */
 export const PORT_GAP_V = 0.1;
 /** SOC difference (points) from which a smaller share counts as equalizing. */
@@ -71,9 +71,9 @@ export const EQUALIZE_SOC = 3;
 
 /**
  * The check needs this much current per pack (median over all packs). Packs at different states of charge
- * equalize through their bridges: logged 2026-10-10, pack 00 (70 %) fed pack 01 (61 %) with ~5 A while the
- * bank was idle. That offset is independent of the load and decides the split at low currents (at 10 A per
- * pack, 00 looked like the weak pack), so only a load well above it shows the resistances.
+ * equalize through their bridges, several amps with the bank idle (e.g. 70 % feeding 61 % with ~5 A). That
+ * offset is independent of the load and decides the split at low currents (at 10 A per pack it can make the
+ * fuller pack look weak), so only a load well above it shows the resistances.
  */
 export const PAIR_MIN_A = 20;
 
@@ -136,7 +136,7 @@ export const TREND_FLAT_V = 0.02;
  * How a pair's output gap behaves over the current: a resistance in bridges or plugs makes it grow with
  * the current (and turn round between charging and discharging), a voltage measurement offset of one BMS
  * keeps it constant. Least-squares line gap = offset + slope × current over the samples (60 s means).
- * Logged 2026-10-10, pair 04/05: 40–47 mV from −24 A to +35 A, i.e. an offset.
+ * Example: 40–47 mV from −24 A to +35 A is an offset.
  * undefined until the samples span TREND_MIN_RANGE_A.
  */
 export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" | "resistance"; offset: number; milliohm: number } | undefined {
