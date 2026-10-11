@@ -255,3 +255,71 @@ fn configured_gap_is_added_after_delayed_ack() {
         assert!(pair[1].1 - pair[0].1 >= Duration::from_millis(330));
     }
 }
+
+#[test]
+fn flash_reports_progress_in_order_and_returns_device_after() {
+    use session::Progress::*;
+    let mut sim = BootSim::new();
+    let mut seen = Vec::new();
+    let result =
+        session::flash_with_progress(&mut sim, 0, &image(), &mut Vec::new(), fast(), &mut |p| {
+            seen.push(p)
+        })
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            Preflight,
+            Bootloader,
+            Erase,
+            Block { index: 0, total: 3 },
+            Block { index: 1, total: 3 },
+            Block { index: 2, total: 3 },
+            Finalize,
+            AppRestart,
+            PostCheck,
+        ]
+    );
+    assert_eq!(result.after.device_name, result.before.device_name);
+    assert!(!result.after.firmware_version.is_empty());
+}
+
+#[test]
+fn progress_stops_at_rejected_block() {
+    let mut sim = BootSim::new();
+    sim.reject_data_block(1);
+    let mut seen = Vec::new();
+    let err =
+        session::flash_with_progress(&mut sim, 0, &image(), &mut Vec::new(), fast(), &mut |p| {
+            seen.push(p)
+        });
+    assert!(err.is_err());
+    assert_eq!(
+        seen.last(),
+        Some(&session::Progress::Block { index: 1, total: 3 })
+    );
+}
+
+#[test]
+fn flash_with_progress_sends_the_same_frames_as_flash() {
+    fn tx(log: Vec<u8>) -> Vec<String> {
+        String::from_utf8(log)
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.split_once(" TX ").map(|(_, hex)| hex.to_string()))
+            .collect()
+    }
+    let mut plain = Vec::new();
+    session::flash(&mut BootSim::new(), 0, &image(), &mut plain, fast()).unwrap();
+    let mut with = Vec::new();
+    session::flash_with_progress(
+        &mut BootSim::new(),
+        0,
+        &image(),
+        &mut with,
+        fast(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(tx(plain), tx(with));
+}

@@ -32,9 +32,23 @@ pub struct ProbeResult {
 }
 pub struct FlashResult {
     pub before: DeviceInfo,
+    /// 0x51 answer of the restarted application.
+    pub after: DeviceInfo,
     pub blocks: usize,
     pub app_returned: bool,
     pub wfd_reply_times: ReplyTimes,
+}
+
+/// Stage of a running flash, reported to the caller (the app shows it as progress).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progress {
+    Preflight,
+    Bootloader,
+    Erase,
+    Block { index: usize, total: usize },
+    Finalize,
+    AppRestart,
+    PostCheck,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -296,11 +310,11 @@ fn wait_for_app(
     address: u8,
     log_file: &mut impl Write,
     options: Options,
-) -> Result<()> {
+) -> Result<DeviceInfo> {
     let deadline = Instant::now() + options.post_timeout;
     while Instant::now() < deadline {
         match ascii_query(link, address, 0x51, log_file, Duration::from_millis(300)) {
-            Ok(_) => return Ok(()),
+            Ok(reply) => return Ok(DeviceInfo::parse(&reply.info)?),
             Err(Error::Timeout { .. }) => link.wait(Duration::from_millis(100)),
             Err(other) => return Err(other),
         }
@@ -376,24 +390,44 @@ pub fn flash(
     log_file: &mut impl Write,
     options: Options,
 ) -> Result<FlashResult> {
+    flash_with_progress(link, address, image, log_file, options, &mut |_| {})
+}
+
+/// Like [`flash`], reporting each stage before it starts. Frames and timing are identical.
+pub fn flash_with_progress(
+    link: &mut impl Link,
+    address: u8,
+    image: &Image,
+    log_file: &mut impl Write,
+    options: Options,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<FlashResult> {
     let frames = dry_run(image)?;
+    let total = frames.len() - 3;
+    progress(Progress::Preflight);
     let before = preflight(link, address, log_file, options)?;
+    progress(Progress::Bootloader);
     enter_boot(link, address, log_file, options, &frames[0])?;
     note(
         log_file,
         "sending W F E; board is in update mode until application restart",
     )?;
+    progress(Progress::Erase);
     boot_exchange(link, &frames[1], log_file, options).map_err(|e| uncertain("W F E", e))?;
-    let mut wfd_times = Vec::with_capacity(frames.len() - 3);
+    let mut wfd_times = Vec::with_capacity(total);
     for (index, frame) in frames[2..frames.len() - 1].iter().enumerate() {
+        progress(Progress::Block { index, total });
         let reply = boot_exchange(link, frame, log_file, options)
             .map_err(|e| uncertain(&format!("W F D block {index}"), e))?;
         wfd_times.push(reply.elapsed);
     }
+    progress(Progress::Finalize);
     boot_exchange(link, frames.last().unwrap(), log_file, options)
         .map_err(|e| uncertain("W F G", e))?;
-    wait_for_app(link, address, log_file, options)
+    progress(Progress::AppRestart);
+    let after = wait_for_app(link, address, log_file, options)
         .map_err(|e| uncertain("application restart", e))?;
+    progress(Progress::PostCheck);
     let ascii_timeout = options.ack_timeout.min(Duration::from_millis(600));
     ascii_query(link, address, 0x42, log_file, ascii_timeout)
         .map_err(|e| uncertain("0x42 post-check", e))?;
@@ -415,7 +449,8 @@ pub fn flash(
     )?;
     Ok(FlashResult {
         before,
-        blocks: frames.len() - 3,
+        after,
+        blocks: total,
         app_returned: true,
         wfd_reply_times,
     })
