@@ -128,8 +128,8 @@ const tauriApi = {
   /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
   firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
   /** Returns at once; progress and result arrive as events. */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, confirmation: string, lang: string) =>
-    invoke<void>("firmware_start", { port, address, path, allowCustom, confirmation, lang }),
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
+    invoke<void>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
   onFirmwareDone: (f: (d: FirmwareDone) => void) => listen<FirmwareDone>("firmware-done", (e) => f(e.payload)),
   /** The window was not closed because a flash is running. */
