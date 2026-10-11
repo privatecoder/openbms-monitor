@@ -12,7 +12,8 @@ Success: a user with a USB-RS485 adapter on the pack bus of a single pack can se
 
 - One pack, serial connection (USB-RS485) on RS485-1/2 at 19200 baud, quiet bus. This is the only case verified on hardware.
 - Not offered yet: TCP gateway, several packs on one bus, flashing a master that polls slaves, retries or recovery after an aborted update. They are enabled once measured on the bench.
-- Same image allowlist as the CLI (`known::RELEASES`, 16.06.x originals).
+- Only the allowlisted vendor images (`known::RELEASES`, 16.06.x originals). The CLI's `--allow-custom-firmware` is not offered in the app; the library leaves the image policy to its caller, and the app's policy is the allowlist.
+- Timing: the library default (`Options::default()`: reply-driven, no extra gap after a reply, 50 ms reset-to-`R F L`, 10 s reply timeout). The app has no timing settings.
 
 ## User interface
 
@@ -24,7 +25,7 @@ Success: a user with a USB-RS485 adapter on the pack bus of a single pack can se
 2. **Image.** File dialog for `.ehex`. The backend validates it (parser + allowlist) and shows release, size, block count and code SHA-256. Unknown or modified images are rejected with the reason.
 3. **Check pack.** Disconnects the monitor (stops polling and recording), opens the port at 19200 baud and runs `session::inspect`: quiet bus, 0x51 and 0x47 answer. Shows device name, current firmware version and CAN protocol. The port is closed again afterwards.
 4. **Confirm.** Summary "pack N: version X → release Y" and the risks in plain words (no valid application from `W F E` until `W F G`; no retry of blocks; do not disconnect power or cable). The start button is enabled only after typing exactly `FLASH N`.
-5. **Progress.** Stage text and a progress bar over the image's blocks (209 for 16.06.13, ≈ 110 s), elapsed time. No cancel button: before `W F E` the run lasts well under a second, after `W F E` cancelling would leave the board without an application.
+5. **Progress.** Stage text and a progress bar over the image's blocks (209 for 16.06.13, ≈ 35 s with the default timing), elapsed time. No cancel button: before `W F E` the run lasts well under a second, after `W F E` cancelling would leave the board without an application.
 6. **Result.** Success: version before and after (from the post-check 0x51), log path with "show in folder", button "back to monitor". Failure: the error text in the user's language, the stage it happened in, the warning not to restart blindly if it happened after `W F E`, and the log path.
 
 While a flash runs, navigation and the sidebar connection controls are disabled, and closing the window is refused with a notice.
