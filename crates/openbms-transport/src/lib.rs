@@ -220,6 +220,30 @@ impl Connection {
     }
 }
 
+/// Raw byte access for tools that speak another framing on the same bus (the bootloader).
+impl Connection {
+    /// Drop everything received so far.
+    pub fn clear_input(&mut self) -> Result<()> {
+        Ok(self.port.clear_input()?)
+    }
+
+    /// Write and wait until the bytes have left the computer (serial: transmitted; TCP: handed to the socket).
+    pub fn write_raw(&mut self, data: &[u8]) -> Result<()> {
+        self.port.write_all(data)?;
+        Ok(self.port.flush()?)
+    }
+
+    /// One read: waits up to the port's read timeout (100 ms) and returns what arrived; 0 = nothing yet.
+    pub fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize> {
+        match self.port.read(buf) {
+            Ok(0) if self.tcp => Err(Error::Closed),
+            Ok(n) => Ok(n),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
 pub fn list_serial_ports() -> Vec<String> {
     serialport::available_ports().map(|v| v.into_iter().map(|p| p.port_name).collect()).unwrap_or_default()
 }
