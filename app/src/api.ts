@@ -86,6 +86,11 @@ export interface Series {
 }
 export interface ExportStats { rows: number; files: string[] }
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
+export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string }
+export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
+export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
+/** End of a flash. written = W F E was sent, so after an error the board may have no application. */
+export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string }
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -118,6 +123,17 @@ const tauriApi = {
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
+  firmwareCheckImage: (path: string, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, lang }),
+  /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
+  firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
+  /** Returns at once; progress and result arrive as events. */
+  firmwareStart: (port: string, address: number, path: string, confirmation: string, lang: string) =>
+    invoke<void>("firmware_start", { port, address, path, confirmation, lang }),
+  onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
+  onFirmwareDone: (f: (d: FirmwareDone) => void) => listen<FirmwareDone>("firmware-done", (e) => f(e.payload)),
+  /** The window was not closed because a flash is running. */
+  onFirmwareBusy: (f: () => void) => listen("firmware-busy", () => f()),
+  revealFirmwareLogs: (path: string | null) => invoke<void>("reveal_firmware_logs", { path }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -192,6 +208,13 @@ function demoApi(): typeof tauriApi {
       return name;
     },
     revealParameters: async () => {},
+    firmwareCheckImage: async () => { throw new Error("desktop app only"); },
+    firmwareInspect: async () => { throw new Error("desktop app only"); },
+    firmwareStart: async () => { throw new Error("desktop app only"); },
+    onFirmwareProgress: async () => () => {},
+    onFirmwareDone: async () => () => {},
+    onFirmwareBusy: async () => () => {},
+    revealFirmwareLogs: async () => {},
   };
 }
 const DEMO_PARAMS = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
