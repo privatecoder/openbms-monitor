@@ -45,8 +45,14 @@ fn push_hex_u16(out: &mut Vec<u8>, v: u16) {
 
 /// Build a request frame. `info` is the binary INFO payload (it is hex-encoded here).
 pub fn encode_request(address: u8, cid2: u8, info: &[u8]) -> Result<Vec<u8>> {
+    encode_request_version(VERSION, address, cid2, info)
+}
+
+/// Like `encode_request` with another VER byte (the vendor's update tool sends 0x26; the firmware
+/// does not check it).
+pub fn encode_request_version(version: u8, address: u8, cid2: u8, info: &[u8]) -> Result<Vec<u8>> {
     let mut body = Vec::with_capacity(12 + info.len() * 2);
-    push_hex_byte(&mut body, VERSION);
+    push_hex_byte(&mut body, version);
     push_hex_byte(&mut body, address);
     push_hex_byte(&mut body, CID1_BMS);
     push_hex_byte(&mut body, cid2);

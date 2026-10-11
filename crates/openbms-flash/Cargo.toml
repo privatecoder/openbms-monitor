@@ -1,0 +1,20 @@
+[package]
+name = "openbms-flash"
+description = "Firmware updater for the Seplos BMS V2.0 (EMU1101): talks to the vendor bootloader over RS485"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "openbms-flash"
+path = "src/main.rs"
+
+[dependencies]
+openbms-proto = { path = "../openbms-proto" }
+openbms-transport = { path = "../openbms-transport" }
+thiserror.workspace = true
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+hex = "0.4"

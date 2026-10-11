@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/openbms-proto", "crates/openbms-transport", "crates/openbms-cli", "app/src-tauri"]
+members = ["crates/openbms-proto", "crates/openbms-transport", "crates/openbms-cli", "crates/openbms-flash", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
