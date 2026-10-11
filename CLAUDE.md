@@ -1,6 +1,6 @@
 # OpenBMS Monitor
 
-Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor is read only. The separate `openbms-flash` CLI can write firmware only after its own validation and explicit confirmation. Pre-release (0.1), public repo. Protocol knowledge comes from [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs); the README describes features and the two buses.
+Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor is read only unless maintenance functions are switched on (firmware view). The separate `openbms-flash` CLI can write firmware only after its own validation and explicit confirmation. Pre-release (0.1), public repo. Protocol knowledge comes from [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs); the README describes features and the two buses.
 
 ## Layout
 
@@ -8,8 +8,9 @@ Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor i
 - `crates/openbms-transport`: serial and TCP transport (5 s connect timeout, write timeout).
 - `crates/openbms-cli`: read-only command-line poller for debugging.
 - `crates/openbms-flash`: standalone EMU1101 updater (probe, `.ehex` validation and dry-run, confirmed flash); it is not part of the monitor UI.
-- `app/src-tauri`: Tauri 2 backend. `lib.rs` holds connection, polling thread, watchdog and all commands; `history.rs` the SQLite history (recording, retention/compaction, series, export/import).
+- `app/src-tauri`: Tauri 2 backend. `lib.rs` holds connection, polling thread, watchdog and all commands; `history.rs` the SQLite history (recording, retention/compaction, series, export/import); `firmware.rs` firmware commands, progress events, flash guard.
 - `app/src`: React 19 + Tailwind 4 frontend.
+  - `views/Firmware.tsx` and `firmware.ts`: firmware update view (behind maintenance functions) and its step logic.
   - `api.ts`: typed Tauri commands, plus a demo API (`isDemo`, data from `demo/capture.json`) used when running in a plain browser.
   - `views/`: Dashboard (overview, towers, pairs), PackDetail, Diagnosis, Parameters, History, Recording, Cells, CellAssign, GroupEditor, Sidebar.
   - `pairs.ts`, `diag/`, `cells/` (datasheet rules, pack and parameter checks), `params.ts`, `groups.ts`, `history/` (charts, client-side helpers).
