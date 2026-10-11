@@ -12,7 +12,7 @@ Success: a user with a USB-RS485 adapter on the pack bus of a single pack can se
 
 - One pack, serial connection (USB-RS485) on RS485-1/2 at 19200 baud, quiet bus. This is the only case verified on hardware.
 - Not offered yet: TCP gateway, several packs on one bus, flashing a master that polls slaves, retries or recovery after an aborted update. They are enabled once measured on the bench.
-- Only the allowlisted vendor images (`known::RELEASES`, 16.06.x originals). The CLI's `--allow-custom-firmware` is not offered in the app; the library leaves the image policy to its caller, and the app's policy is the allowlist.
+- Images: the allowlisted vendor images (`known::RELEASES`, 16.06.x originals) by default. The library leaves the image policy to its caller. Amended 2026-10-11: like the CLI's `--allow-custom-firmware`, the app accepts an unknown code hash after the same format and header checks, only with the switch "Allow custom firmware" on (not remembered) and with its own confirmation phrase `FLASH CUSTOM <address>`.
 - Timing: the library default (`Options::default()`: reply-driven, no extra gap after a reply, 50 ms reset-to-`R F L`, 10 s reply timeout). The app has no timing settings.
 
 ## User interface
@@ -22,7 +22,7 @@ Success: a user with a USB-RS485 adapter on the pack bus of a single pack can se
 **View `Firmware`** (`app/src/views/Firmware.tsx`), a single page with numbered steps that unlock one after another:
 
 1. **Connection.** Serial port (same port list as the sidebar) and pack address 0–15 (default 0). Fixed hint: pack bus RS485-1/2, 19200 baud, only this pack on the bus. If the monitor is connected, the step says that checking the pack will disconnect it.
-2. **Image.** File dialog for `.ehex`. The backend validates it (parser + allowlist) and shows release, size, block count and code SHA-256. Unknown or modified images are rejected with the reason.
+2. **Image.** File dialog for `.ehex`. The backend validates it (parser + allowlist) and shows release, size, block count and code SHA-256. Unknown or modified images are rejected with the reason, unless custom firmware is allowed; then they are shown as custom firmware with a warning.
 3. **Check pack.** Disconnects the monitor (stops polling and recording), opens the port at 19200 baud and runs `session::inspect`: quiet bus, 0x51 and 0x47 answer. Shows device name, current firmware version and CAN protocol. The port is closed again afterwards.
 4. **Confirm.** Summary "pack N: version X → release Y" and the risks in plain words (no valid application from `W F E` until `W F G`; no retry of blocks; do not disconnect power or cable). The start button is enabled only after typing exactly `FLASH N`.
 5. **Progress.** Stage text and a progress bar over the image's blocks (209 for 16.06.13, ≈ 35 s with the default timing), elapsed time. No cancel button: before `W F E` the run lasts well under a second, after `W F E` cancelling would leave the board without an application.
