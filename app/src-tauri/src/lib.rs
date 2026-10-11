@@ -67,7 +67,13 @@ fn lock(m: &Mutex<Option<Connection>>) -> Result<std::sync::MutexGuard<'_, Optio
     m.lock().map_err(|e| e.to_string())
 }
 
-fn with_conn<T>(conn: &Shared, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
+const FLASHING: &str = "a firmware update is running";
+
+/// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
+fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
+    if flashing.load(Ordering::SeqCst) {
+        return Err(FLASHING.into());
+    }
     let mut guard = lock(conn)?;
     let c = guard.as_mut().ok_or("not connected")?;
     f(c).map_err(|e| e.to_string())
@@ -81,7 +87,7 @@ fn list_ports() -> Vec<String> {
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<(), String> {
     if state.flashing.load(Ordering::SeqCst) {
-        return Err("a firmware update is running".into());
+        return Err(FLASHING.into());
     }
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
@@ -92,7 +98,14 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
         EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr: addr.clone() }, Bus::from(bus), addr),
     };
     let conn = Connection::open(&ep).map_err(|e| e.to_string())?;
-    *lock(&state.conn)? = Some(conn);
+    {
+        // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
+        let mut slot = lock(&state.conn)?;
+        if state.flashing.load(Ordering::SeqCst) {
+            return Err(FLASHING.into());
+        }
+        *slot = Some(conn);
+    }
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
     if let Ok(mut h) = state.history.lock() {
         h.connected(&site, if bus == Bus::CanSocketBus { "can" } else { "pack" });
@@ -119,12 +132,12 @@ fn disconnect(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn scan(state: State<'_, AppState>) -> Result<Vec<(u8, DeviceInfo)>, String> {
-    with_conn(&state.conn, |c| Ok(c.scan(0..=15)))
+    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(0..=15)))
 }
 
 #[tauri::command]
 async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry, String> {
-    with_conn(&state.conn, |c| c.telemetry(address))
+    with_conn(&state.conn, &state.flashing, |c| c.telemetry(address))
 }
 
 /// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
@@ -134,14 +147,14 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
     if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
         return Err("parameters can only be read on RS485-1/2".into());
     }
-    with_conn(&state.conn, |c| c.parameters(address))
+    with_conn(&state.conn, &state.flashing, |c| c.parameters(address))
 }
 
 /// Poll the given packs in a loop and emit "pack" (and on the CAN socket bus "system") events.
 #[tauri::command]
 fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, interval_ms: u64) -> Result<(), String> {
     if state.flashing.load(Ordering::SeqCst) {
-        return Err("a firmware update is running".into());
+        return Err(FLASHING.into());
     }
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
     let running = Arc::new(AtomicBool::new(true));
@@ -153,12 +166,13 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     }
     std::thread::sleep(Duration::from_millis(50));
     let conn = state.conn.clone();
+    let flashing = state.flashing.clone();
     let rec = state.history.clone();
     std::thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             let started = std::time::Instant::now();
             if bus == Bus::CanSocketBus {
-                let r = with_conn(&conn, |c| c.system_values());
+                let r = with_conn(&conn, &flashing, |c| c.system_values());
                 let update = SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() };
                 if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
                     rec.system(history::now_ms(), &v);
@@ -169,8 +183,8 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 if !running.load(Ordering::SeqCst) {
                     break;
                 }
-                let telemetry = with_conn(&conn, |c| c.telemetry(address));
-                let status = with_conn(&conn, |c| c.status(address));
+                let telemetry = with_conn(&conn, &flashing, |c| c.telemetry(address));
+                let status = with_conn(&conn, &flashing, |c| c.status(address));
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
                 // A dead link (gateway closed the socket, broken pipe) does not heal by retrying: drop it and
                 // stop polling. The UI reconnects on the "link-lost" event (or after its data timeout).
@@ -373,9 +387,47 @@ fn reveal_parameters(app: AppHandle, path: Option<String>) -> Result<(), String>
     reveal(&parameters_dir(&app)?, path)
 }
 
+/// The standard macOS menu, except Quit: the predefined item sends `terminate:`, which ends the app without
+/// an ExitRequested event, so a flash could be cut off. Our own item goes through `app.exit`, which can be refused.
+#[cfg(target_os = "macos")]
+fn macos_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as P, Submenu};
+    let info = app.package_info();
+    let about = AboutMetadata { name: Some(info.name.clone()), version: Some(info.version.to_string()), ..Default::default() };
+    let quit = MenuItem::with_id(app, QUIT_ID, format!("Quit {}", info.name), true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = Submenu::with_items(app, info.name.clone(), true, &[
+        &P::about(app, None, Some(about))?, &P::separator(app)?, &P::services(app, None)?, &P::separator(app)?,
+        &P::hide(app, None)?, &P::hide_others(app, None)?, &P::show_all(app, None)?, &P::separator(app)?, &quit,
+    ])?;
+    let file = Submenu::with_items(app, "File", true, &[&P::close_window(app, None)?])?;
+    let edit = Submenu::with_items(app, "Edit", true, &[
+        &P::undo(app, None)?, &P::redo(app, None)?, &P::separator(app)?,
+        &P::cut(app, None)?, &P::copy(app, None)?, &P::paste(app, None)?, &P::select_all(app, None)?,
+    ])?;
+    let view = Submenu::with_items(app, "View", true, &[&P::fullscreen(app, None)?])?;
+    let window = Submenu::with_items(app, "Window", true, &[
+        &P::minimize(app, None)?, &P::maximize(app, None)?, &P::separator(app)?, &P::close_window(app, None)?,
+    ])?;
+    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window])
+}
+
+#[cfg(target_os = "macos")]
+const QUIT_ID: &str = "openbms-quit";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(macos_menu).on_menu_event(|app, event| {
+        if event.id() == QUIT_ID {
+            if app.state::<AppState>().flashing.load(Ordering::SeqCst) {
+                let _ = app.emit("firmware-busy", ());
+            } else {
+                app.exit(0);
+            }
+        }
+    });
+    builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
@@ -401,7 +453,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
-            // quitting (Cmd+Q, menu, dock) bypasses CloseRequested
+            // app.exit (our Quit menu item) and closing the last window end up here. macOS Dock -> Quit and
+            // logout send `terminate:` straight to NSApplication; tao has no hook for that, so it cannot be refused.
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 if app.state::<AppState>().flashing.load(Ordering::SeqCst) {
                     api.prevent_exit();
