@@ -18,4 +18,5 @@ serde_json = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled"] }
 tauri-plugin-dialog = "2.8"
 openbms-proto = { path = "../../crates/openbms-proto" }
+openbms-flash = { path = "../../crates/openbms-flash" }
 openbms-transport = { path = "../../crates/openbms-transport" }

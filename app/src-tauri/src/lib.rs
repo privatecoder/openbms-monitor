@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod firmware;
 mod history;
 use history::{Format, Settings, SharedHistory};
 
@@ -16,6 +17,8 @@ struct AppState {
     /// Run flag of the current polling thread; each start gets a fresh one, so an old thread cannot stop a new one.
     polling: Mutex<Arc<AtomicBool>>,
     history: SharedHistory,
+    /// Set while a firmware update runs; the monitor must not touch the bus then.
+    flashing: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +80,9 @@ fn list_ports() -> Vec<String> {
 
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<(), String> {
+    if state.flashing.load(Ordering::SeqCst) {
+        return Err("a firmware update is running".into());
+    }
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
@@ -94,8 +100,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
     Ok(())
 }
 
-#[tauri::command]
-fn disconnect(state: State<AppState>) -> Result<(), String> {
+/// Stop polling and drop the monitor's connection (also before a firmware update takes the port).
+fn stop_monitor(state: &AppState) -> Result<(), String> {
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
@@ -104,6 +110,11 @@ fn disconnect(state: State<AppState>) -> Result<(), String> {
         h.disconnected();
     }
     Ok(())
+}
+
+#[tauri::command]
+fn disconnect(state: State<AppState>) -> Result<(), String> {
+    stop_monitor(&state)
 }
 
 #[tauri::command]
@@ -129,6 +140,9 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
 /// Poll the given packs in a loop and emit "pack" (and on the CAN socket bus "system") events.
 #[tauri::command]
 fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, interval_ms: u64) -> Result<(), String> {
+    if state.flashing.load(Ordering::SeqCst) {
+        return Err("a firmware update is running".into());
+    }
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
     let running = Arc::new(AtomicBool::new(true));
     {
@@ -374,7 +388,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters])
+        .on_window_event(|window, event| {
+            // closing during a flash would cut it off and can leave the board without an application
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.app_handle().state::<AppState>().flashing.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.emit("firmware-busy", ());
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs])
         .run(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor");
 }
