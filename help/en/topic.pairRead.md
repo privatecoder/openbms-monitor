@@ -18,5 +18,6 @@ related: topic.pairs, topic.diagnosis
 - Gap grows with the current, one pack gets less → check the bridge in this pack's path: for the pair's first pack (main + cable) the minus bridge, for the second (main − cable) the plus bridge. Under load a bad plug is often noticeably warm.
 
 **Examples**
-- Pair 04/05 (2026-10-10): 38–47 mV from −24 A to +35 A, constant. When charging, 05 shows the lower voltage but gets more current (10.0 A vs 9.0 A). Result: measurement offset.
-- Bad bridge plug at pack 00 (2026-10-10): 170–390 mV, growing with the current. After the repair pair 00/01 read 10 mV; pack 00, the emptiest, then took the most charge current.
+- Charging at about 10 A each: pack A reads 40 mV more than pack B, but B gets 10 A and A only 9 A. A resistance in front of B would give B less current, not more. If the 40 mV stay the same at 30 A and when discharging: measurement offset.
+- Charging: 50 mV gap at 10 A, 150 mV at 30 A, reversed when discharging. The pack with the lower voltage gets clearly less current. That is about 5 mΩ of contact resistance in this pack's bridge or plug.
+- States of charge 42 % and 45 %, outputs level: when charging, the emptier pack takes a little more current. Normal; the values realign when charging full.

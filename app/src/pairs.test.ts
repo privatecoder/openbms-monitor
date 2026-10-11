@@ -6,7 +6,7 @@ describe("pairs", () => {
     expect(neighbourPairs([0, 1, 2, 3, 4])).toEqual([{ plus: 0, minus: 1 }, { plus: 2, minus: 3 }]);
     expect(validPairs([{ plus: 0, minus: 1 }, { plus: 1, minus: 2 }, { plus: 5, minus: 6 }], [0, 1, 2, 3])).toEqual([{ plus: 0, minus: 1 }]);
   });
-  it("does not judge at 16 A per pack (2026-10-10 morning): equalizing currents dominate", () => {
+  it("does not judge at 16 A per pack: equalizing currents dominate", () => {
     const I: Record<number, number> = { 0: 16.65, 1: 6.53, 2: 15.49, 3: 16.0, 4: 9.5, 5: 12.96, 6: 13.08, 7: 15.37, 8: 15.68, 9: 16.18, 10: 16.2, 11: 15.93 };
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a]);
     expect(res.every((r) => !r.lowTotal && r.weak === undefined)).toBe(true);
@@ -17,7 +17,7 @@ describe("pairs", () => {
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a]);
     expect(res[0]).toMatchObject({ lowTotal: true, weak: undefined });
   });
-  it("does not blame the main cables when the partner is strong (2026-10-10, 13:50)", () => {
+  it("does not blame the main cables when the partner is strong", () => {
     const I: Record<number, number> = { 0: 44.83, 1: 25.03, 2: 36.3, 3: 35.0, 4: 36.5, 5: 38.6, 6: 36.2, 7: 37.1, 8: 37.3, 9: 37.9, 10: 38.0, 11: 39.8 };
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a]);
     expect(res[0]).toMatchObject({ lowTotal: false, weak: 1 });
@@ -36,7 +36,7 @@ describe("pairs", () => {
     expect(windowMean([{ t: 0, i: 100 }, { t: 50_000, i: 10 }, { t: 60_000, i: 20 }], 70_000, 60_000)).toBe(15);
     expect(windowMean([], 0, 60_000)).toBeUndefined();
   });
-  it("reports equalizing instead of a weak pack when the states of charge explain it (2026-10-10 16:18)", () => {
+  it("reports equalizing instead of a weak pack when the states of charge explain it", () => {
     const I: Record<number, number> = { 0: -19.7, 1: -6.3, 2: -21, 3: -20, 4: -21, 5: -22, 6: -21, 7: -21, 8: -21, 9: -22, 10: -22, 11: -23 };
     const soc: Record<number, number> = { 0: 74.4, 1: 67.6 };
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a], undefined, (a) => soc[a] ?? 79);
@@ -51,7 +51,7 @@ describe("pairs", () => {
     expect(checkPairs(pairs, () => 2, undefined, undefined, port(0.27))[0]).toMatchObject({ judged: false, gapHigh: true });
     expect(checkPairs(pairs, () => 2, undefined, undefined, port(0.02))[0].gapHigh).toBe(false);
   });
-  it("no cable note for a pair whose low total is equalizing (2026-10-10 evening)", () => {
+  it("no cable note for a pair whose low total is equalizing", () => {
     const I: Record<number, number> = { 0: -21.91, 1: -7.57, 2: -22.64, 3: -20.78, 4: -21.5, 5: -22, 6: -21.8, 7: -21.6, 8: -21.7, 9: -22.1, 10: -22, 11: -22.3 };
     const soc: Record<number, number> = { 0: 71.7, 1: 67.9 };
     const res = checkPairs(neighbourPairs(Object.keys(I).map(Number)), (a) => I[a], undefined, (a) => soc[a] ?? 74);
