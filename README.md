@@ -2,7 +2,7 @@
 
 Cross-platform monitor for the **Seplos BMS V2.0** (boards 10C/10E, module EMU1101, SH Energy ETECH firmware), as a replacement for the vendor's Windows-only BatteryMonitor. German and English UI, light and dark theme, help for every value behind an info icon.
 
-Status: **pre-release (0.1)**. Monitoring of multi-pack banks is in daily use; there are no release builds yet. The monitor is read only; the separate `openbms-flash` CLI can write firmware after explicit confirmation. Protocol knowledge: [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs).
+Status: **pre-release (0.1)**. Monitoring of multi-pack banks is in daily use; there are no release builds yet. The monitor is read only; firmware updates (CLI `openbms-flash`, or the app's maintenance view) write only after explicit confirmation. Protocol knowledge: [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs).
 
 ## Features
 
@@ -51,7 +51,9 @@ npm run dev                     # browser preview with a recorded 12-pack system
 npm run tauri dev               # desktop app
 ```
 
-## Firmware updater (separate CLI)
+## Firmware updater
+
+**In the app:** switch on *Show maintenance functions* at the bottom of the sidebar; the *Firmware* view then guides through port and pack address, image check, pack check, confirmation (`FLASH <address>`) and progress. It accepts only the allowlisted original images, uses a serial adapter on RS485-1/2 (19200 baud) with a single pack on the bus, and writes a log to the app data folder (`firmware-logs`). While it runs, the monitor is disconnected and the app cannot be closed.
 
 `openbms-flash` uses the **RS485-1/2 pack bus at 19200 baud**, not the CAN-socket RS485 pair. By default it accepts the six validated original EMU1101 `.ehex` releases in its built-in allowlist (16.06.x). `--allow-custom-firmware` permits an unknown code hash after the same strict `.ehex` format and device-header checks. No firmware update can be started from the monitor UI. A vendor-image flash has been verified on one lab board; custom firmware has not been tested on hardware.
 
