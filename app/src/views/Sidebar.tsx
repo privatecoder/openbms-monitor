@@ -92,9 +92,9 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
     return () => { un.then((f) => f()); };
   }, []);
 
-  // While lost, reconnect automatically with the last settings.
+  // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port).
   useEffect(() => {
-    if (lost && !busy && !connected && !locked && now - lastTry >= RECONNECT_MS) connect(true);
+    if (lost && !busy && !connected && !locked && view !== "firmware" && now - lastTry >= RECONNECT_MS) connect(true);
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
