@@ -159,12 +159,14 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 let status = with_conn(&conn, |c| c.status(address));
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
                 // A dead link (gateway closed the socket, broken pipe) does not heal by retrying: drop it and
-                // stop polling. The UI then sees no fresh data and reconnects after its timeout.
+                // stop polling. The UI reconnects on the "link-lost" event (or after its data timeout).
                 if error.as_deref().is_some_and(|e| e == "not connected" || e.starts_with("I/O") || e.starts_with("connection closed")) {
                     if running.load(Ordering::SeqCst) {
                         if let Ok(mut c) = conn.lock() {
                             *c = None;
                         }
+                        // tell the UI right away instead of letting it wait for its data timeout
+                        let _ = app.emit("link-lost", error.clone().unwrap_or_default());
                     }
                     running.store(false, Ordering::SeqCst);
                     break;

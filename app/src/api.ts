@@ -98,6 +98,8 @@ const tauriApi = {
   stopPolling: () => invoke<void>("stop_polling"),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
+  /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
+  onLinkLost: (f: (err: string) => void) => listen<string>("link-lost", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
@@ -153,6 +155,7 @@ function demoApi(): typeof tauriApi {
     stopPolling: async () => { clearInterval(timer); },
     onPack: (f) => sub(packL, f),
     onSystem: (f) => sub(sysL, f),
+    onLinkLost: async () => () => {},
     // preview: keep own cells in browser storage
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),

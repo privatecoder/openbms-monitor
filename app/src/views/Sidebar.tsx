@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo } from "../api";
@@ -60,14 +60,33 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
 
   const disconnect = async () => { await api.disconnect(); onDisconnected(); setMsg(null); setLost(false); };
 
+  // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
+  const markLost = (text: string) => {
+    setLost(true);
+    setMsg(text);
+    setLastTry(Date.now());
+    onDisconnected();
+    api.disconnect().catch(() => {});
+  };
+
+  // The clock starts whenever the app counts as connected, also if this component was mounted afterwards
+  // (otherwise the timeout below would never run).
+  useEffect(() => { setSince(connected ? Date.now() : 0); }, [connected]);
+
   // Fixed timeout: no successful answer for CONN_TIMEOUT_MS (since connecting or since the last data) = disconnected.
   useEffect(() => {
-    if (isDemo || busy || !connected || !since) return;
-    if (now - Math.max(lastUpdate, since) < CONN_TIMEOUT_MS) return;
-    setLost(true);
-    setMsg(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
-    api.disconnect().catch(() => {}).finally(onDisconnected);
+    if (isDemo || busy || !connected) return;
+    if (now - Math.max(lastUpdate, since || now) < CONN_TIMEOUT_MS) return;
+    markLost(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The backend reports a dead link at once; reconnecting starts after RECONNECT_MS.
+  const onLinkLost = useRef((_: string) => {});
+  onLinkLost.current = (err) => { if (connected && !busy) markLost(t("conn.dropped", { err })); };
+  useEffect(() => {
+    const un = api.onLinkLost((err) => onLinkLost.current(err));
+    return () => { un.then((f) => f()); };
+  }, []);
 
   // While lost, reconnect automatically with the last settings.
   useEffect(() => {
