@@ -10,6 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -49,6 +50,15 @@ fn lang(code: &str) -> Lang {
 
 pub fn confirmation_ok(address: u8, typed: &str) -> bool {
     typed.trim() == format!("FLASH {address}")
+}
+
+/// Clears the flash flag on drop, so even a panic in the flash thread cannot leave the app locked.
+pub struct FlashSlot(Arc<AtomicBool>);
+
+impl Drop for FlashSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Claim the single flash slot; false if a flash is already running.
@@ -191,18 +201,23 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             return Err(e);
         }
     };
+    let slot = FlashSlot(flashing);
     std::thread::spawn(move || {
         let mut last = None;
-        let result = session::flash_with_progress(&mut link, address, &image, &mut log, session::Options::default(), &mut |p| {
-            last = Some(p);
-            let _ = app.emit("firmware-progress", progress_event(p));
-        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session::flash_with_progress(&mut link, address, &image, &mut log, session::Options::default(), &mut |p| {
+                last = Some(p);
+                let _ = app.emit("firmware-progress", progress_event(p));
+            })
+        }));
         drop(link);
+        let log = log_path.display().to_string();
         let done = match result {
-            Ok(r) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log: log_path.display().to_string() },
-            Err(e) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log: log_path.display().to_string() },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log },
         };
-        flashing.store(false, Ordering::SeqCst);
+        drop(slot);
         let _ = app.emit("firmware-done", done);
     });
     Ok(())
@@ -250,6 +265,21 @@ mod tests {
         assert!(!try_begin(&flag));
         flag.store(false, Ordering::SeqCst);
         assert!(try_begin(&flag));
+    }
+
+    #[test]
+    fn flash_slot_clears_flag_on_drop_and_panic() {
+        let flag = Arc::new(AtomicBool::new(true));
+        drop(FlashSlot(flag.clone()));
+        assert!(!flag.load(Ordering::SeqCst));
+        flag.store(true, Ordering::SeqCst);
+        let slot = FlashSlot(flag.clone());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _slot = slot;
+            panic!("boom");
+        }));
+        assert!(r.is_err());
+        assert!(!flag.load(Ordering::SeqCst));
     }
 
     #[test]

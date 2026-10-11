@@ -398,6 +398,15 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs])
-        .run(tauri::generate_context!())
-        .expect("error while running OpenBMS Monitor");
+        .build(tauri::generate_context!())
+        .expect("error while running OpenBMS Monitor")
+        .run(|app, event| {
+            // quitting (Cmd+Q, menu, dock) bypasses CloseRequested
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if app.state::<AppState>().flashing.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    let _ = app.emit("firmware-busy", ());
+                }
+            }
+        });
 }
