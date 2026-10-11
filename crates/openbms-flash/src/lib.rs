@@ -4,8 +4,9 @@
 //! vendor's `FirmwareUpdate.exe` does: an ASCII restart (CID2 0x45 type 6) opens a window of about
 //! 0.65 s in which the bootloader answers binary frames (`::::` R/W F L/E/D/G … `\r\r\r\r`).
 //!
-//! Unlike the monitor, this crate **writes** to the BMS. Only original vendor images (`.ehex`) whose
-//! hash is listed in [`known`] are accepted.
+//! Unlike the monitor, this crate **writes** to the BMS. The CLI accepts known vendor `.ehex`
+//! code hashes by default; `--allow-custom-firmware` permits structurally valid images with an
+//! unknown code hash. Library callers must apply their own image authorization policy.
 
 pub mod boot;
 pub mod ehex;

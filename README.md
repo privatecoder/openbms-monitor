@@ -53,17 +53,21 @@ npm run tauri dev               # desktop app
 
 ## Firmware updater (separate CLI)
 
-`openbms-flash` uses the **RS485-1/2 pack bus at 19200 baud**, not the CAN-socket RS485 pair. It accepts only validated original EMU1101 `.ehex` releases in its built-in allowlist (16.06.x). No firmware update can be started from the monitor UI. The CLI and simulator have been tested; a real flash has not yet been verified.
+`openbms-flash` uses the **RS485-1/2 pack bus at 19200 baud**, not the CAN-socket RS485 pair. By default it accepts the six validated original EMU1101 `.ehex` releases in its built-in allowlist (16.06.x). `--allow-custom-firmware` permits an unknown code hash after the same strict `.ehex` format and device-header checks. No firmware update can be started from the monitor UI. A vendor-image flash has been verified on one lab board; custom firmware has not been tested on hardware.
 
 ```sh
 cargo run -p openbms-flash -- dry-run --image vendor.ehex
+cargo run -p openbms-flash -- dry-run --image custom.ehex --allow-custom-firmware
 cargo run -p openbms-flash -- --serial /dev/cu.usbserial-XXXX probe --address 0 --log probe.log
 cargo run -p openbms-flash -- --serial /dev/cu.usbserial-XXXX flash --address 0 --image vendor.ehex --log flash.log
+cargo run -p openbms-flash -- --serial /dev/cu.usbserial-XXXX flash --address 0 --image custom.ehex --allow-custom-firmware --log custom-flash.log
+# If measured behavior on another board requires a pause after each reply:
+cargo run -p openbms-flash -- --serial /dev/cu.usbserial-XXXX --frame-gap-ms 100 flash --address 0 --image vendor.ehex --log flash-with-gap.log
 ```
 
-`dry-run` does not open a port. `probe` reads the device, sends an application reset and `R F L`, then waits for the application to return; it sends no flash write. `flash` validates and precomputes every block before opening the port, checks the target and pack bus, then requires the exact interactive phrase `FLASH <address>` before sending anything to the bootloader. The log file must be new and records TX/RX bytes and state markers. No timed-out write block is retried. After `W F E`, an error may leave the board in update mode; preserve the log and do not blindly restart the command.
+`dry-run` does not open a port. `probe` reads the device, sends an application reset and `R F L`, then waits for the application to return; it sends no flash write. `flash` validates and precomputes every block before opening the port, checks the target and pack bus, then requires the exact interactive phrase `FLASH <address>` for a known image or `FLASH CUSTOM <address>` for an unknown code hash before sending anything to the bootloader. The log file must be new and records TX/RX bytes and state markers. No timed-out write block is retried. After `W F E`, an error may leave the board in update mode; preserve the log and do not blindly restart the command.
 
-The current flasher deliberately keeps at least 350 ms between bootloader frames, matching the vendor's first-test timing. It rejects the available 16.04.06 release because its application uses a different pack-bus baud rate. Use a quiet, exclusive pack bus with one target; a master polling slaves on that bus can interfere with the unaddressed binary bootloader frames.
+The flasher waits for each bootloader reply, then sends the next frame without a fixed pause by default. The 0 ms timing completed a full 16.06.13 lab flash in 33.4 seconds on one board using an independently checked test script. `--frame-gap-ms` accepts 0–1000 ms after each complete reply; increase it if measurements on another board require a pause. The 50 ms reset-to-`R F L` delay and 10 s reply timeout remain fixed. Each bootloader reply time is logged, and a successful flash prints the minimum, median and maximum `W F D` response times. The default allowlist excludes the available 16.04.06 release because its application uses 9600 baud on the pack bus. The override can send it, but the current 19200 baud post-check cannot verify that application. Custom firmware likewise needs compatible 19200 baud replies to pass the post-check. Use a quiet, exclusive pack bus with one target; a master polling slaves on that bus can interfere with the unaddressed binary bootloader frames.
 
 App data (own cells, recordings, saved parameters) lives in the platform's app data folder under `io.github.privatecoder.openbms-monitor`.
 

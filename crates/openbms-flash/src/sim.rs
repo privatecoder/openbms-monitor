@@ -15,6 +15,8 @@ pub struct BootSim {
     data_writes: usize,
     reject_block: Option<usize>,
     boot_writes: Vec<(u8, Duration)>,
+    boot_ack_delay: Duration,
+    boot_reply_ready_at: Duration,
 }
 
 impl BootSim {
@@ -29,7 +31,12 @@ impl BootSim {
             data_writes: 0,
             reject_block: None,
             boot_writes: Vec::new(),
+            boot_ack_delay: Duration::ZERO,
+            boot_reply_ready_at: Duration::ZERO,
         }
+    }
+    pub fn set_boot_ack_delay(&mut self, delay: Duration) {
+        self.boot_ack_delay = delay;
     }
     pub fn reject_data_block(&mut self, index: usize) {
         self.reject_block = Some(index);
@@ -113,6 +120,9 @@ impl BootSim {
             }
             _ => {}
         }
+        if !self.pending.is_empty() {
+            self.boot_reply_ready_at = self.now + self.boot_ack_delay;
+        }
     }
 }
 
@@ -138,7 +148,7 @@ impl Link for BootSim {
         Ok(())
     }
     fn read_raw(&mut self, out: &mut [u8]) -> Result<usize> {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() || self.now < self.boot_reply_ready_at {
             std::thread::sleep(Duration::from_millis(1));
             self.now += Duration::from_millis(1);
             return Ok(0);
