@@ -3,7 +3,7 @@ import { confirmationPhrase, progressFraction, steps, type FwSetup } from "./fir
 
 const image = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab" };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
-const base: FwSetup = { running: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "" };
+const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "" };
 
 describe("firmware steps", () => {
   it("check pack needs port and image", () => {
@@ -27,6 +27,16 @@ describe("firmware steps", () => {
   it("nothing is editable while running", () => {
     const s = steps({ ...base, typed: "FLASH 0", running: true });
     expect(s).toEqual({ image: false, inspect: false, confirm: false, start: false });
+  });
+  it("a shown result blocks a second run with the old confirmation", () => {
+    const s = steps({ ...base, typed: "FLASH 0", done: true });
+    expect(s).toEqual({ image: false, inspect: false, confirm: false, start: false });
+  });
+  it("after New update the pack must be checked and confirmed again", () => {
+    // what reset() and start() leave behind
+    const cleared = { ...base, target: null, checkedFor: null, typed: "" };
+    expect(steps(cleared)).toEqual({ image: true, inspect: true, confirm: false, start: false });
+    expect(steps({ ...cleared, typed: "FLASH 0" }).start).toBe(false);
   });
 });
 

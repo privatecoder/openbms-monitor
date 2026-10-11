@@ -4,6 +4,8 @@ export const confirmationPhrase = (address: number) => `FLASH ${address}`;
 
 export interface FwSetup {
   running: boolean;
+  /** a result is shown; continuing needs "New update" */
+  done: boolean;
   port: string;
   address: number;
   image: FirmwareImage | null;
@@ -15,7 +17,8 @@ export interface FwSetup {
 
 /** Which steps are usable. A checked pack counts only for the port and address it was read from. */
 export function steps(s: FwSetup) {
-  if (s.running) return { image: false, inspect: false, confirm: false, start: false };
+  // the confirmation is used up by a run: nothing is usable until the result is dismissed
+  if (s.running || s.done) return { image: false, inspect: false, confirm: false, start: false };
   const inspect = s.port !== "" && s.image !== null;
   const confirm = inspect && s.target !== null && s.checkedFor?.port === s.port && s.checkedFor.address === s.address;
   return { image: true, inspect, confirm, start: confirm && s.typed.trim() === confirmationPhrase(s.address) };

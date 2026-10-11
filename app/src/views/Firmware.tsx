@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, FolderOpen, TriangleAlert } from "lucide-react";
+import { CircleCheck, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress } from "../api";
 import { Button } from "../components/ui/button";
 import { useNow } from "../components/live";
@@ -44,7 +44,8 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
   const startedAt = useRef(0);
   const now = useNow(500);
 
-  useEffect(() => { api.listPorts().then(setPorts).catch(() => setPorts([])); }, []);
+  const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
+  useEffect(loadPorts, []);
   useEffect(() => {
     const subs = [
       api.onFirmwareProgress(setProgress),
@@ -54,7 +55,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     return () => { subs.forEach((s) => s.then((f) => f())); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const s = steps({ running, port, address, image, target, checkedFor, typed });
+  const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed });
   const phrase = confirmationPhrase(address);
 
   const chooseImage = async () => {
@@ -79,10 +80,12 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     if (!path) return;
     // the backend stops the monitor here too (it may have been reconnected since the check)
     if (connected) onMonitorStopped();
-    setError(null); setDone(null); setProgress(null); setCloseRefused(false);
+    const confirmation = typed;
+    // one confirmation, one run: the pack has to be checked and confirmed again for the next one
+    setError(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
     try {
       setRunning(true); onRunning(true); startedAt.current = Date.now();
-      await api.firmwareStart(port, address, path, typed, lang);
+      await api.firmwareStart(port, address, path, confirmation, lang);
     } catch (e) { setRunning(false); onRunning(false); setError(String(e)); }
   };
 
@@ -103,6 +106,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
             <option value="">{t("fw.choosePort")}</option>
             {ports.map((p) => <option key={p}>{p}</option>)}
           </select>
+          <Button variant="ghost" size="icon" disabled={running} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
           <label className="flex items-center gap-2 text-sm text-muted">{t("fw.address")}
             <select className={input} value={address} disabled={running} onChange={(e) => setAddress(Number(e.target.value))}>
               {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
@@ -151,7 +155,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
                   <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.failTitle")}</p>
                   <p className="text-sm">{done.error}</p>
                   {done.stage && <p className="text-sm text-muted">{t("fw.failStage", { stage: t(`fw.stage.${done.stage}`, { n: (progress?.block ?? 0) + 1, total: progress?.total ?? 0 }) })}</p>}
-                  <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
+                  <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
                 </>
               )}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
