@@ -253,14 +253,16 @@ fn run(cli: Cli) -> Result<()> {
             )?;
             let result = session::flash(&mut link, *address, &image, &mut log_file, options)?;
             println!(
-                "{}: {} {} | {}",
+                "{}: {} {} | {} | {} {}",
                 lang.pick("Fertig", "Complete"),
                 result.blocks,
                 lang.pick("Blöcke", "blocks"),
                 lang.pick(
                     "App antwortet auf 0x51/0x42/0x44",
                     "app answered 0x51/0x42/0x44"
-                )
+                ),
+                lang.pick("Version jetzt", "version now"),
+                result.after.firmware_version
             );
             println!(
                 "W F D {} ({}): {:.1} / {:.1} / {:.1} ms",
