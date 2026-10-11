@@ -1,5 +1,5 @@
 //! Probe and flash state machine. No write is retried: whether the bootloader permits duplicate
-//! writes has not been measured. The first hardware flash uses at least 350 ms between frames.
+//! writes has not been measured. Each bootloader reply is awaited before the next frame.
 
 use crate::{boot, ehex::Image, link::Link, Error, Result};
 use openbms_proto::{frame, DeviceInfo};
@@ -18,7 +18,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             boot_delay: Duration::from_millis(50),
-            min_frame_gap: Duration::from_millis(350),
+            min_frame_gap: Duration::ZERO,
             ack_timeout: Duration::from_secs(10),
             post_timeout: Duration::from_secs(20),
         }
@@ -34,6 +34,36 @@ pub struct FlashResult {
     pub before: DeviceInfo,
     pub blocks: usize,
     pub app_returned: bool,
+    pub wfd_reply_times: ReplyTimes,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ReplyTimes {
+    pub min: Duration,
+    pub median: Duration,
+    pub max: Duration,
+}
+
+impl ReplyTimes {
+    fn from_samples(mut samples: Vec<Duration>) -> Result<Self> {
+        samples.sort_unstable();
+        let count = samples.len();
+        let min = *samples
+            .first()
+            .ok_or_else(|| Error::Proto("no W F D replies".into()))?;
+        let max = *samples.last().unwrap();
+        let median = if count.is_multiple_of(2) {
+            (samples[count / 2 - 1] + samples[count / 2]) / 2
+        } else {
+            samples[count / 2]
+        };
+        Ok(Self { min, median, max })
+    }
+}
+
+struct BootReply {
+    frame: boot::Frame,
+    elapsed: Duration,
 }
 
 fn log(log: &mut impl Write, label: &str, bytes: &[u8]) -> Result<()> {
@@ -113,12 +143,17 @@ fn read_boot(
     link: &mut impl Link,
     log_file: &mut impl Write,
     timeout: Duration,
-) -> Result<boot::Frame> {
+    sent_at: Instant,
+) -> Result<(boot::Frame, Duration)> {
     let deadline = Instant::now() + timeout;
     let mut pending = Vec::new();
     let mut buf = [0u8; 512];
     while Instant::now() < deadline {
-        let n = receive(link, log_file, &mut buf)?;
+        let n = link.read_raw(&mut buf)?;
+        let received_at = Instant::now();
+        if n > 0 {
+            log(log_file, "RX", &buf[..n])?;
+        }
         pending.extend_from_slice(&buf[..n]);
         if let Some(start) = pending.windows(4).position(|w| w == b"::::") {
             if start > 0 {
@@ -132,7 +167,8 @@ fn read_boot(
                     )));
                 }
                 if pending.len() >= len + 17 {
-                    return boot::decode(&pending[..len + 17]);
+                    let frame = boot::decode(&pending[..len + 17])?;
+                    return Ok((frame, received_at.duration_since(sent_at)));
                 }
             }
         } else if pending.len() > 3 {
@@ -151,15 +187,36 @@ fn boot_exchange(
     bytes: &[u8],
     log_file: &mut impl Write,
     options: Options,
-) -> Result<boot::Frame> {
+) -> Result<BootReply> {
     link.clear_input()?;
-    send(link, log_file, bytes)?;
-    let answer = read_boot(link, log_file, options.ack_timeout);
-    // Wait after receiving the ACK, so even delayed responses preserve the vendor's minimum gap.
-    link.wait(options.min_frame_gap);
-    let answer = answer?;
+    log(log_file, "TX", bytes)?;
+    let started = Instant::now();
+    link.write_raw(bytes)?;
+    let answer = read_boot(link, log_file, options.ack_timeout, started);
+    if let Ok((reply, elapsed)) = &answer {
+        let command = std::str::from_utf8(&bytes[4..7]).unwrap_or("???");
+        let response = format!(
+            "{}{}{}",
+            reply.cid1 as char, reply.cid2 as char, reply.cid3 as char
+        );
+        note(
+            log_file,
+            &format!(
+                "TIMING command={command} response={response} response_ms={:.1}",
+                elapsed.as_secs_f64() * 1000.0
+            ),
+        )?;
+    }
+    // The measured bootloader ACK means it is ready for the next frame.
+    if !options.min_frame_gap.is_zero() {
+        link.wait(options.min_frame_gap);
+    }
+    let (answer, elapsed) = answer?;
     match (answer.cid1, answer.cid2, answer.cid3) {
-        (b'R' | b'W', b'F', b'B') => Ok(answer),
+        (b'R' | b'W', b'F', b'B') => Ok(BootReply {
+            frame: answer,
+            elapsed,
+        }),
         (b'R', b'F', b'N') => Err(Error::Rejected),
         _ => Err(Error::Unexpected(format!(
             "{}{}{}",
@@ -221,6 +278,7 @@ fn enter_boot(
         Error::Timeout { .. } => Error::NoBootloader(options.ack_timeout),
         other => other,
     })?;
+    let answer = answer.frame;
     if answer.cid1 != b'R' || answer.address != 0 || answer.data.len() != 2 {
         return Err(Error::Unexpected(
             "R F L did not return a two-byte packet size".into(),
@@ -326,9 +384,11 @@ pub fn flash(
         "sending W F E; board is in update mode until application restart",
     )?;
     boot_exchange(link, &frames[1], log_file, options).map_err(|e| uncertain("W F E", e))?;
+    let mut wfd_times = Vec::with_capacity(frames.len() - 3);
     for (index, frame) in frames[2..frames.len() - 1].iter().enumerate() {
-        boot_exchange(link, frame, log_file, options)
+        let reply = boot_exchange(link, frame, log_file, options)
             .map_err(|e| uncertain(&format!("W F D block {index}"), e))?;
+        wfd_times.push(reply.elapsed);
     }
     boot_exchange(link, frames.last().unwrap(), log_file, options)
         .map_err(|e| uncertain("W F G", e))?;
@@ -339,6 +399,16 @@ pub fn flash(
         .map_err(|e| uncertain("0x42 post-check", e))?;
     ascii_query(link, address, 0x44, log_file, ascii_timeout)
         .map_err(|e| uncertain("0x44 post-check", e))?;
+    let wfd_reply_times = ReplyTimes::from_samples(wfd_times)?;
+    note(
+        log_file,
+        &format!(
+            "WFD response_ms min={:.1} median={:.1} max={:.1}",
+            wfd_reply_times.min.as_secs_f64() * 1000.0,
+            wfd_reply_times.median.as_secs_f64() * 1000.0,
+            wfd_reply_times.max.as_secs_f64() * 1000.0,
+        ),
+    )?;
     note(
         log_file,
         "flash complete; application answered 0x51, 0x42 and 0x44",
@@ -347,5 +417,23 @@ pub fn flash(
         before,
         blocks: frames.len() - 3,
         app_returned: true,
+        wfd_reply_times,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reply_time_summary_uses_middle_sample_or_average_of_middle_pair() {
+        let ms = Duration::from_millis;
+        let odd = ReplyTimes::from_samples(vec![ms(233), ms(153), ms(156)]).unwrap();
+        assert_eq!((odd.min, odd.median, odd.max), (ms(153), ms(156), ms(233)));
+        let even = ReplyTimes::from_samples(vec![ms(233), ms(153), ms(230), ms(156)]).unwrap();
+        assert_eq!(
+            (even.min, even.median, even.max),
+            (ms(153), ms(193), ms(233))
+        );
+    }
 }
