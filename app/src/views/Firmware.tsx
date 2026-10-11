@@ -77,6 +77,8 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
 
   const start = async () => {
     if (!path) return;
+    // the backend stops the monitor here too (it may have been reconnected since the check)
+    if (connected) onMonitorStopped();
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     try {
       setRunning(true); onRunning(true); startedAt.current = Date.now();
