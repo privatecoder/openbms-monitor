@@ -324,6 +324,7 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
             {check.trend?.kind === "resistance" && `, ${t("pairs.gapGrows", { r: fmt(Math.abs(check.trend.milliohm), 1, "mΩ") })}`}
           </span>
         )}
+        <InfoIcon id="topic.pairRead" className="ml-1.5 align-[-2px]" />
       </div>
     </div>
   );
