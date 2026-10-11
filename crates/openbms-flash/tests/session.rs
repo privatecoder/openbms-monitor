@@ -321,5 +321,8 @@ fn flash_with_progress_sends_the_same_frames_as_flash() {
         &mut |_| {},
     )
     .unwrap();
-    assert_eq!(tx(plain), tx(with));
+    let plain = tx(plain);
+    // an empty log on both sides would compare equal without testing anything
+    assert!(!plain.is_empty());
+    assert_eq!(plain, tx(with));
 }
