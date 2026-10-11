@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine } from "lucide-react";
+import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
+import { Switch } from "../components/PackPicker";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
@@ -10,7 +11,7 @@ import { RecordingEntry } from "./Recording";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, view, setView, site, packs }: {
+export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance }: {
   connected: boolean;
   site: string;
   packs: number[];
@@ -19,6 +20,9 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
   onDisconnected: () => void;
   view: string;
   setView: (v: string) => void;
+  locked: boolean;
+  maintenance: boolean;
+  setMaintenance: (v: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
   const [kind, setKind] = useState<"tcp" | "serial">(() => (localStorage.getItem("conn.kind") as "tcp" | "serial") ?? "tcp");
@@ -90,7 +94,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
 
   // While lost, reconnect automatically with the last settings.
   useEffect(() => {
-    if (lost && !busy && !connected && now - lastTry >= RECONNECT_MS) connect(true);
+    if (lost && !busy && !connected && !locked && now - lastTry >= RECONNECT_MS) connect(true);
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -101,11 +105,11 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
         <span className="font-display text-xl font-semibold">{t("app")}</span>
       </div>
       <nav className="space-y-1 px-3">
-        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["history", ChartLine], ["params", SlidersHorizontal], ["cells", Database]].map(([id, Icon]) => {
+        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["history", ChartLine], ["params", SlidersHorizontal], ["cells", Database], ...(maintenance ? [["firmware", Cpu]] : [])].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
-            <button key={id as string} onClick={() => setView(id as string)}
-              className={cn("flex w-full items-center gap-2 rounded-md px-3 py-2", view === id ? "bg-sunken font-medium text-ink" : "text-muted hover:bg-sunken/60 hover:text-ink")}>
+            <button key={id as string} onClick={() => setView(id as string)} disabled={locked}
+              className={cn("flex w-full items-center gap-2 rounded-md px-3 py-2 disabled:opacity-50", view === id ? "bg-sunken font-medium text-ink" : "text-muted hover:bg-sunken/60 hover:text-ink")}>
               <I className="h-4 w-4" />{t(`nav.${id}`)}
             </button>
           );
@@ -146,10 +150,10 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
           </select>
         </label>
         <div className="flex gap-2">
-          <Button variant="primary" className="flex-1" disabled={busy || !target} onClick={() => connect()}>
+          <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>
             {busy ? t("conn.scanning") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
-          {(connected || lost) && <Button variant="ghost" onClick={disconnect}>{t("conn.disconnect")}</Button>}
+          {(connected || lost) && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
         {msg && <p className={cn("text-sm", lost ? "text-alarm" : "text-muted")}>{msg}</p>}
         {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
@@ -158,7 +162,10 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
       <div className="mt-5 border-t border-line px-3 pt-3">
         <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
       </div>
-      <div className="mt-auto flex items-center gap-1 border-t border-line px-3 py-3">
+      <label className="mt-auto flex items-center gap-2 border-t border-line px-5 py-3 text-sm text-muted">
+        <Switch checked={maintenance} onChange={setMaintenance} disabled={locked} />{t("maint")}
+      </label>
+      <div className="flex items-center gap-1 border-t border-line px-3 py-3">
         <Button variant="ghost" size="sm" onClick={() => i18n.changeLanguage(i18n.language === "de" ? "en" : "de")}>
           <Languages className="h-4 w-4" />{i18n.language.toUpperCase()}
         </Button>

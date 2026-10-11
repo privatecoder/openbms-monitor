@@ -5,7 +5,7 @@ const resources = {
   de: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Übersicht", diag: "Diagnose", history: "Verlauf", params: "Parameter", cells: "Zellen", help: "Hilfe" },
+      nav: { dashboard: "Übersicht", diag: "Diagnose", history: "Verlauf", params: "Parameter", cells: "Zellen", firmware: "Firmware", help: "Hilfe" },
       hist: {
         title: "Verlauf", intro: "Aufgezeichnete Werte über die Zeit: Strom, SOC, Spannungen und Temperaturen je Pack, die Werte des Masters, die Zellen eines Packs und die Meldungen.",
         site: "Anlage", hours_one: "{{count}} h", hours_other: "{{count}} h", daysShort_one: "{{count}} Tag", daysShort_other: "{{count}} Tage", all: "Alles",
@@ -42,6 +42,27 @@ const resources = {
         chargeCutoff: "Ladeschluss {{v}}", dischargeCutoff: "Entladeschluss {{v}}", range: "erlaubt {{lo}} bis {{hi}}",
         noChargeNow: "Laden jetzt nicht erlaubt (nur {{lo}} bis {{hi}})", allowedAt: "erlaubt {{a}} bei {{t}}", standard: "empfohlen {{a}}", continuous: "max. {{a}} dauerhaft",
         level: { ok: "im Rahmen", near: "nahe an der Grenze", over: "außerhalb" },
+      },
+      maint: "Wartungsfunktionen anzeigen",
+      fw: {
+        title: "Firmware", intro: "Spielt eine Original-Firmware von Seplos auf ein einzelnes Pack, über RS485-1/2 mit 19200 Baud. Nur freigegebene Versionen.",
+        demo: "Firmware-Updates gehen nur in der Desktop-App.",
+        s1: "Verbindung", port: "Port", choosePort: "Port wählen", address: "Pack-Adresse (DIP)",
+        busHint: "Adapter an RS485-1 oder RS485-2 dieses Packs. Kein anderes Pack und kein anderes Programm am Bus.",
+        monitorWillStop: "Die Monitor-Verbindung wird beim Prüfen getrennt.",
+        s2: "Image", chooseImage: ".ehex-Datei wählen", imageInfo: "{{release}} · {{blocks}} Blöcke · {{bytes}} Byte", sha: "SHA-256 {{sha}}",
+        s3: "Pack prüfen", inspect: "Pack prüfen", inspecting: "Prüfe (Bus still? Pack antwortet?) …", target: "{{name}}, Firmware {{version}}, {{can}}",
+        s4: "Bestätigen", summary: "Pack {{address}}: Firmware {{from}} → {{to}}",
+        risks: "Ab dem Löschen hat das Pack keine gültige Firmware, bis das Update fertig ist. Strom und Kabel nicht trennen, das Fenster bleibt offen. Blöcke werden nicht wiederholt.",
+        typeToConfirm: "Zum Bestätigen {{phrase}} eintippen", start: "Firmware aufspielen",
+        s5: "Ablauf", elapsed: "{{s}} s",
+        stage: { preflight: "Prüfe Pack …", bootloader: "Starte Bootloader …", erase: "Lösche …", block: "Schreibe Block {{n}} von {{total}}", finalize: "Schließe ab …", app_restart: "Warte auf Neustart …", post_check: "Prüfe neue Firmware …" },
+        busy: "Ein Firmware-Update läuft. Das Fenster bleibt offen, bis es fertig ist.",
+        okTitle: "Update erfolgreich", okText: "Firmware {{from}} → {{to}}",
+        failTitle: "Update fehlgeschlagen", failStage: "Abgebrochen bei: {{stage}}",
+        failBefore: "Die alte Firmware läuft weiter; es wurde nichts geschrieben.",
+        failAfter: "Das Pack ist vermutlich im Update-Modus. Nicht einfach neu starten: Log sichern und Hilfe lesen.",
+        log: "Log", showLog: "Im Ordner zeigen", back: "Zurück zum Monitor", again: "Neues Update",
       },
       par: {
         title: "Parameter", intro: "Einstellungen der Packs lesen und vergleichen: aus den Packs über RS485-1/2 oder aus BatteryMonitor-Exporten. Die App ändert nichts am BMS.",
@@ -169,7 +190,7 @@ const resources = {
   en: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Overview", diag: "Diagnosis", history: "History", params: "Parameters", cells: "Cells", help: "Help" },
+      nav: { dashboard: "Overview", diag: "Diagnosis", history: "History", params: "Parameters", cells: "Cells", firmware: "Firmware", help: "Help" },
       hist: {
         title: "History", intro: "Recorded values over time: current, SOC, voltages and temperatures per pack, the master's values, the cells of one pack and the messages.",
         site: "Installation", hours_one: "{{count}} h", hours_other: "{{count}} h", daysShort_one: "{{count}} day", daysShort_other: "{{count}} days", all: "All",
@@ -206,6 +227,27 @@ const resources = {
         chargeCutoff: "charge cut-off {{v}}", dischargeCutoff: "discharge cut-off {{v}}", range: "allowed {{lo}} to {{hi}}",
         noChargeNow: "charging not allowed now (only {{lo}} to {{hi}})", allowedAt: "allowed {{a}} at {{t}}", standard: "recommended {{a}}", continuous: "max. {{a}} continuous",
         level: { ok: "within limits", near: "close to the limit", over: "outside" },
+      },
+      maint: "Show maintenance functions",
+      fw: {
+        title: "Firmware", intro: "Writes an original Seplos firmware to a single pack over RS485-1/2 at 19200 baud. Released versions only.",
+        demo: "Firmware updates need the desktop app.",
+        s1: "Connection", port: "Port", choosePort: "Choose port", address: "Pack address (DIP)",
+        busHint: "Adapter on RS485-1 or RS485-2 of this pack. No other pack and no other program on the bus.",
+        monitorWillStop: "Checking the pack disconnects the monitor.",
+        s2: "Image", chooseImage: "Choose .ehex file", imageInfo: "{{release}} · {{blocks}} blocks · {{bytes}} bytes", sha: "SHA-256 {{sha}}",
+        s3: "Check pack", inspect: "Check pack", inspecting: "Checking (bus quiet? pack answers?) …", target: "{{name}}, firmware {{version}}, {{can}}",
+        s4: "Confirm", summary: "Pack {{address}}: firmware {{from}} → {{to}}",
+        risks: "From erasing on, the pack has no valid firmware until the update completes. Do not disconnect power or cable; the window stays open. Blocks are not retried.",
+        typeToConfirm: "Type {{phrase}} to confirm", start: "Write firmware",
+        s5: "Progress", elapsed: "{{s}} s",
+        stage: { preflight: "Checking pack …", bootloader: "Starting bootloader …", erase: "Erasing …", block: "Writing block {{n}} of {{total}}", finalize: "Finishing …", app_restart: "Waiting for restart …", post_check: "Checking new firmware …" },
+        busy: "A firmware update is running. The window stays open until it completes.",
+        okTitle: "Update complete", okText: "Firmware {{from}} → {{to}}",
+        failTitle: "Update failed", failStage: "Stopped at: {{stage}}",
+        failBefore: "The old firmware keeps running; nothing was written.",
+        failAfter: "The pack is probably in update mode. Do not just restart it: keep the log and read the help.",
+        log: "Log", showLog: "Show in folder", back: "Back to monitor", again: "New update",
       },
       par: {
         title: "Parameters", intro: "Read and compare the packs' settings: from the packs via RS485-1/2 or from BatteryMonitor exports. The app changes nothing in the BMS.",
