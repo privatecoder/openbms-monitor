@@ -66,7 +66,8 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ multiple: false, filters: [{ name: "EMU1101 firmware", extensions: ["ehex"] }] });
     if (typeof picked !== "string") return;
-    setImage(null); setPath(null);
+    // a phrase typed for the previous image may not fit the new one
+    setImage(null); setPath(null); setTyped("");
     try { setImage(await api.firmwareCheckImage(picked, allowCustom, lang)); setPath(picked); } catch (e) { setError(String(e)); }
   };
 

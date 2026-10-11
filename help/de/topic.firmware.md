@@ -1,6 +1,6 @@
 ---
 title: Firmware-Update
-short: Spielt eine Original-Firmware von Seplos auf ein einzelnes Pack. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
+short: Spielt eine Firmware auf ein einzelnes Pack: freigegebene Original-Versionen, auf Wunsch auch eigene. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
 related: topic.buses, topic.connection
 ---
 - **Warum RS485-1/2:** Der Bootloader des BMS hört nur auf diesem Bus (19200 Baud). Über die CAN-Buchse geht kein Update.

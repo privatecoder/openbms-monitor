@@ -1,6 +1,6 @@
 ---
 title: Firmware update
-short: Writes an original Seplos firmware to a single pack. Visible only when maintenance functions are switched on.
+short: Writes firmware to a single pack: released original versions, on request also custom images. Visible only when maintenance functions are switched on.
 related: topic.buses, topic.connection
 ---
 - **Why RS485-1/2:** the BMS bootloader listens only on this bus (19200 baud). No update over the CAN socket.
