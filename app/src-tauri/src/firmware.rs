@@ -1,5 +1,6 @@
 //! Firmware update from the app: a guarded wrapper around `openbms-flash`. The app's image policy is
-//! the vendor allowlist; the flash runs on its own thread and reports progress as events.
+//! the vendor allowlist; other images only after an explicit opt-in and their own confirmation phrase.
+//! The flash runs on its own thread and reports progress as events.
 
 use crate::{reveal, stop_monitor, AppState};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
@@ -23,6 +24,8 @@ pub struct ImageInfo {
     bytes: usize,
     blocks: usize,
     sha256: String,
+    /// not in the vendor allowlist (accepted only with custom firmware allowed)
+    custom: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -48,8 +51,10 @@ fn lang(code: &str) -> Lang {
     if code.starts_with("de") { Lang::De } else { Lang::En }
 }
 
-pub fn confirmation_ok(address: u8, typed: &str) -> bool {
-    typed.trim() == format!("FLASH {address}")
+/// The phrase differs for custom images, so consent to one kind never covers the other.
+pub fn confirmation_ok(address: u8, custom: bool, typed: &str) -> bool {
+    let phrase = if custom { format!("FLASH CUSTOM {address}") } else { format!("FLASH {address}") };
+    typed.trim() == phrase
 }
 
 /// Clears the flash flag on drop, so even a panic in the flash thread cannot leave the app locked.
@@ -112,13 +117,19 @@ pub fn log_name(unix_s: u64, address: u8, what: &str) -> String {
     format!("{}_pack{address}_{what}.log", utc_stamp(unix_s))
 }
 
-/// Parse and authorize an image: only allowlisted vendor releases.
-pub fn image_info(bytes: &[u8]) -> openbms_flash::Result<(ehex::Image, ImageInfo)> {
+/// Parse and authorize an image: allowlisted vendor releases, or any image that passes the strict
+/// format and header checks when custom firmware is allowed.
+pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(ehex::Image, ImageInfo)> {
     let image = ehex::parse(bytes)?;
-    let release = known::identify(&image)?;
+    let release = match known::identify(&image) {
+        Ok(r) => Some(r.name),
+        Err(_) if allow_custom => None,
+        Err(e) => return Err(e),
+    };
     let blocks = session::dry_run(&image)?.len() - 3;
     let info = ImageInfo {
-        release: release.name.into(),
+        release: release.unwrap_or("custom").into(),
+        custom: release.is_none(),
         device: image.header.device.clone(),
         bytes: image.code.len(),
         blocks,
@@ -127,12 +138,12 @@ pub fn image_info(bytes: &[u8]) -> openbms_flash::Result<(ehex::Image, ImageInfo
     Ok((image, info))
 }
 
-fn read_image(path: &str, l: Lang) -> Result<(ehex::Image, ImageInfo), String> {
+fn read_image(path: &str, allow_custom: bool, l: Lang) -> Result<(ehex::Image, ImageInfo), String> {
     if !path.to_ascii_lowercase().ends_with(".ehex") {
         return Err(l.pick("Erwartet wird eine .ehex-Datei", "expected a .ehex file").into());
     }
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    image_info(&bytes).map_err(|e| e.text(l))
+    image_info(&bytes, allow_custom).map_err(|e| e.text(l))
 }
 
 fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -154,8 +165,8 @@ fn open_port(port: &str, l: Lang) -> Result<Connection, String> {
 }
 
 #[tauri::command]
-pub async fn firmware_check_image(path: String, lang: String) -> Result<ImageInfo, String> {
-    read_image(&path, self::lang(&lang)).map(|(_, info)| info)
+pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String) -> Result<ImageInfo, String> {
+    read_image(&path, allow_custom, self::lang(&lang)).map(|(_, info)| info)
 }
 
 /// Stops the monitor, then checks the target on the pack bus without resetting it.
@@ -173,16 +184,17 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
 
 /// Validates everything again, then flashes on its own thread and returns at once.
 #[tauri::command]
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, confirmation: String, lang: String) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)] // each argument is one value from the UI
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, confirmation: String, lang: String) -> Result<(), String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
     }
-    if !confirmation_ok(address, &confirmation) {
+    // the file may have changed since it was checked; the phrase must match what it is now
+    let (image, info) = read_image(&path, allow_custom, l)?;
+    if !confirmation_ok(address, info.custom, &confirmation) {
         return Err(openbms_flash::Error::Cancelled.text(l));
     }
-    // the file may have changed since it was checked
-    let (image, info) = read_image(&path, l)?;
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
@@ -191,7 +203,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         stop_monitor(&state)?;
         let link = open_port(&port, l)?;
         let (mut log, log_path) = new_log(&app, address, &info.release)?;
-        writeln!(log, "CONFIRMED target={address} code_sha256={} release={} source=app", info.sha256, info.release).map_err(|e| e.to_string())?;
+        writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
         Ok::<_, String>((link, log, log_path))
     })();
     let (mut link, mut log, log_path) = match prepared {
@@ -236,12 +248,20 @@ mod tests {
 
     #[test]
     fn confirmation_requires_exact_phrase() {
-        assert!(confirmation_ok(3, "FLASH 3"));
-        assert!(confirmation_ok(3, "  FLASH 3 "));
-        assert!(!confirmation_ok(3, "FLASH 4"));
-        assert!(!confirmation_ok(3, "flash 3"));
-        assert!(!confirmation_ok(3, "FLASH 3 now"));
-        assert!(!confirmation_ok(3, ""));
+        assert!(confirmation_ok(3, false, "FLASH 3"));
+        assert!(confirmation_ok(3, false, "  FLASH 3 "));
+        assert!(!confirmation_ok(3, false, "FLASH 4"));
+        assert!(!confirmation_ok(3, false, "flash 3"));
+        assert!(!confirmation_ok(3, false, "FLASH 3 now"));
+        assert!(!confirmation_ok(3, false, ""));
+    }
+
+    #[test]
+    fn custom_image_needs_its_own_phrase() {
+        assert!(confirmation_ok(3, true, "FLASH CUSTOM 3"));
+        assert!(!confirmation_ok(3, true, "FLASH 3"));
+        assert!(!confirmation_ok(3, false, "FLASH CUSTOM 3"));
+        assert!(!confirmation_ok(3, true, "FLASH CUSTOM 4"));
     }
 
     #[test]
@@ -315,7 +335,13 @@ mod tests {
         lines.push(record(0, &code, false));
         lines.push(record(5, &[0, 0, 0, 0xc1], false));
         lines.push(record(1, &[], false));
-        let err = image_info(lines.join("\n").as_bytes()).err().unwrap();
+        let bytes = lines.join("\n").into_bytes();
+        let err = image_info(&bytes, false).err().unwrap();
         assert!(err.to_string().contains("unknown or unsupported"));
+        // with custom firmware allowed, the same image passes the format checks and is marked
+        let (_, info) = image_info(&bytes, true).unwrap();
+        assert!(info.custom);
+        assert_eq!(info.release, "custom");
+        assert_eq!(info.device, "EMU1101_10D_HW16");
     }
 }

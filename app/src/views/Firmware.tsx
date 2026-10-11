@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CircleCheck, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress } from "../api";
 import { Button } from "../components/ui/button";
+import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
@@ -32,6 +33,8 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
   const [address, setAddress] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
+  // not remembered: every visit starts with the vendor allowlist only
+  const [allowCustom, setAllowCustom] = useState(false);
   const [target, setTarget] = useState<DeviceInfo | null>(null);
   const [checkedFor, setCheckedFor] = useState<{ port: string; address: number } | null>(null);
   const [typed, setTyped] = useState("");
@@ -56,7 +59,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed });
-  const phrase = confirmationPhrase(address);
+  const phrase = confirmationPhrase(address, image?.custom);
 
   const chooseImage = async () => {
     setError(null);
@@ -64,7 +67,13 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     const picked = await open({ multiple: false, filters: [{ name: "EMU1101 firmware", extensions: ["ehex"] }] });
     if (typeof picked !== "string") return;
     setImage(null); setPath(null);
-    try { setImage(await api.firmwareCheckImage(picked, lang)); setPath(picked); } catch (e) { setError(String(e)); }
+    try { setImage(await api.firmwareCheckImage(picked, allowCustom, lang)); setPath(picked); } catch (e) { setError(String(e)); }
+  };
+
+  const toggleCustom = (v: boolean) => {
+    setAllowCustom(v);
+    // switching off must not leave a custom image selected
+    if (!v && image?.custom) { setImage(null); setPath(null); setTyped(""); }
   };
 
   const inspect = async () => {
@@ -85,7 +94,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     setError(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
     try {
       setRunning(true); onRunning(true); startedAt.current = Date.now();
-      await api.firmwareStart(port, address, path, confirmation, lang);
+      await api.firmwareStart(port, address, path, allowCustom, confirmation, lang);
     } catch (e) { setRunning(false); onRunning(false); setError(String(e)); }
   };
 
@@ -118,8 +127,12 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
       </Step>
 
       <Step n={2} title={t("fw.s2")} active={s.image}>
-        <Button variant="ghost" disabled={!s.image} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
-        {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: image.release, blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
+        <div className="flex flex-wrap items-center gap-4">
+          <Button variant="ghost" disabled={!s.image} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
+          <label className="flex items-center gap-2 text-sm text-muted"><Switch checked={allowCustom} onChange={toggleCustom} disabled={!s.image} />{t("fw.allowCustom")}</label>
+        </div>
+        {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: image.custom ? t("fw.customName") : image.release, blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
+        {image?.custom && <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.customWarning")}</p>}
       </Step>
 
       <Step n={3} title={t("fw.s3")} active={s.inspect}>
@@ -128,7 +141,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
       </Step>
 
       <Step n={4} title={t("fw.s4")} active={s.confirm}>
-        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: target.firmware_version, to: image.release })}</p>}
+        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: target.firmware_version, to: image.custom ? t("fw.customName") : image.release })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />

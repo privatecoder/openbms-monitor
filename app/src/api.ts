@@ -86,7 +86,8 @@ export interface Series {
 }
 export interface ExportStats { rows: number; files: string[] }
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
-export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string }
+/** custom = not in the vendor allowlist (only with custom firmware allowed) */
+export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; custom: boolean }
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application. */
@@ -123,12 +124,12 @@ const tauriApi = {
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
-  firmwareCheckImage: (path: string, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, lang }),
+  firmwareCheckImage: (path: string, allowCustom: boolean, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, allowCustom, lang }),
   /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
   firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
   /** Returns at once; progress and result arrive as events. */
-  firmwareStart: (port: string, address: number, path: string, confirmation: string, lang: string) =>
-    invoke<void>("firmware_start", { port, address, path, confirmation, lang }),
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, confirmation: string, lang: string) =>
+    invoke<void>("firmware_start", { port, address, path, allowCustom, confirmation, lang }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
   onFirmwareDone: (f: (d: FirmwareDone) => void) => listen<FirmwareDone>("firmware-done", (e) => f(e.payload)),
   /** The window was not closed because a flash is running. */
