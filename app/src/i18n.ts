@@ -45,7 +45,7 @@ const resources = {
       },
       maint: "Wartungsfunktionen anzeigen",
       fw: {
-        title: "Firmware", intro: "Spielt eine Original-Firmware von Seplos auf ein einzelnes Pack, über RS485-1/2 mit 19200 Baud. Nur freigegebene Versionen.",
+        title: "Firmware", intro: "Spielt eine Firmware auf ein einzelnes Pack, über RS485-1/2 mit 19200 Baud. Freigegebene Original-Versionen; eigene Firmware nur nach ausdrücklicher Freigabe.",
         demo: "Firmware-Updates gehen nur in der Desktop-App.",
         s1: "Verbindung", port: "Port", choosePort: "Port wählen", refreshPorts: "Ports neu laden", address: "Pack-Adresse (DIP)",
         busHint: "Adapter an RS485-1 oder RS485-2 dieses Packs. Kein anderes Pack und kein anderes Programm am Bus.",
@@ -233,7 +233,7 @@ const resources = {
       },
       maint: "Show maintenance functions",
       fw: {
-        title: "Firmware", intro: "Writes an original Seplos firmware to a single pack over RS485-1/2 at 19200 baud. Released versions only.",
+        title: "Firmware", intro: "Writes firmware to a single pack over RS485-1/2 at 19200 baud. Released original versions; custom firmware only after an explicit opt-in.",
         demo: "Firmware updates need the desktop app.",
         s1: "Connection", port: "Port", choosePort: "Choose port", refreshPorts: "Reload ports", address: "Pack address (DIP)",
         busHint: "Adapter on RS485-1 or RS485-2 of this pack. No other pack and no other program on the bus.",
