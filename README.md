@@ -55,7 +55,7 @@ npm run tauri dev               # desktop app
 
 **In the app:** switch on *Show maintenance functions* at the bottom of the sidebar; the *Firmware* view then guides through port and pack address, image check, pack check, confirmation (`FLASH <address>`) and progress. It accepts only the allowlisted original images, uses a serial adapter on RS485-1/2 (19200 baud) with a single pack on the bus, and writes a log to the app data folder (`firmware-logs`). While it runs, the monitor is disconnected and the app cannot be closed.
 
-`openbms-flash` uses the **RS485-1/2 pack bus at 19200 baud**, not the CAN-socket RS485 pair. By default it accepts the six validated original EMU1101 `.ehex` releases in its built-in allowlist (16.06.x). `--allow-custom-firmware` permits an unknown code hash after the same strict `.ehex` format and device-header checks. No firmware update can be started from the monitor UI. A vendor-image flash has been verified on one lab board; custom firmware has not been tested on hardware.
+`openbms-flash` uses the **RS485-1/2 pack bus at 19200 baud**, not the CAN-socket RS485 pair. By default it accepts the six validated original EMU1101 `.ehex` releases in its built-in allowlist (16.06.x). `--allow-custom-firmware` permits an unknown code hash after the same strict `.ehex` format and device-header checks. The app's Firmware view (maintenance functions) offers the same guarded flow, for allowlisted images only. A vendor-image flash has been verified on one lab board; custom firmware has not been tested on hardware.
 
 ```sh
 cargo run -p openbms-flash -- dry-run --image vendor.ehex
