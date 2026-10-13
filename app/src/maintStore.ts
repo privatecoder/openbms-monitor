@@ -89,5 +89,8 @@ export function useMaint() {
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { installation, overview, setOverview: store, unassigned, other, attach, assign, switchTo, refresh, check };
+  /** installation and session in use right now (refs, not render values): for actions that outlive a render */
+  const current = useCallback(() => ({ installation: installationRef.current, session: overviewRef.current?.session?.id ?? null }), []);
+
+  return { installation, overview, current, setOverview: store, unassigned, other, attach, assign, switchTo, refresh, check };
 }

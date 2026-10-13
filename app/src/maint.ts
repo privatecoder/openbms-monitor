@@ -77,6 +77,11 @@ export function needsReplug(control: ControlEndpoint | null, packPort: string): 
   return control?.kind === "serial" && control.path === packPort;
 }
 
+/** A running action may write its result only while the installation and session it started with are still current. */
+export function workUnchanged(start: { installation: string; session: number | null }, now: { installation: string | null; session: number | null }): boolean {
+  return start.installation === now.installation && start.session === now.session;
+}
+
 export interface FlashCheck {
   overview: MaintOverview | null;
   inverter: boolean;
