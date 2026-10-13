@@ -46,6 +46,9 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const [image, setImage] = useState<FirmwareImage | null>(null);
   // not remembered: every visit starts with the vendor allowlist only
   const [allowCustom, setAllowCustom] = useState(false);
+  // a valid image that needs "allow custom firmware": kept so switching it on takes the same file
+  const [pending, setPending] = useState<{ path: string; info: FirmwareImage } | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
   const [target, setTarget] = useState<DeviceInfo | null>(null);
   const [checkedFor, setCheckedFor] = useState<{ port: string; address: number } | null>(null);
   const [typed, setTyped] = useState("");
@@ -169,17 +172,26 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   );
 
   const chooseImage = async () => {
-    setError(null);
+    setError(null); setImageError(null); setPending(null);
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ multiple: false, filters: [{ name: "EMU1101 firmware", extensions: ["ehex"] }] });
     if (typeof picked !== "string") return;
     // a phrase typed for the previous image may not fit the new one
     setImage(null); setPath(null); setTyped("");
-    try { setImage(await api.firmwareCheckImage(picked, allowCustom, lang)); setPath(picked); } catch (e) { setError(String(e)); }
+    try { setImage(await api.firmwareCheckImage(picked, allowCustom, lang)); setPath(picked); }
+    catch (e) {
+      // refused only because it is not an allowlisted original? then say so here and keep the file
+      if (!allowCustom) {
+        try { setPending({ path: picked, info: await api.firmwareCheckImage(picked, true, lang) }); return; } catch { /* a real format error: show the first one */ }
+      }
+      setImageError(String(e));
+    }
   };
 
   const toggleCustom = (v: boolean) => {
     setAllowCustom(v);
+    if (v && pending) { setImage(pending.info); setPath(pending.path); setTyped(""); setPending(null); }
+    if (!v) setPending(null);
     // switching off must not leave a custom image selected
     if (!v && image?.custom) { setImage(null); setPath(null); setTyped(""); }
   };
@@ -256,6 +268,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         </div>
         {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: imageLabel(image, t, true), blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
         {image && imageWarning(image) && <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t(imageWarning(image)!)}</p>}
+        {pending && <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>}
+        {imageError && <p className="text-sm text-alarm">{imageError}</p>}
       </Step>
 
       <Step n={3} title={t("fw.s3")} active={s.inspect}>
