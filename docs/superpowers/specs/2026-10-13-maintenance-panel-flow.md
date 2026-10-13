@@ -51,6 +51,8 @@ Bench feedback: three port pickers (control channel, an endpoint list with "add"
 
 Blocks (unclear updates) are listed above the steps; while one exists, steps 5–7 are locked with the block as the reason.
 
+End's pack bus step for a single pack (N = 0) always checks the quiet bus and 0x47 from address 0, but skips the slave scan when a scan without a slave was recorded for the same installation and the same session in this app run at most 30 minutes ago (set by the single-pack proof in start/set-slaves and by step 4's scan; a found slave or an error clears it, a new session or an app restart invalidates it). The progress line then reads "Slave scan skipped (passed n min ago)" (phase `scan-skipped`, detail `minutes`). The Values step's fresh 0x64 0/0 stays.
+
 ## Single pack without a control channel
 
 Without a control channel the app cannot read 0x64, and a DIP session with 1 pack needs one (single-pack proof). So step 1 has the explicit choice "work without a control channel" (step 2 then ends as the manual way), and step 4 offers, next to the DIP way, the operator statement "only this one pack is on the pack bus" — only while no session is open and the stored master state is absent or `unknown`. It marks step 4 as not needed; steps 3 and 5 stay required, and the flash's own preflight still checks the quiet bus. Both choices live in memory only and are cleared, like the inverter statement, when the connection is closed or lost.

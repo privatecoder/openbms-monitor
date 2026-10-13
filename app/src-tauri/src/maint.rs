@@ -14,7 +14,7 @@ use openbms_proto::MaintStatus;
 use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize, Debug)]
@@ -291,6 +291,36 @@ impl std::io::Write for ScanProgress<'_> {
     }
 }
 
+/// A slave scan that found no slave: installation, session (if one was open) and when (monotonic).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPass {
+    pub installation: String,
+    pub session: Option<i64>,
+    pub at: Instant,
+}
+
+/// How long a passed slave scan counts for End's pack bus step.
+pub const SCAN_VALID: Duration = Duration::from_secs(30 * 60);
+
+/// Whether End's Bus step (N = 0) must scan for slaves: yes unless a pass for this installation and this
+/// session is at most `SCAN_VALID` old.
+pub fn scan_needed(record: Option<&ScanPass>, installation: &str, session: Option<i64>, now: Instant) -> bool {
+    match record {
+        Some(r) => r.installation != installation || r.session != session || now.saturating_duration_since(r.at) > SCAN_VALID,
+        None => true,
+    }
+}
+
+/// Remember a scan that found no slave, or (`passed` false: a slave, an error) forget the installation's record.
+fn note_scan(state: &AppState, installation: &str, session: Option<i64>, passed: bool) {
+    let Ok(mut rec) = state.scan_pass.lock() else { return };
+    if passed {
+        *rec = Some(ScanPass { installation: installation.to_string(), session, at: Instant::now() });
+    } else if rec.as_ref().is_some_and(|r| r.installation == installation) {
+        *rec = None;
+    }
+}
+
 /// `bus::first_slave` with its progress shown.
 fn scan_for_slave(state: &AppState, link: &mut Connection) -> openbms_flash::Result<Option<u8>> {
     bus::first_slave(link, &SystemClock::new(), &mut ScanProgress { state, line: vec![] }, bus::SLAVE_WINDOW)
@@ -451,7 +481,14 @@ pub fn single_pack(state: Option<&StoredMasterState>, slave: Option<u8>) -> bool
 /// bus that it is the pack bus (quiet, 0x47 from address 0) and scan for a slave (`bus::first_slave`, two
 /// passes, fail-closed). Returns the fresh state and the scan result; a slave found is refused `slave-present`.
 /// Without a control channel nothing can be verified: `slaves-range`.
-fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<(StoredMasterState, Option<u8>), MaintError> {
+fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, session: Option<i64>) -> Result<(StoredMasterState, Option<u8>), MaintError> {
+    let r = verify_single_pack_scan(state, app, inst, port);
+    // a pass is remembered for End's pack bus step; a slave, an error or a master not at 0/0 forgets it
+    note_scan(state, &inst.id, session, matches!(&r, Ok((fresh, None)) if reports_zero(Some(fresh))));
+    r
+}
+
+fn verify_single_pack_scan(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<(StoredMasterState, Option<u8>), MaintError> {
     if port.is_empty() {
         return Err(refused("no-port"));
     }
@@ -486,9 +523,15 @@ pub async fn maint_scan_slaves(app: AppHandle, state: State<'_, AppState>, insta
     let _a = begin_action(&state, &installation, "scan");
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
+    let session = with_store(&state, |s| s.open_session(&inst.id))?.map(|x| x.id);
     let mut link = open_pack_for(&state, &app, &port)?;
-    quiet_bus(&state, &mut link).map_err(|e| MaintError::Measure { message: e.to_string() })?;
-    scan_for_slave(&state, &mut link).map_err(|e| MaintError::Connection { message: e.to_string() })
+    if let Err(e) = quiet_bus(&state, &mut link) {
+        note_scan(&state, &inst.id, session, false);
+        return Err(MaintError::Measure { message: e.to_string() });
+    }
+    let r = scan_for_slave(&state, &mut link);
+    note_scan(&state, &inst.id, session, matches!(r, Ok(None)));
+    r.map_err(|e| MaintError::Connection { message: e.to_string() })
 }
 
 /// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
@@ -501,12 +544,18 @@ pub async fn maint_start_dip(app: AppHandle, state: State<'_, AppState>, install
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, &installation, "start-dip");
     let inst = self::installation(&state, &installation)?;
+    let mut scanned = false;
     if expected_slaves == 0 {
-        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port)?;
-        slaves_allowed(0, single_pack(Some(&fresh), slave))?;
+        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port, None)?;
+        scanned = single_pack(Some(&fresh), slave);
+        slaves_allowed(0, scanned)?;
     }
     let now = crate::history::now_ms();
-    with_store(&state, |s| s.start_session(&inst.id, SessionKind::Dip, expected_slaves, now).map(|_| ()))?;
+    let started = with_store(&state, |s| s.start_session(&inst.id, SessionKind::Dip, expected_slaves, now))?;
+    if scanned {
+        // the pass belongs to the session that now exists
+        note_scan(&state, &inst.id, Some(started.id), true);
+    }
     overview(&state, &installation)
 }
 
@@ -553,7 +602,7 @@ pub async fn maint_set_slaves(app: AppHandle, state: State<'_, AppState>, instal
     if expected_slaves == 0 {
         // nothing stored counts for N = 0: prove a single pack now (session and lock checked first)
         set_slaves_allowed(session.as_ref(), ms.as_ref(), 1, false)?;
-        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port)?;
+        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port, session.as_ref().map(|x| x.id))?;
         single = single_pack(Some(&fresh), slave);
         ms = Some(fresh);
     }
@@ -1053,11 +1102,21 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
                 Err(openbms_flash::Error::MasterSilent) => return fail("master-not-answering", vec![]),
                 Err(e) => return Err(MaintError::Measure { message: e.to_string() }),
             }
-            // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF)
-            match scan_for_slave(state, &mut link) {
-                Ok(None) => {}
-                Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
-                Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
+            // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF); a pass of this
+            // session within the last 30 minutes (e.g. when the pack count was set to 1) is not repeated
+            let now = Instant::now();
+            let recent = state.scan_pass.lock().ok().and_then(|r| r.clone());
+            if scan_needed(recent.as_ref(), &inst.id, Some(session.id), now) {
+                let r = scan_for_slave(state, &mut link);
+                note_scan(state, &inst.id, Some(session.id), matches!(r, Ok(None)));
+                match r {
+                    Ok(None) => {}
+                    Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
+                    Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
+                }
+            } else if let Some(r) = recent {
+                let minutes = now.saturating_duration_since(r.at).as_secs() / 60;
+                progress(state, "scan-skipped", Some(serde_json::json!({ "minutes": minutes })));
             }
         }
         EndStep::Bus => {
@@ -1373,6 +1432,30 @@ mod tests {
 
     fn refused_with(r: Result<impl std::fmt::Debug, MaintError>, key: &str) -> bool {
         matches!(r, Err(MaintError::Refused { reason }) if reason == key)
+    }
+
+    #[test]
+    fn scan_needed_only_without_a_recent_pass_of_this_session() {
+        let now = Instant::now();
+        let rec = |inst: &str, session: Option<i64>, age: Duration| ScanPass { installation: inst.into(), session, at: now - age };
+        let min = Duration::from_secs(60);
+        assert!(scan_needed(None, "a", Some(1), now));
+        assert!(scan_needed(Some(&rec("b", Some(1), min)), "a", Some(1), now));
+        assert!(scan_needed(Some(&rec("a", Some(2), min)), "a", Some(1), now));
+        assert!(scan_needed(Some(&rec("a", None, min)), "a", Some(1), now));
+        assert!(scan_needed(Some(&rec("a", Some(1), SCAN_VALID + Duration::from_secs(1))), "a", Some(1), now));
+        assert!(!scan_needed(Some(&rec("a", Some(1), SCAN_VALID)), "a", Some(1), now));
+        assert!(!scan_needed(Some(&rec("a", Some(1), min)), "a", Some(1), now));
+    }
+
+    #[test]
+    fn a_scan_that_found_a_slave_forgets_the_pass() {
+        let state = AppState::default();
+        note_scan(&state, "a", Some(1), true);
+        note_scan(&state, "b", Some(1), false);
+        assert!(state.scan_pass.lock().unwrap().is_some());
+        note_scan(&state, "a", Some(1), false);
+        assert!(state.scan_pass.lock().unwrap().is_none());
     }
 
     #[test]
