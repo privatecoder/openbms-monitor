@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, parsePacks, preselectPort, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -221,7 +221,7 @@ describe("guided flow (flowOf)", () => {
   // the pack port /dev/b is chosen and assigned, the control channel is /dev/a; nothing checked yet
   const input = (o: Partial<FlowInput> = {}): FlowInput => ({
     overview: ov({ state: { state: "patched-off", slaves: 7 } }), fresh: null, noControl: false, singlePack: false, inverter: false,
-    measuredAt: null, port: "/dev/b", portOwner: "this", address: 3, imageKind: "original", scan: undefined, busy: false, running: false, ...o,
+    measuredAt: null, port: "/dev/b", portAvailable: true, portOwner: "this", address: 3, imageKind: "original", scan: undefined, busy: false, running: false, ...o,
   });
   const states = (f: ReturnType<typeof flowOf>) => [f.steps.connections, f.steps.check, f.steps.inverter, f.steps.start, f.steps.measure, f.steps.flash].map((s) => s.state);
   const first = (n: number) => ({ key: "maint.flow.reason.first", params: { n } });
@@ -233,8 +233,10 @@ describe("guided flow (flowOf)", () => {
     expect(f.end.shown).toBe(false);
   });
 
-  it("step 1: pack port chosen and assigned, control channel set or explicitly none", () => {
-    expect(flowOf(input({ port: "" })).steps.connections).toEqual({ state: "current", reason: { key: "maint.flow.reason.choose-port" } });
+  it("step 1: RS485-1/2 port set up and plugged in, control channel set or explicitly none", () => {
+    expect(flowOf(input({ port: "" })).steps.connections).toEqual({ state: "current", reason: { key: "maint.flow.reason.setup-pack" } });
+    expect(flowOf(input({ portAvailable: false })).steps.connections).toEqual({ state: "current", reason: { key: "maint.flow.reason.pack-unplugged", params: { port: "/dev/b" } } });
+    expect(flowOf(input({ portAvailable: false })).steps.check).toEqual({ state: "locked", reason: first(1) });
     expect(flowOf(input({ portOwner: "none" })).steps.connections.reason?.key).toBe("maint.err.refused.port-not-assigned");
     expect(flowOf(input({ portOwner: "other" })).steps.connections.reason?.key).toBe("maint.err.refused.installation-mismatch");
     const noCtl = { ...inst, control: null };
@@ -252,6 +254,10 @@ describe("guided flow (flowOf)", () => {
     expect(f.steps.flash.reason).toEqual(first(2));
     // the open session can still be ended (End checks itself)
     expect(f.end).toMatchObject({ shown: true, state: "current" });
+    // End needs the RS485-1/2 port plugged in
+    const g = flowOf(input({ overview: ov({ session, state: { state: "patched-on" } }), portAvailable: false }));
+    expect(g.end).toMatchObject({ shown: true, state: "locked", reason: { key: "maint.flow.reason.pack-unplugged", params: { port: "/dev/b" } } });
+    expect(flowOf(input({ overview: ov({ session, state: { state: "patched-on" } }), port: "" })).end.reason?.key).toBe("maint.flow.reason.setup-pack");
   });
 
   it("patched-off with N > 0: activate (recommended) or the DIP way, after the inverter statement", () => {
@@ -431,24 +437,70 @@ describe("guided flow (flowOf)", () => {
   });
 });
 
-describe("pack port preselection", () => {
+describe("installation setup: CAN socket and RS485-1/2", () => {
+  const can: ControlEndpoint = { kind: "serial", path: "/dev/cu.usbserial-A" };
   const withEps = (endpoints: string[], control: ControlEndpoint | null) => ({ ...inst, endpoints, control });
-  it("preselects only the one candidate that is not the control adapter", () => {
-    expect(preselectPort(["/dev/a", "/dev/b"], withEps(["serial:/dev/a", "serial:/dev/b"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/b");
-    // several candidates: ask
-    expect(preselectPort(["/dev/a", "/dev/b", "/dev/c"], withEps(["serial:/dev/b", "serial:/dev/c"], { kind: "serial", path: "/dev/a" }))).toBe("");
-    // a candidate that is not plugged in does not count
-    expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a", "serial:/dev/b"], { kind: "serial", path: "/dev/a" }))).toBe("");
+  // the bench case: the control adapter was registered by the sidebar connection, the pack port assigned later
+  const bench = withEps(["serial:/dev/cu.usbserial-A", "serial:/dev/cu.usbmodem-B"], can);
+
+  it("the RS485-1/2 port is the first stored serial endpoint that is not the control adapter", () => {
+    expect(packPortOf(bench)).toBe("/dev/cu.usbmodem-B");
+    expect(packPortOf(withEps(["tcp:gw:4196", "serial:/dev/b", "serial:/dev/c"], can))).toBe("/dev/b");
+    expect(packPortOf(withEps(["serial:/dev/b"], { kind: "tcp", addr: "gw:4196" }))).toBe("/dev/b");
+    expect(packPortOf(withEps(["tcp:gw:4196"], null))).toBeNull();
+    expect(packPortOf(null)).toBeNull();
   });
-  it("the control adapter only when it is the installation's only serial endpoint", () => {
-    expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
-    expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a", "tcp:gw:4196"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
-    // another serial port is plugged in (not assigned): the user chooses
-    expect(preselectPort(["/dev/a", "/dev/x"], withEps(["serial:/dev/a"], { kind: "serial", path: "/dev/a" }))).toBe("");
-    // a TCP control channel is no serial endpoint
-    expect(preselectPort(["/dev/b"], withEps(["serial:/dev/b"], { kind: "tcp", addr: "gw:4196" }))).toBe("/dev/b");
-    // ports that belong to no installation are never preselected
-    expect(preselectPort(["/dev/a", "/dev/b"], withEps([], null))).toBe("");
-    expect(preselectPort(["/dev/a"], null)).toBe("");
+  it("the control adapter counts as RS485-1/2 only with the one-adapter confirmation", () => {
+    const one = withEps(["serial:/dev/cu.usbserial-A"], can);
+    expect(packPortOf(one)).toBeNull();
+    expect(packPortOf(one, true)).toBe("/dev/cu.usbserial-A");
+    // a second adapter wins over the confirmation; a TCP control channel is no adapter
+    expect(packPortOf(bench, true)).toBe("/dev/cu.usbmodem-B");
+    expect(packPortOf(withEps([], { kind: "tcp", addr: "gw:4196" }), true)).toBeNull();
+  });
+  it("saving keeps both stored ports of the bench case (the form shows both, nothing is dropped)", () => {
+    expect(packPortOf(bench)).toBe("/dev/cu.usbmodem-B");
+    expect(setupEndpoints(bench, can, "/dev/cu.usbmodem-B").sort()).toEqual(["serial:/dev/cu.usbmodem-B", "serial:/dev/cu.usbserial-A"]);
+    // and the saved list reads back as the same RS485-1/2 port
+    expect(packPortOf({ ...bench, endpoints: setupEndpoints(bench, can, "/dev/cu.usbmodem-B") })).toBe("/dev/cu.usbmodem-B");
+  });
+  it("a new RS485-1/2 port replaces the old one; other endpoints of the installation stay", () => {
+    const i = withEps(["tcp:gw:4196", "serial:/dev/cu.usbserial-A", "serial:/dev/b"], can);
+    const eps = setupEndpoints(i, can, "/dev/c");
+    expect(eps).toContain("tcp:gw:4196");
+    expect(eps).toContain("serial:/dev/cu.usbserial-A");
+    expect(eps).toContain("serial:/dev/c");
+    expect(eps).not.toContain("serial:/dev/b");
+    expect(packPortOf({ ...i, endpoints: eps })).toBe("/dev/c");
+  });
+  it("a new CAN socket replaces the old control key; a network CAN socket is listed by its address", () => {
+    const eps = setupEndpoints(bench, { kind: "tcp", addr: "GW:4196" }, "/dev/cu.usbmodem-B");
+    expect(eps).toEqual(["tcp:gw:4196", "serial:/dev/cu.usbmodem-B"]);
+    expect(setupEndpoints(withEps([], null), null, "/dev/b")).toEqual(["serial:/dev/b"]);
+  });
+  it("the RS485-1/2 port is listed before any other serial endpoint, so it reads back as the pack port", () => {
+    // an extra serial endpoint (e.g. a sidebar connection) stays, after the pack port
+    const i = withEps(["serial:/dev/x", "serial:/dev/b"], { kind: "tcp", addr: "gw:4196" });
+    expect(packPortOf(i)).toBe("/dev/x");
+    const eps = setupEndpoints(i, { kind: "tcp", addr: "gw:4196" }, "/dev/b");
+    expect(packPortOf({ ...i, endpoints: eps })).toBe("/dev/b");
+  });
+  it("one adapter for both buses: one key, refused without the explicit confirmation", () => {
+    expect(sameAdapter(can, "/dev/cu.usbserial-A")).toBe(true);
+    expect(sameAdapter({ kind: "tcp", addr: "gw:4196" }, "/dev/cu.usbserial-A")).toBe(false);
+    expect(sameAdapter(can, "")).toBe(false);
+    const stored = withEps(["serial:/dev/cu.usbserial-A"], can);
+    expect(setupEndpoints(stored, can, "/dev/cu.usbserial-A", true)).toEqual(["serial:/dev/cu.usbserial-A"]);
+    expect(setupCheck({ can, pack: "/dev/cu.usbserial-A", oneAdapter: false, storedPack: null })).toBe("maint.setup.err.sameAdapter");
+    expect(setupCheck({ can, pack: "/dev/cu.usbserial-A", oneAdapter: true, storedPack: null })).toBeNull();
+    expect(setupCheck({ can, pack: "/dev/cu.usbmodem-B", oneAdapter: false, storedPack: null })).toBeNull();
+  });
+  it("a save never drops a stored RS485-1/2 port by leaving it empty", () => {
+    expect(setupCheck({ can, pack: "", oneAdapter: false, storedPack: "/dev/cu.usbmodem-B" })).toBe("maint.setup.err.packRequired");
+    // nothing stored yet: the CAN socket alone may be saved, and so may no port at all
+    expect(setupCheck({ can, pack: "", oneAdapter: false, storedPack: null })).toBeNull();
+    expect(setupCheck({ can: null, pack: "", oneAdapter: false, storedPack: null })).toBeNull();
+    // and the endpoint list keeps the stored pack port when no new one is given
+    expect(setupEndpoints(bench, can, "")).toContain("serial:/dev/cu.usbmodem-B");
   });
 });

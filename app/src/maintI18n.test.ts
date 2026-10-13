@@ -31,6 +31,20 @@ describe("maintenance texts", () => {
       }
     }
   });
+  it("the setup names two ports, CAN socket and RS485-1/2; the endpoint list and its wording are gone", () => {
+    for (const lng of ["de", "en"]) {
+      for (const k of ["can", "rs485", "networkLater", "notPlugged", "oneAdapter", "err.sameAdapter", "err.packRequired", "save"]) {
+        expect(i18n.exists(`maint.setup.${k}`, { lng }), `${lng} ${k}`).toBe(true);
+      }
+      for (const k of ["endpoints", "packPort", "add", "remove", "control"]) expect(i18n.exists(`maint.setup.${k}`, { lng }), `${lng} ${k}`).toBe(false);
+      expect(i18n.exists("maint.panel.portUnassigned", { lng })).toBe(false);
+      const all = JSON.stringify(i18n.getResourceBundle(lng, "translation"));
+      expect(all).not.toMatch(/USB-Port am Pack-Bus|USB port on the pack bus|Pack-Port|pack port/i);
+    }
+    expect(i18n.t("maint.setup.rs485", { lng: "de" })).toBe("RS485-1/2 (Packs messen und flashen, 19200 Baud)");
+    expect(i18n.t("maint.flow.packPort", { lng: "de", port: "/dev/x" })).toBe("RS485-1/2: /dev/x");
+    expect(i18n.t("maint.flow.packPort", { lng: "en", port: "/dev/x" })).toBe("RS485-1/2: /dev/x");
+  });
   it("shows the pack count with the derived slave count and DIP value", () => {
     const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
     expect(packsLine(8, tr("de"))).toBe("8 Packs = 7 Slaves + 1 Master");
@@ -50,7 +64,7 @@ describe("maintenance texts", () => {
     const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
     const de = keys(i18n.getResourceBundle("de", "translation").maint.flow).sort();
     expect(keys(i18n.getResourceBundle("en", "translation").maint.flow).sort()).toEqual(de);
-    for (const r of ["first", "choose-port", "control-or-none", "check-needed", "marker-unknown", "after-scan", "after-recovery", "patched-on-no-session", "recovery-only-original", "marker-not-on", "running", "no-installation", "end-first"]) {
+    for (const r of ["first", "setup-pack", "pack-unplugged", "control-or-none", "check-needed", "marker-unknown", "after-scan", "after-recovery", "patched-on-no-session", "recovery-only-original", "marker-not-on", "running", "no-installation", "end-first"]) {
       expect(de).toContain(`reason.${r}`);
     }
     for (const m of ["paused", "offline", "lost"]) expect(de).toContain(`monitor.${m}`);

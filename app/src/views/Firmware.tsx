@@ -8,8 +8,8 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, progressFraction, steps } from "../firmware";
-import { canFlash, errorKey, flowOf, keepsInverter, preselectPort, type Monitor } from "../maint";
-import type { useMaint } from "../maintStore";
+import { canFlash, errorKey, flowOf, keepsInverter, packPortOf, type Monitor } from "../maint";
+import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
@@ -39,7 +39,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const [ports, setPorts] = useState<string[]>([]);
-  const [port, setPort] = useState("");
+  // the port chosen here: only without an installation (a single pack without maintenance)
+  const [ownPort, setOwnPort] = useState("");
   const [address, setAddress] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
@@ -68,8 +69,6 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   // step 1 without a control channel, and the single-pack statement of that way (memory only)
   const [noControl, setNoControl] = useState(false);
   const [singlePack, setSinglePack] = useState(false);
-  // the user chose a port (also "none"): no preselection overrides that
-  const portChosen = useRef(false);
   const startedAt = useRef(0);
   const addressRef = useRef(address);
   addressRef.current = address;
@@ -96,12 +95,9 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overview = maint.overview;
-  // the preselection: exactly one candidate of the installation, never the control adapter unless it is the only one
-  useEffect(() => {
-    if (portChosen.current || port || !overview) return;
-    const p = preselectPort(ports, overview.installation);
-    if (p) setPort(p);
-  }, [ports, overview?.installation]); // eslint-disable-line react-hooks/exhaustive-deps
+  // with an installation the RS485-1/2 port is the one of its setup (the single place to choose it)
+  const port = overview ? packPortOf(overview.installation, oneAdapterOf(overview.installation.id)) ?? "" : ownPort;
+  const portAvailable = ports.includes(port);
   useEffect(() => { setNoControl(false); setSinglePack(false); }, [overview?.installation.id]);
   // a new port, address or image: the measurement, the pack check and the typed confirmation no longer fit
   useEffect(() => { setMeasuredAt(null); setTarget(null); setCheckedFor(null); setTyped(""); }, [port, address, image?.sha256]);
@@ -129,7 +125,6 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   useEffect(() => { void lookupPort(); }, [port, overview]); // eslint-disable-line react-hooks/exhaustive-deps
   const portAssigned = !!overview && portInstallation === overview.installation.id;
   const portElsewhere = !!overview && !!port && portInstallation !== null && !portAssigned;
-  const portFree = !!overview && !!port && portInstallation === null;
 
   // the master (address 0) has its own plan; refused plans keep the start locked
   const overviewId = overview?.installation.id;
@@ -147,7 +142,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
     && (!plan || planError !== null || (plan.before.includes("dip-off") && !dipOffConfirmed) || (plan.before.includes("isolated-or-released") && !isolatedConfirmed));
   const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none" });
   const flow = flowOf({
-    overview, fresh: maint.freshFor(overview?.installation.id), noControl, singlePack, inverter, measuredAt, port,
+    overview, fresh: maint.freshFor(overview?.installation.id), noControl, singlePack, inverter, measuredAt, port, portAvailable,
     portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none", address, imageKind: image?.kind ?? null,
     scan: maint.scanOf(overview?.installation.id, port), busy: busy || panelBusy, running,
   });
@@ -157,21 +152,15 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const flowReason = !ready && !running && !done && flow.steps.flash.reason ? t(flow.steps.flash.reason.key, flow.steps.flash.reason.params) : null;
   const phrase = confirmationPhrase(address, image?.custom);
 
+  const refreshPorts = <Button variant="ghost" size="icon" disabled={inputsLocked} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>;
+  // without an installation: the port select of a single pack without maintenance
   const portPicker = (
-    <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-3">
-        <select className={input} value={port} disabled={inputsLocked} onChange={(e) => { portChosen.current = true; setPort(e.target.value); }} aria-label={t("fw.port")}>
-          <option value="">{t("fw.choosePort")}</option>
-          {ports.map((p) => <option key={p}>{p}</option>)}
-        </select>
-        <Button variant="ghost" size="icon" disabled={inputsLocked} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
-      </div>
-      {portFree && (
-        <p className="flex flex-wrap items-center gap-3 text-sm text-discharge">{t("maint.panel.portUnassigned")}
-          <Button variant="secondary" size="sm" disabled={inputsLocked} onClick={async () => { await maint.assign({ kind: "serial", path: port, bus: "pack" }); await lookupPort(); }}>{t("maint.banner.assign")}</Button>
-        </p>
-      )}
-      {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
+    <div className="flex flex-wrap items-center gap-3">
+      <select className={input} value={ownPort} disabled={inputsLocked} onChange={(e) => setOwnPort(e.target.value)} aria-label={t("fw.port")}>
+        <option value="">{t("fw.choosePort")}</option>
+        {ports.map((p) => <option key={p}>{p}</option>)}
+      </select>
+      {refreshPorts}
     </div>
   );
 
@@ -229,7 +218,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
-      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} portPicker={portPicker} monitor={monitor} focusEnd={focusEnd} onFocusDone={onFocusDone}
+      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} ports={ports} onPortsChanged={loadPorts} monitor={monitor} focusEnd={focusEnd} onFocusDone={onFocusDone}
         busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
         noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
         setEndNote={(text) => setEndNote(text && overview ? { installation: overview.installation.id, text } : null)} />
@@ -237,15 +226,22 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">
-          {/* with an installation the port is chosen in step 1 of the pack bus panel */}
+          {/* with an installation the port comes from its setup (pack bus panel, step 1); display only */}
           {!overview && portPicker}
-          {overview && <span className="flex items-center text-sm">{port ? t("maint.flow.packPort", { port }) : t("maint.flow.noPackPort")}</span>}
+          {overview && (
+            <span className="flex items-center gap-1 text-sm">
+              {port ? t("maint.flow.packPort", { port: portAvailable ? port : `${port} (${t("maint.flow.notPlugged")})` }) : t("maint.flow.noPackPort")}
+              {refreshPorts}
+            </span>
+          )}
           <label className="flex items-center gap-2 text-sm text-muted">{t("fw.address")}
             <select className={input} value={address} disabled={inputsLocked} onChange={(e) => setAddress(Number(e.target.value))}>
               {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </label>
         </div>
+        {overview && <p className="text-sm text-muted">{t("maint.flow.fwPortHint")}</p>}
+        {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
         <p className="text-sm text-muted">{t("fw.busHint")}</p>
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}
       </Step>
