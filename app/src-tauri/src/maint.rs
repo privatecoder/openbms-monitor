@@ -90,12 +90,20 @@ pub enum Route {
     Refused,
 }
 
-pub fn route(main: Option<&(String, Bus)>, control_key: &str) -> Route {
+/// `main_conn_present`: the main connection object still exists; if it was dropped meanwhile (link loss),
+/// the control exchange opens its own channel.
+pub fn route_with(main: Option<&(String, Bus)>, control_key: &str, main_conn_present: bool) -> Route {
     match main {
-        _ if uses_main_connection(main, control_key) => Route::Main,
+        _ if uses_main_connection(main, control_key) && main_conn_present => Route::Main,
+        _ if uses_main_connection(main, control_key) => Route::Open,
         Some((key, _)) if key == control_key => Route::Refused,
         _ => Route::Open,
     }
+}
+
+#[cfg(test)]
+fn route(main: Option<&(String, Bus)>, control_key: &str) -> Route {
+    route_with(main, control_key, true)
 }
 
 fn control_endpoint(c: &ControlEndpoint) -> Endpoint {
@@ -110,16 +118,16 @@ fn control_endpoint(c: &ControlEndpoint) -> Endpoint {
 pub fn with_control<T>(state: &AppState, inst: &Installation, f: impl FnOnce(&mut Connection) -> T) -> Result<T, MaintError> {
     let control = inst.control.as_ref().ok_or_else(|| refused("no-control-channel"))?;
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
-    match route(main.as_ref(), &control.key()) {
-        Route::Main => {
-            let mut guard = lock(&state.conn).map_err(|m| MaintError::Connection { message: m })?;
-            match guard.as_mut() {
-                Some(c) => Ok(f(c)),
-                None => Err(MaintError::Connection { message: "not connected".into() }),
-            }
-        }
+    let key = control.key();
+    let mut guard = lock(&state.conn).map_err(|m| MaintError::Connection { message: m })?;
+    match route_with(main.as_ref(), &key, guard.is_some()) {
+        Route::Main => match guard.as_mut() {
+            Some(c) => Ok(f(c)),
+            None => Err(MaintError::Connection { message: "not connected".into() }),
+        },
         Route::Refused => Err(refused("control-on-pack-bus")),
         Route::Open => {
+            drop(guard);
             let mut c = Connection::open(&control_endpoint(control)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
             Ok(f(&mut c))
         }
@@ -138,12 +146,29 @@ fn installation(state: &AppState, id: &str) -> Result<Installation, MaintError> 
     with_store(state, |s| s.installations()?.into_iter().find(|i| i.id == id).ok_or_else(|| "unknown installation".into()))
 }
 
-/// Read 0x64 and store the classified state. A connection failure stores `unknown`, never `no-0x64`.
+/// The state to store after a read. A failed read (no usable answer) never clears `marker-unexplained`:
+/// only a successful read may change it.
+pub fn next_state(stored: Option<&StoredMasterState>, classified: StoredMasterState, read_ok: bool) -> StoredMasterState {
+    if !read_ok && stored == Some(&StoredMasterState::MarkerUnexplained) {
+        return StoredMasterState::MarkerUnexplained;
+    }
+    classified
+}
+
+/// Read 0x64 and store the state. A connection or dialog failure stores `unknown` (never `no-0x64`; a stored
+/// `marker-unexplained` stays); a refusal (no control channel, control on the pack bus) is returned and stores nothing.
 pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState, MaintError> {
     let session = with_store(state, |s| s.open_session(&inst.id))?;
-    let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()).ok()).unwrap_or(None);
+    let probe = match with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()).ok()) {
+        Ok(p) => p,
+        Err(e @ MaintError::Refused { .. }) => return Err(e),
+        Err(_) => None,
+    };
+    let read_ok = matches!(probe, Some(dialog::Probe::Status(_) | dialog::Probe::Unsupported));
     let expected = session.is_some_and(|s| s.kind == SessionKind::Marker);
-    let m: StoredMasterState = policy::classify(probe, expected).into();
+    let classified: StoredMasterState = policy::classify(probe, expected).into();
+    let stored = with_store(state, |s| s.master_state(&inst.id))?.map(|(m, _)| m);
+    let m = next_state(stored.as_ref(), classified, read_ok);
     with_store(state, |s| s.set_master_state(&inst.id, &m, crate::history::now_ms()))?;
     Ok(m)
 }
@@ -264,5 +289,20 @@ mod tests {
         assert!(matches!(MaintError::from(D::Link(openbms_flash::Error::Transport("x".into()))), MaintError::Connection { .. }));
         let v = serde_json::to_value(MaintError::Rejected { rtn: 5 }).unwrap();
         assert_eq!(v, serde_json::json!({ "kind": "rejected", "rtn": 5 }));
+    }
+
+    #[test]
+    fn control_on_the_main_endpoint_opens_its_own_channel_when_the_main_connection_is_gone() {
+        let can = ("serial:/dev/a".to_string(), Bus::CanSocketBus);
+        assert!(matches!(route_with(Some(&can), "serial:/dev/a", true), Route::Main));
+        assert!(matches!(route_with(Some(&can), "serial:/dev/a", false), Route::Open));
+    }
+
+    #[test]
+    fn a_failed_read_never_clears_marker_unexplained() {
+        use StoredMasterState as S;
+        assert_eq!(next_state(Some(&S::MarkerUnexplained), S::Unknown, false), S::MarkerUnexplained);
+        assert_eq!(next_state(Some(&S::MarkerUnexplained), S::PatchedOff { slaves: 3 }, true), S::PatchedOff { slaves: 3 });
+        assert_eq!(next_state(Some(&S::PatchedOn), S::Unknown, false), S::Unknown);
     }
 }
