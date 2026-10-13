@@ -42,6 +42,7 @@ export function useMaint() {
       try { o = await api.maintCheck(id); } catch (e) { error = e; }
       if (guard.accepts(ticket, installationRef.current, o, overviewRef.current) && o) store(o);
       // a busy port is no answer at all: the previous result stays
+      if (o || errorKey(error).key !== "maint.err.busy") setScans({});
       if (o) setFresh({ id, result: "ok" });
       else if (errorKey(error).key !== "maint.err.busy") setFresh({ id, result: "failed" });
     } finally { guard.end(ticket); }
@@ -50,8 +51,9 @@ export function useMaint() {
     return o;
   }, [guard, refresh]);
 
-  /** The monitor connection was lost or closed: the next work phase needs a fresh check. */
-  const invalidateCheck = useCallback(() => setFresh(null), []);
+  /** The monitor connection was lost or closed: the next work phase needs a fresh check (and a new slave search).
+   *  Every new master check clears the slave searches too. */
+  const invalidateCheck = useCallback(() => { setFresh(null); setScans({}); }, []);
   const freshFor = (id: string | null | undefined) => (id && fresh?.id === id ? fresh.result : null);
   const scanOf = (id: string | null | undefined, port: string) => (id && port ? scans[`${id}|${port}`] : undefined);
   const setScan = useCallback((id: string, port: string, slave: number | null) => setScans((m) => ({ ...m, [`${id}|${port}`]: slave })), []);

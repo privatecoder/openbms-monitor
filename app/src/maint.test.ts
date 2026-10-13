@@ -282,6 +282,8 @@ describe("guided flow (flowOf)", () => {
     expect(f.steps.inverter).toEqual({ state: "locked", reason: { key: "maint.flow.reason.after-scan" } });
     expect(f.steps.start.state).toBe("current");
     expect(f.steps.flash.state).toBe("locked");
+    // a cleared scan result (new check, lost or closed connection) asks again
+    expect(flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: undefined, inverter: true, measuredAt: 5_000 })).scanNeeded).toBe(true);
   });
 
   it("0/0 and no slave answers: a single pack, nothing to prepare for the original or maintenance image", () => {
@@ -289,9 +291,12 @@ describe("guided flow (flowOf)", () => {
     const f = flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null }));
     expect(f.branch).toBe("single-pack");
     expect(f.scanNeeded).toBe(false);
-    expect(states(f)).toEqual(["done", "done", "done", "done", "done", "current"]);
-    expect([f.steps.inverter.notNeeded, f.steps.start.notNeeded, f.steps.measure.notNeeded]).toEqual([true, true, true]);
-    expect(flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null, imageKind: "maintenance" })).steps.flash.state).toBe("current");
+    // only step 4 is not needed: a master flash cuts CAN to the inverter, and the bus is measured anyway
+    expect(states(f)).toEqual(["done", "done", "current", "locked", "locked", "locked"]);
+    const g = flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null, inverter: true }));
+    expect(states(g)).toEqual(["done", "done", "done", "done", "current", "locked"]);
+    expect([g.steps.inverter.notNeeded, g.steps.start.notNeeded, g.steps.measure.notNeeded]).toEqual([undefined, true, undefined]);
+    expect(flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null, inverter: true, measuredAt: 5_000, imageKind: "maintenance" })).steps.flash.state).toBe("current");
     // a custom image on a single pack still needs the DIP session (with the single-pack proof)
     const c = flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null, imageKind: "custom" }));
     expect(c.branch).toBe("dip");
@@ -341,6 +346,15 @@ describe("guided flow (flowOf)", () => {
     expect(flowOf(input({ fresh: "ok", overview: ov({ session, state: { state: "patched-on" } }), inverter: true, measuredAt: 5_000 })).steps.flash.state).toBe("current");
   });
 
+  it("a marker session whose master no longer reports the marker (e.g. after End's stop) locks measure and flash", () => {
+    const stopped = ov({ session, state: { state: "patched-off", slaves: 7 }, end_next: "bus" });
+    const f = flowOf(input({ fresh: "ok", overview: stopped, inverter: true, measuredAt: 5_000 }));
+    const r = { key: "maint.flow.reason.marker-not-on" };
+    expect([f.steps.measure, f.steps.flash]).toEqual([{ state: "locked", reason: r }, { state: "locked", reason: r }]);
+    // End continues
+    expect(f.end).toMatchObject({ shown: true, state: "current", next: "bus" });
+  });
+
   it("marker-unexplained without session: explain or start the recovery; End not offered", () => {
     const f = flowOf(input({ fresh: "ok", overview: ov({ state: { state: "marker-unexplained" } }) }));
     expect(f.branch).toBe("unexplained");
@@ -388,13 +402,24 @@ describe("guided flow (flowOf)", () => {
   });
 
   it("without a control channel: the DIP way, or a single pack stated by the user", () => {
-    const noCtl = ov({ installation: { ...inst, control: null } });
+    const noCtl = ov({ installation: { ...inst, control: null }, state: null });
     const f = flowOf(input({ overview: noCtl, noControl: true }));
     expect(f.steps.check.state).toBe("done");
     expect(f.branch).toBe("dip");
+    expect(f.singlePackOffered).toBe(true);
     const s = flowOf(input({ overview: noCtl, noControl: true, singlePack: true }));
     expect(s.branch).toBe("single-pack");
-    expect(states(s)).toEqual(["done", "done", "done", "done", "done", "current"]);
+    // steps 3 and 5 stay required
+    expect(states(s)).toEqual(["done", "done", "current", "locked", "locked", "locked"]);
+    expect(states(flowOf(input({ overview: noCtl, noControl: true, singlePack: true, inverter: true, measuredAt: 5_000 })))).toEqual(["done", "done", "done", "done", "done", "current"]);
+    // stored unknown: still offered
+    expect(flowOf(input({ overview: ov({ installation: { ...inst, control: null }, state: { state: "unknown" } }), noControl: true, singlePack: true })).branch).toBe("single-pack");
+    // only without a session and only with no stored state or unknown
+    for (const o of [ov({ installation: { ...inst, control: null }, state: { state: "no-0x64" } }), ov({ installation: { ...inst, control: null }, state: null, session: dip })]) {
+      const x = flowOf(input({ overview: o, noControl: true, singlePack: true }));
+      expect(x.singlePackOffered).toBe(false);
+      expect(x.branch).not.toBe("single-pack");
+    }
   });
 
   it("while something runs every step is locked; a busy panel only disables the actions", () => {
@@ -416,8 +441,10 @@ describe("pack port preselection", () => {
     expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a", "serial:/dev/b"], { kind: "serial", path: "/dev/a" }))).toBe("");
   });
   it("the control adapter only when it is the installation's only serial endpoint", () => {
-    expect(preselectPort(["/dev/a", "/dev/x"], withEps(["serial:/dev/a"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
-    expect(preselectPort(["/dev/a", "/dev/x"], withEps(["serial:/dev/a", "tcp:gw:4196"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
+    expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
+    expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a", "tcp:gw:4196"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
+    // another serial port is plugged in (not assigned): the user chooses
+    expect(preselectPort(["/dev/a", "/dev/x"], withEps(["serial:/dev/a"], { kind: "serial", path: "/dev/a" }))).toBe("");
     // a TCP control channel is no serial endpoint
     expect(preselectPort(["/dev/b"], withEps(["serial:/dev/b"], { kind: "tcp", addr: "gw:4196" }))).toBe("/dev/b");
     // ports that belong to no installation are never preselected
