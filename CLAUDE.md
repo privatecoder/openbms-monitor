@@ -8,9 +8,9 @@ Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor i
 - `crates/openbms-transport`: serial and TCP transport (5 s connect timeout, write timeout).
 - `crates/openbms-cli`: read-only command-line poller for debugging.
 - `crates/openbms-flash`: standalone EMU1101 updater (probe, `.ehex` validation and dry-run, confirmed flash); the app's firmware view uses it as a library (`app/src-tauri/src/firmware.rs`).
-- `app/src-tauri`: Tauri 2 backend. `lib.rs` holds connection, polling thread, watchdog and all commands; `history.rs` the SQLite history (recording, retention/compaction, series, export/import); `firmware.rs` firmware commands, progress events, flash guard.
+- `app/src-tauri`: Tauri 2 backend. `lib.rs` holds connection, polling thread, watchdog and all commands; `history.rs` the SQLite history (recording, retention/compaction, series, export/import); `firmware.rs` firmware commands, progress events, flash guard; `maint.rs` / `maint_store.rs` the pack bus panel's backend (live status, pack scan, master marker over the CAN socket, right-bank check, bootloader-pending records; design `docs/superpowers/specs/2026-10-13-simple-flash-flow.md`).
 - `app/src`: React 19 + Tailwind 4 frontend.
-  - `views/Firmware.tsx` and `firmware.ts`: firmware update view (behind maintenance functions) and its step logic.
+  - `views/Firmware.tsx` and `firmware.ts`: firmware update view (behind maintenance functions) and its step logic; `views/PackBusPanel.tsx`, `maint.ts`, `maintStore.ts`: the one-screen pack bus panel, installations (address book) and the banner.
   - `api.ts`: typed Tauri commands, plus a demo API (`isDemo`, data from `demo/capture.json`) used when running in a plain browser.
   - `views/`: Dashboard (overview, towers, pairs), PackDetail, Diagnosis, Parameters, History, Recording, Cells, CellAssign, GroupEditor, Sidebar.
   - `pairs.ts`, `diag/`, `cells/` (datasheet rules, pack and parameter checks), `params.ts`, `groups.ts`, `history/` (charts, client-side helpers).

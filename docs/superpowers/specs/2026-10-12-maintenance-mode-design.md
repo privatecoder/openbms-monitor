@@ -1,6 +1,6 @@
 # Maintenance mode for firmware and parameters: design
 
-Status: stage 1 implemented (local: control channel, maintenance mode, DIP way, guards). Stage 2 (remote flashing through the gateway) is pending bench tests. Design reviewed (five rounds with a second model, no open blocking or high findings), 2026-10-12.
+Status: stage 1 implemented (local: control channel, maintenance mode, DIP way, guards). Stage 2 (remote flashing through the gateway) is pending bench tests. Design reviewed (five rounds with a second model, no open blocking or high findings), 2026-10-12. Superseded in parts by `2026-10-13-simple-flash-flow.md` (2026-10-13).
 
 ## Goal
 

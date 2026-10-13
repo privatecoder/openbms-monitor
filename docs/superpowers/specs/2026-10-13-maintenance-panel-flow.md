@@ -1,6 +1,6 @@
 # Pack bus panel: guided flow
 
-Status: implemented, 2026-10-13; the installation picker in the panel header and the banner for every installation are implemented per `2026-10-13-installation-picker.md` (draft r3 reviewed; r1 review: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`).
+Status: implemented, 2026-10-13; the installation picker in the panel header and the banner for every installation are implemented per `2026-10-13-installation-picker.md` (draft r3 reviewed; r1 review: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`). Superseded in parts by `2026-10-13-simple-flash-flow.md` (2026-10-13).
 
 ## Why
 

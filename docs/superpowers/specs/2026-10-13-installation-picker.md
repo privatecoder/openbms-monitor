@@ -1,6 +1,6 @@
 # Several installations: pick, name, create, delete
 
-Status: implemented, 2026-10-13 (draft r2; r1 reviewed: `.orch/reviewer-codex-6-sol-installation-picker-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the implemented stage 1 + guided panel (`docs/superpowers/specs/2026-10-13-maintenance-panel-flow.md`).
+Status: implemented, 2026-10-13 (draft r2; r1 reviewed: `.orch/reviewer-codex-6-sol-installation-picker-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the implemented stage 1 + guided panel (`docs/superpowers/specs/2026-10-13-maintenance-panel-flow.md`). Superseded in parts by `2026-10-13-simple-flash-flow.md` (2026-10-13).
 
 ## Why
 
