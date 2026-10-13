@@ -3,6 +3,7 @@
 
 use crate::{ehex::Image, Error, Result};
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Release {
     pub name: &'static str,
     pub code_sha256: &'static str,
@@ -35,6 +36,37 @@ pub const RELEASES: &[Release] = &[
     },
 ];
 
+/// Maintenance builds: patched 16.06.13 with CID2 0x64 on the CAN socket bus. Modified firmware, so
+/// accepted only like custom images; known here so the app can plan a flash of the master.
+pub const MAINT_BUILDS: &[Release] = &[Release {
+    name: "16.06.13 MAINT",
+    code_sha256: "4d76a96fa7f7ad0e1aa3de1ac4fbe51f0fc4ae03a19aea2d4e696c2812d8f55d",
+}];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageKind {
+    /// unmodified vendor release (allowlist above)
+    Original,
+    /// a known maintenance build
+    Maintenance,
+    /// anything else that passes the format checks
+    Custom,
+}
+
+pub fn kind_of_hash(code_sha256: &str) -> (ImageKind, Option<&'static Release>) {
+    if let Some(r) = RELEASES.iter().find(|r| r.code_sha256 == code_sha256) {
+        return (ImageKind::Original, Some(r));
+    }
+    if let Some(r) = MAINT_BUILDS.iter().find(|r| r.code_sha256 == code_sha256) {
+        return (ImageKind::Maintenance, Some(r));
+    }
+    (ImageKind::Custom, None)
+}
+
+pub fn kind(image: &Image) -> (ImageKind, Option<&'static Release>) {
+    kind_of_hash(&image.code_sha256)
+}
+
 pub fn identify(image: &Image) -> Result<&'static Release> {
     RELEASES
         .iter()
@@ -45,4 +77,24 @@ pub fn identify(image: &Image) -> Result<&'static Release> {
                 image.code_sha256
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_of_hash_tells_originals_maintenance_builds_and_custom_apart() {
+        let (k, r) = kind_of_hash(RELEASES[0].code_sha256);
+        assert_eq!((k, r.map(|r| r.name)), (ImageKind::Original, Some(RELEASES[0].name)));
+        let (k, r) = kind_of_hash(MAINT_BUILDS[0].code_sha256);
+        assert_eq!((k, r.map(|r| r.name)), (ImageKind::Maintenance, Some("16.06.13 MAINT")));
+        assert_eq!(kind_of_hash(&"0".repeat(64)), (ImageKind::Custom, None));
+    }
+
+    #[test]
+    fn identify_still_accepts_only_vendor_releases() {
+        let (_, r) = kind_of_hash(MAINT_BUILDS[0].code_sha256);
+        assert!(RELEASES.iter().all(|v| v.code_sha256 != r.unwrap().code_sha256));
+    }
 }
