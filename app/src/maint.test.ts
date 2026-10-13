@@ -23,7 +23,7 @@ describe("banner", () => {
 });
 
 describe("flash unlock", () => {
-  const ok = { overview: { ...base, session, state: { state: "patched-on" as const } }, inverter: true, measuredAt: 5_000, address: 3, imageKind: "original" as const, portAssigned: true };
+  const ok = { overview: { ...base, session, state: { state: "patched-on" as const } }, inverter: true, measuredAt: 5_000, address: 3, imageKind: "original" as const, portOwner: "this" as const };
   it("needs the inverter tick and a measurement in a session", () => {
     expect(canFlash(ok).ok).toBe(true);
     expect(canFlash({ ...ok, inverter: false })).toEqual({ ok: false, reason: "inverter" });
@@ -37,11 +37,17 @@ describe("flash unlock", () => {
     expect(canFlash({ ...ok, overview: { ...ok.overview, state_at: 6_000 }, measuredAt: 5_000 }).reason).toBe("measure");
   });
   it("a single pack without maintenance needs neither", () => {
-    expect(canFlash({ ...ok, overview: { ...base, state: { state: "patched-off", slaves: 0 } }, inverter: false, measuredAt: null, portAssigned: false }).ok).toBe(true);
-    expect(canFlash({ ...ok, overview: null, inverter: false, measuredAt: null, portAssigned: false }).ok).toBe(true);
+    expect(canFlash({ ...ok, overview: { ...base, state: { state: "patched-off", slaves: 0 } }, inverter: false, measuredAt: null }).ok).toBe(true);
+    expect(canFlash({ ...ok, overview: null, inverter: false, measuredAt: null, portOwner: "none" }).ok).toBe(true);
   });
   it("unassigned_port_blocks_maintenance_flash", () => {
-    expect(canFlash({ ...ok, portAssigned: false }).reason).toBe("port-not-assigned");
+    expect(canFlash({ ...ok, portOwner: "none" }).reason).toBe("port-not-assigned");
+  });
+  it("with an installation in use the port must belong to it, also without maintenance (backend port_gate)", () => {
+    const idle = { ...ok, overview: { ...base, state: { state: "patched-off" as const, slaves: 0 } }, inverter: false, measuredAt: null };
+    expect(canFlash({ ...idle, portOwner: "none" })).toEqual({ ok: false, reason: "port-not-assigned" });
+    expect(canFlash({ ...idle, portOwner: "other" })).toEqual({ ok: false, reason: "installation-mismatch" });
+    expect(canFlash({ ...ok, portOwner: "other" }).reason).toBe("installation-mismatch");
   });
   it("an interrupted update blocks like an unclear one", () => {
     expect(canFlash({ ...ok, overview: { ...ok.overview, blocks: [{ id: 2, pack: 4, reason: "update-interrupted", expect: null, since: 0 }] } }).reason).toBe("update-interrupted");

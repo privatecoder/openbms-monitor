@@ -119,7 +119,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
 
   const masterPending = !!overview && address === 0 && !!image
     && (!plan || planError !== null || (plan.before.includes("dip-off") && !dipOffConfirmed) || (plan.before.includes("isolated-or-released") && !isolatedConfirmed));
-  const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portAssigned });
+  const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none" });
   const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed, unlocked: gate.ok && !masterPending });
   const phrase = confirmationPhrase(address, image?.custom);
 
