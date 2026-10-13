@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, needsReplug, openWork, parsePacks, slavesOf, workUnchanged } from "./maint";
+import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, needsReplug, openWork, parsePacks, slavesOf, workUnchanged } from "./maint";
 import type { MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -202,5 +202,15 @@ describe("failing End checks", () => {
     expect(failingText("slave-present: 7", t)).toBe('maint.failing.slave-present({"addr":7})');
     expect(failingText('stop: {"kind":"refused","reason":"no-session"}', t)).toBe('maint.failing.stop({"error":"maint.err.refused.no-session"})');
     expect(failingText("something else", t)).toBe("something else");
+  });
+});
+
+describe("inverter statement per work phase", () => {
+  it("survives the session its activation opened, nothing else", () => {
+    expect(keepsInverter({ installation: "a", session: null }, { installation: "a", session: 3 })).toBe(true);
+    expect(keepsInverter({ installation: "a", session: 3 }, { installation: "a", session: 3 })).toBe(true);
+    expect(keepsInverter({ installation: "a", session: 3 }, { installation: "a", session: null })).toBe(false);
+    expect(keepsInverter({ installation: "a", session: 3 }, { installation: "a", session: 4 })).toBe(false);
+    expect(keepsInverter({ installation: "a", session: null }, { installation: "b", session: 3 })).toBe(false);
   });
 });

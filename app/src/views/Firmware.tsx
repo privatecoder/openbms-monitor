@@ -8,7 +8,7 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, progressFraction, steps } from "../firmware";
-import { canFlash, errorKey } from "../maint";
+import { canFlash, errorKey, keepsInverter } from "../maint";
 import type { useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -87,7 +87,13 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
   const overview = maint.overview;
   // a new measurement is needed after every state change; the inverter statement after every new session
   useEffect(() => { setMeasuredAt(null); }, [overview?.state_at, overview?.installation.id]);
-  useEffect(() => { setInverter(false); }, [overview?.session?.id, overview?.installation.id]);
+  // one work phase: the statement survives the session its own activation opened (see keepsInverter)
+  const phase = useRef<{ installation: string | null; session: number | null }>({ installation: null, session: null });
+  useEffect(() => {
+    const next = { installation: overview?.installation.id ?? null, session: overview?.session?.id ?? null };
+    if (!keepsInverter(phase.current, next)) setInverter(false);
+    phase.current = next;
+  }, [overview?.session?.id, overview?.installation.id]);
   // after a lost or closed connection the operator confirms the inverter afresh and measures again
   useEffect(() => { setInverter(false); setMeasuredAt(null); }, [disconnects]);
   // the End result stays until a new session opens or another installation is shown
