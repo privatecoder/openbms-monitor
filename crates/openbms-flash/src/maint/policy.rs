@@ -1,284 +1,132 @@
-//! What the app knows about the master, and which preparation a flash of the master needs (design:
-//! "Master state as seen by the app", "Flashing the master itself"). Pure, so every combination is tested.
+//! What the app makes of the master's answer, and the one rule for flashing the master itself (design:
+//! docs/superpowers/specs/2026-10-13-simple-flash-flow.md, scenario C'). Pure, so every case is tested.
 
 use super::dialog::Probe;
-use crate::known::ImageKind;
+use crate::known::{self, ImageKind};
+use openbms_proto::{MaintInfo, MaintStatus, MarkerWord};
 
+/// The master as read over the CAN socket bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MasterState {
-    /// patched firmware, marker 0, `slaves` effective (= DIP count)
-    PatchedOff { slaves: u8 },
-    /// patched firmware, marker 1, and the marker is accounted for
-    PatchedOn,
-    /// verified RTN 04
+pub enum Master {
+    /// MAINT 1.1 with a build ID from the catalog
+    Maint { info: MaintInfo, release: &'static str },
+    /// an `MNT` answer with a build ID the catalog does not know: shown, never started or stopped
+    UnknownBuild(MaintInfo),
+    /// RTN 05 to `03`, a valid `02`: MAINT 1.0 compatible
+    Legacy(MaintStatus),
+    /// RTN 04: no 0x64 (original or another build)
     No0x64,
-    /// no answer, connection error, other RTN
+    /// no valid answer, or no CAN socket endpoint
     Unknown,
-    /// marker 1 that nobody can account for: locked
-    MarkerUnexplained,
 }
 
-/// `probe` None = the control channel could not be used. `marker_expected`: an open marker session
-/// exists, the app has just set the marker, or the user stated where it comes from.
-pub fn classify(probe: Option<Probe>, marker_expected: bool) -> MasterState {
-    match probe {
-        Some(Probe::Status(s)) if !s.marker => MasterState::PatchedOff { slaves: s.effective_slaves },
-        // marker set but still polling (1/N): not a state the app can act on
-        Some(Probe::Status(s)) if s.effective_slaves > 0 => MasterState::Unknown,
-        Some(Probe::Status(_)) if marker_expected => MasterState::PatchedOn,
-        Some(Probe::Status(_)) => MasterState::MarkerUnexplained,
-        Some(Probe::Unsupported) => MasterState::No0x64,
-        _ => MasterState::Unknown,
+impl Master {
+    pub fn of(probe: Option<Probe>) -> Self {
+        match probe {
+            Some(Probe::Info(info)) => match known::maint_build(&info.build_id_hex()) {
+                Some(r) => Master::Maint { info, release: r.name },
+                None => Master::UnknownBuild(info),
+            },
+            Some(Probe::Legacy(s)) => Master::Legacy(s),
+            Some(Probe::No0x64) => Master::No0x64,
+            Some(Probe::Failed) | None => Master::Unknown,
+        }
+    }
+
+    /// The marker as the master reports it; None without 0x64.
+    pub fn marker(&self) -> Option<MarkerWord> {
+        match self {
+            Master::Maint { info, .. } | Master::UnknownBuild(info) => Some(info.marker()),
+            Master::Legacy(s) => Some(if s.marker { MarkerWord::On } else { MarkerWord::Off }),
+            Master::No0x64 | Master::Unknown => None,
+        }
+    }
+
+    /// The slave count the master works with (0 while its marker holds the bus quiet, or with DIP 5–8 OFF).
+    pub fn effective_slaves(&self) -> Option<u8> {
+        match self {
+            Master::Maint { info, .. } | Master::UnknownBuild(info) => Some(info.effective_slaves),
+            Master::Legacy(s) => Some(s.effective_slaves),
+            Master::No0x64 | Master::Unknown => None,
+        }
+    }
+
+    /// A known maintenance build: the app may send it start and stop.
+    pub fn trusted(&self) -> bool {
+        matches!(self, Master::Maint { .. } | Master::Legacy(_))
+    }
+
+    /// „Master anhalten“ is offered: a trusted build with the marker off.
+    pub fn may_halt(&self) -> bool {
+        self.trusted() && self.marker() == Some(MarkerWord::Off)
+    }
+
+    /// „Master freigeben“ is offered (and `stop` sent) only when 0x64 shows the marker on; a foreign marker
+    /// word or an unknown build never gets a `stop`.
+    pub fn may_release(&self) -> bool {
+        self.trusted() && self.marker() == Some(MarkerWord::On)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
-    /// the user sets DIP 5–8 OFF and confirms
-    DipOff,
-    /// send `stop` and wait for 0/0 (after DipOff)
-    StopToZero,
-    /// quiet bus + 0x47 at address 0 (+ fresh 1/0 while the marker is set)
-    Measure,
-    /// not a known build: the user confirms it is released for a shared bus, or the master is isolated
-    IsolatedOrReleased,
-}
-
-/// What 0x64 must show after the flash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Expect {
-    MarkerOn,
-    Zero,
-    /// 0/0 expected; 1/0 means an old marker or other content in 0x23000
-    ZeroOrUnexplained,
-    /// RTN 04 (original firmware)
-    Unsupported,
-    NoAssumption,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Plan {
-    pub before: Vec<Step>,
-    pub after: Expect,
-    /// recovery row for `marker-unexplained`: no `stop`, sector content stays unexplained
-    pub recovery: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    /// the master still polls: activate maintenance mode or set DIP 5–8 OFF first
-    QuietFirst,
-    /// nothing is unlocked while the state is unknown
-    Unknown,
-    /// marker of unexplained origin: only the recovery to the original image
-    Locked,
-}
-
-fn row(before: &[Step], after: Expect) -> Result<Plan, Refusal> {
-    Ok(Plan { before: before.to_vec(), after, recovery: false })
-}
-
-pub fn master_flash_plan(state: MasterState, image: ImageKind) -> Result<Plan, Refusal> {
-    use MasterState as M;
-    use Step::*;
-    match (state, image) {
-        (M::Unknown, _) => Err(Refusal::Unknown),
-        (M::MarkerUnexplained, ImageKind::Original) => Ok(Plan { before: vec![DipOff, Measure], after: Expect::Unsupported, recovery: true }),
-        (M::MarkerUnexplained, _) => Err(Refusal::Locked),
-        // the image kind decides first: an unknown image may ignore the marker
-        (M::PatchedOn | M::PatchedOff { .. }, ImageKind::Custom) => row(&[DipOff, StopToZero, Measure, IsolatedOrReleased], Expect::NoAssumption),
-        (M::No0x64, ImageKind::Custom) => row(&[DipOff, Measure, IsolatedOrReleased], Expect::NoAssumption),
-        (M::PatchedOn, ImageKind::Maintenance) => row(&[Measure], Expect::MarkerOn),
-        // the original ignores the marker: clear it under DIP OFF so no hidden state stays in flash
-        (M::PatchedOn, ImageKind::Original) => row(&[DipOff, StopToZero, Measure], Expect::Unsupported),
-        (M::PatchedOff { slaves: 1.. }, _) => Err(Refusal::QuietFirst),
-        (M::PatchedOff { slaves: 0 }, ImageKind::Maintenance) => row(&[Measure], Expect::Zero),
-        (M::PatchedOff { slaves: 0 }, ImageKind::Original) => row(&[Measure], Expect::Unsupported),
-        (M::No0x64, ImageKind::Maintenance) => row(&[DipOff, Measure], Expect::ZeroOrUnexplained),
-        (M::No0x64, ImageKind::Original) => row(&[DipOff, Measure], Expect::Unsupported),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    AsExpected,
-    /// keep the session open, no inverter release, show DIP 5–8 OFF and the recovery hint
-    Unclear,
-    MarkerUnexplained,
-    /// custom image: show what answers, DIP 5–8 stay OFF
-    UnknownImage,
-}
-
-pub fn after_flash(expect: Expect, probe: Option<Probe>) -> Outcome {
-    let s = match probe {
-        Some(Probe::Status(s)) => Some(s),
-        _ => None,
-    };
-    match expect {
-        Expect::NoAssumption => Outcome::UnknownImage,
-        Expect::MarkerOn if s.is_some_and(|s| s.marker && s.effective_slaves == 0) => Outcome::AsExpected,
-        Expect::Zero | Expect::ZeroOrUnexplained if s.is_some_and(|s| !s.marker && s.effective_slaves == 0) => Outcome::AsExpected,
-        Expect::ZeroOrUnexplained if s.is_some_and(|s| s.marker && s.effective_slaves == 0) => Outcome::MarkerUnexplained,
-        Expect::Unsupported if probe == Some(Probe::Unsupported) => Outcome::AsExpected,
-        _ => Outcome::Unclear,
-    }
-}
-
-/// What 0x64 must read on the control channel right before a flash (design, step 3). Derived from the
-/// stored state just before the measurement, i.e. after any `stop` of the master-flash plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fresh {
-    /// 1/0
-    MarkerOn,
-    /// 0/0 (patched, no marker; with N > 0 stored this means DIP 5–8 are OFF now)
-    Zero,
-    /// RTN 04
-    Unsupported,
-    /// state unknown (manual DIP way): only the pack bus measurement counts
-    Unchecked,
-}
-
-pub fn fresh_status(state: MasterState) -> Fresh {
-    match state {
-        MasterState::PatchedOn | MasterState::MarkerUnexplained => Fresh::MarkerOn,
-        MasterState::PatchedOff { .. } => Fresh::Zero,
-        MasterState::No0x64 => Fresh::Unsupported,
-        MasterState::Unknown => Fresh::Unchecked,
-    }
-}
-
-pub fn fresh_matches(f: Fresh, probe: Option<Probe>) -> bool {
-    match (f, probe) {
-        (Fresh::Unchecked, _) => true,
-        (Fresh::MarkerOn, Some(Probe::Status(s))) => s.marker && s.effective_slaves == 0,
-        (Fresh::Zero, Some(Probe::Status(s))) => !s.marker && s.effective_slaves == 0,
-        (Fresh::Unsupported, Some(Probe::Unsupported)) => true,
-        _ => false,
-    }
-}
-
-/// After a master flash: keep reading 0x64 until the answer is final. A set marker takes effect from the
-/// master's next one-second cycle, so 1/N is still in transition.
-pub fn settled(probe: Option<Probe>) -> bool {
-    match probe {
-        None | Some(Probe::NoAnswer) => false,
-        Some(Probe::Status(s)) => !(s.marker && s.effective_slaves > 0),
-        Some(_) => true,
-    }
+/// Scenario C': a trusted patched master whose marker is on gets no image that is not a maintenance build. The
+/// original ignores the marker: it would poll right after the flash and the marker word would stay hidden in
+/// flash. The user releases the master first (DIP 5–8 OFF keep the bus quiet meanwhile). Every other master is
+/// left to the bus check.
+pub fn release_first(master: &Master, image: ImageKind) -> bool {
+    image != ImageKind::Maintenance && master.may_release()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::known::ImageKind as K;
-    use openbms_proto::MaintStatus;
-    use MasterState as M;
-    use Step as S;
 
-    fn status(marker: bool, slaves: u8) -> Option<Probe> {
-        Some(Probe::Status(MaintStatus { marker, effective_slaves: slaves }))
+    fn info(marker_word: u32, slaves: u8, build_id: [u8; 8]) -> MaintInfo {
+        MaintInfo { base: [16, 6, 13], patch: [1, 1], marker_word, effective_slaves: slaves, build_id }
+    }
+    const KNOWN: [u8; 8] = [0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0];
+    const OTHER: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    #[test]
+    fn the_build_id_decides_trust() {
+        let m = Master::of(Some(Probe::Info(info(u32::MAX, 3, KNOWN))));
+        assert!(matches!(m, Master::Maint { release: "16.06.13 MAINT 1.1", .. }));
+        assert!(m.trusted() && m.may_halt() && !m.may_release());
+        let u = Master::of(Some(Probe::Info(info(0, 0, OTHER))));
+        assert!(matches!(u, Master::UnknownBuild(_)));
+        assert!(!u.trusted() && !u.may_halt() && !u.may_release());
+        assert_eq!(u.marker(), Some(MarkerWord::On));
     }
 
     #[test]
-    fn classify_uses_the_open_session() {
-        assert_eq!(classify(status(false, 11), false), M::PatchedOff { slaves: 11 });
-        assert_eq!(classify(status(true, 0), true), M::PatchedOn);
-        assert_eq!(classify(status(true, 0), false), M::MarkerUnexplained);
-        assert_eq!(classify(Some(Probe::Unsupported), false), M::No0x64);
-        // a set marker counts only with 0 effective slaves; 1/N means the master still polls
-        assert_eq!(classify(status(true, 3), true), M::Unknown);
-        assert_eq!(classify(status(true, 3), false), M::Unknown);
-        // never shown as no-0x64 without a verified RTN 04
-        for p in [None, Some(Probe::NoAnswer), Some(Probe::Rejected(5))] {
-            assert_eq!(classify(p, false), M::Unknown);
+    fn legacy_no_0x64_and_unknown() {
+        let on = Master::of(Some(Probe::Legacy(MaintStatus { marker: true, effective_slaves: 0 })));
+        assert!(on.trusted() && on.may_release() && !on.may_halt());
+        assert_eq!(on.effective_slaves(), Some(0));
+        for m in [Master::of(Some(Probe::No0x64)), Master::of(Some(Probe::Failed)), Master::of(None)] {
+            assert!(!m.trusted() && !m.may_halt() && !m.may_release());
+            assert_eq!((m.marker(), m.effective_slaves()), (None, None));
         }
+        assert_eq!(Master::of(Some(Probe::Failed)), Master::Unknown);
     }
 
     #[test]
-    fn every_combination_has_a_defined_row() {
-        use Expect as E;
-        let plan = |s, k| master_flash_plan(s, k);
-        let ok = |before: &[Step], after| Ok(Plan { before: before.to_vec(), after, recovery: false });
-        for k in [K::Original, K::Maintenance, K::Custom] {
-            assert_eq!(plan(M::Unknown, k), Err(Refusal::Unknown));
+    fn a_foreign_marker_word_is_neither_halted_nor_released() {
+        let m = Master::of(Some(Probe::Info(info(0x1234_5678, 0, KNOWN))));
+        assert_eq!(m.marker(), Some(MarkerWord::Foreign(0x1234_5678)));
+        assert!(!m.may_halt() && !m.may_release());
+    }
+
+    #[test]
+    fn a_master_with_its_marker_on_is_released_before_a_non_maintenance_image() {
+        let on = Master::of(Some(Probe::Info(info(0, 0, KNOWN))));
+        let off = Master::of(Some(Probe::Info(info(u32::MAX, 0, KNOWN))));
+        assert!(release_first(&on, ImageKind::Original));
+        assert!(release_first(&on, ImageKind::Custom));
+        assert!(!release_first(&on, ImageKind::Maintenance));
+        assert!(!release_first(&off, ImageKind::Original));
+        // nothing to release: left to the bus check (DIP way)
+        for m in [Master::No0x64, Master::Unknown, Master::of(Some(Probe::Info(info(0, 0, OTHER))))] {
+            assert!(!release_first(&m, ImageKind::Original));
         }
-        assert_eq!(plan(M::PatchedOn, K::Maintenance), ok(&[S::Measure], E::MarkerOn));
-        assert_eq!(plan(M::PatchedOn, K::Original), ok(&[S::DipOff, S::StopToZero, S::Measure], E::Unsupported));
-        assert_eq!(plan(M::PatchedOff { slaves: 11 }, K::Original), Err(Refusal::QuietFirst));
-        assert_eq!(plan(M::PatchedOff { slaves: 11 }, K::Maintenance), Err(Refusal::QuietFirst));
-        assert_eq!(plan(M::PatchedOff { slaves: 0 }, K::Maintenance), ok(&[S::Measure], E::Zero));
-        assert_eq!(plan(M::PatchedOff { slaves: 0 }, K::Original), ok(&[S::Measure], E::Unsupported));
-        assert_eq!(plan(M::No0x64, K::Maintenance), ok(&[S::DipOff, S::Measure], E::ZeroOrUnexplained));
-        assert_eq!(plan(M::No0x64, K::Original), ok(&[S::DipOff, S::Measure], E::Unsupported));
-    }
-
-    #[test]
-    fn the_image_kind_decides_first_for_custom_images() {
-        let custom = [S::DipOff, S::StopToZero, S::Measure, S::IsolatedOrReleased];
-        for s in [M::PatchedOn, M::PatchedOff { slaves: 0 }, M::PatchedOff { slaves: 11 }] {
-            assert_eq!(master_flash_plan(s, K::Custom).unwrap().before, custom.to_vec());
-        }
-        assert_eq!(master_flash_plan(M::No0x64, K::Custom).unwrap().before, vec![S::DipOff, S::Measure, S::IsolatedOrReleased]);
-        assert_eq!(master_flash_plan(M::No0x64, K::Custom).unwrap().after, Expect::NoAssumption);
-    }
-
-    #[test]
-    fn marker_unexplained_allows_only_recovery_to_original() {
-        let r = master_flash_plan(M::MarkerUnexplained, K::Original).unwrap();
-        assert!(r.recovery);
-        assert_eq!(r.before, vec![S::DipOff, S::Measure]);
-        assert!(!r.before.contains(&S::StopToZero));
-        assert_eq!(master_flash_plan(M::MarkerUnexplained, K::Maintenance), Err(Refusal::Locked));
-        assert_eq!(master_flash_plan(M::MarkerUnexplained, K::Custom), Err(Refusal::Locked));
-        // the normal patched-on -> original change always clears the marker first
-        assert!(master_flash_plan(M::PatchedOn, K::Original).unwrap().before.contains(&S::StopToZero));
-    }
-
-    #[test]
-    fn after_flash_outcomes() {
-        use Expect as E;
-        assert_eq!(after_flash(E::MarkerOn, status(true, 0)), Outcome::AsExpected);
-        assert_eq!(after_flash(E::MarkerOn, status(true, 3)), Outcome::Unclear);
-        assert_eq!(after_flash(E::ZeroOrUnexplained, status(true, 3)), Outcome::Unclear);
-        assert_eq!(after_flash(E::MarkerOn, status(false, 11)), Outcome::Unclear);
-        assert_eq!(after_flash(E::MarkerOn, None), Outcome::Unclear);
-        assert_eq!(after_flash(E::Zero, status(false, 0)), Outcome::AsExpected);
-        assert_eq!(after_flash(E::ZeroOrUnexplained, status(true, 0)), Outcome::MarkerUnexplained);
-        assert_eq!(after_flash(E::ZeroOrUnexplained, status(false, 0)), Outcome::AsExpected);
-        assert_eq!(after_flash(E::Unsupported, Some(Probe::Unsupported)), Outcome::AsExpected);
-        assert_eq!(after_flash(E::Unsupported, status(false, 0)), Outcome::Unclear);
-        assert_eq!(after_flash(E::NoAssumption, status(false, 0)), Outcome::UnknownImage);
-    }
-
-    #[test]
-    fn fresh_status_follows_the_state() {
-        // after `stop` the stored state is patched-off 0/0, so the fresh status expects 0/0, not 1/0
-        assert_eq!(fresh_status(M::PatchedOff { slaves: 0 }), Fresh::Zero);
-        // patched-off with N > 0 only reaches a flash in a DIP session: DIP 5–8 OFF reads 0/0
-        assert_eq!(fresh_status(M::PatchedOff { slaves: 11 }), Fresh::Zero);
-        assert_eq!(fresh_status(M::PatchedOn), Fresh::MarkerOn);
-        assert_eq!(fresh_status(M::MarkerUnexplained), Fresh::MarkerOn);
-        assert_eq!(fresh_status(M::No0x64), Fresh::Unsupported);
-        assert_eq!(fresh_status(M::Unknown), Fresh::Unchecked);
-        assert!(fresh_matches(Fresh::MarkerOn, status(true, 0)));
-        assert!(!fresh_matches(Fresh::MarkerOn, status(true, 2)));
-        assert!(!fresh_matches(Fresh::MarkerOn, status(false, 0)));
-        assert!(fresh_matches(Fresh::Zero, status(false, 0)));
-        assert!(!fresh_matches(Fresh::Zero, status(false, 1)));
-        assert!(fresh_matches(Fresh::Unsupported, Some(Probe::Unsupported)));
-        assert!(!fresh_matches(Fresh::Unsupported, Some(Probe::NoAnswer)));
-        assert!(!fresh_matches(Fresh::Zero, None));
-        assert!(fresh_matches(Fresh::Unchecked, None));
-    }
-
-    #[test]
-    fn post_flash_polling_waits_for_a_settled_answer() {
-        assert!(!settled(None));
-        assert!(!settled(Some(Probe::NoAnswer)));
-        assert!(!settled(status(true, 3))); // marker set, slave count not yet 0 (next 1 s cycle)
-        assert!(settled(status(true, 0)));
-        assert!(settled(status(false, 11)));
-        assert!(settled(Some(Probe::Unsupported)));
-        assert!(settled(Some(Probe::Rejected(5))));
     }
 }

@@ -18,7 +18,7 @@ pub use device_info::DeviceInfo;
 pub use error::{Error, Result};
 pub use frame::Frame;
 pub use intra_pack::IntraPackRecord;
-pub use maint::MaintStatus;
+pub use maint::{MaintInfo, MaintStatus, MarkerWord};
 pub use modbus::SystemValues;
 pub use params::Parameters;
 pub use serial::{SerialNumbers, SerialValue};
