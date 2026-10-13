@@ -204,7 +204,7 @@ const resources = {
           phase: {
             check: "Prüfe Master …", start: "Setze den Marker, warte auf 1/0 …", stop: "Beenden: Marker löschen …", "end-check": "Beenden: Master prüfen …",
             quiet: "Pack-Bus: Ruhe abwarten, Master fragen …", scan: "Suche Slaves (Adresse {{address}} von {{of}}, Durchgang {{pass}} von {{passes}}) …",
-            bus: "Beenden: Pack-Bus prüfen …", values: "Beenden: Systemwerte lesen …", block: "Frage Pack {{pack}} ab …",
+            bus: "Beenden: Pack-Bus prüfen …", "scan-skipped": "Slave-Suche übersprungen (vor {{minutes}} min bestanden)", values: "Beenden: Systemwerte lesen …", block: "Frage Pack {{pack}} ab …",
           },
         },
         result: {
@@ -584,7 +584,7 @@ const resources = {
           phase: {
             check: "Checking the master …", start: "Setting the marker, waiting for 1/0 …", stop: "End: clearing the marker …", "end-check": "End: checking the master …",
             quiet: "Pack bus: waiting for quiet, asking the master …", scan: "Searching for slaves (address {{address}} of {{of}}, pass {{pass}} of {{passes}}) …",
-            bus: "End: checking the pack bus …", values: "End: reading system values …", block: "Asking pack {{pack}} …",
+            bus: "End: checking the pack bus …", "scan-skipped": "Slave scan skipped (passed {{minutes}} min ago)", values: "End: reading system values …", block: "Asking pack {{pack}} …",
           },
         },
         result: {

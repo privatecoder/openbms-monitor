@@ -29,6 +29,8 @@ struct AppState {
     maint: Arc<Mutex<Option<maint_store::Store>>>,
     /// Steps of End that passed in this app run, per installation (see `maint::EndProgress`).
     end_progress: Mutex<std::collections::HashMap<String, maint::EndProgress>>,
+    /// The last slave scan that found no slave, in this app run (see `maint::ScanPass`).
+    scan_pass: Mutex<Option<maint::ScanPass>>,
     /// The running maintenance action (installation, action) its progress events name (see `maint::progress`).
     maint_action: Mutex<Option<(String, &'static str)>>,
     /// For events from code that has no `AppHandle` (progress, a dead main connection); set once at start-up.
