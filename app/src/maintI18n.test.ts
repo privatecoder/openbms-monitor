@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { packsDerived, packsLine } from "./maint";
+import { failingText, packsDerived, packsLine } from "./maint";
 
 // every refusal key the backend can send (reasons, block reasons used as refusals, refusal_key values)
 const REFUSALS = [
@@ -11,7 +11,7 @@ const REFUSALS = [
   "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained", "slave-present",
 ];
 // every value the backend stores as a failing End check (besides "stop: …", which carries an error)
-const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop"];
+const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop", "slave-count-mismatch"];
 
 describe("maintenance texts", () => {
   it("has a German and an English text for every refusal key", () => {
@@ -54,11 +54,37 @@ describe("maintenance texts", () => {
     expect(packsLine(2, tr("de"))).toBe("2 Packs = 1 Slave + 1 Master");
     expect(packsLine(1, tr("en"))).toBe("1 pack = 0 slaves + 1 master");
   });
-  it("failing texts are short phrases: they go inside „Prüfung fehlgeschlagen (…)“", () => {
+  it("failing texts end without a period: they go into „Prüfung fehlgeschlagen: …. Die Wartung bleibt offen.“", () => {
     for (const lng of ["de", "en"]) {
       for (const k of FAILING) expect(i18n.t(`maint.failing.${k}`, { lng, addr: 7, error: "x" }), `${lng} ${k}`).not.toMatch(/\.$/);
     }
     expect(i18n.t("maint.failing.slave-present", { lng: "de", addr: 7 })).toBe("An Adresse 7 antwortet ein Slave – es sind mehr als 1 Pack");
+  });
+  it("composes End's failure text with clean punctuation, also around a stop timeout", () => {
+    const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
+    const timeout = 'stop: {"kind":"timeout","marker":true,"slaves":0}';
+    for (const lng of ["de", "en"]) {
+      const text = tr(lng)("maint.panel.endFailed", { what: failingText(timeout, tr(lng)) });
+      expect(text, lng).not.toMatch(/\)\.\)|\.\)|\.\.|\)\)/);
+      expect(text, lng).toMatch(/\)\. /);
+    }
+    expect(tr("de")("maint.panel.endFailed", { what: failingText(timeout, tr("de")) }))
+      .toBe("Prüfung fehlgeschlagen: „stop“ fehlgeschlagen: Der Master hat den neuen Zustand nicht rechtzeitig gemeldet (zuletzt Marker 1, 0 Slaves). Die Wartung bleibt offen.");
+    expect(tr("de")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 0 1", tr("de")) }))
+      .toBe("Prüfung fehlgeschlagen: Der Master meldet 0 Slaves, eingetragen sind 2 Packs (1 Slave). DIP 5–8 zurückstellen oder die Packzahl ändern. Die Wartung bleibt offen.");
+    expect(tr("en")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 2 1", tr("en")) }))
+      .toBe("Check failed: the master reports 2 slaves, 2 packs are entered (1 slave). Set DIP 5–8 back or change the pack count. Maintenance stays open.");
+  });
+  it("has progress texts for every panel action and phase, in German and English", () => {
+    for (const lng of ["de", "en"]) {
+      for (const a of ["check", "activate", "start-dip", "scan", "account-marker", "set-slaves", "measure", "end", "end-step", "clear-block"]) {
+        expect(i18n.exists(`maint.progress.action.${a}`, { lng }), `${lng} ${a}`).toBe(true);
+      }
+      for (const p of ["check", "start", "stop", "end-check", "quiet", "scan", "bus", "values", "block"]) {
+        expect(i18n.exists(`maint.progress.phase.${p}`, { lng }), `${lng} ${p}`).toBe(true);
+      }
+    }
+    expect(i18n.t("maint.progress.phase.scan", { lng: "de", address: 7, of: 15, pass: 1, passes: 2 })).toBe("Suche Slaves (Adresse 7 von 15, Durchgang 1 von 2) …");
   });
   it("the guided flow has the same texts in German and English, with every reason flowOf can name", () => {
     const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));

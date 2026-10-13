@@ -108,6 +108,8 @@ export type MaintError =
   | { kind: "measure"; message: string } | { kind: "store"; message: string };
 export interface EndResult { ok: boolean; missing: number[]; failing: string | null }
 export type EndStep = "stop" | "bus" | "values";
+/** Event "maint-progress": the phase of the running pack bus panel action (`detail`: e.g. address and pass of the slave scan). */
+export interface MaintProgress { installation: string; action: string; phase: string; detail: Record<string, unknown> | null }
 export type PlanStep = "dip-off" | "stop-to-zero" | "measure" | "isolated-or-released";
 export interface PlanView { before: PlanStep[]; after: "marker-on" | "zero" | "zero-or-unexplained" | "unsupported" | "no-assumption"; recovery: boolean }
 export interface FlashMaint { installation: string; inverterConfirmed: boolean; dipOffConfirmed: boolean; isolatedConfirmed: boolean }
@@ -133,6 +135,7 @@ const tauriApi = {
   onLinkLost: (f: (err: string) => void) => listen<string>("link-lost", (e) => f(e.payload)),
   /** A maintenance step (measurement, End, block check) stopped the monitor to use the pack port: not a lost link. */
   onMonitorStopped: (f: () => void) => listen("monitor-stopped", () => f()),
+  onMaintProgress: (f: (p: MaintProgress) => void) => listen<MaintProgress>("maint-progress", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
@@ -227,6 +230,7 @@ function demoApi(): typeof tauriApi {
     onSystem: (f) => sub(sysL, f),
     onLinkLost: async () => () => {},
     onMonitorStopped: async () => () => {},
+    onMaintProgress: async () => () => {},
     // preview: keep own cells in browser storage
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),

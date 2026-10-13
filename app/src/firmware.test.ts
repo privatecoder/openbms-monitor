@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { confirmationPhrase, progressFraction, steps, type FwSetup } from "./firmware";
+import { confirmationPhrase, imageLabel, imageWarning, progressFraction, steps, type FwSetup } from "./firmware";
+import i18n from "./i18n";
 
 const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
@@ -71,5 +72,26 @@ describe("maintenance gate", () => {
     const s = { ...base, typed: "FLASH 0" };
     expect(steps({ ...s, unlocked: true }).start).toBe(true);
     expect(steps({ ...s, unlocked: false }).start).toBe(false);
+  });
+});
+
+describe("image naming", () => {
+  const maint = { ...image!, release: "16.06.13 MAINT", kind: "maintenance" as const, custom: true };
+  const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
+  const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
+  it("names the maintenance build as known, not as custom firmware", () => {
+    expect(imageLabel(maint, tr("de"), true)).toBe("Wartungs-Build 16.06.13 MAINT (bekannte Prüfsumme)");
+    expect(imageLabel(maint, tr("en"), true)).toBe("maintenance build 16.06.13 MAINT (known checksum)");
+    expect(imageLabel(maint, tr("de"))).toBe("Wartungs-Build 16.06.13 MAINT");
+    expect(imageLabel(custom, tr("de"), true)).toBe("eigene Firmware");
+    expect(imageLabel(image!, tr("de"), true)).toBe("16.06.13");
+  });
+  it("warns per kind: the known maintenance build is not an unknown checksum", () => {
+    expect(imageWarning(maint)).toBe("fw.maintWarning");
+    expect(imageWarning(custom)).toBe("fw.customWarning");
+    expect(imageWarning(image!)).toBeNull();
+    expect(i18n.t("fw.maintWarning", { lng: "de" })).not.toMatch(/keiner bekannten/);
+    // still behind the custom opt-in and its own phrase
+    expect(confirmationPhrase(0, maint.custom)).toBe("FLASH CUSTOM 0");
   });
 });

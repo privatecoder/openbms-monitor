@@ -1,4 +1,4 @@
-import type { ControlEndpoint, EndStep, Endpoint, FirmwareImage, Installation, MaintError, MaintOverview, MasterStateName } from "./api";
+import type { ControlEndpoint, EndStep, Endpoint, FirmwareImage, Installation, MaintError, MaintOverview, MaintProgress, MasterStateName } from "./api";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
  *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
@@ -167,20 +167,56 @@ export function packsDerived(packs: number, t: T): string {
 const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero"];
 
 /** Text key of a failing End check (EndResult.failing, session.failing); "stop: <MaintError JSON>" carries the
- *  dialog's error, "slave-present: <address>" the slave found. null for a value this UI does not know: it is
- *  shown as is. */
+ *  dialog's error, "slave-present: <address>" the slave found, "slave-count-mismatch: <actual> <N>" the master's
+ *  slave count against the session's. null for a value this UI does not know: it is shown as is. */
 export function failingKey(f: string): { key: string; params?: Record<string, unknown>; inner?: { key: string; params?: Record<string, unknown> } } | null {
   if (FAILING.includes(f)) return { key: `maint.failing.${f}` };
   const slave = /^slave-present: (\d+)$/.exec(f);
   if (slave) return { key: "maint.failing.slave-present", params: { addr: Number(slave[1]) } };
+  const mismatch = /^slave-count-mismatch: (\d+) (\d+)$/.exec(f);
+  if (mismatch) return { key: "maint.failing.slave-count-mismatch", params: { actual: Number(mismatch[1]), expected: Number(mismatch[2]) } };
   if (f.startsWith("stop: ")) return { key: "maint.failing.stop", inner: errorKey(f.slice("stop: ".length)) };
   return null;
 }
 
+/** A sentence used inside another one: without its own final period (an ellipsis stays). */
+export function clause(text: string): string {
+  return text.replace(/(?<!\.)\.$/, "");
+}
+
+/** The failing End check as a clause (no final period): it goes into „Prüfung fehlgeschlagen: …. Die Wartung bleibt offen.“ */
 export function failingText(f: string, t: T): string {
   const k = failingKey(f);
-  if (!k) return f;
-  return k.inner ? t(k.key, { error: t(k.inner.key, k.inner.params) }) : t(k.key, k.params);
+  if (!k) return clause(f);
+  if (k.inner) return clause(t(k.key, { error: clause(t(k.inner.key, k.inner.params)) }));
+  if (k.key === "maint.failing.slave-count-mismatch") {
+    const actual = Number(k.params?.actual), expected = Number(k.params?.expected);
+    return clause(t(k.key, { actual: t("maint.panel.slaveCount", { count: actual }), packs: t("maint.panel.packCount", { count: expected + 1 }), expected: t("maint.panel.slaveCount", { count: expected }) }));
+  }
+  return clause(t(k.key, k.params));
+}
+
+/** A pack bus panel action at its button: running (with the latest phase the backend reported), then its result,
+ *  which stays until the next action or a view change. `key` names the button, `action` the backend command. */
+export interface Activity {
+  installation: string;
+  key: string;
+  action: string;
+  running: boolean;
+  phase?: MaintProgress;
+  result?: { ok: boolean; text: string };
+}
+
+/** A progress event belongs to the running action of the same installation. */
+export function acceptsProgress(a: Activity | null, ev: MaintProgress): boolean {
+  return !!a && a.running && a.installation === ev.installation && a.action === ev.action;
+}
+
+/** The status line under the button: the phase while running (else the action's generic text), then the result. */
+export function activityStatus(a: Activity, t: T): { kind: "running" | "ok" | "failed"; text: string } | null {
+  if (a.running) return { kind: "running", text: a.phase ? t(`maint.progress.phase.${a.phase.phase}`, a.phase.detail ?? undefined) : t(`maint.progress.action.${a.action}`) };
+  if (a.result) return { kind: a.result.ok ? "ok" : "failed", text: a.result.text };
+  return null;
 }
 
 /** The inverter statement belongs to one work phase. It survives the session that the activation it

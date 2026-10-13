@@ -76,6 +76,16 @@ A connection loss stores `unknown` while a marker session is open. Today `measur
 
 Three distinct texts: "monitor paused for maintenance" (the app stopped it itself, `monitor-stopped`), "not connected" (never connected / closed by the user), "connection lost" (link-lost or data timeout). The maintenance steps open their connections themselves; each step reports its own success or failure.
 
+## Feedback at the button (amended 2026-10-13, second bench run)
+
+- Every panel action shows a spinner in its button and a status line right below it. While it runs the line names the phase the backend reports in the event `maint-progress { installation, action, phase, detail? }` (check master, set the marker, End: check master / clear the marker / check the pack bus / read system values, pack bus quiet check, slave scan "address a of 15, pass p of 2", block check); before the first event it shows the action's generic text. Afterwards the result (success or failure, translated) stays there until the next action or a view change; failures are not only in the banner. When End closed the session (the section is gone) or a cleared block took its buttons along, the result stays in their place.
+- After every action the overview is reloaded, also after a success (End, pack count change).
+- The pack count can be changed in the End section too (same editor and command as in step 4), whenever a session is open.
+- A control exchange through the main connection that fails with a dead link (I/O error, closed by the gateway) drops that connection like the polling thread does (polling stops, `link-lost`) and runs once more on a freshly opened control endpoint (`retry_fresh`).
+- End's stop sub-step reads 0x64 first: a marker already off with `N` slaves needs no `stop` (the sub-step counts as done); a marker off with another slave count fails as `slave-count-mismatch` with both numbers ("the master reports 0 slaves, 2 packs are entered (1 slave). Set DIP 5–8 back or change the pack count"). A `stop` that ends at another count than `N` fails the same way. In a DIP session (one-call End) the same read names the mismatch when the control channel answers.
+- Failing texts are clauses without a final period; End's failure reads "Check failed: <clause>. Maintenance stays open."
+- The project's maintenance build is named as such in the firmware view ("maintenance build 16.06.13 MAINT (known checksum)") with its own warning; it still needs "allow custom firmware" and `FLASH CUSTOM n`.
+
 ## Answers to the r1 questions (adopted)
 
 1. Fresh check per app run / after a connection loss before a new work phase: yes. Stored data only drives the banner.
