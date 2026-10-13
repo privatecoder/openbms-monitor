@@ -5,6 +5,7 @@ import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
 import { errorKey, needsReplug, workUnchanged } from "../maint";
 import type { useMaint } from "../maintStore";
 import { Button } from "../components/ui/button";
+import { InfoIcon } from "../help";
 import { MaintSetup } from "./MaintSetup";
 
 const input = "h-9 w-20 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
@@ -64,7 +65,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   return (
     <section className="space-y-3 rounded-md border border-line p-4 text-sm">
       <div className="flex items-center justify-between">
-        <h2 className="font-display text-lg font-semibold">{t("maint.panel.title", { name: o.installation.name })}</h2>
+        <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title", { name: o.installation.name })}<InfoIcon id="topic.maintenance" /></h2>
         <Button variant="ghost" size="sm" onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
       </div>
       {setup && <MaintSetup key={o.installation.id} overview={o} onSaved={(x) => { maint.setOverview(x); setSetup(false); }} />}

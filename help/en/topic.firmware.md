@@ -9,4 +9,5 @@ related: topic.buses, topic.connection
 - **Released images:** unmodified original Seplos firmware (16.06.x), recognised by its checksum. The pack's parameters are kept.
 - **Custom firmware:** with “Allow custom firmware” the app also accepts images with an unknown checksum if format and header match the EMU1101. It does not check the content. Confirm with `FLASH CUSTOM` and the address. The check afterwards works only if the new firmware answers on the pack bus at 19200 baud.
 - **During the update:** do not disconnect power or cable. The app cannot be closed then; on macOS this does not cover *Quit* in the Dock, which cannot be intercepted. So do not quit the app from the Dock.
+- **Several packs:** with several packs, prepare maintenance in the *Pack bus* panel first.
 - **If something goes wrong:** an error before erasing changes nothing; the pack restarts its old firmware by itself. An error after that can leave the pack in update mode. Keep the log (folder `firmware-logs` in the app data) and do not just restart or blindly repeat the update. If only the final check fails, the new firmware has already started; check the pack's values in the monitor.
