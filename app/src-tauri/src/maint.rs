@@ -251,6 +251,7 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
         StoredMasterState::PatchedOff { slaves } => slaves,
         _ => return Err(refused("not-patched-off")),
     };
+    slaves_in_range(n)?;
     let now = crate::history::now_ms();
     with_store(&state, |s| s.start_session(&inst.id, SessionKind::Marker, n, now))?;
     let r = with_control(&state, &inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Start, None, Budgets::default()))?;
@@ -259,25 +260,67 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
     overview(&state, &installation)
 }
 
+/// The slave count `N` per DIP. A bank has 1 to 15 slaves; with 0, End's bus step would pass on a master
+/// that still does not poll (DIP 5–8 not restored).
+pub fn slaves_in_range(n: u8) -> Result<(), MaintError> {
+    if (1..=15).contains(&n) {
+        Ok(())
+    } else {
+        Err(refused("slaves-range"))
+    }
+}
+
 /// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered.
 #[tauri::command]
 pub async fn maint_start_dip(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
+    slaves_in_range(expected_slaves)?;
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let inst = self::installation(&state, &installation)?;
     let now = crate::history::now_ms();
-    with_store(&state, |s| s.start_session(&installation, SessionKind::Dip, expected_slaves, now).map(|_| ()))?;
+    with_store(&state, |s| s.start_session(&inst.id, SessionKind::Dip, expected_slaves, now).map(|_| ()))?;
     overview(&state, &installation)
 }
 
 /// The user states where an unexplained marker comes from ("I set it earlier"): a marker session with `N`.
 #[tauri::command]
 pub async fn maint_account_marker(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
+    slaves_in_range(expected_slaves)?;
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let inst = self::installation(&state, &installation)?;
     let now = crate::history::now_ms();
-    account_allowed(with_store(&state, |s| s.open_session(&installation))?.as_ref())?;
+    let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
+    account_allowed(session.as_ref(), ms.as_ref().map(|(m, _)| m))?;
     with_store(&state, |s| {
-        if s.open_session(&installation)?.is_none() {
-            s.start_session(&installation, SessionKind::Marker, expected_slaves, now)?;
+        if s.open_session(&inst.id)?.is_none() {
+            s.start_session(&inst.id, SessionKind::Marker, expected_slaves, now)?;
         }
-        s.set_master_state(&installation, &StoredMasterState::PatchedOn, now)
+        s.set_master_state(&inst.id, &StoredMasterState::PatchedOn, now)
     })?;
+    overview(&state, &installation)
+}
+
+/// Correcting `N` of an open session: never in the locked state (its only ways out are the recovery row
+/// and the user's statement).
+pub fn set_slaves_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>, n: u8) -> Result<(), MaintError> {
+    if session.is_none() {
+        return Err(refused("no-session"));
+    }
+    stop_allowed(state)?;
+    slaves_in_range(n)
+}
+
+/// A session with a wrong `N` could never be closed: the user corrects the slave count per DIP. End
+/// starts over, its earlier steps were checked against the old count.
+#[tauri::command]
+pub async fn maint_set_slaves(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let inst = self::installation(&state, &installation)?;
+    let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
+    set_slaves_allowed(session.as_ref(), ms.as_ref().map(|(m, _)| m), expected_slaves)?;
+    if let Some(ses) = &session {
+        with_store(&state, |s| s.set_expected_slaves(ses.id, expected_slaves))?;
+    }
+    state.end_progress.lock().map_err(|e| store_err(e.to_string()))?.remove(&inst.id);
     overview(&state, &installation)
 }
 
@@ -305,9 +348,12 @@ pub fn flash_gate(g: &GateInput) -> Result<(), MaintError> {
 
 /// The pack port decides the installation, not the UI. `port_inst`: installation the port is assigned to;
 /// `ui_inst`: the installation the UI shows; `any_open`: some installation has open maintenance work.
+/// An unassigned port is refused when the UI named an installation (the user assigns it there; a new
+/// installation would block later with `installation-mismatch`) or while any installation has open work.
 pub fn port_gate(port_inst: Option<&str>, ui_inst: Option<&str>, any_open: bool) -> Result<(), MaintError> {
     match (port_inst, ui_inst) {
         (Some(p), Some(u)) if p != u => Err(refused("installation-mismatch")),
+        (None, Some(_)) => Err(refused("port-not-assigned")),
         (None, _) if any_open => Err(refused("port-not-assigned")),
         _ => Ok(()),
     }
@@ -363,9 +409,13 @@ pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
     main.is_some_and(|(key, bus)| matches!(bus, Bus::PackBus) || key == pack_key)
 }
 
-/// "I set the marker myself" turns an unexplained marker into a marker session. A DIP session (the
-/// recovery) stays what it is: its End sends no `stop` and expects the polls of a quiet master.
-pub fn account_allowed(session: Option<&MaintSession>) -> Result<(), MaintError> {
+/// "I set the marker myself" turns an unexplained marker into a marker session; only that state is
+/// accounted for this way. A DIP session (the recovery) stays what it is: its End sends no `stop` and
+/// expects the polls of a quiet master.
+pub fn account_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>) -> Result<(), MaintError> {
+    if state != Some(&StoredMasterState::MarkerUnexplained) {
+        return Err(refused("not-marker-unexplained"));
+    }
     match session {
         Some(s) if s.kind == SessionKind::Dip => Err(refused("dip-session-open")),
         _ => Ok(()),
@@ -398,6 +448,11 @@ pub fn clears_master_unclear(expect: &str, probe: Option<Probe>) -> bool {
 /// Listening time for the end round: two full polling rounds (150 ms per slave) plus 2 s, at least 4 s.
 pub fn end_timeout(n: u8) -> Duration {
     (Duration::from_millis(300) * u32::from(n) + Duration::from_secs(2)).max(Duration::from_secs(4))
+}
+
+/// Pause between the two Modbus reads of End: one full polling round (150 ms per slave) plus 1 s, at least 2 s.
+pub fn values_pause(n: u8) -> Duration {
+    (Duration::from_millis(150) * u32::from(n) + Duration::from_secs(1)).max(Duration::from_secs(2))
 }
 
 pub fn state_after(outcome: Outcome, expect: Expect) -> StoredMasterState {
@@ -571,11 +626,7 @@ impl Prep for AppPrep<'_> {
 fn port_of(state: &AppState, inst: &Installation, port: &str) -> Result<(), MaintError> {
     let key = crate::maint_store::endpoint_key(false, port);
     let (owner, any_open) = with_store(state, |s| Ok((s.installation_of(&key)?, s.any_open()?)))?;
-    port_gate(owner.as_ref().map(|i| i.id.as_str()), Some(&inst.id), any_open)?;
-    if owner.is_none() {
-        return Err(refused("port-not-assigned"));
-    }
-    Ok(())
+    port_gate(owner.as_ref().map(|i| i.id.as_str()), Some(&inst.id), any_open)
 }
 
 #[tauri::command]
@@ -603,7 +654,7 @@ pub enum EndStep {
     Stop,
     /// pack bus: every slave polled and answering (N > 0), or the master answering 0x47 (N = 0)
     Bus,
-    /// two Modbus reads ≥ 2 s apart over the control channel; closes the session
+    /// two Modbus reads one polling round apart (`values_pause`) over the control channel; closes the session
     Values,
 }
 
@@ -701,7 +752,7 @@ fn run_end_step(state: &AppState, inst: &Installation, port: &str, session: &Mai
         EndStep::Values => {
             for i in 0..2 {
                 if i == 1 {
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(values_pause(n));
                 }
                 if !with_control(state, inst, |c| c.system_values().is_ok())? {
                     return fail("system-values", vec![]);
@@ -962,6 +1013,8 @@ mod tests {
         assert!(refused_with(port_gate(Some("a"), Some("b"), false), "installation-mismatch"));
         // an unassigned port while maintenance is open anywhere
         assert!(refused_with(port_gate(None, Some("a"), true), "port-not-assigned"));
+        // the UI named an installation, but the port belongs to none: assign it first, never a new installation
+        assert!(refused_with(port_gate(None, Some("a"), false), "port-not-assigned"));
         assert!(refused_with(port_gate(None, None, true), "port-not-assigned"));
         // a single pack, nothing open: allowed (the port gets an installation of its own)
         assert!(port_gate(None, None, false).is_ok());
@@ -1018,9 +1071,44 @@ mod tests {
 
     #[test]
     fn account_marker_never_rewrites_a_dip_recovery() {
-        assert!(account_allowed(None).is_ok());
-        assert!(account_allowed(Some(&session(SessionKind::Marker))).is_ok());
-        assert!(refused_with(account_allowed(Some(&session(SessionKind::Dip))), "dip-session-open"));
+        let locked = Some(&StoredMasterState::MarkerUnexplained);
+        assert!(account_allowed(None, locked).is_ok());
+        assert!(account_allowed(Some(&session(SessionKind::Marker)), locked).is_ok());
+        assert!(refused_with(account_allowed(Some(&session(SessionKind::Dip)), locked), "dip-session-open"));
+    }
+
+    #[test]
+    fn account_marker_only_for_an_unexplained_marker() {
+        assert!(refused_with(account_allowed(None, None), "not-marker-unexplained"));
+        assert!(refused_with(account_allowed(None, Some(&StoredMasterState::PatchedOn)), "not-marker-unexplained"));
+        assert!(refused_with(account_allowed(None, Some(&StoredMasterState::PatchedOff { slaves: 3 })), "not-marker-unexplained"));
+    }
+
+    #[test]
+    fn slave_count_must_be_one_to_fifteen() {
+        assert!(refused_with(slaves_in_range(0), "slaves-range"));
+        assert!(slaves_in_range(1).is_ok());
+        assert!(slaves_in_range(15).is_ok());
+        assert!(refused_with(slaves_in_range(16), "slaves-range"));
+    }
+
+    #[test]
+    fn slave_count_changes_only_in_an_open_session() {
+        let on = StoredMasterState::PatchedOn;
+        let ses = session(SessionKind::Dip);
+        assert!(set_slaves_allowed(Some(&ses), Some(&on), 4).is_ok());
+        assert!(set_slaves_allowed(Some(&ses), None, 4).is_ok());
+        assert!(refused_with(set_slaves_allowed(None, Some(&on), 4), "no-session"));
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&on), 0), "slaves-range"));
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 4), "marker-unexplained"));
+    }
+
+    #[test]
+    fn values_pause_covers_a_full_polling_round() {
+        assert_eq!(values_pause(0), std::time::Duration::from_secs(2));
+        assert_eq!(values_pause(1), std::time::Duration::from_secs(2));
+        assert_eq!(values_pause(11), std::time::Duration::from_millis(11 * 150 + 1000));
+        assert_eq!(values_pause(15), std::time::Duration::from_millis(15 * 150 + 1000));
     }
 
     #[test]

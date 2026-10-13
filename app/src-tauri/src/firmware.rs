@@ -232,6 +232,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let (owner, any_open) = crate::maint::with_store(&state, |s| Ok((s.installation_of(&key)?, s.any_open()?))).map_err(to_text)?;
     let ui = (!confirm.installation.is_empty()).then_some(confirm.installation.as_str());
     crate::maint::port_gate(owner.as_ref().map(|i| i.id.as_str()), ui, any_open).map_err(to_text)?;
+    // an unassigned port passed the gate only without a UI installation (a single pack): it gets its own
     let inst = match owner {
         Some(i) => i,
         None => crate::maint::with_store(&state, |s| s.installation_for(&key)).map_err(to_text)?,
@@ -278,13 +279,15 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         }));
         // a panic inside the flash counts as a failure at the last reported stage
         let ok = matches!(result, Ok(Ok(_)));
-        // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
-        let block = crate::maint::record_after_flash(&store, &inst2, pending, address, &release, ok, last, &mut link);
-        drop(link);
+        // the master's post-check stores its outcome first: the update-interrupted block is cleared only
+        // afterwards, so a crash during the settle loop leaves the record
         let master = match &plan2 {
             Some(plan) if ok && address == 0 => Some(crate::maint::post_master_check(&store, &inst2, plan, sequential).to_string()),
             _ => None,
         };
+        // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
+        let block = crate::maint::record_after_flash(&store, &inst2, pending, address, &release, ok, last, &mut link);
+        drop(link);
         let log = log_path.display().to_string();
         let done = match result {
             Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, block, master },

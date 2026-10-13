@@ -329,6 +329,12 @@ impl Store {
         Ok(())
     }
 
+    /// The user corrected the slave count per DIP of an open session.
+    pub fn set_expected_slaves(&self, id: i64, n: u8) -> Result<(), String> {
+        self.db.execute("UPDATE maint_sessions SET expected_slaves = ?2 WHERE id = ?1 AND ended IS NULL", params![id, n]).map_err(e)?;
+        Ok(())
+    }
+
     pub fn note_done(&self, id: i64, what: &str) -> Result<(), String> {
         let done: String = self.db.query_row("SELECT done FROM maint_sessions WHERE id = ?1", [id], |r| r.get(0)).map_err(e)?;
         let mut list: Vec<String> = serde_json::from_str(&done).unwrap_or_default();
@@ -452,6 +458,16 @@ mod tests {
         assert!(s.blocks(&id).unwrap().is_empty());
         s.end_session(ses.id, 6).unwrap();
         assert!(s.open_session(&id).unwrap().is_none());
+    }
+
+    #[test]
+    fn expected_slaves_of_an_open_session_can_be_corrected() {
+        let s = Store::open(&temp("slaves")).unwrap();
+        let i = s.installation_for("tcp:gw:4196").unwrap();
+        let ses = s.start_session(&i.id, SessionKind::Dip, 2, 1).unwrap();
+        s.set_expected_slaves(ses.id, 5).unwrap();
+        let back = s.open_session(&i.id).unwrap().unwrap();
+        assert_eq!((back.id, back.kind, back.expected_slaves), (ses.id, SessionKind::Dip, 5));
     }
 
     #[test]
