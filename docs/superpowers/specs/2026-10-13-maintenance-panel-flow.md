@@ -1,6 +1,6 @@
 # Pack bus panel: guided flow
 
-Status: draft r3, 2026-10-13 (r1 reviewed: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`).
+Status: implemented, 2026-10-13 (draft r3 reviewed; r1 review: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`).
 
 ## Why
 
@@ -28,7 +28,7 @@ First bench run of stage 1 (single board, patched master, DIP 5 ON = 1 slave):
 4. **Start maintenance**, by state:
    - `patched-off`, N > 0, no session: two choices — "Activate maintenance mode" (recommended) or the manual DIP way (note positions, set DIP 5–8 OFF, confirm, enter pack count incl. master). Spec row "activate first or DIP 5–8 OFF".
    - `no-0x64` / `unknown`, no session: manual DIP way.
-   - `patched-off` with 0 slaves (fresh 0/0), no session: 0/0 alone does not prove a single pack (a bank with DIP 5–8 OFF reads the same). Step 4 offers "check for slaves" (the existing UART0 slave scan, two passes). Only when no slave answers is the installation shown as a single pack and step 4 as "not needed" for a master flash with the original or maintenance image (spec row "patched-off, DIP 5–8 = 0"). If a slave answers, the state is "pack count unclear: DIP 5–8 may be OFF" and only the DIP session (with its End and DIP-restore reminder) is offered. A custom image on a single pack still needs the DIP session with the single-pack proof (as implemented).
+   - `patched-off` with 0 slaves (fresh 0/0), no session: 0/0 alone does not prove a single pack (a bank with DIP 5–8 OFF reads the same). Step 4 offers "check for slaves" (the existing UART0 slave scan, two passes). Only when no slave answers is the installation shown as a single pack and step 4 as "not needed" for a master flash with the original or maintenance image (spec row "patched-off, DIP 5–8 = 0"). Steps 3 and 5 stay required: a master flash stops CAN to the inverter. The scan result lives in memory and is cleared by every new master check and by a closed or lost connection. If a slave answers, the state is "pack count unclear: DIP 5–8 may be OFF" and only the DIP session (with its End and DIP-restore reminder) is offered. A custom image on a single pack still needs the DIP session with the single-pack proof (as implemented).
    - session open (marker or DIP), or `patched-on` with the marker accounted for: ✓, showing kind and "P packs = N slaves + 1 master" with "change".
    - `marker-unexplained`: the locked branch (explanation; "I set the marker myself" for marker sessions, or "start recovery by DIP"). See Recovery.
 5. **Measure bus.** Unlocked when step 4 is done (or "not needed") and a pack port is chosen. Shows "bus quiet at hh:mm:ss"; a new state check or a flash invalidates it.
@@ -38,6 +38,14 @@ First bench run of stage 1 (single board, patched master, DIP 5 ON = 1 slave):
    - One adapter: three sub-steps; the backend reports the next allowed sub-step (new field in the overview: `end_next: "stop" | "bus" | "values" | null`, derived from the in-memory progress), so the UI shows exactly that one as current after a view change or retry. After a failed sub-step the overview reports the restart point and the UI says so.
 
 Blocks (unclear updates) are listed above the steps; while one exists, steps 5–7 are locked with the block as the reason.
+
+## Single pack without a control channel
+
+Without a control channel the app cannot read 0x64, and a DIP session with 1 pack needs one (single-pack proof). So step 1 has the explicit choice "work without a control channel" (step 2 then ends as the manual way), and step 4 offers, next to the DIP way, the operator statement "only this one pack is on the pack bus" — only while no session is open and the stored master state is absent or `unknown`. It marks step 4 as not needed; steps 3 and 5 stay required, and the flash's own preflight still checks the quiet bus. Both choices live in memory only and are cleared, like the inverter statement, when the connection is closed or lost.
+
+## Marker session after `stop`
+
+A marker session whose master no longer reports the marker (e.g. `patched-off` after End's stop sub-step) locks steps 5–6 ("check the master again"); End continues from its next sub-step.
 
 ## Recovery (`marker-unexplained`)
 
