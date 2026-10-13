@@ -25,14 +25,10 @@ struct AppState {
     port_busy: Arc<AtomicBool>,
     /// Endpoint key and bus of the main connection; a control exchange on that endpoint runs through it.
     main: Mutex<Option<(String, Bus)>>,
-    /// Maintenance database (installations, master state, sessions); None if it could not be opened.
+    /// Maintenance database (installations, master reads, pending bootloader records); None if it could not be opened.
     maint: Arc<Mutex<Option<maint_store::Store>>>,
-    /// Steps of End that passed in this app run, per installation (see `maint::EndProgress`).
-    end_progress: Mutex<std::collections::HashMap<String, maint::EndProgress>>,
-    /// The last slave scan that found no slave, in this app run (see `maint::ScanPass`).
-    scan_pass: Mutex<Option<maint::ScanPass>>,
-    /// The running maintenance action (installation, action) its progress events name (see `maint::progress`).
-    maint_action: Mutex<Option<(String, &'static str)>>,
+    /// The maintenance operation that holds the port now ("live", "scan", "halt", "release", "flash").
+    maint_action: Mutex<Option<&'static str>>,
     /// For events from code that has no `AppHandle` (progress, a dead main connection); set once at start-up.
     app: std::sync::OnceLock<AppHandle>,
 }
@@ -103,7 +99,7 @@ fn port_busy_error(action: Option<&str>) -> String {
 
 /// What holds the port now, for `port_busy_error`.
 fn current_action(state: &AppState) -> Option<&'static str> {
-    let maint = state.maint_action.lock().ok().and_then(|a| a.as_ref().map(|(_, a)| *a));
+    let maint = state.maint_action.lock().ok().and_then(|a| *a);
     maint.or_else(|| state.flashing.load(Ordering::SeqCst).then_some("flash"))
 }
 
@@ -556,7 +552,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installation_of, maint::maint_installations, maint::maint_open_work, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_resolve_sector_note, maint::maint_overview, maint::maint_check, maint::maint_activate, maint::maint_start_dip, maint::maint_account_marker, maint::maint_set_slaves, maint::maint_measure, maint::maint_scan_slaves, maint::maint_end, maint::maint_end_step, maint::maint_clear_block, maint::maint_master_plan])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
@@ -590,10 +586,10 @@ mod port_reservation_tests {
         assert_eq!(current_action(&state), None);
         let v: serde_json::Value = serde_json::from_str(&port_busy_error(current_action(&state))).unwrap();
         assert_eq!(v, serde_json::json!({ "kind": "busy", "action": null }));
-        *state.maint_action.lock().unwrap() = Some(("inst".into(), "check"));
-        assert_eq!(current_action(&state), Some("check"));
+        *state.maint_action.lock().unwrap() = Some("scan");
+        assert_eq!(current_action(&state), Some("scan"));
         let v: serde_json::Value = serde_json::from_str(&port_busy_error(current_action(&state))).unwrap();
-        assert_eq!(v, serde_json::json!({ "kind": "busy", "action": "check" }));
+        assert_eq!(v, serde_json::json!({ "kind": "busy", "action": "scan" }));
         *state.maint_action.lock().unwrap() = None;
         state.flashing.store(true, Ordering::SeqCst);
         assert_eq!(current_action(&state), Some("flash"));

@@ -271,6 +271,11 @@ impl Connection {
         Ok(SerialNumbers { battery, bms })
     }
 
+    /// The BMS serial number alone (0xA4, RS485-1/2 only), e.g. to recognise a bank by its master.
+    pub fn bms_serial(&mut self, address: u8) -> Result<SerialValue> {
+        Ok(self.ascii_serial(serial::bms_request(address), address)?.0)
+    }
+
     /// First 22 characters of the master's battery serial number (Modbus FC04, CAN socket bus). Firmware before
     /// 16.06.11 answers with an exception.
     pub fn master_battery_serial(&mut self) -> Result<SerialValue> {
