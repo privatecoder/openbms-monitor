@@ -129,7 +129,9 @@ pub fn app_answers(link: &mut impl Link, log: &mut impl Write, address: u8, with
 
 /// Window per address of the slave scan, and the number of passes over 1..=15.
 pub const SLAVE_WINDOW: Duration = Duration::from_millis(600);
-const SLAVE_PASSES: u8 = 2;
+pub const SLAVE_PASSES: u8 = 2;
+/// The slave addresses the scan asks (1..=SLAVE_ADDRESSES).
+pub const SLAVE_ADDRESSES: u8 = 15;
 
 /// Fail-closed proof that no slave is on the bus (a single pack): two passes over addresses 1..=15, each
 /// sending 0x51 and listening for `per_address`. Any byte other than an exact echo of the own request counts
@@ -139,7 +141,7 @@ const SLAVE_PASSES: u8 = 2;
 /// window stayed silent, or the link error.
 pub fn first_slave(link: &mut impl Link, clock: &impl Clock, log: &mut impl Write, per_address: Duration) -> Result<Option<u8>> {
     for pass in 1..=SLAVE_PASSES {
-        for address in 1..=15u8 {
+        for address in 1..=SLAVE_ADDRESSES {
             writeln!(log, "slave scan: pass {pass}, address {address}")?;
             let request = frame::encode_request(address, 0x51, &[])?;
             link.write_raw(&request)?;

@@ -197,6 +197,7 @@ describe("failing End checks", () => {
     expect(failingKey("master-not-answering")).toEqual({ key: "maint.failing.master-not-answering" });
     expect(failingKey("system-values")).toEqual({ key: "maint.failing.system-values" });
     expect(failingKey("master-not-zero")).toEqual({ key: "maint.failing.master-not-zero" });
+    expect(failingKey("master-unreadable")).toEqual({ key: "maint.failing.master-unreadable" });
     expect(failingKey("slave-present: 7")).toEqual({ key: "maint.failing.slave-present", params: { addr: 7 } });
     expect(failingKey('stop: {"kind":"no-answer"}')).toEqual({ key: "maint.failing.stop", inner: { key: "maint.err.no-answer" } });
     expect(failingKey("something else")).toBeNull();
