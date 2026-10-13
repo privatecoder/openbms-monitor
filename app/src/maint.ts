@@ -149,7 +149,7 @@ export function slavesOf(packs: number): number {
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
-/** "12 Packs = 11 Slaves + 1 Master" */
+/** "8 Packs = 7 Slaves + 1 Master" */
 export function packsLine(packs: number, t: T): string {
   return t("maint.panel.packsEq", { packs: t("maint.panel.packCount", { count: packs }), slaves: t("maint.panel.slaveCount", { count: slavesOf(packs) }) });
 }

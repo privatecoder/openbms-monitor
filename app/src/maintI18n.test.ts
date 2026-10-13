@@ -33,10 +33,10 @@ describe("maintenance texts", () => {
   });
   it("shows the pack count with the derived slave count and DIP value", () => {
     const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
-    expect(packsLine(12, tr("de"))).toBe("12 Packs = 11 Slaves + 1 Master");
-    expect(packsLine(12, tr("en"))).toBe("12 packs = 11 slaves + 1 master");
-    expect(packsDerived(12, tr("de"))).toBe("12 Packs = 11 Slaves + 1 Master · DIP 5–8 des Masters standen auf 11");
-    expect(packsDerived(12, tr("en"))).toBe("12 packs = 11 slaves + 1 master · the master's DIP 5–8 were set to 11");
+    expect(packsLine(8, tr("de"))).toBe("8 Packs = 7 Slaves + 1 Master");
+    expect(packsLine(8, tr("en"))).toBe("8 packs = 7 slaves + 1 master");
+    expect(packsDerived(8, tr("de"))).toBe("8 Packs = 7 Slaves + 1 Master · DIP 5–8 des Masters standen auf 7");
+    expect(packsDerived(8, tr("en"))).toBe("8 packs = 7 slaves + 1 master · the master's DIP 5–8 were set to 7");
     expect(packsLine(2, tr("de"))).toBe("2 Packs = 1 Slave + 1 Master");
     expect(packsLine(1, tr("en"))).toBe("1 pack = 0 slaves + 1 master");
   });
