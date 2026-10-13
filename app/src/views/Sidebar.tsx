@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
-import { api, isDemo, type Bus, type DeviceInfo } from "../api";
+import { api, isDemo, type Bus, type DeviceInfo, type Endpoint } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
@@ -10,7 +10,7 @@ import { RecordingEntry } from "./Recording";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance }: {
+export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
   connected: boolean;
   site: string;
   packs: number[];
@@ -23,6 +23,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisco
   locked: boolean;
   maintenance: boolean;
   setMaintenance: (v: boolean) => void;
+  onEndpoint: (endpoint: Endpoint) => void;
 }) {
   const { t, i18n } = useTranslation();
   const [kind, setKind] = useState<"tcp" | "serial">(() => (localStorage.getItem("conn.kind") as "tcp" | "serial") ?? "tcp");
@@ -60,7 +61,9 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisco
     try {
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       localStorage.setItem("conn.packs", String(packCount));
-      await api.connect(kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus });
+      const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
+      await api.connect(ep);
+      void onEndpoint(ep);
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
       let addrs: number[] | null = null;
@@ -219,7 +222,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisco
         <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
         {/* maintenance functions: an icon toggle, highlighted while on; the label is the tooltip */}
         <Button variant="ghost" size="icon" onClick={() => setMaintenance(!maintenance)} disabled={locked}
-          aria-pressed={maintenance} aria-label={t("maint")} title={t("maint")}
+          aria-pressed={maintenance} aria-label={t("maintToggle")} title={t("maintToggle")}
           className={cn(maintenance && "bg-sunken text-ink")}>
           <Wrench className="h-4 w-4" />
         </Button>

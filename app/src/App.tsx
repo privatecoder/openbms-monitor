@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Cable } from "lucide-react";
 import { Sidebar } from "./views/Sidebar";
+import { MaintBanner } from "./views/MaintBanner";
 import { Firmware } from "./views/Firmware";
 import { Dashboard } from "./views/Dashboard";
 import { PackDetail } from "./views/PackDetail";
@@ -11,6 +12,7 @@ import { ParametersView } from "./views/Parameters";
 import { History } from "./views/History";
 import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
+import { useMaint } from "./maintStore";
 import { isDemo, type Bus } from "./api";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
@@ -21,6 +23,7 @@ const MAINT_VIEWS = ["diag", "params", "firmware"];
 export default function App() {
   const { t } = useTranslation();
   const live = useLiveData();
+  const maint = useMaint();
   const [connected, setConnected] = useState(false);
   const [site, setSite] = useState("");
   const [bus, setBus] = useState<Bus | null>(null);
@@ -46,9 +49,12 @@ export default function App() {
           setView={(v) => { setView(v); setPack(null); }}
           onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); if (!isDemo) setPack(null); }}
           onDevices={live.addDevices}
+          onEndpoint={(ep) => maint.attach(ep)}
           onDisconnected={() => { live.reset(); setConnected(false); setPack(null); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
+          <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
+            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => setView("firmware")} />
           {view === "firmware" && maintenance ? (
             <Firmware connected={connected} onRunning={setFlashing} onBack={() => setView("dashboard")}
               onMonitorStopped={() => { live.reset(); setConnected(false); setPack(null); }} />
