@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
@@ -28,6 +28,10 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   const [nText, setNText] = useState("");
   const n = parseSlaves(nText);
   const [editSlaves, setEditSlaves] = useState(false);
+  // the N editor belongs to one session; a new (or closed) session starts with it closed, also when the
+  // parent keeps this panel mounted
+  const sessionId = o?.session?.id ?? null;
+  useEffect(() => { setEditSlaves(false); setNText(""); }, [sessionId]);
   const [dipConfirmed, setDipConfirmed] = useState(false);
   const [setup, setSetup] = useState(false);
   // set when maintEnd was refused with end-sequential (one adapter for both buses)
