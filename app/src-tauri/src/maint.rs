@@ -14,7 +14,7 @@ use openbms_proto::MaintStatus;
 use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize, Debug)]
@@ -291,22 +291,23 @@ impl std::io::Write for ScanProgress<'_> {
     }
 }
 
-/// A slave scan that found no slave: installation, session (if one was open) and when (monotonic).
+/// A slave scan that found no slave: installation, session (if one was open) and when (wall clock, ms, so a
+/// sleeping laptop counts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanPass {
     pub installation: String,
     pub session: Option<i64>,
-    pub at: Instant,
+    pub at: i64,
 }
 
 /// How long a passed slave scan counts for End's pack bus step.
-pub const SCAN_VALID: Duration = Duration::from_secs(30 * 60);
+pub const SCAN_VALID_MS: i64 = 30 * 60 * 1000;
 
 /// Whether End's Bus step (N = 0) must scan for slaves: yes unless a pass for this installation and this
 /// session is at most `SCAN_VALID` old.
-pub fn scan_needed(record: Option<&ScanPass>, installation: &str, session: Option<i64>, now: Instant) -> bool {
+pub fn scan_needed(record: Option<&ScanPass>, installation: &str, session: Option<i64>, now: i64) -> bool {
     match record {
-        Some(r) => r.installation != installation || r.session != session || now.saturating_duration_since(r.at) > SCAN_VALID,
+        Some(r) => r.installation != installation || r.session != session || now.saturating_sub(r.at) > SCAN_VALID_MS,
         None => true,
     }
 }
@@ -315,7 +316,7 @@ pub fn scan_needed(record: Option<&ScanPass>, installation: &str, session: Optio
 fn note_scan(state: &AppState, installation: &str, session: Option<i64>, passed: bool) {
     let Ok(mut rec) = state.scan_pass.lock() else { return };
     if passed {
-        *rec = Some(ScanPass { installation: installation.to_string(), session, at: Instant::now() });
+        *rec = Some(ScanPass { installation: installation.to_string(), session, at: crate::history::now_ms() });
     } else if rec.as_ref().is_some_and(|r| r.installation == installation) {
         *rec = None;
     }
@@ -521,6 +522,8 @@ pub async fn maint_scan_slaves(app: AppHandle, state: State<'_, AppState>, insta
     }
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, &installation, "scan");
+    // an attempt forgets the earlier pass; only a pass records again
+    note_scan(&state, &installation, None, false);
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
     let session = with_store(&state, |s| s.open_session(&inst.id))?.map(|x| x.id);
@@ -1096,6 +1099,9 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
         EndStep::Bus if n == 0 => {
             // a single pack: nothing polls, the master answers 0x47 on a quiet bus, and no slave answers
             progress(state, "bus", None);
+            // an attempt forgets the earlier pass; it is put back when the scan is skipped, recorded on a pass
+            let recent = state.scan_pass.lock().ok().and_then(|r| r.clone());
+            note_scan(state, &inst.id, Some(session.id), false);
             let mut link = open_pack_for(state, app, port)?;
             match quiet_bus(state, &mut link) {
                 Ok(()) => {}
@@ -1104,19 +1110,24 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
             }
             // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF); a pass of this
             // session within the last 30 minutes (e.g. when the pack count was set to 1) is not repeated
-            let now = Instant::now();
-            let recent = state.scan_pass.lock().ok().and_then(|r| r.clone());
-            if scan_needed(recent.as_ref(), &inst.id, Some(session.id), now) {
-                let r = scan_for_slave(state, &mut link);
-                note_scan(state, &inst.id, Some(session.id), matches!(r, Ok(None)));
-                match r {
-                    Ok(None) => {}
-                    Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
-                    Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
+            let now = crate::history::now_ms();
+            match recent {
+                Some(r) if !scan_needed(Some(&r), &inst.id, Some(session.id), now) => {
+                    let minutes = now.saturating_sub(r.at) / 60_000;
+                    if let Ok(mut rec) = state.scan_pass.lock() {
+                        *rec = Some(r);
+                    }
+                    progress(state, "scan-skipped", Some(serde_json::json!({ "minutes": minutes })));
                 }
-            } else if let Some(r) = recent {
-                let minutes = now.saturating_duration_since(r.at).as_secs() / 60;
-                progress(state, "scan-skipped", Some(serde_json::json!({ "minutes": minutes })));
+                _ => {
+                    let r = scan_for_slave(state, &mut link);
+                    note_scan(state, &inst.id, Some(session.id), matches!(r, Ok(None)));
+                    match r {
+                        Ok(None) => {}
+                        Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
+                        Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
+                    }
+                }
             }
         }
         EndStep::Bus => {
@@ -1436,15 +1447,15 @@ mod tests {
 
     #[test]
     fn scan_needed_only_without_a_recent_pass_of_this_session() {
-        let now = Instant::now();
-        let rec = |inst: &str, session: Option<i64>, age: Duration| ScanPass { installation: inst.into(), session, at: now - age };
-        let min = Duration::from_secs(60);
+        let now = 10_000_000_i64;
+        let rec = |inst: &str, session: Option<i64>, age: i64| ScanPass { installation: inst.into(), session, at: now - age };
+        let min = 60_000;
         assert!(scan_needed(None, "a", Some(1), now));
         assert!(scan_needed(Some(&rec("b", Some(1), min)), "a", Some(1), now));
         assert!(scan_needed(Some(&rec("a", Some(2), min)), "a", Some(1), now));
         assert!(scan_needed(Some(&rec("a", None, min)), "a", Some(1), now));
-        assert!(scan_needed(Some(&rec("a", Some(1), SCAN_VALID + Duration::from_secs(1))), "a", Some(1), now));
-        assert!(!scan_needed(Some(&rec("a", Some(1), SCAN_VALID)), "a", Some(1), now));
+        assert!(scan_needed(Some(&rec("a", Some(1), SCAN_VALID_MS + 1000)), "a", Some(1), now));
+        assert!(!scan_needed(Some(&rec("a", Some(1), SCAN_VALID_MS)), "a", Some(1), now));
         assert!(!scan_needed(Some(&rec("a", Some(1), min)), "a", Some(1), now));
     }
 
