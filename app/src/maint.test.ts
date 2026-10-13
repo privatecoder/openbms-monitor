@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignEndpoint, attachDecision, busLine, busyMessage, busyWaitStep, controlFromAttach, createFromAttach, defaultName, endpointKey, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
+import { packIsCanAdapter, assignEndpoint, attachDecision, busLine, busyMessage, busyWaitStep, controlFromAttach, createFromAttach, defaultName, endpointKey, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
 import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
@@ -32,12 +32,15 @@ describe("installations: an address book", () => {
     expect(assignEndpoint(inst, { kind: "serial", path: "/dev/p", bus: "pack" }).endpoints).toEqual(["serial:/dev/p"]);
     expect(assignEndpoint(inst, { kind: "serial", path: "/dev/a", bus: "can" })).toBe(inst);
   });
-  it("the RS485-1/2 port is the first serial endpoint that is not the CAN socket, else the CAN adapter listed itself", () => {
+  it("the RS485-1/2 port is the first serial endpoint that is not the CAN socket; the CAN adapter itself is named, not used", () => {
     expect(packPortOf(null)).toBeNull();
     expect(packPortOf(inst)).toBeNull();
     expect(packPortOf({ ...inst, endpoints: ["tcp:gw:4196", "serial:/dev/a", "serial:/dev/p"] })).toBe("/dev/p");
-    // one adapter moved between both buses
-    expect(packPortOf({ ...inst, endpoints: ["serial:/dev/a"] })).toBe("/dev/a");
+    expect(packPortOf({ ...inst, endpoints: ["serial:/dev/a"] })).toBeNull();
+    expect(packIsCanAdapter({ ...inst, endpoints: ["serial:/dev/a"] })).toBe(true);
+    expect(packIsCanAdapter({ ...inst, endpoints: ["serial:/dev/a", "serial:/dev/p"] })).toBe(false);
+    expect(packIsCanAdapter(inst)).toBe(false);
+    expect(setupFields({ ...inst, endpoints: ["serial:/dev/a"] }).pack).toBe("/dev/a");
   });
   it("the setup saves the pack port first and keeps other endpoints", () => {
     const stored = { ...inst, endpoints: ["serial:/dev/a", "serial:/dev/p", "tcp:gw:4196"] };
@@ -46,7 +49,7 @@ describe("installations: an address book", () => {
     expect(setupEndpoints(stored, "")).toEqual(["tcp:gw:4196"]);
     // one adapter for both buses: the CAN adapter is listed as the pack port
     expect(setupEndpoints(stored, "/dev/a")).toEqual(["serial:/dev/a", "tcp:gw:4196"]);
-    expect(packPortOf({ ...inst, endpoints: setupEndpoints(stored, "/dev/a") })).toBe("/dev/a");
+    expect(packIsCanAdapter({ ...inst, endpoints: setupEndpoints(stored, "/dev/a") })).toBe(true);
   });
   it("names endpoints like the backend", () => {
     expect(endpointKey({ kind: "tcp", addr: " Gateway.local:4196 ", bus: "can" })).toBe("tcp:gateway.local:4196");

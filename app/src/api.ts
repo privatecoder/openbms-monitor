@@ -146,7 +146,7 @@ const tauriApi = {
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
   /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
   onLinkLost: (f: (err: string) => void) => listen<string>("link-lost", (e) => f(e.payload)),
-  /** A maintenance step (measurement, End, block check) stopped the monitor to use the pack port: not a lost link. */
+  /** The pack bus panel or a flash stopped the monitor to use the pack port: not a lost link. */
   onMonitorStopped: (f: () => void) => listen("monitor-stopped", () => f()),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),

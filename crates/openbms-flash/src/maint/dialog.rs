@@ -133,10 +133,11 @@ pub fn probe(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Pro
         None => Probe::Failed,
         Some(f) if f.rtn == 0x00 => MaintInfo::parse(&f.info).map(Probe::Info).unwrap_or(Probe::Failed),
         Some(f) if f.rtn == 0x04 => Probe::No0x64,
-        Some(_) => match status_read(link, clock, b)? {
+        Some(f) if f.rtn == 0x05 => match status_read(link, clock, b)? {
             Reply::Status(s) => Probe::Legacy(s),
             _ => Probe::Failed,
         },
+        Some(_) => Probe::Failed,
     })
 }
 

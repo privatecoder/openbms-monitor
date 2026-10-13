@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, endpointKey, errorKey, flashBlocked, masterLine, otherBank, releaseFirst, showDone, type Tone } from "../maint";
+import { busLine, endpointKey, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, releaseFirst, showDone, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { imageLabel } from "../firmware";
 import { Button } from "../components/ui/button";
@@ -153,7 +153,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
 
       {/* the RS485-1/2 port: from the installation, or chosen here */}
       {inst ? (
-        <p>{port ? t("maint.panel.port", { port: ports.includes(port) ? port : `${port} (${t("maint.panel.notPlugged")})` }) : t("maint.panel.noPort")}</p>
+        packIsCanAdapter(inst) ? <p className="text-discharge">{t("maint.panel.canAdapter")}</p>
+          : <p>{port ? t("maint.panel.port", { port: ports.includes(port) ? port : `${port} (${t("maint.panel.notPlugged")})` }) : t("maint.panel.noPort")}</p>
       ) : (
         <label className="flex flex-wrap items-center gap-2">{t("maint.setup.rs485")}
           <select className={select} value={port} disabled={running || busy} onChange={(e) => setPort(e.target.value)}>
@@ -163,6 +164,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
           <Button variant="ghost" size="icon" disabled={running} onClick={onPortsChanged} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
         </label>
       )}
+
+      {port && <p className="text-muted">{t("maint.panel.monitorStops")}</p>}
 
       {/* live status */}
       <div role="status" className="space-y-1 rounded-md bg-sunken p-3">
@@ -176,7 +179,15 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
       {live && !quiet && !running && live.bus !== "no-port" && (
         <div className="space-y-2">
           <h3 className="font-medium">{t("maint.quiet.title")}</h3>
-          {master?.may_halt && inst ? (
+          {/* an image that is not a maintenance build would need „Master freigeben“ again before the master's flash
+              (C'): DIP 5–8 OFF keep the bus quiet for every pack; halting stays possible for the slaves only */}
+          {master?.may_halt && inst && image && image.kind !== "maintenance" ? (
+            <>
+              <p>{t("maint.quiet.dip")}</p>
+              <p className="text-muted">{t("maint.quiet.dipForImage")}</p>
+              <ActButton variant="secondary" size="sm" spinning={action === "halt"} disabled={busy} onClick={() => marker(false)}>{t("maint.quiet.haltSlaves")}</ActButton>
+            </>
+          ) : master?.may_halt && inst ? (
             <ActButton variant="primary" size="sm" spinning={action === "halt"} disabled={busy} onClick={() => marker(false)}>{t("maint.halt")}</ActButton>
           ) : <p>{t("maint.quiet.dip")}</p>}
           <p className="text-muted">{t("maint.quiet.hint")}</p>
@@ -217,7 +228,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
                   {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                   {confirm === a && image && d && (
                     <div className="flex flex-wrap items-center gap-2">
-                      <span>{t("maint.packs.confirm", { name, from: d.firmware_version, to: imageLabel(image, t) })}</span>
+                      <span>{t(image.custom ? "maint.packs.confirmCustom" : "maint.packs.confirm", { name, from: d.firmware_version, to: imageLabel(image, t) })}</span>
                       <ActButton variant="primary" size="sm" spinning={action === "flash"} disabled={!!blocked} onClick={() => flash(a, d.firmware_version)}>{t("maint.packs.flashNow")}</ActButton>
                       <Button variant="secondary" size="sm" onClick={() => setConfirm(null)}>{t("maint.setup.cancel")}</Button>
                     </div>

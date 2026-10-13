@@ -64,6 +64,8 @@ const resources = {
         panel: {
           title: "Pack-Bus", setup: "Einrichten", port: "RS485-1/2: {{port}}", noPort: "RS485-1/2 nicht eingerichtet („Einrichten“).",
           notPlugged: "nicht eingesteckt",
+          canAdapter: "RS485-1/2 ist derselbe Adapter wie die CAN-Buchse – in der Einrichtung den RS485-1/2-Port setzen.",
+          monitorStops: "Solange dieses Feld mit einem RS485-1/2-Port offen ist, trennt die App eine Monitor-Verbindung über RS485-1/2 oder denselben Adapter.",
         },
         live: {
           running: "Update läuft: am Pack-Bus sendet nur das Update.", waiting: "Prüfe den Pack-Bus …",
@@ -79,12 +81,14 @@ const resources = {
         quiet: {
           title: "Bus ruhig machen", dip: "Am Master DIP 5–8 auf OFF stellen (alte Stellung notieren).",
           hint: "Die Statuszeile wird von selbst grün, sobald der Bus ruhig ist.",
+          dipForImage: "Das gewählte Image ist kein Wartungs-Build: Vor dem Flashen des Masters müsste er wieder freigegeben werden. Mit DIP 5–8 auf OFF bleibt der Bus für alle Packs ruhig.",
+          haltSlaves: "Nur Slaves flashen: Master anhalten",
         },
         packs: {
           title: "Packs", rescan: "Neu suchen", none: "Kein Pack antwortet am Pack-Bus.",
           inverter: "Während der Wartung meldet der Master dem Wechselrichter nur sein eigenes Pack.",
           master: "Master (0)", pack: "Pack {{address}}", version: "Firmware {{version}}", silent: "antwortet nicht",
-          flash: "Flashen", flashNow: "Jetzt flashen", confirm: "{{name}}: Firmware {{from}} → {{to}}",
+          flash: "Flashen", flashNow: "Jetzt flashen", confirm: "{{name}}: Firmware {{from}} → {{to}}", confirmCustom: "{{name}}: Firmware {{from}} → Eigene Firmware, nicht freigegeben ({{to}})",
           pending: "Pack {{pack}} hängt eventuell im Bootloader. Neu flashen geht in der App noch nicht (das Update braucht eine Antwort der Anwendung).",
           cPrime: "Das Image ist kein Wartungs-Build: erst am Master DIP 5–8 auf OFF, dann „Master freigeben“, dann flashen, danach DIP 5–8 zurückstellen.",
           why: {
@@ -124,6 +128,7 @@ const resources = {
             "halt-not-offered": "Anhalten geht nur bei einem bekannten Wartungs-Build mit Marker aus.",
             "release-not-offered": "Freigeben geht nur, wenn der Master den Marker an meldet (bekannter Wartungs-Build).",
             "release-master-first": "Der Master hat den Marker an: erst DIP 5–8 auf OFF, dann „Master freigeben“, dann flashen.",
+            "release-master-first-unread": "Der Master ist über die CAN-Buchse nicht lesbar, und zuletzt war sein Marker an: erst DIP 5–8 auf OFF, dann „Master freigeben“, dann flashen.",
             "no-port": "RS485-1/2 nicht eingerichtet.", "no-serial": "Keine Seriennummer.",
             "name-required": "Einen Namen für die Anlage eingeben.", "name-taken": "Diesen Namen trägt schon eine andere Anlage.",
             "unknown-installation": "Diese Anlage gibt es nicht mehr.",
@@ -354,6 +359,8 @@ const resources = {
         panel: {
           title: "Pack bus", setup: "Set up", port: "RS485-1/2: {{port}}", noPort: "RS485-1/2 not set up (“Set up”).",
           notPlugged: "not plugged in",
+          canAdapter: "RS485-1/2 is the same adapter as the CAN socket – set the RS485-1/2 port in the setup.",
+          monitorStops: "While this panel is open with an RS485-1/2 port, the app closes a monitor connection over RS485-1/2 or the same adapter.",
         },
         live: {
           running: "Update running: only the update sends on the pack bus.", waiting: "Checking the pack bus …",
@@ -369,12 +376,14 @@ const resources = {
         quiet: {
           title: "Make the bus quiet", dip: "Set DIP 5–8 of the master OFF (note the old positions).",
           hint: "The status line turns green by itself once the bus is quiet.",
+          dipForImage: "The chosen image is not a maintenance build: before the master's flash it would have to be released again. With DIP 5–8 OFF the bus stays quiet for every pack.",
+          haltSlaves: "Flash slaves only: halt master",
         },
         packs: {
           title: "Packs", rescan: "Search again", none: "No pack answers on the pack bus.",
           inverter: "During maintenance the master reports only its own pack to the inverter.",
           master: "Master (0)", pack: "Pack {{address}}", version: "firmware {{version}}", silent: "does not answer",
-          flash: "Flash", flashNow: "Flash now", confirm: "{{name}}: firmware {{from}} → {{to}}",
+          flash: "Flash", flashNow: "Flash now", confirm: "{{name}}: firmware {{from}} → {{to}}", confirmCustom: "{{name}}: firmware {{from}} → custom firmware, not released ({{to}})",
           pending: "Pack {{pack}} may hang in its bootloader. Flashing it again is not possible in the app yet (the updater needs an answer of the application).",
           cPrime: "The image is not a maintenance build: first set DIP 5–8 of the master OFF, then “Release master”, then flash, then set DIP 5–8 back.",
           why: {
@@ -414,6 +423,7 @@ const resources = {
             "halt-not-offered": "Halting works only for a known maintenance build with the marker off.",
             "release-not-offered": "Releasing works only when the master reports the marker on (known maintenance build).",
             "release-master-first": "The master has its marker on: first set DIP 5–8 OFF, then “Release master”, then flash.",
+            "release-master-first-unread": "The master cannot be read over the CAN socket, and its marker was last seen on: first set DIP 5–8 OFF, then “Release master”, then flash.",
             "no-port": "RS485-1/2 not set up.", "no-serial": "No serial number.",
             "name-required": "Enter a name for the installation.", "name-taken": "Another installation already has this name.",
             "unknown-installation": "This installation no longer exists.",

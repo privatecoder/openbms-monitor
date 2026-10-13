@@ -5,6 +5,7 @@
 use crate::maint_store::endpoint_key;
 use crate::{maint, reserve_port, reveal, stop_monitor, AppState};
 use openbms_flash::maint::policy::{self, Master};
+use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
 use openbms_proto::DeviceInfo;
 use openbms_transport::{Connection, Endpoint};
@@ -244,10 +245,14 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     maint::with_store(&state, |s| s.pending_on(&key)).and_then(|p| maint::pending_refusal(&p, address)).map_err(to_text)?;
     let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
     if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
-        // a failed read leaves it to the bus check (DIP way)
         let master = maint::read_master(&state, i).unwrap_or(Master::Unknown);
-        if policy::release_first(&master, maint_kind(info.kind)) {
+        let kind = maint_kind(info.kind);
+        if policy::release_first(&master, kind) {
             return Err(to_text(maint::refused("release-master-first")));
+        }
+        // no fresh read: the marker last seen on still counts
+        if master == Master::Unknown && kind != known::ImageKind::Maintenance && maint::with_store(&state, |s| s.marker_last_on(&i.id)).map_err(to_text)? {
+            return Err(to_text(maint::refused("release-master-first-unread")));
         }
     }
     if !try_begin(&state.flashing) {
@@ -257,6 +262,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     stop_monitor(&state)?;
     let mut link = open_port(&port, l)?;
     let bank = match &inst {
+        // a bus with traffic gets no 0xA4: the preflight refuses it anyway
+        Some(_) if !bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?.quiet() => "unchecked",
         Some(i) => match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
             maint::Bank::Mismatch(serial) => return Err(to_text(maint::MaintError::OtherBank { serial })),
             maint::Bank::Match => "match",
