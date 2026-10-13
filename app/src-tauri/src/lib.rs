@@ -29,6 +29,10 @@ struct AppState {
     maint: Arc<Mutex<Option<maint_store::Store>>>,
     /// Steps of End that passed in this app run, per installation (see `maint::EndProgress`).
     end_progress: Mutex<std::collections::HashMap<String, maint::EndProgress>>,
+    /// The running maintenance action (installation, action) its progress events name (see `maint::progress`).
+    maint_action: Mutex<Option<(String, &'static str)>>,
+    /// For events from code that has no `AppHandle` (progress, a dead main connection); set once at start-up.
+    app: std::sync::OnceLock<AppHandle>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -509,6 +513,7 @@ pub fn run() {
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("history.sqlite");
             let state = app.state::<AppState>();
+            let _ = state.app.set(app.handle().clone());
             if let Ok(mut h) = state.history.lock() {
                 if let Err(e) = h.open(&path) {
                     eprintln!("history: {e}");

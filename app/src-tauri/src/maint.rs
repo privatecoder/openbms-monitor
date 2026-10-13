@@ -14,7 +14,7 @@ use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -130,25 +130,149 @@ fn control_endpoint(c: &ControlEndpoint) -> Endpoint {
     }
 }
 
+/// A link error that no retry on the same connection heals (the polling thread's rule): the gateway closed
+/// the socket, a broken pipe, any other I/O error.
+pub fn link_dead(message: &str) -> bool {
+    message.contains("I/O") || message.contains("connection closed") || message.ends_with("not connected")
+}
+
+/// After an exchange through the main connection failed with a dead link (e.g. a reconnect in the sidebar left
+/// a dead socket behind), the exchange runs once more on a freshly opened control endpoint. An exchange on an
+/// own connection, or any other failure (no answer, timeout, rejected), is not repeated.
+pub fn retry_fresh(through_main: bool, error: Option<&str>) -> bool {
+    through_main && error.is_some_and(link_dead)
+}
+
+/// Drop a dead main connection like the polling thread does on link loss: polling stops, the connection and
+/// its route go, the UI hears "link-lost".
+fn drop_dead_main(state: &AppState, error: &str) {
+    if let Ok(p) = state.polling.lock() {
+        p.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    if let Ok(mut c) = state.conn.lock() {
+        *c = None;
+    }
+    if let Ok(mut m) = state.main.lock() {
+        *m = None;
+    }
+    if let Ok(mut h) = state.history.lock() {
+        h.disconnected();
+    }
+    if let Some(app) = state.app.get() {
+        let _ = app.emit("link-lost", error.to_string());
+    }
+}
+
 /// Run `f` on the control channel: through the main connection when it is that endpoint on the CAN socket
 /// bus (the polling thread waits for the mutex meanwhile), otherwise on a connection opened for this dialog.
-pub fn with_control<T>(state: &AppState, inst: &Installation, f: impl FnOnce(&mut Connection) -> T) -> Result<T, MaintError> {
+/// A dead main connection is dropped and the exchange repeated once on its own channel (`retry_fresh`).
+pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installation, mut f: impl FnMut(&mut Connection) -> Result<T, E>) -> Result<Result<T, E>, MaintError> {
     let control = inst.control.as_ref().ok_or_else(|| refused("no-control-channel"))?;
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
     let key = control.key();
     let mut guard = lock(&state.conn).map_err(|m| MaintError::Connection { message: m })?;
+    let open = |f: &mut dyn FnMut(&mut Connection) -> Result<T, E>| -> Result<Result<T, E>, MaintError> {
+        let mut c = Connection::open(&control_endpoint(control)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+        Ok(f(&mut c))
+    };
     match route_with(main.as_ref(), &key, guard.is_some()) {
-        Route::Main => match guard.as_mut() {
-            Some(c) => Ok(f(c)),
-            None => Err(MaintError::Connection { message: "not connected".into() }),
-        },
+        Route::Main => {
+            let c = guard.as_mut().ok_or_else(|| MaintError::Connection { message: "not connected".into() })?;
+            let r = f(c);
+            let error = r.as_ref().err().map(|e| e.to_string());
+            if !retry_fresh(true, error.as_deref()) {
+                return Ok(r);
+            }
+            drop(guard);
+            drop_dead_main(state, error.as_deref().unwrap_or_default());
+            open(&mut f)
+        }
         Route::Refused => Err(refused("control-on-pack-bus")),
         Route::Open => {
             drop(guard);
-            let mut c = Connection::open(&control_endpoint(control)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-            Ok(f(&mut c))
+            open(&mut f)
         }
     }
+}
+
+/// Event "maint-progress": the phase of the running panel action (`detail`: e.g. address and pass of the
+/// slave scan), so the UI can name it at the button.
+#[derive(Serialize, Clone, Debug)]
+pub struct MaintProgress {
+    installation: String,
+    action: &'static str,
+    phase: &'static str,
+    detail: Option<serde_json::Value>,
+}
+
+/// The panel action running now; its progress events name it. Cleared on drop (one action at a time: the
+/// commands hold `port_busy`).
+pub struct ActionScope<'a>(&'a AppState);
+
+impl Drop for ActionScope<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut a) = self.0.maint_action.lock() {
+            *a = None;
+        }
+    }
+}
+
+pub fn begin_action<'a>(state: &'a AppState, installation: &str, action: &'static str) -> ActionScope<'a> {
+    if let Ok(mut a) = state.maint_action.lock() {
+        *a = Some((installation.to_string(), action));
+    }
+    ActionScope(state)
+}
+
+/// Tell the UI the phase of the running action; nothing when no panel action runs (e.g. inside a flash).
+pub fn progress(state: &AppState, phase: &'static str, detail: Option<serde_json::Value>) {
+    let Some((installation, action)) = state.maint_action.lock().ok().and_then(|a| a.clone()) else { return };
+    if let Some(app) = state.app.get() {
+        let _ = app.emit("maint-progress", MaintProgress { installation, action, phase, detail });
+    }
+}
+
+/// Pass and address of a slave scan log line ("slave scan: pass 1, address 7").
+pub fn scan_step(line: &str) -> Option<(u8, u8)> {
+    let rest = line.trim().strip_prefix("slave scan: pass ")?;
+    let (pass, address) = rest.split_once(", address ")?;
+    Some((pass.parse().ok()?, address.parse().ok()?))
+}
+
+/// The slave scan's log as progress events ("Adresse 7 von 15, Durchgang 1 von 2").
+struct ScanProgress<'a> {
+    state: &'a AppState,
+    line: Vec<u8>,
+}
+
+impl std::io::Write for ScanProgress<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for &b in buf {
+            if b != b'\n' {
+                self.line.push(b);
+                continue;
+            }
+            if let Some((pass, address)) = scan_step(&String::from_utf8_lossy(&self.line)) {
+                progress(self.state, "scan", Some(serde_json::json!({ "address": address, "of": 15, "pass": pass, "passes": 2 })));
+            }
+            self.line.clear();
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `bus::first_slave` with its progress shown.
+fn scan_for_slave(state: &AppState, link: &mut Connection) -> openbms_flash::Result<Option<u8>> {
+    bus::first_slave(link, &SystemClock::new(), &mut ScanProgress { state, line: vec![] }, bus::SLAVE_WINDOW)
+}
+
+/// The quiet-bus check on the pack bus (2 s quiet, 0x47 from address 0), with its phase shown.
+fn quiet_bus(state: &AppState, link: &mut Connection) -> openbms_flash::Result<()> {
+    progress(state, "quiet", None);
+    bus::measure(link, &mut std::io::sink())
 }
 
 pub fn stop_allowed(state: Option<&StoredMasterState>) -> Result<(), MaintError> {
@@ -189,8 +313,8 @@ pub fn resolved_master_blocks(blocks: &[FlashBlock], probe: Option<Probe>, read_
 /// A successful read that shows the expected state clears an unclear master update.
 pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState, MaintError> {
     let session = with_store(state, |s| s.open_session(&inst.id))?;
-    let probe = match with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()).ok()) {
-        Ok(p) => p,
+    let probe = match with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default())) {
+        Ok(p) => p.ok(),
         Err(e @ MaintError::Refused { .. }) => return Err(e),
         Err(_) => None,
     };
@@ -241,7 +365,9 @@ pub async fn maint_overview(state: State<'_, AppState>, installation: String) ->
 #[tauri::command]
 pub async fn maint_check(state: State<'_, AppState>, installation: String) -> Result<Overview, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "check");
     let inst = self::installation(&state, &installation)?;
+    progress(&state, "check", None);
     check(&state, &inst)?;
     overview(&state, &installation)
 }
@@ -254,7 +380,9 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
         return Err(refused("inverter"));
     }
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "activate");
     let inst = self::installation(&state, &installation)?;
+    progress(&state, "check", None);
     let n = match check(&state, &inst)? {
         StoredMasterState::PatchedOff { slaves } => slaves,
         _ => return Err(refused("not-patched-off")),
@@ -263,6 +391,7 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
     slaves_allowed(n, false)?;
     let now = crate::history::now_ms();
     with_store(&state, |s| s.start_session(&inst.id, SessionKind::Marker, n, now))?;
+    progress(&state, "start", None);
     let r = with_control(&state, &inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Start, None, Budgets::default()))?;
     check(&state, &inst)?;
     r?;
@@ -300,6 +429,7 @@ fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, po
         return Err(refused("no-port"));
     }
     port_of(state, inst, port)?;
+    progress(state, "check", None);
     let fresh = match check(state, inst) {
         Err(MaintError::Refused { reason }) if reason == "no-control-channel" => return Err(refused("slaves-range")),
         r => r?,
@@ -308,9 +438,8 @@ fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, po
         return Ok((fresh, None));
     }
     let mut link = open_pack_for(state, app, port)?;
-    bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
-    let slave = bus::first_slave(&mut link, &SystemClock::new(), &mut std::io::sink(), bus::SLAVE_WINDOW)
-        .map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    quiet_bus(state, &mut link).map_err(|e| MaintError::Measure { message: e.to_string() })?;
+    let slave = scan_for_slave(state, &mut link).map_err(|e| MaintError::Connection { message: e.to_string() })?;
     if slave.is_some() {
         return Err(refused("slave-present"));
     }
@@ -327,11 +456,12 @@ pub async fn maint_scan_slaves(app: AppHandle, state: State<'_, AppState>, insta
         return Err(refused("no-port"));
     }
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "scan");
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
     let mut link = open_pack_for(&state, &app, &port)?;
-    bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
-    bus::first_slave(&mut link, &SystemClock::new(), &mut std::io::sink(), bus::SLAVE_WINDOW).map_err(|e| MaintError::Connection { message: e.to_string() })
+    quiet_bus(&state, &mut link).map_err(|e| MaintError::Measure { message: e.to_string() })?;
+    scan_for_slave(&state, &mut link).map_err(|e| MaintError::Connection { message: e.to_string() })
 }
 
 /// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
@@ -342,6 +472,7 @@ pub async fn maint_start_dip(app: AppHandle, state: State<'_, AppState>, install
         slaves_allowed(expected_slaves, false)?;
     }
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "start-dip");
     let inst = self::installation(&state, &installation)?;
     if expected_slaves == 0 {
         let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port)?;
@@ -358,6 +489,7 @@ pub async fn maint_account_marker(state: State<'_, AppState>, installation: Stri
     // a set marker is never a verified 0/0 single pack
     slaves_allowed(expected_slaves, false)?;
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "account-marker");
     let inst = self::installation(&state, &installation)?;
     let now = crate::history::now_ms();
     let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
@@ -386,6 +518,7 @@ pub fn set_slaves_allowed(session: Option<&MaintSession>, state: Option<&StoredM
 #[tauri::command]
 pub async fn maint_set_slaves(app: AppHandle, state: State<'_, AppState>, installation: String, expected_slaves: u8, port: String) -> Result<Overview, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "set-slaves");
     let inst = self::installation(&state, &installation)?;
     let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
     let mut ms = ms.map(|(m, _)| m);
@@ -659,14 +792,15 @@ pub fn measure(state: &AppState, app: &AppHandle, inst: &Installation, port: &st
     let uart1 = inst.control.is_some() && !same_adapter(inst, port);
     let fresh = measure_fresh(ms.as_ref().map(|(m, _)| m), session.map(|s| s.kind), uart1)?;
     if fresh != policy::Fresh::Unchecked && uart1 {
-        let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()).ok())?;
+        progress(state, "check", None);
+        let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()))?.ok();
         if !policy::fresh_matches(fresh, probe) {
             check(state, inst)?;
             return Err(refused("state-changed"));
         }
     }
     let mut link = open_pack_for(state, app, port)?;
-    bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
+    quiet_bus(state, &mut link).map_err(|e| MaintError::Measure { message: e.to_string() })?;
     Ok(crate::history::now_ms())
 }
 
@@ -685,6 +819,7 @@ pub fn open_pack_for(state: &AppState, app: &AppHandle, port: &str) -> Result<Co
 pub fn stop_to_zero(state: &AppState, inst: &Installation) -> Result<(), MaintError> {
     let ms = with_store(state, |s| s.master_state(&inst.id))?;
     stop_allowed(ms.as_ref().map(|(m, _)| m))?;
+    progress(state, "stop", None);
     let r = with_control(state, inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(0), Budgets::default()))?;
     check(state, inst)?;
     r?;
@@ -735,6 +870,7 @@ fn port_of(state: &AppState, inst: &Installation, port: &str) -> Result<(), Main
 #[tauri::command]
 pub async fn maint_measure(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<i64, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "measure");
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
     measure(&state, &app, &inst, &port)
@@ -852,23 +988,44 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
     };
     match step {
         EndStep::Stop if session.kind == SessionKind::Marker => {
-            let r = with_control(state, inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(n), Budgets::default()))?;
-            check(state, inst)?;
-            if let Err(e) = r {
-                return fail(&format!("stop: {}", serde_json::to_string(&MaintError::from(e)).unwrap_or_default()), vec![]);
+            // read first: a marker already off needs no `stop`, and a slave count that does not fit N is named
+            progress(state, "end-check", None);
+            match stop_plan(&check(state, inst)?, n) {
+                StopPlan::Skip => {}
+                StopPlan::Mismatch { actual } => return fail(&mismatch_failing(actual, n), vec![]),
+                StopPlan::Send => {
+                    progress(state, "stop", None);
+                    let r = with_control(state, inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(n), Budgets::default()))?;
+                    check(state, inst)?;
+                    if let Err(e) = r {
+                        return fail(&stop_failing(MaintError::from(e), n), vec![]);
+                    }
+                }
             }
         }
-        EndStep::Stop => {}
+        EndStep::Stop => {
+            // a DIP session sends no `stop`; with a control channel a master that still reports another slave
+            // count (DIP 5–8 not back yet) is named here instead of as missing packs later
+            if inst.control.is_some() {
+                progress(state, "end-check", None);
+                if let Ok(fresh) = check(state, inst) {
+                    if let StopPlan::Mismatch { actual } = stop_plan(&fresh, n) {
+                        return fail(&mismatch_failing(actual, n), vec![]);
+                    }
+                }
+            }
+        }
         EndStep::Bus if n == 0 => {
             // a single pack: nothing polls, the master answers 0x47 on a quiet bus, and no slave answers
+            progress(state, "bus", None);
             let mut link = open_pack_for(state, app, port)?;
-            match bus::measure(&mut link, &mut std::io::sink()) {
+            match quiet_bus(state, &mut link) {
                 Ok(()) => {}
                 Err(openbms_flash::Error::MasterSilent) => return fail("master-not-answering", vec![]),
                 Err(e) => return Err(MaintError::Measure { message: e.to_string() }),
             }
             // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF)
-            match bus::first_slave(&mut link, &SystemClock::new(), &mut std::io::sink(), bus::SLAVE_WINDOW) {
+            match scan_for_slave(state, &mut link) {
                 Ok(None) => {}
                 Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
                 Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
@@ -876,6 +1033,7 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
         }
         EndStep::Bus => {
             // N is 1..=15 here (`end_next`)
+            progress(state, "bus", None);
             let mut link = open_pack_for(state, app, port)?;
             let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
                 .map_err(|e| MaintError::Connection { message: e.to_string() })?;
@@ -884,6 +1042,7 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
             }
         }
         EndStep::Values => {
+            progress(state, "values", None);
             // a single pack: the master must still report 0/0 now (it cannot show a polling round)
             if n == 0 && !reports_zero(Some(&check(state, inst)?)) {
                 return fail("master-not-zero", vec![]);
@@ -892,7 +1051,7 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
                 if i == 1 {
                     std::thread::sleep(values_pause(n));
                 }
-                if !with_control(state, inst, |c| c.system_values().is_ok())? {
+                if with_control(state, inst, |c| c.system_values())?.is_err() {
                     return fail("system-values", vec![]);
                 }
             }
@@ -900,6 +1059,38 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
         }
     }
     Ok(EndResult { ok: true, missing: vec![], failing: None })
+}
+
+/// What End's Stop step does after reading 0x64 (marker session): a marker already off with the session's
+/// slave count needs no `stop` (the step counts as done); a marker off with another count fails with
+/// `slave-count-mismatch` (e.g. 0/0 for N = 1 while DIP 5–8 are still OFF); anything else sends `stop`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StopPlan {
+    Send,
+    Skip,
+    Mismatch { actual: u8 },
+}
+
+pub fn stop_plan(fresh: &StoredMasterState, n: u8) -> StopPlan {
+    match fresh {
+        StoredMasterState::PatchedOff { slaves } if *slaves == n => StopPlan::Skip,
+        StoredMasterState::PatchedOff { slaves } => StopPlan::Mismatch { actual: *slaves },
+        _ => StopPlan::Send,
+    }
+}
+
+/// The failing End check for a master whose slave count does not match N: "slave-count-mismatch: <actual> <N>".
+pub fn mismatch_failing(actual: u8, expected: u8) -> String {
+    format!("slave-count-mismatch: {actual} {expected}")
+}
+
+/// The failing End check for a failed `stop`: a timeout with the marker off but another slave count than N is
+/// the slave count mismatch (`stop` worked, the master polls a different number); anything else carries the error.
+pub fn stop_failing(e: MaintError, n: u8) -> String {
+    match e {
+        MaintError::Timeout { marker: false, slaves } if slaves != n => mismatch_failing(slaves, n),
+        e => format!("stop: {}", serde_json::to_string(&e).unwrap_or_default()),
+    }
 }
 
 /// End (step 5) in one call: refused while an update is unclear; marker → `stop` and wait for 0/N; then
@@ -910,6 +1101,7 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
 #[tauri::command]
 pub async fn maint_end(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<EndResult, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "end");
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
     if same_adapter(&inst, &port) {
@@ -929,6 +1121,7 @@ pub async fn maint_end(app: AppHandle, state: State<'_, AppState>, installation:
 #[tauri::command]
 pub async fn maint_end_step(app: AppHandle, state: State<'_, AppState>, installation: String, port: String, step: EndStep) -> Result<EndResult, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "end-step");
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
     end_step(&state, &app, &inst, &port, step)
@@ -939,12 +1132,14 @@ pub async fn maint_end_step(app: AppHandle, state: State<'_, AppState>, installa
 #[tauri::command]
 pub async fn maint_clear_block(app: AppHandle, state: State<'_, AppState>, installation: String, id: i64, how: String, port: Option<String>) -> Result<Overview, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, &installation, "clear-block");
     let blocks = with_store(&state, |s| s.blocks(&installation))?;
     let b = blocks.iter().find(|b| b.id == id).ok_or_else(|| refused("no-block"))?;
     match how.as_str() {
         // the master's application runs; only a 0x64 check that shows the expected state resolves it
         "answered" if b.reason == "master-unclear" => {
             let inst = self::installation(&state, &installation)?;
+            progress(&state, "check", None);
             check(&state, &inst)?;
             if with_store(&state, |s| s.blocks(&installation))?.iter().any(|x| x.id == id) {
                 return Err(refused("master-unclear"));
@@ -956,6 +1151,7 @@ pub async fn maint_clear_block(app: AppHandle, state: State<'_, AppState>, insta
             let inst = self::installation(&state, &installation)?;
             port_of(&state, &inst, port)?;
             let mut link = open_pack_for(&state, &app, port)?;
+            progress(&state, "block", Some(serde_json::json!({ "pack": b.pack })));
             if !bus::app_answers(&mut link, &mut std::io::sink(), b.pack, Duration::from_secs(2)) {
                 return Err(refused("pack-not-answering"));
             }
@@ -1627,5 +1823,43 @@ mod tests {
         assert_eq!(next_state(Some(&S::MarkerUnexplained), S::Unknown, false), S::MarkerUnexplained);
         assert_eq!(next_state(Some(&S::MarkerUnexplained), S::PatchedOff { slaves: 3 }, true), S::PatchedOff { slaves: 3 });
         assert_eq!(next_state(Some(&S::PatchedOn), S::Unknown, false), S::Unknown);
+    }
+
+    #[test]
+    fn a_dead_main_connection_is_retried_once_on_a_fresh_channel() {
+        // the error as it arrives from a dialog on a socket the gateway closed
+        assert!(retry_fresh(true, Some("connection: transport: I/O: Broken pipe (os error 32)")));
+        assert!(retry_fresh(true, Some("connection closed by the gateway")));
+        assert!(retry_fresh(true, Some("not connected")));
+        // an answer problem is no dead link: no retry
+        assert!(!retry_fresh(true, Some("the master at address 0 does not answer")));
+        assert!(!retry_fresh(true, Some("no answer within 600ms")));
+        assert!(!retry_fresh(true, None));
+        // an own channel is never retried
+        assert!(!retry_fresh(false, Some("connection: transport: I/O: Broken pipe")));
+    }
+
+    #[test]
+    fn end_stop_reads_first_and_names_a_slave_count_mismatch() {
+        use StoredMasterState as S;
+        assert_eq!(stop_plan(&S::PatchedOn, 1), StopPlan::Send);
+        assert_eq!(stop_plan(&S::Unknown, 1), StopPlan::Send);
+        // marker already off with N slaves: nothing to stop
+        assert_eq!(stop_plan(&S::PatchedOff { slaves: 3 }, 3), StopPlan::Skip);
+        // DIP 5–8 still OFF (0/0 for N = 1), or more slaves than entered (0/2 for N = 1)
+        assert_eq!(stop_plan(&S::PatchedOff { slaves: 0 }, 1), StopPlan::Mismatch { actual: 0 });
+        assert_eq!(stop_plan(&S::PatchedOff { slaves: 2 }, 1), StopPlan::Mismatch { actual: 2 });
+        assert_eq!(mismatch_failing(0, 1), "slave-count-mismatch: 0 1");
+        // a stop that ends at another count than N is the same mismatch; other failures carry the error
+        assert_eq!(stop_failing(MaintError::Timeout { marker: false, slaves: 2 }, 1), "slave-count-mismatch: 2 1");
+        assert_eq!(stop_failing(MaintError::Timeout { marker: true, slaves: 0 }, 1), r#"stop: {"kind":"timeout","marker":true,"slaves":0}"#);
+        assert_eq!(stop_failing(MaintError::NoAnswer, 1), r#"stop: {"kind":"no-answer"}"#);
+    }
+
+    #[test]
+    fn the_slave_scan_log_becomes_progress() {
+        assert_eq!(scan_step("slave scan: pass 1, address 7"), Some((1, 7)));
+        assert_eq!(scan_step("slave scan: pass 2, address 15\n"), Some((2, 15)));
+        assert_eq!(scan_step("slave scan: 3 byte(s) seen, slave at 4"), None);
     }
 }
