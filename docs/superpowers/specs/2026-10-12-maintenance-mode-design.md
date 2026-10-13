@@ -1,6 +1,6 @@
 # Maintenance mode for firmware and parameters: design
 
-Status: draft, reviewed (five rounds with a second model, no open blocking or high findings), 2026-10-12.
+Status: stage 1 implemented (local: control channel, maintenance mode, DIP way, guards). Stage 2 (remote flashing through the gateway) is pending bench tests. Design reviewed (five rounds with a second model, no open blocking or high findings), 2026-10-12.
 
 ## Goal
 
@@ -105,6 +105,8 @@ The master can only be restarted into its bootloader while it does not poll.
 | `patched-off`, DIP 5–8 = 0 | known patched build or original | nothing extra (master already quiet) | patched: `0/0`; original: RTN 04 |
 | `no-0x64` | known patched build | DIP 5–8 OFF (DIP session) | `0/0` expected. `1/0` is possible (an old marker or other content in `0x23000`): do **not** send `stop` automatically (it erases the whole 4 KiB sector); state `marker-unexplained` (locked, see master state). With `0/0`: restore DIP at the end. |
 | any | other custom image | Treat it as an image that may ignore the marker: the same hard order as for the original (DIP 5–8 OFF, then `stop` with confirmed `0/0` if the master was patched, then measure). Offered on a shared bus only if the build is released separately for that, otherwise only with the master physically isolated from the other packs. | no assumptions: state `unknown image`, re-check 0x51 and 0x64 and show what answers; DIP 5–8 stay OFF until the result is clear. |
+| `no-0x64` | original | DIP 5-8 OFF (user confirms), then measure (step 3). No `stop` (the firmware has no 0x64). | Master runs the original firmware, quiet because of the DIP; 0x64 answers RTN 04, as expected. End as DIP session. |
+| `no-0x64` | other custom image | The custom row below, without `stop` (nothing to stop). | as the custom row |
 | `marker-unexplained` | original (recovery) | DIP 5–8 OFF (user confirms), then measure (quiet + 0x47 at address 0). **No `stop`.** | Master runs the original firmware, quiet because of the DIP. The content of `0x23000` stays unexplained and is recorded with the installation id; before a later patched flash the app shows it again. End as DIP session. |
 
 Rule for choosing the row: the image kind decides first. An image that is neither an allowlisted original nor a known maintenance build always takes the custom row, whatever the master's state; the backend decision function is covered by a unit test for every combination.
@@ -132,8 +134,22 @@ Stage 2 needs TCP in the firmware flow: `firmware_inspect` and `firmware_start` 
   - control endpoint settings; endpoint registry with one lock per physical endpoint; the maintenance-operation lock (extends `flashing`/`port_busy`).
   - `maint_dialog(action, expected_slaves)`: status/start/stop plus wait, one deadline, returns the final state or a typed error (connection vs status vs timeout).
   - `bus_measure(address)`: quiet + 0x47 on the pack bus channel; shares code with `openbms-flash::session` (export `quiet`), returns time and result.
-  - maintenance session per installation id in the local database (small table, additive `CREATE TABLE IF NOT EXISTS`; the history schema is not bumped).
+  - maintenance session, blocks and installation settings per installation id in an own database file `maintenance.sqlite` (app data folder), not in the history database. Reason: `history.rs::open_db` moves the whole history file aside when its schema version changes, which would silently drop an open session or a flash block. The new file uses only `CREATE TABLE IF NOT EXISTS` and never bumps a version.
   - firmware commands take an endpoint (stage 2).
+
+## Stage-1 decisions
+
+Taken during implementation where this design leaves room:
+
+1. **Pack port decides the installation.** Flash start, measurement, End and the block check find the installation from the pack port. A new connection never silently switches the installation in use; endpoints are assigned explicitly. An unassigned pack port is refused while any installation has open work.
+2. **`update-interrupted`** is written before every restart into the bootloader and replaced by the result once the flash returns. A crash leaves it, and it blocks like an unclear update.
+3. **Sequential way and `stop`.** A master-flash row that needs `stop` right before the restart cannot run with one adapter; it is refused there with a hint to use a separate control adapter.
+4. **Unclear master update** is a flash block on address 0 (reason `master-unclear`, with the expected state), with or without a session. It stops further flashes and End and is cleared only by a master check that shows the expected state (not by 0x51/0x47, because the master's application runs) or by "isolated or recovered".
+5. **Guarded endpoint ownership.** One physical endpoint belongs to exactly one installation. An adapter used as another installation's control channel is never taken over. An endpoint or control adapter never moves between installations while the source or the target has open work, and an installation with open work keeps all its endpoints and its control adapter.
+6. **End in three steps** (clear the marker, check the pack bus, read the system values). With one USB adapter for both buses the panel runs them one at a time and asks to move the cable in between; with two adapters End runs them in one go.
+7. **A failed read never clears `marker-unexplained`**; an unclear check after the recovery flash keeps that state too (plus a block).
+8. **Stale results are discarded.** Results of panel actions that return after a switch of installation or session are not written. A refresh never overrides a fresh master check.
+9. **Own database file** `maintenance.sqlite` (see Backend) and the maintenance build counts as custom firmware for the opt-in (it needs "Allow custom firmware" and `FLASH CUSTOM n`; it is still recognised by its code hash).
 
 ## Out of scope
 

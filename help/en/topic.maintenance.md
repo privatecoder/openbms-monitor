@@ -1,0 +1,14 @@
+---
+title: Maintenance on the pack bus
+short: Stops the master so that one pack of a multi-pack bank can be flashed.
+related: topic.firmware, topic.buses
+---
+- **Why the master interferes:** It polls RS485-1/2 constantly and does not run a restart command while doing so. An update (and any command to a pack) fails while it polls.
+- **Maintenance mode:** Only with patched master firmware. The app sends a command to address 0 over the CAN socket (9600 baud); the master then treats its slave count as 0 and stops polling. The marker is stored in flash and survives restarts; the app shows it as a banner on top until it is ended.
+- **DIP 5–8 OFF:** The way for any firmware. Switch the master's DIP 5–8 off by hand (note the positions first); it then stops polling. Set them back at the end; the app cannot see the switches.
+- **Control channel:** The access to the CAN socket (USB or gateway) through which the app controls the master. An endpoint always belongs to exactly one installation. With only one USB adapter for both buses the app guides step by step and asks you to move the cable.
+- **Inverter:** The app does not control it. You confirm yourself that it takes and gives no battery power. In maintenance the master reports only its own pack (DCL drops to one pack at once, CCL ramps down only 1 A/s); while the master itself is flashed, CAN stops entirely. The confirmation holds only for the current work phase and is not stored.
+- **Measurement:** Before each action the app checks that no bytes arrive for 2 s and that the master answers 0x47 at address 0. The result reads “bus quiet at …”. It cannot see a pack silently sitting in its bootloader, and a later restart of the master or another program can disturb the bus again.
+- **End:** In three steps: clear the marker, check the pack bus (every slave was polled and answered), read the system values twice. With one adapter for both buses the steps run one at a time and the app asks you to move the cable in between; with two adapters everything runs in one go. Only then give the inverter its power back.
+- **Unclear update and block:** An update with an unclear outcome (also an interrupted one, also on the master) blocks further flashes and End. The block survives an app restart and is lifted only when the pack answers again (for the master: a master check shows the expected state) or you confirm “isolated or recovered”.
+- **Unexplained marker:** If a marker is set that the app cannot explain, it sends no `stop` (it would erase the whole flash sector) and offers no End. The way back: the original image with DIP 5–8 OFF and no `stop`, or state that you set the marker yourself. A failed read never lifts this state.

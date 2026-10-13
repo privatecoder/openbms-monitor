@@ -75,6 +75,12 @@ App data (own cells, recordings, saved parameters) lives in the platform's app d
 
 Targets: macOS (arm64/x64), Windows 11 (arm64/x64). So far developed and tested on macOS.
 
+## Maintenance (multi-pack banks)
+
+A master with configured slaves polls the pack bus constantly, so no pack of the bank can be flashed while it runs. The *Pack bus* panel in the firmware view stops the polling in one of two ways: **maintenance mode** of a patched master firmware (a command over the CAN socket sets a marker that survives restarts) or **DIP 5-8 OFF** on the master, which works with any firmware. The app measures a quiet bus right before each flash, keeps an open maintenance visible as a banner, blocks further flashes after an update with an unclear outcome, and ends in three checked steps (marker cleared, pack bus polled and answered, system values read).
+
+Maintenance needs a **control channel** to the CAN socket bus (USB or gateway) next to the pack bus connection; with a single USB adapter for both buses the panel guides step by step and asks to move the cable. The inverter is not controlled: the operator confirms that it takes and gives no battery power. Stage 2, flashing remotely through an RS485-to-Ethernet gateway, is pending bench tests and not offered yet.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Not affiliated with Seplos or SH Energy.
