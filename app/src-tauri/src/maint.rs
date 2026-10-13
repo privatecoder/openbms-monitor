@@ -251,7 +251,8 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
         StoredMasterState::PatchedOff { slaves } => slaves,
         _ => return Err(refused("not-patched-off")),
     };
-    slaves_in_range(n)?;
+    // a marker session needs a polling master: 0/0 is a single pack, it takes the DIP way
+    slaves_allowed(n, false)?;
     let now = crate::history::now_ms();
     with_store(&state, |s| s.start_session(&inst.id, SessionKind::Marker, n, now))?;
     let r = with_control(&state, &inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Start, None, Budgets::default()))?;
@@ -260,22 +261,43 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
     overview(&state, &installation)
 }
 
-/// The slave count `N` per DIP. A bank has 1 to 15 slaves; with 0, End's bus step would pass on a master
-/// that still does not poll (DIP 5–8 not restored).
-pub fn slaves_in_range(n: u8) -> Result<(), MaintError> {
-    if (1..=15).contains(&n) {
-        Ok(())
-    } else {
-        Err(refused("slaves-range"))
+/// The slave count `N` (packs on the bus minus the master, = the master's DIP 5–8 value). A bank has 1 to 15
+/// slaves. `N` = 0 (a single pack) only when `zero_verified`: a fresh 0x64 read in the same command showed
+/// "patched, marker off, 0 slaves"; otherwise End's bus step could pass on a master that still does not poll.
+pub fn slaves_allowed(n: u8, zero_verified: bool) -> Result<(), MaintError> {
+    match n {
+        1..=15 => Ok(()),
+        0 if zero_verified => Ok(()),
+        _ => Err(refused("slaves-range")),
     }
 }
 
-/// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered.
+/// The master itself reported "patched, marker off, 0 slaves" (status 0/0).
+pub fn reports_zero(state: Option<&StoredMasterState>) -> bool {
+    state == Some(&StoredMasterState::PatchedOff { slaves: 0 })
+}
+
+/// For `N` = 0: read 0x64 now (the caller holds `port_busy`) and return the state stored from it. Without a
+/// control channel nothing can be verified: `slaves-range`.
+fn fresh_for_zero(state: &AppState, inst: &Installation) -> Result<StoredMasterState, MaintError> {
+    match check(state, inst) {
+        Err(MaintError::Refused { reason }) if reason == "no-control-channel" => Err(refused("slaves-range")),
+        r => r,
+    }
+}
+
+/// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
+/// (`N` = 0 only when the master itself reports 0/0, see `slaves_allowed`).
 #[tauri::command]
 pub async fn maint_start_dip(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
-    slaves_in_range(expected_slaves)?;
+    if expected_slaves != 0 {
+        slaves_allowed(expected_slaves, false)?;
+    }
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
+    if expected_slaves == 0 {
+        slaves_allowed(0, reports_zero(Some(&fresh_for_zero(&state, &inst)?)))?;
+    }
     let now = crate::history::now_ms();
     with_store(&state, |s| s.start_session(&inst.id, SessionKind::Dip, expected_slaves, now).map(|_| ()))?;
     overview(&state, &installation)
@@ -284,7 +306,8 @@ pub async fn maint_start_dip(state: State<'_, AppState>, installation: String, e
 /// The user states where an unexplained marker comes from ("I set it earlier"): a marker session with `N`.
 #[tauri::command]
 pub async fn maint_account_marker(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
-    slaves_in_range(expected_slaves)?;
+    // a set marker is never a verified 0/0 single pack
+    slaves_allowed(expected_slaves, false)?;
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     let now = crate::history::now_ms();
@@ -300,13 +323,13 @@ pub async fn maint_account_marker(state: State<'_, AppState>, installation: Stri
 }
 
 /// Correcting `N` of an open session: never in the locked state (its only ways out are the recovery row
-/// and the user's statement).
+/// and the user's statement). `state`: for `N` = 0 the one read fresh in this command.
 pub fn set_slaves_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>, n: u8) -> Result<(), MaintError> {
     if session.is_none() {
         return Err(refused("no-session"));
     }
     stop_allowed(state)?;
-    slaves_in_range(n)
+    slaves_allowed(n, reports_zero(state))
 }
 
 /// A session with a wrong `N` could never be closed: the user corrects the slave count per DIP. End
@@ -316,7 +339,13 @@ pub async fn maint_set_slaves(state: State<'_, AppState>, installation: String, 
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
-    set_slaves_allowed(session.as_ref(), ms.as_ref().map(|(m, _)| m), expected_slaves)?;
+    let mut ms = ms.map(|(m, _)| m);
+    if expected_slaves == 0 {
+        // the stored state never counts for N = 0: read the master now (session and lock checked first)
+        set_slaves_allowed(session.as_ref(), ms.as_ref(), 1)?;
+        ms = Some(fresh_for_zero(&state, &inst)?);
+    }
+    set_slaves_allowed(session.as_ref(), ms.as_ref(), expected_slaves)?;
     if let Some(ses) = &session {
         with_store(&state, |s| s.set_expected_slaves(ses.id, expected_slaves))?;
     }
@@ -658,9 +687,10 @@ pub struct EndResult {
 pub enum EndStep {
     /// marker session: `stop` and wait for 0/N (a DIP session sends no `stop`; the step passes without one)
     Stop,
-    /// pack bus: every slave polled and answering
+    /// pack bus: every slave polled and answering (`N` = 0: quiet bus and 0x47 answered by address 0)
     Bus,
-    /// two Modbus reads one polling round apart (`values_pause`) over the control channel; closes the session
+    /// two Modbus reads one polling round apart (`values_pause`) over the control channel, for `N` = 0 after a
+    /// fresh 0x64 status 0/0; closes the session
     Values,
 }
 
@@ -681,11 +711,12 @@ pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgres
     }
 }
 
-/// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A session
-/// whose slave count is out of range (N = 0 from an older build) is refused at every step: with N = 0 the
-/// bus step would pass on a master that still does not poll; the user corrects N first (`maint_set_slaves`).
-pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, step: EndStep) -> Result<(), MaintError> {
-    slaves_in_range(slaves)?;
+/// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A single pack
+/// (`N` = 0) ends only with a control channel: its Values step needs a fresh 0/0 from the master
+/// (`reports_zero`), because a quiet bus alone also passes on a bank master whose DIP 5–8 are still OFF.
+/// Without one (or with `N` > 15) every step is refused until the user corrects `N` (`maint_set_slaves`).
+pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, has_control: bool, step: EndStep) -> Result<(), MaintError> {
+    slaves_allowed(slaves, has_control)?;
     let stopped = p.stopped || kind == SessionKind::Dip;
     match step {
         EndStep::Stop => Ok(()),
@@ -719,7 +750,7 @@ fn end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, 
         let map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
         end_progress_of(map.get(&inst.id), session.id)
     };
-    end_next(&progress, session.kind, session.expected_slaves, step)?;
+    end_next(&progress, session.kind, session.expected_slaves, inst.control.is_some(), step)?;
     let r = run_end_step(state, app, inst, port, &session, step);
     let ok = matches!(r, Ok(EndResult { ok: true, .. }));
     let mut map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
@@ -746,6 +777,15 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
             }
         }
         EndStep::Stop => {}
+        EndStep::Bus if n == 0 => {
+            // a single pack: nothing polls, the master answers 0x47 on a quiet bus
+            let mut link = open_pack_for(state, app, port)?;
+            match bus::measure(&mut link, &mut std::io::sink()) {
+                Ok(()) => {}
+                Err(openbms_flash::Error::MasterSilent) => return fail("master-not-answering", vec![]),
+                Err(e) => return Err(MaintError::Measure { message: e.to_string() }),
+            }
+        }
         EndStep::Bus => {
             // N is 1..=15 here (`end_next`)
             let mut link = open_pack_for(state, app, port)?;
@@ -756,6 +796,10 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
             }
         }
         EndStep::Values => {
+            // a single pack: the master must still report 0/0 now (it cannot show a polling round)
+            if n == 0 && !reports_zero(Some(&check(state, inst)?)) {
+                return fail("master-not-zero", vec![]);
+            }
             for i in 0..2 {
                 if i == 1 {
                     std::thread::sleep(values_pause(n));
@@ -771,7 +815,8 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
 }
 
 /// End (step 5) in one call: refused while an update is unclear; marker → `stop` and wait for 0/N; then
-/// the pack bus check against N; then two Modbus reads ≥ 2 s apart over the control channel. The session
+/// the pack bus check against N; then two Modbus reads ≥ 2 s apart over the control channel (for N = 0 after
+/// a fresh 0/0 from the master). The session
 /// closes only when all of it passed. In the sequential way this is impossible in one call
 /// (`end-sequential`): the UI runs `maint_end_step` with a cable change in between.
 #[tauri::command]
@@ -1099,11 +1144,27 @@ mod tests {
     }
 
     #[test]
-    fn slave_count_must_be_one_to_fifteen() {
-        assert!(refused_with(slaves_in_range(0), "slaves-range"));
-        assert!(slaves_in_range(1).is_ok());
-        assert!(slaves_in_range(15).is_ok());
-        assert!(refused_with(slaves_in_range(16), "slaves-range"));
+    fn slave_count_is_one_to_fifteen_or_a_verified_zero() {
+        for verified in [false, true] {
+            assert!(slaves_allowed(1, verified).is_ok());
+            assert!(slaves_allowed(15, verified).is_ok());
+            assert!(refused_with(slaves_allowed(16, verified), "slaves-range"));
+        }
+        // a single pack only when a fresh read of the master showed 0/0
+        assert!(refused_with(slaves_allowed(0, false), "slaves-range"));
+        assert!(slaves_allowed(0, true).is_ok());
+    }
+
+    #[test]
+    fn only_a_patched_master_with_marker_off_and_zero_slaves_reports_zero() {
+        use StoredMasterState as S;
+        assert!(reports_zero(Some(&S::PatchedOff { slaves: 0 })));
+        assert!(!reports_zero(Some(&S::PatchedOff { slaves: 1 })));
+        assert!(!reports_zero(Some(&S::PatchedOn)));
+        assert!(!reports_zero(Some(&S::MarkerUnexplained)));
+        assert!(!reports_zero(Some(&S::No0x64)));
+        assert!(!reports_zero(Some(&S::Unknown)));
+        assert!(!reports_zero(None));
     }
 
     #[test]
@@ -1114,7 +1175,11 @@ mod tests {
         assert!(set_slaves_allowed(Some(&ses), None, 4).is_ok());
         assert!(refused_with(set_slaves_allowed(None, Some(&on), 4), "no-session"));
         assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&on), 0), "slaves-range"));
+        // N = 0 only after the master itself reported 0/0
+        assert!(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::PatchedOff { slaves: 0 }), 0).is_ok());
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::PatchedOff { slaves: 3 }), 0), "slaves-range"));
         assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 4), "marker-unexplained"));
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 0), "marker-unexplained"));
     }
 
     #[test]
@@ -1205,32 +1270,38 @@ mod tests {
         use SessionKind::{Dip, Marker};
         let fresh = end_progress_of(None, 7);
         // Values before Bus is refused, for both kinds
-        assert!(refused_with(end_next(&fresh, Dip, 11, Values), "end-order"));
-        assert!(refused_with(end_next(&fresh, Marker, 11, Values), "end-order"));
+        assert!(refused_with(end_next(&fresh, Dip, 11, true, Values), "end-order"));
+        assert!(refused_with(end_next(&fresh, Marker, 11, true, Values), "end-order"));
         // Bus before Stop: refused for a marker session, allowed for a DIP session (no stop there)
-        assert!(refused_with(end_next(&fresh, Marker, 11, Bus), "end-order"));
-        assert!(end_next(&fresh, Dip, 11, Bus).is_ok());
-        assert!(end_next(&fresh, Marker, 11, Stop).is_ok());
+        assert!(refused_with(end_next(&fresh, Marker, 11, true, Bus), "end-order"));
+        assert!(end_next(&fresh, Dip, 11, true, Bus).is_ok());
+        assert!(end_next(&fresh, Marker, 11, true, Stop).is_ok());
         let stopped = end_record(fresh, Stop, true);
-        assert!(end_next(&stopped, Marker, 11, Bus).is_ok());
-        assert!(refused_with(end_next(&stopped, Marker, 11, Values), "end-order"));
+        assert!(end_next(&stopped, Marker, 11, true, Bus).is_ok());
+        assert!(refused_with(end_next(&stopped, Marker, 11, true, Values), "end-order"));
         let bus = end_record(stopped, Bus, true);
-        assert!(end_next(&bus, Marker, 11, Values).is_ok());
+        assert!(end_next(&bus, Marker, 11, true, Values).is_ok());
         // a failure starts over
         let failed = end_record(bus, Values, false);
         assert_eq!(failed, EndProgress { session: 7, stopped: false, bus_ok: false });
-        assert!(refused_with(end_next(&failed, Marker, 11, Bus), "end-order"));
+        assert!(refused_with(end_next(&failed, Marker, 11, true, Bus), "end-order"));
         // a new stop makes the earlier bus check stale
         assert!(!end_record(bus, Stop, true).bus_ok);
         // progress of another session does not count
         assert_eq!(end_progress_of(Some(&bus), 8), EndProgress { session: 8, stopped: false, bus_ok: false });
         assert_eq!(end_progress_of(Some(&bus), 7), bus);
-        // a session with N = 0 (stored before the slave count was checked) is refused at every step until
-        // the user corrects N
+        // a single pack (N = 0) ends in the same order when there is a control channel (its Values step needs
+        // a fresh 0/0); without one it is refused at every step until the user corrects N
+        assert!(end_next(&fresh, Dip, 0, true, Bus).is_ok());
+        assert!(refused_with(end_next(&fresh, Dip, 0, true, Values), "end-order"));
+        assert!(end_next(&bus, Dip, 0, true, Values).is_ok());
+        assert!(refused_with(end_next(&fresh, Marker, 0, true, Bus), "end-order"));
         for step in [Stop, Bus, Values] {
-            assert!(refused_with(end_next(&bus, Dip, 0, step), "slaves-range"));
-            assert!(refused_with(end_next(&bus, Marker, 0, step), "slaves-range"));
+            assert!(refused_with(end_next(&bus, Dip, 0, false, step), "slaves-range"));
+            assert!(refused_with(end_next(&bus, Marker, 0, false, step), "slaves-range"));
+            assert!(refused_with(end_next(&bus, Dip, 16, true, step), "slaves-range"));
         }
+        assert!(end_next(&bus, Dip, 11, false, Values).is_ok());
     }
 
     /// A simulated master behind `Prep`: `check` reads the real state, `stop_to_zero` clears the marker and
