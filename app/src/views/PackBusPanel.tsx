@@ -215,9 +215,12 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-3">
           <span>{packsLine(current, t)}</span>
-          {editing === where ? (
-            <>
-              <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
+          {editing !== where && <Button variant="secondary" size="sm" disabled={!idle} onClick={() => { setNText(String(current)); setEditing(where); }}>{t("maint.panel.changeSlaves")}</Button>}
+        </div>
+        {editing === where && (
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
+            <div className="flex items-center gap-2">
               <ActButton variant="secondary" size="sm" spinning={spinning(key)} disabled={!idle || n === null || blocked} onClick={() => n !== null && run(key, "set-slaves", async (still) => {
                 setEditorRefusal(null);
                 let r: MaintOverview;
@@ -226,12 +229,10 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
                 if (still()) setEditing(null);
                 return { overview: r, text: t("maint.result.set-slaves", { line: packsLine(n + 1, t) }) };
               })}>{t("maint.panel.save")}</ActButton>
-              <Button variant="ghost" size="sm" disabled={!idle} onClick={() => { setEditing(null); setActivity((a) => (a?.key === key && !a.running ? null : a)); }}>{t("maint.panel.cancel")}</Button>
-            </>
-          ) : (
-            <Button variant="secondary" size="sm" disabled={!idle} onClick={() => { setNText(String(current)); setEditing(where); }}>{t("maint.panel.changeSlaves")}</Button>
-          )}
-        </div>
+              <Button variant="secondary" size="sm" disabled={!idle} onClick={() => { setEditing(null); setActivity((a) => (a?.key === key && !a.running ? null : a)); }}>{t("maint.panel.cancel")}</Button>
+            </div>
+          </div>
+        )}
         {editing === where && derived}
         {editing === where && blocked && <p className="text-discharge">{t("maint.panel.onePackMarker")}</p>}
         {mine(key) ? status(key) : refusal && <p role="status" className="flex items-start gap-1.5 text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{refusal}</p>}
