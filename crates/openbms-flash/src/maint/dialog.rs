@@ -73,7 +73,10 @@ fn exchange(link: &mut impl Link, clock: &impl Clock, request: &[u8], timeout: D
             let line: Vec<u8> = pending.drain(..=end).collect();
             let Some(start) = line.iter().position(|b| *b == b'~') else { continue };
             if let Ok(f) = frame::parse(&line[start..]) {
-                if f.address == 0 && f.rtn != 0x64 {
+                // answer = RTN 00 with a 2-byte status, or the master's rejection (RTN 01..=0F);
+                // anything else is foreign traffic or our own echo and is skipped
+                let answer = (f.rtn == 0x00 && f.info.len() == 2) || (0x01..=0x0F).contains(&f.rtn);
+                if f.address == 0 && answer {
                     return Ok(Some(f));
                 }
             }
@@ -125,16 +128,21 @@ pub fn dialog(
     };
     let mut last = status_of(to_probe(exchange(link, clock, &request, b.answer)?)?)?;
     let since = clock.now();
+    let left = || b.change.saturating_sub(clock.now().saturating_sub(since));
     let reached = |s: MaintStatus| match action {
         Action::Start => s.marker && s.effective_slaves == 0,
         _ => !s.marker && expected_slaves.is_none_or(|n| s.effective_slaves == n),
     };
     loop {
-        if clock.now().saturating_sub(since) > b.change {
+        if left().is_zero() {
             return Err(DialogError::Timeout { after: b.change, last });
         }
-        link.wait(b.interval);
-        match status_of(probe(link, clock, b)?) {
+        link.wait(b.interval.min(left()));
+        if left().is_zero() {
+            return Err(DialogError::Timeout { after: b.change, last });
+        }
+        let pb = Budgets { answer: b.answer.min(left()), ..b };
+        match status_of(probe(link, clock, pb)?) {
             Ok(s) => {
                 last = s;
                 if reached(s) {
@@ -224,6 +232,8 @@ mod tests {
             Err(DialogError::Timeout { last, .. }) => assert_eq!(last, st(true, 11)),
             other => panic!("{other:?}"),
         }
+        // 40 ms answer latency + the 3 s change budget, plus at most a read step of rounding
+        assert!(t.now() <= ms(40) + ms(3000) + ms(100), "{:?}", t.now());
     }
 
     #[test]
@@ -247,6 +257,16 @@ mod tests {
     fn an_echo_of_the_request_is_not_taken_as_the_answer() {
         let t = VTime::default();
         let mut link = FakeLink::new(t.clone(), |req, now| vec![(now, req.to_vec()), (now + ms(40), answer(0, 0, &[0, 3]))]);
+        assert_eq!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Status(st(false, 3)));
+    }
+
+    #[test]
+    fn foreign_traffic_before_the_status_is_skipped() {
+        let t = VTime::default();
+        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(300), answer(0, 0, &[0, 3]))]);
+        link.inject(ms(100), &answer(0, 0x00, &[1, 2, 3, 4]));
+        let foreign_req = frame::encode_request(0, 0x42, &[]).unwrap();
+        link.inject(ms(150), &foreign_req);
         assert_eq!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Status(st(false, 3)));
     }
 }

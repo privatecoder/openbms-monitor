@@ -39,7 +39,6 @@ impl FakeLink {
     }
 
     /// Bytes that arrive at `at` without a request (another sender on the bus).
-    #[allow(dead_code)] // used by the bus checks (later task)
     pub fn inject(&mut self, at: Duration, bytes: &[u8]) {
         self.incoming.push((at, bytes.to_vec()));
         self.incoming.sort_by_key(|(t, _)| *t);
