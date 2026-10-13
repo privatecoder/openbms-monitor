@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
-import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress } from "../api";
+import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type PlanView } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, progressFraction, steps } from "../firmware";
+import { canFlash, errorKey } from "../maint";
+import type { useMaint } from "../maintStore";
+import { PackBusPanel } from "./PackBusPanel";
 
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 
@@ -20,8 +23,9 @@ function Step({ n, title, active, children }: { n: number; title: string; active
   );
 }
 
-export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
+export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack }: {
   connected: boolean;
+  maint: ReturnType<typeof useMaint>;
   onMonitorStopped: () => void;
   onRunning: (running: boolean) => void;
   onBack: () => void;
@@ -44,7 +48,17 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
   const [progress, setProgress] = useState<FirmwareProgress | null>(null);
   const [done, setDone] = useState<FirmwareDone | null>(null);
   const [closeRefused, setCloseRefused] = useState(false);
+  const [inverter, setInverter] = useState(false);
+  const [measuredAt, setMeasuredAt] = useState<number | null>(null);
+  const [portInstallation, setPortInstallation] = useState<string | null>(null);
+  const [plan, setPlan] = useState<PlanView | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [dipOffConfirmed, setDipOffConfirmed] = useState(false);
+  const [isolatedConfirmed, setIsolatedConfirmed] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const startedAt = useRef(0);
+  const addressRef = useRef(address);
+  addressRef.current = address;
   const now = useNow(500);
 
   const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
@@ -52,13 +66,53 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
   useEffect(() => {
     const subs = [
       api.onFirmwareProgress(setProgress),
-      api.onFirmwareDone((d) => { setDone(d); setRunning(false); onRunning(false); }),
+      api.onFirmwareDone((d) => {
+        setDone(d); setRunning(false); onRunning(false);
+        void maint.refresh();
+        // one measurement, one flash
+        setMeasuredAt(null);
+        const notes: string[] = [];
+        if (d.block) notes.push(t(`maint.panel.block.${d.block}`, { pack: addressRef.current }));
+        if (d.master) notes.push(t(`maint.master.${d.master}`));
+        setNotice(notes.length ? notes.join(" ") : null);
+      }),
       api.onFirmwareBusy(() => setCloseRefused(true)),
     ];
     return () => { subs.forEach((s) => s.then((f) => f())); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed });
+  const overview = maint.overview;
+  // a new measurement is needed after every state change; the inverter statement after every new session
+  useEffect(() => { setMeasuredAt(null); }, [overview?.state_at]);
+  useEffect(() => { setInverter(false); }, [overview?.session?.id]);
+
+  // which installation owns the pack port
+  const lookupPort = () => {
+    if (!port) { setPortInstallation(null); return Promise.resolve(); }
+    return api.maintInstallationOf({ kind: "serial", path: port, bus: "pack" })
+      .then((i) => setPortInstallation(i?.id ?? null)).catch(() => setPortInstallation(null));
+  };
+  useEffect(() => { void lookupPort(); }, [port, overview]); // eslint-disable-line react-hooks/exhaustive-deps
+  const portAssigned = !!overview && portInstallation === overview.installation.id;
+  const portElsewhere = !!overview && !!port && portInstallation !== null && !portAssigned;
+  const portFree = !!overview && !!port && portInstallation === null;
+
+  // the master (address 0) has its own plan; refused plans keep the start locked
+  const overviewId = overview?.installation.id;
+  useEffect(() => {
+    setPlan(null); setPlanError(null); setDipOffConfirmed(false); setIsolatedConfirmed(false);
+    if (!overviewId || address !== 0 || !image) return;
+    let live = true;
+    api.maintMasterPlan(overviewId, image.kind)
+      .then((p) => { if (live) setPlan(p); })
+      .catch((e) => { if (live) { const k = errorKey(e); setPlanError(t(k.key, k.params)); } });
+    return () => { live = false; };
+  }, [overviewId, address, image?.kind, overview?.state?.state, overview?.session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const masterPending = !!overview && address === 0 && !!image
+    && (!plan || planError !== null || (plan.before.includes("dip-off") && !dipOffConfirmed) || (plan.before.includes("isolated-or-released") && !isolatedConfirmed));
+  const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portAssigned });
+  const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed, unlocked: gate.ok && !masterPending });
   const phrase = confirmationPhrase(address, image?.custom);
 
   const chooseImage = async () => {
@@ -92,10 +146,11 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     if (connected) onMonitorStopped();
     const confirmation = typed;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
-    setError(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
+    setError(null); setNotice(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
     try {
       setRunning(true); onRunning(true); startedAt.current = Date.now();
-      await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang, null);
+      await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang,
+        overview ? { installation: overview.installation.id, inverterConfirmed: inverter, dipOffConfirmed, isolatedConfirmed } : null);
     } catch (e) { setRunning(false); onRunning(false); setError(String(e)); }
   };
 
@@ -110,6 +165,8 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
+      <PackBusPanel maint={maint} port={port} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt} />
+
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">
           <select className={input} value={port} disabled={running} onChange={(e) => setPort(e.target.value)} aria-label={t("fw.port")}>
@@ -123,6 +180,12 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
             </select>
           </label>
         </div>
+        {portFree && (
+          <p className="flex flex-wrap items-center gap-3 text-sm text-discharge">{t("maint.panel.portUnassigned")}
+            <Button variant="ghost" size="sm" onClick={async () => { await maint.assign({ kind: "serial", path: port, bus: "pack" }); await lookupPort(); }}>{t("maint.banner.assign")}</Button>
+          </p>
+        )}
+        {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
         <p className="text-sm text-muted">{t("fw.busHint")}</p>
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}
       </Step>
@@ -147,7 +210,24 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
         </label>
+        {overview && address === 0 && image && (
+          <div className="space-y-1 text-sm">
+            {planError && <p className="text-alarm">{planError}</p>}
+            {plan && (
+              <>
+                <ul className="list-inside list-disc">
+                  {plan.before.map((st) => <li key={st}>{t(`maint.plan.${st}`)}</li>)}
+                  <li>{t(`maint.plan.after.${plan.after}`)}</li>
+                </ul>
+                {plan.before.includes("dip-off") && <label className="flex items-center gap-2"><input type="checkbox" checked={dipOffConfirmed} onChange={(e) => setDipOffConfirmed(e.target.checked)} />{t("maint.plan.dip-off")}</label>}
+                {plan.before.includes("isolated-or-released") && <label className="flex items-center gap-2"><input type="checkbox" checked={isolatedConfirmed} onChange={(e) => setIsolatedConfirmed(e.target.checked)} />{t("maint.plan.isolated-or-released")}</label>}
+                {plan.recovery && <p className="text-muted">{t("maint.plan.recovery")}</p>}
+              </>
+            )}
+          </div>
+        )}
         <Button variant="primary" disabled={!s.start} onClick={start}>{t("fw.start")}</Button>
+        {!gate.ok && gate.reason && <p className="text-sm text-alarm">{t(errorKey(gate.reason).key)}</p>}
       </Step>
 
       {(running || done) && (
@@ -172,6 +252,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
                   <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
                 </>
               )}
+              {notice && <p className="text-sm text-alarm">{notice}</p>}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>
