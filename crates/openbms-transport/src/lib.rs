@@ -26,11 +26,40 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// up after sleep) blocks a connection attempt for the operating system's timeout, over a minute on macOS.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Connect to the first address of `addr` that answers within CONNECT_TIMEOUT.
+/// Connect to the first address of `addr` that answers within CONNECT_TIMEOUT, name resolution included.
 fn connect_tcp(addr: &str) -> Result<TcpStream> {
+    connect_tcp_within(
+        addr,
+        CONNECT_TIMEOUT,
+        |name| name.to_socket_addrs().map(|a| a.collect()),
+        TcpStream::connect_timeout,
+    )
+}
+
+/// Resolution runs on a helper thread, so a hanging name server cannot stretch the budget; every address
+/// gets only what is left of it.
+fn connect_tcp_within(
+    addr: &str,
+    budget: Duration,
+    resolve: impl FnOnce(String) -> std::io::Result<Vec<std::net::SocketAddr>> + Send + 'static,
+    mut connect: impl FnMut(&std::net::SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> Result<TcpStream> {
+    let deadline = Instant::now() + budget;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let name = addr.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(resolve(name));
+    });
+    let timed_out =
+        || std::io::Error::new(std::io::ErrorKind::TimedOut, format!("{addr}: no connection within {budget:?}"));
+    let addrs = rx.recv_timeout(budget).map_err(|_| timed_out())??;
     let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, format!("{addr}: no address"));
-    for a in addr.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
+    for a in addrs {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(timed_out().into());
+        }
+        match connect(&a, left) {
             Ok(s) => return Ok(s),
             Err(e) => last = e,
         }
@@ -256,4 +285,48 @@ impl Connection {
 
 pub fn list_serial_ports() -> Vec<String> {
     serialport::available_ports().map(|v| v.into_iter().map(|p| p.port_name).collect()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+
+    fn two() -> Vec<SocketAddr> {
+        vec!["192.0.2.1:9".parse().unwrap(), "192.0.2.2:9".parse().unwrap()]
+    }
+
+    #[test]
+    fn a_hanging_name_server_does_not_stretch_the_budget() {
+        let started = Instant::now();
+        let r = connect_tcp_within(
+            "slow.example:9",
+            Duration::from_millis(300),
+            |_| {
+                std::thread::sleep(Duration::from_secs(3));
+                Ok(two())
+            },
+            |_, _| unreachable!("no address resolved in time"),
+        );
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn all_addresses_share_one_budget() {
+        let given = Arc::new(Mutex::new(Vec::new()));
+        let g = given.clone();
+        let started = Instant::now();
+        let r = connect_tcp_within("gw:9", Duration::from_millis(400), |_| Ok(two()), move |_, left| {
+            g.lock().unwrap().push(left);
+            std::thread::sleep(left.min(Duration::from_millis(250)));
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "test"))
+        });
+        assert!(r.is_err());
+        let given = given.lock().unwrap();
+        assert_eq!(given.len(), 2);
+        assert!(given[1] < Duration::from_millis(200), "second address gets only what is left: {:?}", given[1]);
+        assert!(started.elapsed() < Duration::from_millis(700));
+    }
 }
