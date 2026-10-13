@@ -1,6 +1,6 @@
 ---
 title: Widerstands-Diagnose
-short: Vergleicht den Widerstand jedes Packs im Inneren und auf dem Weg zur Sammelschiene, um schlechte Kontakte oder Kabel zu finden.
+short: Vergleicht den Widerstand jedes Packs im Inneren und auf dem Weg zur Sammelschiene, um schlechte Kontakte oder Kabel zu finden. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
 related: topic.pairs
 ---
 - **Im Pack:** Jedes BMS meldet die Summe seiner Zellen und die Spannung an seinem Ausgang. Unter Strom ist die Differenz der Spannungsfall im Pack (u. a. MOSFETs, Shunt, interne Schienen); geteilt durch den Strom ergibt das den Widerstand. Wird laufend berechnet und geglättet, ab 3 A.

@@ -1,6 +1,6 @@
 ---
 title: Parameters
-short: The packs' settings: limits, delays, balancing and function switches. The app only reads them, it changes nothing.
+short: The packs' settings: limits, delays, balancing and function switches. The app only reads them, it changes nothing. Visible only when maintenance functions are switched on.
 related: topic.buses, topic.switches
 ---
 - **Read from packs:** only via RS485-1/2 (19200 baud). The CAN socket does not know the command. The **master** (DIP 0 with slaves) does not answer on RS485-1/2; get its values from a BatteryMonitor export or while it is alone on the bus.

@@ -1,6 +1,6 @@
 ---
 title: Resistance diagnosis
-short: Compares each pack's resistance inside and on the way to the busbar, to find bad contacts or cables.
+short: Compares each pack's resistance inside and on the way to the busbar, to find bad contacts or cables. Visible only when maintenance functions are switched on.
 related: topic.pairs
 ---
 - **Inside:** every BMS reports the sum of its cells and the voltage at its output. Under current the difference is the voltage drop inside the pack (MOSFETs, shunt, internal bars); divided by the current it gives the resistance. Calculated continuously and smoothed, from 3 A.

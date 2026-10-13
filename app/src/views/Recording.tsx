@@ -48,15 +48,14 @@ export function RecordingEntry({ site, packs, systemAvailable, connected, onOpen
   const rec = useHistoryStatus();
   const s = rec.status;
   const on = !!s?.settings.enabled;
+  const state = !on ? t("rec.off") : s?.active ? t("rec.onShort") : t("rec.waiting");
   return (
     <>
-      <button onClick={() => setOpen(true)}
-        className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-sunken/60">
-        <span className="flex items-center gap-2 font-medium"><RecDot active={!!s?.active} />{t("rec.title")}</span>
-        <span className={cn("tabular-nums", s?.active ? "text-alarm" : "text-muted")}>
-          {!on ? t("rec.off") : s?.active ? t("rec.onShort") : t("rec.waiting")}
-        </span>
-      </button>
+      {/* footer icon: the dot is the state (pulsing red = recording); label and state are the tooltip */}
+      <Button variant="ghost" size="icon" onClick={() => setOpen(true)}
+        aria-label={`${t("rec.title")}: ${state}`} title={`${t("rec.title")}: ${state}`}>
+        <RecDot active={!!s?.active} />
+      </Button>
       <RecordingSheet open={open} onOpenChange={setOpen} rec={rec} site={site} packs={packs} systemAvailable={systemAvailable} connected={connected}
         onOpenHistory={() => { setOpen(false); onOpenHistory(); }} />
     </>

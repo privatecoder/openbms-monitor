@@ -15,6 +15,8 @@ import { isDemo, type Bus } from "./api";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
+// views listed in the sidebar only while "show maintenance functions" is on
+const MAINT_VIEWS = ["diag", "params", "firmware"];
 
 export default function App() {
   const { t } = useTranslation();
@@ -24,7 +26,8 @@ export default function App() {
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
   const [flashing, setFlashing] = useState(false);
-  const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1");
+  // a screenshot link straight into a maintenance view (demoView) shows that view
+  const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1" || MAINT_VIEWS.includes(demoView ?? ""));
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
   const current = pack !== null ? live.packs[pack] : undefined;
 
@@ -38,10 +41,11 @@ export default function App() {
           lastUpdate={Math.max(0, ...Object.values(live.packs).map((p) => p.updated))}
           locked={flashing}
           maintenance={maintenance}
-          setMaintenance={(v) => { localStorage.setItem("maint.enabled", v ? "1" : "0"); setMaintenance(v); if (!v && view === "firmware") setView("dashboard"); }}
+          setMaintenance={(v) => { localStorage.setItem("maint.enabled", v ? "1" : "0"); setMaintenance(v); if (!v && MAINT_VIEWS.includes(view)) setView("dashboard"); }}
           view={view}
           setView={(v) => { setView(v); setPack(null); }}
           onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); if (!isDemo) setPack(null); }}
+          onDevices={live.addDevices}
           onDisconnected={() => { live.reset(); setConnected(false); setPack(null); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
@@ -52,11 +56,11 @@ export default function App() {
             <Cells />
           ) : view === "history" ? (
             <History site={site} />
-          ) : view === "params" ? (
+          ) : view === "params" && maintenance ? (
             <ParametersView connected={connected} bus={bus} site={site} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
-          ) : view === "diag" ? (
+          ) : view === "diag" && maintenance ? (
             <Diagnosis packs={live.packs} site={site} />
           ) : current ? (
             <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} site={site} packs={live.packs} />

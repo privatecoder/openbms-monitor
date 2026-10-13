@@ -1,4 +1,4 @@
-use openbms_proto::{DeviceInfo, Parameters, Status, SystemValues, Telemetry};
+use openbms_proto::{DeviceInfo, MaintStatus, Parameters, Status, SystemValues, Telemetry};
 use openbms_transport::{list_serial_ports, Bus, Connection, Endpoint};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -115,6 +115,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
         EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), path),
         EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr: addr.clone() }, Bus::from(bus), addr),
     };
+    // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
+    lock(&state.conn)?.take();
     let conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     {
         // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
@@ -149,8 +151,32 @@ fn disconnect(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn scan(state: State<'_, AppState>) -> Result<Vec<(u8, DeviceInfo)>, String> {
-    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(0..=15)))
+async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>) -> Result<Vec<(u8, DeviceInfo)>, String> {
+    // without addresses every DIP address 0..=15 is asked; with a fixed pack count only those
+    let addresses = addresses.unwrap_or_else(|| (0..=15).collect());
+    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(addresses)))
+}
+
+/// Read the master's system values once and send them like a polling round would (CAN socket bus only).
+/// Used right after connecting, before the slower pack search.
+#[tauri::command]
+async fn system_once(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if *state.bus.lock().map_err(|e| e.to_string())? != Some(Bus::CanSocketBus) {
+        return Err("system values exist only on the CAN socket bus".into());
+    }
+    let r = with_conn(&state.conn, &state.flashing, |c| c.system_values());
+    let ok = r.is_ok();
+    let _ = app.emit("system", SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() });
+    if ok { Ok(()) } else { Err("no system values".into()) }
+}
+
+/// Maintenance state of a patched master (CID2 0x64, CAN socket bus). Original firmware: error.
+#[tauri::command]
+async fn maint_status(state: State<'_, AppState>) -> Result<MaintStatus, String> {
+    if *state.bus.lock().map_err(|e| e.to_string())? != Some(Bus::CanSocketBus) {
+        return Err("the maintenance command exists only on the CAN socket bus".into());
+    }
+    with_conn(&state.conn, &state.flashing, |c| c.maint_status())
 }
 
 #[tauri::command]
@@ -467,7 +493,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
