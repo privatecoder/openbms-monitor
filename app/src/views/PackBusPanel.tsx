@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
-import { errorKey, needsReplug } from "../maint";
+import { errorKey, needsReplug, workUnchanged } from "../maint";
 import type { useMaint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { MaintSetup } from "./MaintSetup";
@@ -29,10 +29,14 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   // set when maintEnd was refused with end-sequential (one adapter for both buses)
   const [stepwise, setStepwise] = useState(false);
 
-  const run = async (f: () => Promise<MaintOverview | void>) => {
+  /** `still()` tells an action, after an await, that the installation and session it began with are still in use;
+   *  if not, it must not write (overview, measurement, inverter, note). */
+  const run = async (f: (still: () => boolean) => Promise<MaintOverview | void>) => {
+    const start = { installation: o?.installation.id ?? "", session: o?.session?.id ?? null };
+    const still = () => workUnchanged(start, maint.current());
     setBusy(true); setError(null);
-    try { const r = await f(); if (r) maint.setOverview(r); }
-    catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); await maint.refresh(); }
+    try { const r = await f(still); if (r && still()) maint.setOverview(r); }
+    catch (e) { if (still()) { const k = errorKey(e); setError(t(k.key, k.params)); } await maint.refresh(); }
     finally { setBusy(false); }
   };
 
@@ -42,11 +46,13 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   const sequential = replug || stepwise;
 
   const endNoteOf = (r: EndResult) => r.ok ? t("maint.panel.endOk") : r.missing.length ? t("maint.panel.endMissing", { list: r.missing.join(", ") }) : t("maint.panel.endFailed", { what: r.failing });
-  const endStep = (step: EndStep) => run(async () => {
+  const endStep = (step: EndStep) => run(async (still) => {
     setEndNote(null);
     const r = await api.maintEndStep(o.installation.id, port, step);
-    if (step === "values") { setInverter(false); setMeasuredAt(null); setEndNote(endNoteOf(r)); }
-    else if (!r.ok) setEndNote(endNoteOf(r));
+    if (still()) {
+      if (step === "values") { setInverter(false); setMeasuredAt(null); setEndNote(endNoteOf(r)); }
+      else if (!r.ok) setEndNote(endNoteOf(r));
+    }
     return api.maintOverview(o.installation.id);
   });
   const endSteps: { step: EndStep; hint: string }[] = [
@@ -108,7 +114,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
       {/* 3. measure */}
       {(o.session || s === "patched-on") && (
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="ghost" size="sm" disabled={busy || !port} onClick={() => run(async () => { setMeasuredAt(null); setMeasuredAt(await api.maintMeasure(o.installation.id, port)); })}>{t("maint.panel.measure")}</Button>
+          <Button variant="ghost" size="sm" disabled={busy || !port} onClick={() => run(async (still) => { setMeasuredAt(null); const at = await api.maintMeasure(o.installation.id, port); if (still()) setMeasuredAt(at); })}>{t("maint.panel.measure")}</Button>
           {replug && <span className="text-discharge">{t("maint.panel.replugPack")}</span>}
           {measuredAt && <span className="flex items-center gap-1 text-ok"><CircleCheck className="h-4 w-4" />{t("maint.panel.quietAt", { time: new Date(measuredAt).toLocaleTimeString() })}</span>}
         </div>
@@ -139,16 +145,15 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
               ))}
             </div>
           ) : (
-            <Button variant="primary" size="sm" disabled={busy || !port} onClick={() => run(async () => {
+            <Button variant="primary" size="sm" disabled={busy || !port} onClick={() => run(async (still) => {
               setEndNote(null);
               let r: EndResult;
               try { r = await api.maintEnd(o.installation.id, port); }
               catch (e) {
-                if (errorKey(e).key === "maint.err.refused.end-sequential") { setStepwise(true); setError(null); return; }
+                if (errorKey(e).key === "maint.err.refused.end-sequential") { if (still()) { setStepwise(true); setError(null); } return; }
                 throw e;
               }
-              setInverter(false); setMeasuredAt(null);
-              setEndNote(endNoteOf(r));
+              if (still()) { setInverter(false); setMeasuredAt(null); setEndNote(endNoteOf(r)); }
               return api.maintOverview(o.installation.id);
             })}>{t("maint.end")}</Button>
           )}
