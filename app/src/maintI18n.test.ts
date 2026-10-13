@@ -8,14 +8,14 @@ const REFUSALS = [
   "installation-mismatch", "inverter", "isolated-or-released", "marker-unexplained", "master-unclear", "no-block",
   "no-control-channel", "no-port", "no-session", "not-patched-off", "pack-not-answering", "port-not-assigned",
   "state-changed", "stop-needs-control-channel", "update-interrupted", "update-unclear", "bootloader-unclear",
-  "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained",
+  "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained", "slave-present",
 ];
 // every value the backend stores as a failing End check (besides "stop: …", which carries an error)
 const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop"];
 
 describe("maintenance texts", () => {
   it("has a German and an English text for every refusal key", () => {
-    expect(REFUSALS).toHaveLength(28);
+    expect(REFUSALS).toHaveLength(29);
     for (const lng of ["de", "en"]) {
       for (const k of REFUSALS) {
         const key = `maint.err.refused.${k}`;

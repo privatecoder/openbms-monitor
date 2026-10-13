@@ -107,7 +107,8 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
         <div className="space-y-2">
           <p className="text-alarm">{t("maint.banner.unexplainedHint")}</p>
           {packsInput}
-          {o.session?.kind !== "dip" && <Button variant="ghost" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
+          {/* a set marker is never a single pack: 2 to 16 packs only (the backend refuses N = 0 here) */}
+          {o.session?.kind !== "dip" && <Button variant="ghost" size="sm" disabled={busy || n === null || n === 0} onClick={() => n !== null && n > 0 && run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
           {/* the recovery row: DIP session first, then the original image on address 0 (firmware view below) */}
           {!o.session && (
             <div className="space-y-2 border-t border-line pt-2">
@@ -155,7 +156,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
             <span>{packsLine(o.session.expected_slaves + 1, t)}</span>
             {editSlaves ? (
               <>
-                {packsField}
+                <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
                 <Button variant="ghost" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(async (still) => {
                   const r = await api.maintSetSlaves(o.installation.id, n, port);
                   if (still()) setEditSlaves(false);

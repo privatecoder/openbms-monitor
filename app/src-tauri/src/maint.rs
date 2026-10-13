@@ -283,12 +283,10 @@ pub fn single_pack(state: Option<&StoredMasterState>, slave: Option<u8>) -> bool
     reports_zero(state) && slave.is_none()
 }
 
-/// Per-address timeout of the slave scan for `N` = 0: 15 addresses stay below 4 s.
-const SLAVE_SCAN: Duration = Duration::from_millis(250);
-
 /// For `N` = 0 (the caller holds `port_busy`): read 0x64 now and store it; if it shows 0/0, prove on the pack
-/// bus that it is the pack bus (quiet, 0x47 from address 0) and look for a slave. Returns the fresh state and
-/// the first slave found. Without a control channel nothing can be verified: `slaves-range`.
+/// bus that it is the pack bus (quiet, 0x47 from address 0) and scan for a slave (`bus::first_slave`, two
+/// passes, fail-closed). Returns the fresh state and the scan result; a slave found is refused `slave-present`.
+/// Without a control channel nothing can be verified: `slaves-range`.
 fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<(StoredMasterState, Option<u8>), MaintError> {
     if port.is_empty() {
         return Err(refused("no-port"));
@@ -303,7 +301,11 @@ fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, po
     }
     let mut link = open_pack_for(state, app, port)?;
     bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
-    let slave = bus::first_slave(&mut link, &mut std::io::sink(), SLAVE_SCAN).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    let slave = bus::first_slave(&mut link, &SystemClock::new(), &mut std::io::sink(), bus::SLAVE_WINDOW)
+        .map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    if slave.is_some() {
+        return Err(refused("slave-present"));
+    }
     Ok((fresh, slave))
 }
 
@@ -813,7 +815,7 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
                 Err(e) => return Err(MaintError::Measure { message: e.to_string() }),
             }
             // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF)
-            match bus::first_slave(&mut link, &mut std::io::sink(), SLAVE_SCAN) {
+            match bus::first_slave(&mut link, &SystemClock::new(), &mut std::io::sink(), bus::SLAVE_WINDOW) {
                 Ok(None) => {}
                 Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
                 Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
