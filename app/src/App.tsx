@@ -25,6 +25,8 @@ export default function App() {
   const live = useLiveData();
   const maint = useMaint();
   const [connected, setConnected] = useState(false);
+  // lost or closed in the sidebar: the firmware view asks for the inverter confirmation again
+  const [disconnects, setDisconnects] = useState(0);
   const [site, setSite] = useState("");
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
@@ -50,13 +52,13 @@ export default function App() {
           onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); if (!isDemo) setPack(null); }}
           onDevices={live.addDevices}
           onEndpoint={(ep) => maint.attach(ep)}
-          onDisconnected={() => { live.reset(); setConnected(false); setPack(null); }}
+          onDisconnected={() => { live.reset(); setConnected(false); setPack(null); setDisconnects((d) => d + 1); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
           <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
             onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); }} />
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
+            <Firmware connected={connected} disconnects={disconnects} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
               onMonitorStopped={() => { live.reset(); setConnected(false); setPack(null); }} />
           ) : view === "cells" ? (
             <Cells />

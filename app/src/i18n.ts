@@ -88,6 +88,8 @@ const resources = {
             "endpoint-in-use": "Dieser Anschluss gehört zu einer Anlage mit offener Wartung oder Sperre und kann nicht umziehen.",
             "end-order": "Erst die vorherigen Schritte beim Beenden ausführen.",
             "end-sequential": "Steuerkanal und Pack-Port sind derselbe Adapter: Beenden Schritt für Schritt mit Umstecken.",
+            "slaves-range": "Anzahl der Slaves laut DIP eingeben (1 bis 15).",
+            "not-marker-unexplained": "Nur bei einem Marker ungeklärter Herkunft.",
           },
         },
         state: {
@@ -100,6 +102,7 @@ const resources = {
           check: "Master prüfen", activate: "Wartungsmodus aktivieren",
           dipHint: "Dieser Master kennt den Wartungsmodus nicht. Stellungen von DIP 5–8 notieren und auf AUS stellen.",
           unknownHint: "Der Master antwortet nicht auf dem Steuerkanal. Verbindung prüfen, oder von Hand: DIP 5–8 notieren und auf AUS stellen.",
+          dipZeroHint: "Der Master fragt keine Slaves ab. Für ein eigenes Image auf dem Master: DIP 5–8 notieren, auf AUS stellen und die Wartung per DIP beginnen.",
           dipConfirm: "DIP 5–8 stehen auf AUS, die alten Stellungen sind notiert.", slaves: "Slaves laut DIP (N)", startDip: "Wartung per DIP beginnen",
           accountMarker: "Ich habe den Marker selbst gesetzt",
           inverter: "Wechselrichter: kein Laden und kein Entladen der Batterie.",
@@ -118,6 +121,13 @@ const resources = {
           residual: "Die Messung sieht kein Pack, das still in seinem Bootloader hängt. Das Ergebnis lautet nur „Bus still um …“, mehr sagt es nicht.",
           endStep: { stop: "1. Marker löschen (stop)", bus: "2. Pack-Bus prüfen", values: "3. Systemwerte lesen" },
           endSequential: "Ein Adapter für beide Busse: Beenden Schritt für Schritt, dazwischen umstecken.",
+          slavesNow: "Slaves laut DIP (N): {{n}}", changeSlaves: "Ändern", save: "Speichern",
+        },
+        failing: {
+          "pack-communication-incomplete": "Pack-Kommunikation unvollständig",
+          "master-not-answering": "Master antwortet nicht am Pack-Bus",
+          "system-values": "Systemwerte nicht lesbar",
+          stop: "„stop“ fehlgeschlagen: {{error}}",
         },
         plan: {
           "dip-off": "DIP 5–8 AUS (bestätigen)", "stop-to-zero": "Marker löschen (stop) und auf 0/0 warten", measure: "Bus messen",
@@ -363,6 +373,8 @@ const resources = {
             "endpoint-in-use": "This connection belongs to an installation with open maintenance or a block and cannot move.",
             "end-order": "Run the previous End steps first.",
             "end-sequential": "Control channel and pack port are the same adapter: end step by step, moving the cable.",
+            "slaves-range": "Enter the slave count per DIP (1 to 15).",
+            "not-marker-unexplained": "Only for a marker of unexplained origin.",
           },
         },
         state: {
@@ -375,6 +387,7 @@ const resources = {
           check: "Check master", activate: "Activate maintenance mode",
           dipHint: "This master does not know maintenance mode. Note the positions of DIP 5–8 and set them OFF.",
           unknownHint: "The master does not answer on the control channel. Check the connection, or by hand: note DIP 5–8 and set them OFF.",
+          dipZeroHint: "The master polls no slaves. For a custom image on the master: note DIP 5–8, set them OFF and start maintenance by DIP.",
           dipConfirm: "DIP 5–8 are OFF, the old positions are noted.", slaves: "Slaves per DIP (N)", startDip: "Start maintenance by DIP",
           accountMarker: "I set the marker myself",
           inverter: "Inverter: no battery charging or discharging.",
@@ -393,6 +406,13 @@ const resources = {
           residual: "The measurement cannot see a pack that sits silently in its bootloader. The result reads only “bus quiet at …”, nothing more.",
           endStep: { stop: "1. Clear the marker (stop)", bus: "2. Check the pack bus", values: "3. Read system values" },
           endSequential: "One adapter for both buses: end step by step, moving the cable in between.",
+          slavesNow: "Slaves per DIP (N): {{n}}", changeSlaves: "Change", save: "Save",
+        },
+        failing: {
+          "pack-communication-incomplete": "pack communication incomplete",
+          "master-not-answering": "master not answering on the pack bus",
+          "system-values": "system values not readable",
+          stop: "“stop” failed: {{error}}",
         },
         plan: {
           "dip-off": "DIP 5–8 OFF (confirm)", "stop-to-zero": "Clear the marker (stop) and wait for 0/0", measure: "Measure bus",

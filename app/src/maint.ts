@@ -130,3 +130,27 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
   }
   return { key: "maint.err.text", params: { text: String(e) } };
 }
+
+/** The slave count per DIP as typed: a whole number from 1 to 15, else null (the backend refuses anything else). */
+export function parseSlaves(text: string): number | null {
+  const v = text.trim();
+  if (!/^\d+$/.test(v)) return null;
+  const n = Number(v);
+  return n >= 1 && n <= 15 ? n : null;
+}
+
+const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values"];
+
+/** Text key of a failing End check (EndResult.failing, session.failing); "stop: <MaintError JSON>" carries the
+ *  dialog's error. null for a value this UI does not know: it is shown as is. */
+export function failingKey(f: string): { key: string; inner?: { key: string; params?: Record<string, unknown> } } | null {
+  if (FAILING.includes(f)) return { key: `maint.failing.${f}` };
+  if (f.startsWith("stop: ")) return { key: "maint.failing.stop", inner: errorKey(f.slice("stop: ".length)) };
+  return null;
+}
+
+export function failingText(f: string, t: (key: string, params?: Record<string, unknown>) => string): string {
+  const k = failingKey(f);
+  if (!k) return f;
+  return k.inner ? t(k.key, { error: t(k.inner.key, k.inner.params) }) : t(k.key);
+}
