@@ -3,7 +3,7 @@ import { confirmationPhrase, progressFraction, steps, type FwSetup } from "./fir
 
 const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
-const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "", unlocked: true };
+const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "", unlocked: true, ready: true, busy: false };
 
 describe("firmware steps", () => {
   it("check pack needs port and image", () => {
@@ -30,6 +30,15 @@ describe("firmware steps", () => {
     expect(steps({ ...custom, typed: "FLASH CUSTOM 0" }).start).toBe(true);
     expect(steps({ ...custom, typed: "FLASH 0" }).start).toBe(false);
     expect(steps({ ...base, typed: "FLASH CUSTOM 0" }).start).toBe(false);
+  });
+  it("check pack and start follow the guided flow (steps 2–5 of the pack bus panel)", () => {
+    const s = steps({ ...base, typed: "FLASH 0", ready: false });
+    expect([s.inspect, s.confirm, s.start]).toEqual([false, false, false]);
+    // choosing an image stays free during the preparation
+    expect(s.image).toBe(true);
+  });
+  it("another action (pack check, measurement, End step) locks the inputs while it runs", () => {
+    expect(steps({ ...base, typed: "FLASH 0", busy: true })).toEqual({ image: false, inspect: false, confirm: false, start: false });
   });
   it("nothing is editable while running", () => {
     const s = steps({ ...base, typed: "FLASH 0", running: true });

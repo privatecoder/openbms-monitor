@@ -10,14 +10,17 @@ import { RecordingEntry } from "./Recording";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
+export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
   connected: boolean;
+  /** the app stopped the monitor itself for a maintenance step (not lost, not closed by the user) */
+  paused: boolean;
   site: string;
   packs: number[];
   lastUpdate: number;
   onConnected: (found: [number, DeviceInfo | undefined][], site: string, bus: Bus) => void;
   onDevices: (found: [number, DeviceInfo][]) => void;
-  onDisconnected: () => void;
+  /** `lost`: the link died or timed out; false: closed by the user */
+  onDisconnected: (lost: boolean) => void;
   view: string;
   setView: (v: string) => void;
   locked: boolean;
@@ -102,14 +105,14 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisco
   // Browser preview: connect straight away so the recorded system is visible.
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const disconnect = async () => { await api.disconnect(); onDisconnected(); setMsg(null); setLost(false); };
+  const disconnect = async () => { await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
     setLost(true);
     setMsg(text);
     setLastTry(Date.now());
-    onDisconnected();
+    onDisconnected(true);
     api.disconnect().catch(() => {});
   };
 
@@ -165,7 +168,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisco
               {connected && lastUpdate > 0 && <span key={lastUpdate} className="ping-once absolute inset-0 rounded-full bg-charge" />}
               <span className={cn("relative h-2 w-2 rounded-full", connected ? "bg-charge" : lost ? "bg-alarm" : "border border-muted")} />
             </span>
-            {connected ? t("conn.connected") : lost ? t("conn.lostShort") : t("conn.offline")}
+            {connected ? t("conn.connected") : lost ? t("conn.lostShort") : paused ? t("conn.paused") : t("conn.offline")}
           </span>
         </div>
         <div className="grid grid-cols-2 gap-1 rounded-md bg-sunken p-1">

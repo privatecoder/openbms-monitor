@@ -46,6 +46,24 @@ describe("maintenance texts", () => {
     }
     expect(i18n.t("maint.failing.slave-present", { lng: "de", addr: 7 })).toBe("An Adresse 7 antwortet ein Slave – es sind mehr als 1 Pack");
   });
+  it("the guided flow has the same texts in German and English, with every reason flowOf can name", () => {
+    const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
+    const de = keys(i18n.getResourceBundle("de", "translation").maint.flow).sort();
+    expect(keys(i18n.getResourceBundle("en", "translation").maint.flow).sort()).toEqual(de);
+    for (const r of ["first", "choose-port", "control-or-none", "check-needed", "marker-unknown", "after-scan", "after-recovery", "patched-on-no-session", "recovery-only-original", "running", "no-installation", "end-first"]) {
+      expect(de).toContain(`reason.${r}`);
+    }
+    for (const m of ["paused", "offline", "lost"]) expect(de).toContain(`monitor.${m}`);
+    for (const lng of ["de", "en"]) expect(i18n.exists("conn.paused", { lng })).toBe(true);
+    // three distinct monitor texts
+    for (const lng of ["de", "en"]) expect(new Set(["paused", "offline", "lost"].map((m) => i18n.t(`maint.flow.monitor.${m}`, { lng }))).size).toBe(3);
+  });
+  it("German quotes are „…“", () => {
+    const values = (o: unknown): string[] => Object.values(o as Record<string, unknown>).flatMap((v) => (typeof v === "object" && v ? values(v) : [String(v)]));
+    const text = values(i18n.getResourceBundle("de", "translation").maint.flow).join(" ");
+    expect(text).not.toMatch(/["”]/);
+    expect((text.match(/„/g) ?? []).length).toBe((text.match(/“/g) ?? []).length);
+  });
   it("never says exclusive", () => {
     for (const lng of ["de", "en"]) expect(JSON.stringify(i18n.getResourceBundle(lng, "translation").maint)).not.toMatch(/exklusiv|exclusive/i);
   });
