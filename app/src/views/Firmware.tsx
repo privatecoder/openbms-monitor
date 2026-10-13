@@ -55,6 +55,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [planError, setPlanError] = useState<string | null>(null);
   const [dipOffConfirmed, setDipOffConfirmed] = useState(false);
   const [isolatedConfirmed, setIsolatedConfirmed] = useState(false);
+  const [endNote, setEndNote] = useState<{ installation: string; text: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const startedAt = useRef(0);
   const addressRef = useRef(address);
@@ -85,6 +86,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // a new measurement is needed after every state change; the inverter statement after every new session
   useEffect(() => { setMeasuredAt(null); }, [overview?.state_at, overview?.installation.id]);
   useEffect(() => { setInverter(false); }, [overview?.session?.id, overview?.installation.id]);
+  // the End result stays until a new session opens or another installation is shown
+  useEffect(() => { setEndNote(null); }, [overview?.installation.id]);
+  useEffect(() => { if (overview?.session) setEndNote(null); }, [overview?.session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // which installation owns the pack port
   const lookupPort = () => {
@@ -165,7 +169,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
-      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} port={port} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt} />
+      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} port={port} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
+        setEndNote={(text) => setEndNote(text && overview ? { installation: overview.installation.id, text } : null)} />
+      {endNote && endNote.installation === overview?.installation.id && <p className="text-sm">{endNote.text}</p>}
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">

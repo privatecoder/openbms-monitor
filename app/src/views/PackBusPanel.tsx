@@ -9,13 +9,15 @@ import { MaintSetup } from "./MaintSetup";
 
 const input = "h-9 w-20 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, setMeasuredAt }: {
+export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, setMeasuredAt, setEndNote }: {
   maint: ReturnType<typeof useMaint>;
   port: string;
   inverter: boolean;
   setInverter: (v: boolean) => void;
   measuredAt: number | null;
   setMeasuredAt: (v: number | null) => void;
+  /** the result of End lives in the parent: it must outlast the session */
+  setEndNote: (v: string | null) => void;
 }) {
   const { t } = useTranslation();
   const o = maint.overview;
@@ -24,7 +26,6 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   const [n, setN] = useState(0);
   const [dipConfirmed, setDipConfirmed] = useState(false);
   const [setup, setSetup] = useState(false);
-  const [endNote, setEndNote] = useState<string | null>(null);
   // set when maintEnd was refused with end-sequential (one adapter for both buses)
   const [stepwise, setStepwise] = useState(false);
 
@@ -152,7 +153,6 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
             })}>{t("maint.end")}</Button>
           )}
           {o.session.kind === "dip" && <p className="text-muted">{t("maint.panel.dipBack")}</p>}
-          {endNote && <p>{endNote}</p>}
         </div>
       )}
       <p className="text-muted">{t("maint.panel.residual")}</p>
