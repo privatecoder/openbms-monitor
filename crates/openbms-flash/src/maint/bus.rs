@@ -127,18 +127,50 @@ pub fn app_answers(link: &mut impl Link, log: &mut impl Write, address: u8, with
     }
 }
 
-/// The first slave address (1..=15) that answers 0x51 within `per_address`, or None when none does. Proof of
-/// a single pack on a quiet bus: a slave answers here whenever the master does not poll. Only a timeout counts
-/// as "no answer"; any other link error is returned, so a broken port never reads as "no slave".
-pub fn first_slave(link: &mut impl Link, log: &mut impl Write, per_address: Duration) -> Result<Option<u8>> {
-    for address in 1..=15 {
-        match session::ascii_query(link, address, 0x51, log, per_address) {
-            Ok(_) => return Ok(Some(address)),
-            Err(Error::Timeout { .. }) => {}
-            Err(e) => return Err(e),
+/// Window per address of the slave scan, and the number of passes over 1..=15.
+pub const SLAVE_WINDOW: Duration = Duration::from_millis(600);
+const SLAVE_PASSES: u8 = 2;
+
+/// Fail-closed proof that no slave is on the bus (a single pack): two passes over addresses 1..=15, each
+/// sending 0x51 and listening for `per_address`. Any byte other than an exact echo of the own request counts
+/// as a slave: a frame from any address 1..=15 (any RTN) names that address, anything else (garbled, cut off,
+/// late, another sender) the address just queried. Only a window without a byte is absence. The input is never
+/// cleared, so a late answer still counts in the next window. Returns the first slave seen, None when every
+/// window stayed silent, or the link error.
+pub fn first_slave(link: &mut impl Link, clock: &impl Clock, log: &mut impl Write, per_address: Duration) -> Result<Option<u8>> {
+    for pass in 1..=SLAVE_PASSES {
+        for address in 1..=15u8 {
+            writeln!(log, "slave scan: pass {pass}, address {address}")?;
+            let request = frame::encode_request(address, 0x51, &[])?;
+            link.write_raw(&request)?;
+            let start = clock.now();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 512];
+            while clock.now().saturating_sub(start) < per_address {
+                let n = link.read_raw(&mut buf)?;
+                got.extend_from_slice(&buf[..n]);
+                if !request.starts_with(&got) {
+                    break;
+                }
+            }
+            if !(got.is_empty() || got == request) {
+                let who = sender(&got).unwrap_or(address);
+                writeln!(log, "slave scan: {} byte(s) seen, slave at {who}", got.len())?;
+                return Ok(Some(who));
+            }
         }
     }
     Ok(None)
+}
+
+/// The address 1..=15 of the first parsable ASCII frame in `bytes`, any RTN.
+fn sender(bytes: &[u8]) -> Option<u8> {
+    bytes.split(|b| *b == b'\r').find_map(|line| {
+        let start = line.iter().position(|b| *b == b'~')?;
+        let mut f = line[start..].to_vec();
+        f.push(b'\r');
+        frame::parse(&f).ok().map(|f| f.address).filter(|a| (1..=15).contains(a))
+    })
 }
 
 #[cfg(test)]
@@ -163,22 +195,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn first_slave_finds_the_lowest_answering_address() {
-        // only the master: no slave
-        let mut link = FakeLink::new(VTime::default(), quiet_master);
-        assert_eq!(first_slave(&mut link, &mut Vec::new(), ms(20)).unwrap(), None);
-        assert_eq!(link.sent.len(), 15);
-        // a slave at address 7 answers 0x51
-        let mut link = FakeLink::new(VTime::default(), |req, now| match frame::parse(req) {
-            Ok(f) if f.address == 7 && f.rtn == 0x51 => vec![(now + ms(5), answer(7, 0, &[1]))],
+    fn scan(link: &mut FakeLink) -> Result<Option<u8>> {
+        let t = link.time.clone();
+        first_slave(link, &t, &mut Vec::new(), SLAVE_WINDOW)
+    }
+
+    /// A responder: `at(address)` returns the bytes and their delay for a 0x51 to that address.
+    fn replying(at: impl Fn(u8) -> Option<(Duration, Vec<u8>)> + 'static) -> FakeLink {
+        FakeLink::new(VTime::default(), move |req, now| match frame::parse(req) {
+            Ok(f) if f.rtn == 0x51 => at(f.address).map(|(d, b)| vec![(now + d, b)]).unwrap_or_default(),
             _ => vec![],
+        })
+    }
+
+    #[test]
+    fn first_slave_is_absent_only_for_silent_windows() {
+        // nothing at all: two passes over 1..=15
+        let mut link = replying(|_| None);
+        assert_eq!(scan(&mut link).unwrap(), None);
+        assert_eq!(link.sent.len(), 30);
+        // only the adapter's echo of the own request
+        let mut link = FakeLink::new(VTime::default(), |req, now| vec![(now + ms(5), req.to_vec())]);
+        assert_eq!(scan(&mut link).unwrap(), None);
+    }
+
+    #[test]
+    fn first_slave_counts_every_reply_as_present() {
+        // a normal answer at address 7
+        let mut link = replying(|a| (a == 7).then(|| (ms(50), answer(7, 0, &[1]))));
+        assert_eq!(scan(&mut link).unwrap(), Some(7));
+        // an answer with RTN != 0
+        let mut link = replying(|a| (a == 4).then(|| (ms(50), answer(4, 0x04, &[]))));
+        assert_eq!(scan(&mut link).unwrap(), Some(4));
+        // garbled bytes after the query to 9
+        let mut link = replying(|a| (a == 9).then(|| (ms(50), b"~20\x00zz".to_vec())));
+        assert_eq!(scan(&mut link).unwrap(), Some(9));
+        // a late answer at 500 ms, still inside the window
+        let mut link = replying(|a| (a == 3).then(|| (ms(500), answer(3, 0, &[1]))));
+        assert_eq!(scan(&mut link).unwrap(), Some(3));
+        // an answer later than the window: seen in the next window, named by its frame
+        let mut link = replying(|a| (a == 5).then(|| (ms(700), answer(5, 0, &[1]))));
+        assert_eq!(scan(&mut link).unwrap(), Some(5));
+        // echo plus answer
+        let mut link = FakeLink::new(VTime::default(), |req, now| {
+            let mut v = vec![(now + ms(5), req.to_vec())];
+            if frame::parse(req).is_ok_and(|f| f.address == 12) {
+                v.push((now + ms(60), answer(12, 0, &[1])));
+            }
+            v
         });
-        assert_eq!(first_slave(&mut link, &mut Vec::new(), ms(20)).unwrap(), Some(7));
-        // a broken port is an error, never "no slave"
-        let mut link = FakeLink::new(VTime::default(), quiet_master);
+        assert_eq!(scan(&mut link).unwrap(), Some(12));
+    }
+
+    #[test]
+    fn first_slave_reports_a_broken_port() {
+        let mut link = replying(|_| None);
         link.broken = true;
-        assert!(first_slave(&mut link, &mut Vec::new(), ms(20)).is_err());
+        assert!(scan(&mut link).is_err());
     }
 
     #[test]
