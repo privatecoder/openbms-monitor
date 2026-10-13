@@ -69,6 +69,7 @@ const resources = {
           err: {
             sameAdapter: "CAN-Buchse und RS485-1/2 sind derselbe Adapter. Zwei Adapter wählen oder „Ein Adapter für beide Busse“ ankreuzen.",
             packRequired: "Der RS485-1/2-Port lässt sich ersetzen, aber nicht leer lassen.",
+            packSetMeanwhile: "Der RS485-1/2-Port wurde inzwischen eingerichtet; die Felder sind neu geladen. Bitte prüfen und erneut speichern.",
           },
         },
         err: {
@@ -141,6 +142,7 @@ const resources = {
             first: "Erst Schritt {{n}} erledigen.",
             "setup-pack": "Den RS485-1/2-Port einrichten („Einrichten“).",
             "pack-unplugged": "Der RS485-1/2-Port {{port}} ist nicht eingesteckt.",
+            "confirm-one-adapter": "Ein Adapter für beide Busse? In der Einrichtung bestätigen („Einrichten“).",
             "control-or-none": "Die CAN-Buchse einrichten („Einrichten“) oder ausdrücklich ohne Steuerkanal arbeiten.",
             "check-needed": "Nach einem Start der App oder wenn die Verbindung getrennt wurde oder verloren ging, den Master neu prüfen. Gespeichert ist nur der zuletzt bestätigte Zustand.",
             "marker-not-on": "Der Master meldet den Marker nicht mehr (z. B. nach „Marker löschen“ beim Beenden). Den Master erneut prüfen oder das Beenden fortsetzen.",
@@ -416,6 +418,7 @@ const resources = {
           err: {
             sameAdapter: "CAN socket and RS485-1/2 are the same adapter. Choose two adapters or tick “One adapter for both buses”.",
             packRequired: "The RS485-1/2 port can be replaced, but not left empty.",
+            packSetMeanwhile: "The RS485-1/2 port was set meanwhile; the fields are reloaded. Please check and save again.",
           },
         },
         err: {
@@ -488,6 +491,7 @@ const resources = {
             first: "Finish step {{n}} first.",
             "setup-pack": "Set up the RS485-1/2 port (“Set up”).",
             "pack-unplugged": "The RS485-1/2 port {{port}} is not plugged in.",
+            "confirm-one-adapter": "One adapter for both buses? Confirm it in the setup (“Set up”).",
             "control-or-none": "Set up the CAN socket (“Set up”) or choose explicitly to work without a control channel.",
             "check-needed": "After an app start, or when the connection was closed or lost, check the master again. Stored is only the last confirmed state.",
             "marker-not-on": "The master no longer reports the marker (e.g. after “clear the marker” while ending). Check the master again or continue ending.",

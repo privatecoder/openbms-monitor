@@ -82,8 +82,9 @@ export function needsReplug(control: ControlEndpoint | null, packPort: string): 
 }
 
 /** A running action may write its result only while the installation and session it started with are still current. */
-export function workUnchanged(start: { installation: string; session: number | null }, now: { installation: string | null; session: number | null }): boolean {
-  return start.installation === now.installation && start.session === now.session;
+/** With `port` (the RS485-1/2 port the action used) also only while that port is still the one in use. */
+export function workUnchanged(start: { installation: string; session: number | null; port?: string }, now: { installation: string | null; session: number | null; port?: string }): boolean {
+  return start.installation === now.installation && start.session === now.session && (start.port === undefined || start.port === now.port);
 }
 
 export interface FlashCheck {
@@ -210,10 +211,46 @@ export function sameAdapter(can: ControlEndpoint | null, pack: string): boolean 
 
 /** The setup form's check before saving: null = fine, else the text key of the refusal. A stored RS485-1/2 port
  *  can be replaced, never silently dropped; one adapter for both buses needs the explicit confirmation. */
-export function setupCheck({ can, pack, oneAdapter, storedPack }: { can: ControlEndpoint | null; pack: string; oneAdapter: boolean; storedPack: string | null }): string | null {
-  if (!pack && storedPack) return "maint.setup.err.packRequired";
+export function setupCheck({ can, pack, oneAdapter, storedPack, loadedPack }: { can: ControlEndpoint | null; pack: string; oneAdapter: boolean; storedPack: string | null;
+  /** the pack port the form was loaded with: "" while a port is stored = it was set meanwhile (the form reloads) */
+  loadedPack?: string }): string | null {
+  if (!pack && storedPack) return loadedPack === "" ? "maint.setup.err.packSetMeanwhile" : "maint.setup.err.packRequired";
   if (sameAdapter(can, pack) && !oneAdapter) return "maint.setup.err.sameAdapter";
   return null;
+}
+
+/** The setup form's fields from a stored installation (`oneAdapter`: the stored one-adapter confirmation). */
+export function setupFields(inst: Installation, oneAdapter: boolean) {
+  const c = inst.control;
+  return {
+    name: inst.name,
+    canKind: (c?.kind ?? "serial") as ControlEndpoint["kind"],
+    canValue: c ? (c.kind === "tcp" ? c.addr : c.path) : "",
+    pack: packPortOf(inst, oneAdapter) ?? "",
+    oneAdapter,
+  };
+}
+
+const controlOf = (ep: Endpoint): ControlEndpoint => (ep.kind === "tcp" ? { kind: "tcp", addr: ep.addr } : { kind: "serial", path: ep.path });
+
+/** A connection on the CAN socket bus (sidebar) for an installation without a control channel: the adapter becomes
+ *  its CAN socket, never a listed endpoint (which could pass for the RS485-1/2 port). null: nothing to change. */
+export function controlFromAttach(inst: Installation, ep: Endpoint): Installation | null {
+  if (ep.bus !== "can" || inst.control) return null;
+  const key = endpointKey(ep);
+  return { ...inst, control: controlOf(ep), endpoints: inst.endpoints.filter((k) => k !== key) };
+}
+
+/** Assign a connection explicitly (banner): on the CAN socket bus it sets (or keeps) the CAN socket; only a
+ *  pack-bus endpoint is listed, and only a serial one can then be the RS485-1/2 port. */
+export function assignEndpoint(inst: Installation, ep: Endpoint): Installation {
+  const key = endpointKey(ep);
+  if (ep.bus === "can") {
+    const endpoints = inst.endpoints.filter((k) => k !== key);
+    if (controlKey(inst.control) === key) return endpoints.length === inst.endpoints.length ? inst : { ...inst, endpoints };
+    return { ...inst, control: controlOf(ep), endpoints };
+  }
+  return inst.endpoints.includes(key) ? inst : { ...inst, endpoints: [...inst.endpoints, key] };
 }
 
 /** The endpoint list the setup form saves: the CAN socket and the RS485-1/2 port first (so the pack port reads
@@ -330,7 +367,11 @@ export function flowOf(i: FlowInput): Flow {
     ? r("maint.flow.reason.marker-not-on") : null;
   const blockLock = o.blocks.length ? r(`maint.err.refused.${o.blocks[0].reason}`) : null;
   // the RS485-1/2 port: set up (setup form) and plugged in
-  const portLock = !i.port ? r("maint.flow.reason.setup-pack") : !i.portAvailable ? r("maint.flow.reason.pack-unplugged", { port: i.port }) : undefined;
+  // a one-adapter setup without the tick: the only serial endpoint is the control adapter
+  const ctlKey = controlKey(o.installation.control);
+  const serialEps = o.installation.endpoints.filter((k) => k.startsWith("serial:"));
+  const unconfirmedOne = o.installation.control?.kind === "serial" && serialEps.length > 0 && serialEps.every((k) => k === ctlKey);
+  const portLock = !i.port ? r(unconfirmedOne ? "maint.flow.reason.confirm-one-adapter" : "maint.flow.reason.setup-pack") : !i.portAvailable ? r("maint.flow.reason.pack-unplugged", { port: i.port }) : undefined;
   const measured = i.measuredAt !== null && (o.state_at === null || i.measuredAt >= o.state_at);
 
   type Eval = { complete: boolean; reason?: Reason; hard?: Reason | null; deferred?: Reason; notNeeded?: boolean };

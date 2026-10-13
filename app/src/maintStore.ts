@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, isDemo, type Endpoint, type MaintOverview } from "./api";
-import { attachDecision, endpointKey, errorKey, latestGuard } from "./maint";
+import { api, isDemo, type Endpoint, type Installation, type MaintOverview } from "./api";
+import { assignEndpoint, attachDecision, controlFromAttach, errorKey, latestGuard } from "./maint";
 
 /** The setup's one-adapter confirmation ("one adapter for both buses, I move the cable"), per installation. The
  *  backend stores only the keys; without this the control adapter is never taken as the RS485-1/2 port
@@ -88,10 +88,20 @@ export function useMaint() {
     const d = attachDecision(id ? current : null, known, id && !current ? id : null);
     setUnassigned(d.do === "offer-assign" ? endpoint : null);
     setOther(d.do === "offer-switch" ? { id: d.id, name: d.name } : null);
-    if (d.do === "use") await use(d.id, endpoint.bus === "can" && !!known?.control);
+    // a connection on the CAN socket bus becomes the CAN socket of an installation without one, never a listed
+    // endpoint (that could pass for the RS485-1/2 port); refused while the installation has open work
+    const promote = async (inst: Installation) => {
+      const next = controlFromAttach(inst, endpoint);
+      if (!next) return !!inst.control;
+      return api.maintSaveInstallation(next).then(() => true).catch(() => !!inst.control);
+    };
+    if (d.do === "use") {
+      const hasControl = known ? await promote(known) : false;
+      await use(d.id, endpoint.bus === "can" && hasControl);
+    }
     if (d.do === "create") {
       const created = await api.maintInstallationFor(endpoint).catch(() => null);
-      if (created) await use(created.id, false);
+      if (created) { await promote(created); await use(created.id, false); }
     }
   }, [refresh, use]);
 
@@ -101,13 +111,14 @@ export function useMaint() {
     await use(id, false);
   }, [use]);
 
-  /** Add an endpoint to the installation in use (explicit, from the banner or the firmware view). */
+  /** Assign a connection to the installation in use (explicit, from the banner): on the CAN socket bus as its CAN
+   *  socket, on the pack bus as an endpoint (`assignEndpoint`). */
   const assign = useCallback(async (endpoint: Endpoint) => {
     const current = overviewRef.current;
     if (!current) return;
     const inst = current.installation;
-    const key = endpointKey(endpoint);
-    if (!inst.endpoints.includes(key)) await api.maintSaveInstallation({ ...inst, endpoints: [...inst.endpoints, key] });
+    const next = assignEndpoint(inst, endpoint);
+    if (next !== inst) await api.maintSaveInstallation(next);
     setUnassigned(null);
     await refresh(inst.id);
   }, [refresh]);
