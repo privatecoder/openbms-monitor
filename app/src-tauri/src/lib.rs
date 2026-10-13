@@ -133,6 +133,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
     };
     // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
     lock(&state.conn)?.take();
+    // the old connection is gone; control exchanges must not route through it
+    *state.main.lock().map_err(|e| e.to_string())? = None;
     let conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     {
         // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
