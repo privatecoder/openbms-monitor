@@ -32,8 +32,10 @@ pub enum SerialValue {
     /// The factory placeholder; `value` is the raw text.
     Placeholder { value: String },
     Empty,
-    /// The command is not supported or not reachable on this bus.
+    /// The command is not supported (RTN 04) or not reachable on this bus.
     Unavailable,
+    /// The pack did not answer this command, or the answer was malformed.
+    NoAnswer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,6 +56,18 @@ pub fn bms_request(address: u8) -> Result<Vec<u8>> {
     crate::frame::encode_request(address, CID2_BMS, &[])
 }
 
+/// Padding of the stored strings: spaces, NUL on older images, 0xFF in erased flash.
+fn is_pad(b: u8) -> bool {
+    matches!(b, 0 | b' ' | 0xFF)
+}
+
+/// Classify raw stored bytes; padding is trimmed before the text is decoded.
+fn classify_bytes(b: &[u8]) -> SerialValue {
+    let start = b.iter().position(|c| !is_pad(*c)).unwrap_or(b.len());
+    let end = b.iter().rposition(|c| !is_pad(*c)).map_or(start, |i| i + 1);
+    classify(&String::from_utf8_lossy(&b[start..end]))
+}
+
 /// Classify a stored text (padding is trimmed here).
 pub fn classify(text: &str) -> SerialValue {
     let t = text.trim_matches(|c: char| c == '\0' || c == ' ');
@@ -71,7 +85,7 @@ pub fn parse_ascii_serial(info: &[u8]) -> Result<SerialValue> {
     if info.len() < LEN {
         return Err(Error::Layout("serial number answer shorter than 30 bytes"));
     }
-    Ok(classify(&String::from_utf8_lossy(&info[..LEN])))
+    Ok(classify_bytes(&info[..LEN]))
 }
 
 /// Battery serial number from the master's input registers 0x0000.. (high byte first).
@@ -80,10 +94,10 @@ pub fn battery_from_input_regs(regs: &[u16]) -> Result<SerialValue> {
         return Err(Error::Layout("fewer than 11 serial number registers"));
     }
     let bytes: Vec<u8> = regs[..MODBUS_SERIAL_REGS].iter().flat_map(|r| r.to_be_bytes()).collect();
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    // the 22nd character is not padding: the stored string may go on beyond what Modbus shows
-    let cut = !matches!(bytes.last(), Some(0 | b' '));
-    Ok(match classify(&text) {
+    // the 22nd character is not padding: the stored string may go on beyond what Modbus shows. A value of exactly
+    // 22 characters cannot be told apart from a longer one, so it is marked as possibly cut, too.
+    let cut = !bytes.last().copied().is_some_and(is_pad);
+    Ok(match classify_bytes(&bytes) {
         SerialValue::Set { value, .. } => SerialValue::Set { value, truncated: cut },
         other => other,
     })
@@ -138,6 +152,16 @@ mod tests {
         );
         assert_eq!(parse_ascii_serial(&[b' '; LEN]).unwrap(), SerialValue::Empty);
         assert_eq!(parse_ascii_serial(&[0; LEN]).unwrap(), SerialValue::Empty);
+    }
+
+    #[test]
+    fn erased_flash_is_empty() {
+        assert_eq!(parse_ascii_serial(&[0xFF; LEN]).unwrap(), SerialValue::Empty);
+        assert_eq!(parse_ascii_serial(&padded("SYN-0003", 0xFF)).unwrap(), SerialValue::Set { value: "SYN-0003".into(), truncated: false });
+        assert_eq!(battery_from_input_regs(&[0xFFFF; 21]).unwrap(), SerialValue::Empty);
+        let mut r = vec![0x5359, 0x4E2D, 0x3030, 0x3034];
+        r.resize(21, 0xFFFF);
+        assert_eq!(battery_from_input_regs(&r).unwrap(), SerialValue::Set { value: "SYN-0004".into(), truncated: false });
     }
 
     #[test]
