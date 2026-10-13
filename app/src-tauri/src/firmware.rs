@@ -238,7 +238,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         None => crate::maint::with_store(&state, |s| s.installation_for(&key)).map_err(to_text)?,
     };
     let master_plan = crate::maint::prepare_flash(
-        &mut crate::maint::AppPrep { state: &state, inst: &inst, port: &port },
+        &mut crate::maint::AppPrep { state: &state, app: &app, inst: &inst, port: &port },
         address,
         crate::maint::image_kind(info.kind),
         &confirm,

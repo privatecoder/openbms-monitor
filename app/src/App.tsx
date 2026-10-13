@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Cable } from "lucide-react";
 import { Sidebar } from "./views/Sidebar";
@@ -13,7 +13,7 @@ import { History } from "./views/History";
 import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { useMaint } from "./maintStore";
-import { isDemo, type Bus } from "./api";
+import { api, isDemo, type Bus } from "./api";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
@@ -35,6 +35,15 @@ export default function App() {
   const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1" || MAINT_VIEWS.includes(demoView ?? ""));
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
   const current = pack !== null ? live.packs[pack] : undefined;
+  // the app stopped the monitor itself (firmware view, maintenance step): "not connected", no lost connection,
+  // so the inverter confirmation and the measurement stay
+  const monitorStopped = () => { live.reset(); setConnected(false); setPack(null); };
+  const onMonitorStopped = useRef(monitorStopped);
+  onMonitorStopped.current = monitorStopped;
+  useEffect(() => {
+    const un = api.onMonitorStopped(() => onMonitorStopped.current());
+    return () => { un.then((f) => f()); };
+  }, []);
 
   return (
     <HelpProvider>
@@ -59,7 +68,7 @@ export default function App() {
             onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); }} />
           {view === "firmware" && maintenance ? (
             <Firmware connected={connected} disconnects={disconnects} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
-              onMonitorStopped={() => { live.reset(); setConnected(false); setPack(null); }} />
+              onMonitorStopped={monitorStopped} />
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (

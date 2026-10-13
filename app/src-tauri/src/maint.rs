@@ -14,7 +14,7 @@ use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -558,7 +558,7 @@ fn open_pack(port: &str) -> Result<Connection, MaintError> {
 /// separate adapter, a fresh 0x64 status that must match it (`policy::fresh_status`); a mismatch re-checks
 /// the master and refuses. Then on the pack bus 2 s quiet and 0x47 from address 0. Stops the monitor when
 /// it holds the pack port or polls the pack bus.
-pub fn measure(state: &AppState, inst: &Installation, port: &str) -> Result<i64, MaintError> {
+pub fn measure(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<i64, MaintError> {
     let ms = with_store(state, |s| s.master_state(&inst.id))?;
     let fresh = ms.as_ref().map(|(m, _)| policy::fresh_status(m.into())).unwrap_or(policy::Fresh::Unchecked);
     if fresh != policy::Fresh::Unchecked && inst.control.is_some() && !same_adapter(inst, port) {
@@ -568,16 +568,17 @@ pub fn measure(state: &AppState, inst: &Installation, port: &str) -> Result<i64,
             return Err(refused("state-changed"));
         }
     }
-    let mut link = open_pack_for(state, port)?;
+    let mut link = open_pack_for(state, app, port)?;
     bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
     Ok(crate::history::now_ms())
 }
 
-/// Open the pack bus port; first stop the monitor when it holds that adapter or polls the pack bus.
-pub fn open_pack_for(state: &AppState, port: &str) -> Result<Connection, MaintError> {
+/// Open the pack bus port; first stop the monitor when it holds that adapter or polls the pack bus, and tell
+/// the UI ("monitor-stopped"): a stop by the app is no lost connection.
+pub fn open_pack_for(state: &AppState, app: &AppHandle, port: &str) -> Result<Connection, MaintError> {
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
     if must_stop_monitor(main.as_ref(), &crate::maint_store::endpoint_key(false, port)) {
-        crate::stop_monitor(state).map_err(|m| MaintError::Connection { message: m })?;
+        crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
     }
     open_pack(port)
 }
@@ -598,6 +599,7 @@ pub fn stop_to_zero(state: &AppState, inst: &Installation) -> Result<(), MaintEr
 
 pub struct AppPrep<'a> {
     pub state: &'a AppState,
+    pub app: &'a AppHandle,
     pub inst: &'a Installation,
     pub port: &'a str,
 }
@@ -622,7 +624,7 @@ impl Prep for AppPrep<'_> {
         stop_to_zero(self.state, self.inst)
     }
     fn measure(&mut self) -> Result<(), MaintError> {
-        measure(self.state, self.inst, self.port).map(|_| ())
+        measure(self.state, self.app, self.inst, self.port).map(|_| ())
     }
 }
 
@@ -634,11 +636,11 @@ fn port_of(state: &AppState, inst: &Installation, port: &str) -> Result<(), Main
 }
 
 #[tauri::command]
-pub async fn maint_measure(state: State<'_, AppState>, installation: String, port: String) -> Result<i64, MaintError> {
+pub async fn maint_measure(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<i64, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
-    measure(&state, &inst, &port)
+    measure(&state, &app, &inst, &port)
 }
 
 #[derive(Serialize)]
@@ -708,7 +710,7 @@ pub fn end_record(p: EndProgress, step: EndStep, ok: bool) -> EndProgress {
 
 /// Run one step of End for the open session; the refusals (unclear update, locked marker, order) are
 /// checked at every step.
-fn end_step(state: &AppState, inst: &Installation, port: &str, step: EndStep) -> Result<EndResult, MaintError> {
+fn end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, step: EndStep) -> Result<EndResult, MaintError> {
     let (session, ms, blocks) = with_store(state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?, s.blocks(&inst.id)?)))?;
     let session = session.ok_or_else(|| refused("no-session"))?;
     stop_allowed(ms.as_ref().map(|(m, _)| m))?;
@@ -718,7 +720,7 @@ fn end_step(state: &AppState, inst: &Installation, port: &str, step: EndStep) ->
         end_progress_of(map.get(&inst.id), session.id)
     };
     end_next(&progress, session.kind, session.expected_slaves, step)?;
-    let r = run_end_step(state, inst, port, &session, step);
+    let r = run_end_step(state, app, inst, port, &session, step);
     let ok = matches!(r, Ok(EndResult { ok: true, .. }));
     let mut map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
     if ok && step == EndStep::Values {
@@ -729,7 +731,7 @@ fn end_step(state: &AppState, inst: &Installation, port: &str, step: EndStep) ->
     r
 }
 
-fn run_end_step(state: &AppState, inst: &Installation, port: &str, session: &MaintSession, step: EndStep) -> Result<EndResult, MaintError> {
+fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, session: &MaintSession, step: EndStep) -> Result<EndResult, MaintError> {
     let n = session.expected_slaves;
     let fail = |what: &str, missing: Vec<u8>| -> Result<EndResult, MaintError> {
         with_store(state, |s| s.set_failing(session.id, Some(what)))?;
@@ -746,7 +748,7 @@ fn run_end_step(state: &AppState, inst: &Installation, port: &str, session: &Mai
         EndStep::Stop => {}
         EndStep::Bus => {
             // N is 1..=15 here (`end_next`)
-            let mut link = open_pack_for(state, port)?;
+            let mut link = open_pack_for(state, app, port)?;
             let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
                 .map_err(|e| MaintError::Connection { message: e.to_string() })?;
             if !round.complete(n) {
@@ -773,7 +775,7 @@ fn run_end_step(state: &AppState, inst: &Installation, port: &str, session: &Mai
 /// closes only when all of it passed. In the sequential way this is impossible in one call
 /// (`end-sequential`): the UI runs `maint_end_step` with a cable change in between.
 #[tauri::command]
-pub async fn maint_end(state: State<'_, AppState>, installation: String, port: String) -> Result<EndResult, MaintError> {
+pub async fn maint_end(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<EndResult, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
@@ -782,7 +784,7 @@ pub async fn maint_end(state: State<'_, AppState>, installation: String, port: S
     }
     let mut last = EndResult { ok: false, missing: vec![], failing: None };
     for step in [EndStep::Stop, EndStep::Bus, EndStep::Values] {
-        last = end_step(&state, &inst, &port, step)?;
+        last = end_step(&state, &app, &inst, &port, step)?;
         if !last.ok {
             break;
         }
@@ -792,17 +794,17 @@ pub async fn maint_end(state: State<'_, AppState>, installation: String, port: S
 
 /// One step of End (see `EndStep`); refused (`end-order`) before its predecessors passed in this app run.
 #[tauri::command]
-pub async fn maint_end_step(state: State<'_, AppState>, installation: String, port: String, step: EndStep) -> Result<EndResult, MaintError> {
+pub async fn maint_end_step(app: AppHandle, state: State<'_, AppState>, installation: String, port: String, step: EndStep) -> Result<EndResult, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
-    end_step(&state, &inst, &port, step)
+    end_step(&state, &app, &inst, &port, step)
 }
 
 /// Clear a flash block: "answered" checks the pack on the pack bus (0x51 and 0x47), "isolated" is the
 /// user's confirmation that the pack was isolated or recovered.
 #[tauri::command]
-pub async fn maint_clear_block(state: State<'_, AppState>, installation: String, id: i64, how: String, port: Option<String>) -> Result<Overview, MaintError> {
+pub async fn maint_clear_block(app: AppHandle, state: State<'_, AppState>, installation: String, id: i64, how: String, port: Option<String>) -> Result<Overview, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let blocks = with_store(&state, |s| s.blocks(&installation))?;
     let b = blocks.iter().find(|b| b.id == id).ok_or_else(|| refused("no-block"))?;
@@ -820,7 +822,7 @@ pub async fn maint_clear_block(state: State<'_, AppState>, installation: String,
             let port = port.as_deref().ok_or_else(|| refused("no-port"))?;
             let inst = self::installation(&state, &installation)?;
             port_of(&state, &inst, port)?;
-            let mut link = open_pack_for(&state, port)?;
+            let mut link = open_pack_for(&state, &app, port)?;
             if !bus::app_answers(&mut link, &mut std::io::sink(), b.pack, Duration::from_secs(2)) {
                 return Err(refused("pack-not-answering"));
             }
