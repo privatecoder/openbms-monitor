@@ -1,4 +1,8 @@
-import type { ControlEndpoint, Endpoint, FirmwareImage, Installation, MaintError, MaintOverview } from "./api";
+import type { ControlEndpoint, EndStep, Endpoint, FirmwareImage, Installation, MaintError, MaintOverview, MasterStateName } from "./api";
+
+/** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
+ *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
+export type Monitor = "connected" | "paused" | "offline" | "lost";
 
 /** What the banner above every view shows; null = nothing open. */
 export interface Banner {
@@ -184,4 +188,175 @@ export function failingText(f: string, t: T): string {
 export function keepsInverter(prev: { installation: string | null; session: number | null }, next: { installation: string | null; session: number | null }): boolean {
   if (prev.installation !== next.installation) return false;
   return prev.session === next.session || (prev.session === null && next.session !== null);
+}
+
+/** The pack port the firmware view preselects: only the one available serial endpoint of the installation that
+ *  is not the control adapter. None or several: "" (the user chooses). The control adapter only when it is the
+ *  installation's only serial endpoint (a deliberate one-adapter setup). */
+export function preselectPort(ports: string[], inst: Installation | null): string {
+  if (!inst) return "";
+  const control = inst.control?.kind === "serial" ? inst.control.path : null;
+  const serial = new Set(inst.endpoints.filter((k) => k.startsWith("serial:")).map((k) => k.slice("serial:".length)));
+  if (control) serial.add(control);
+  const available = [...serial].filter((p) => ports.includes(p));
+  const candidates = available.filter((p) => p !== control);
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 0 && control && serial.size === 1 && available.includes(control)) return control;
+  return "";
+}
+
+export type StepId = "connections" | "check" | "inverter" | "start" | "measure" | "flash";
+export type StepState = "done" | "current" | "locked";
+export interface Reason { key: string; params?: Record<string, unknown> }
+export interface FlowStep {
+  state: StepState;
+  /** why it is locked, or what the current step waits for */
+  reason?: Reason;
+  /** done without work: this branch does not need the step */
+  notNeeded?: boolean;
+}
+/** What step 4 offers: activate maintenance mode (or the DIP way), the DIP way, nothing (single pack), the
+ *  running recovery, an open session, or the explanation of an unexplained marker. */
+export type Branch = "activate" | "dip" | "single-pack" | "recovery" | "session" | "unexplained";
+
+export interface FlowInput {
+  overview: MaintOverview | null;
+  /** the fresh 0x64 check of this app run (and since the last lost connection): null = none yet, "failed" =
+   *  refused (e.g. no control channel); an answer stored as unknown arrives as "ok" with state unknown */
+  fresh: "ok" | "failed" | null;
+  /** the user works without a control channel (explicit choice in step 1) */
+  noControl: boolean;
+  /** without a control channel: the user stated that only this one pack is on the bus */
+  singlePack: boolean;
+  inverter: boolean;
+  measuredAt: number | null;
+  port: string;
+  portOwner: "this" | "none" | "other";
+  address: number;
+  imageKind: FirmwareImage["kind"] | null;
+  /** single-pack slave scan of this run on the chosen port: undefined = not run, null = no slave, n = first slave */
+  scan: number | null | undefined;
+  /** a panel action runs */
+  busy: boolean;
+  /** a flash runs */
+  running: boolean;
+}
+
+export interface Flow {
+  /** the master state of this run; null until a fresh check (the stored one is only "last confirmed") */
+  state: MasterStateName | null;
+  branch: Branch | null;
+  steps: Record<StepId, FlowStep>;
+  /** End, its own section: shown while a session is open */
+  end: { shown: boolean; state: StepState; reason?: Reason; next: EndStep | null };
+  /** step 4 offers the slave check (0/0 without session, not yet checked on this port) */
+  scanNeeded: boolean;
+  /** 0/0 but a slave answered: DIP 5–8 may be OFF */
+  packsUnclear: boolean;
+  /** control channel and pack port are one adapter */
+  replug: boolean;
+  /** no action runs: the current step's main action may be used */
+  idle: boolean;
+}
+
+const r = (key: string, params?: Record<string, unknown>): Reason => (params ? { key, params } : { key });
+
+/** The panel's guided steps. An additional UI rule on top of the backend gates, never a replacement: the backend
+ *  checks everything again. Steps run in order; a step after the first incomplete one is locked ("first step n"),
+ *  a deferred step waits for step 4 without holding up the others, a hard lock (block, recovery target) names
+ *  its own reason. */
+export function flowOf(i: FlowInput): Flow {
+  const o = i.overview;
+  const ids: StepId[] = ["connections", "check", "inverter", "start", "measure", "flash"];
+  if (!o) {
+    const steps = Object.fromEntries(ids.map((id) => [id, { state: "locked", reason: r("maint.flow.reason.no-installation") }])) as Record<StepId, FlowStep>;
+    steps.flash = { state: i.running ? "locked" : "current", ...(i.running ? { reason: r("maint.flow.reason.running") } : {}) };
+    return { state: null, branch: null, steps, end: { shown: false, state: "locked", next: null }, scanNeeded: false, packsUnclear: false, replug: false, idle: !i.busy && !i.running };
+  }
+  const stored = o.state?.state ?? null;
+  const hasControl = !!o.installation.control;
+  const manual = !hasControl && i.noControl;
+  const fresh = manual ? "failed" : i.fresh;
+  // a failed check ends as unknown; it never clears an unexplained marker
+  const state: MasterStateName | null = fresh === null ? null : fresh === "failed" ? (stored === "marker-unexplained" ? stored : "unknown") : (stored ?? "unknown");
+  const session = o.session;
+  const zero = state === "patched-off" && (o.state?.slaves ?? 0) === 0;
+  let branch: Branch | null = null;
+  if (state === "marker-unexplained") branch = session?.kind === "dip" ? "recovery" : "unexplained";
+  else if (session) branch = "session";
+  else if (state === "patched-on") branch = null;
+  else if (state === "patched-off" && !zero) branch = "activate";
+  else if (zero) branch = i.scan === undefined || (i.scan === null && i.imageKind !== "custom") ? "single-pack" : "dip";
+  else if (state !== null) branch = manual && i.singlePack ? "single-pack" : "dip";
+  const scanNeeded = !session && zero && i.scan === undefined;
+  const single = branch === "single-pack" && !scanNeeded;
+  const recoveryTarget = i.address === 0 && i.imageKind === "original";
+  const recoveryLock = branch === "recovery" && !recoveryTarget ? r("maint.flow.reason.recovery-only-original") : null;
+  const blockLock = o.blocks.length ? r(`maint.err.refused.${o.blocks[0].reason}`) : null;
+  const measured = i.measuredAt !== null && (o.state_at === null || i.measuredAt >= o.state_at);
+
+  type Eval = { complete: boolean; reason?: Reason; hard?: Reason | null; deferred?: Reason; notNeeded?: boolean };
+  const evalStep: Record<StepId, () => Eval> = {
+    connections: () => {
+      const reason = !i.port ? r("maint.flow.reason.choose-port")
+        : i.portOwner === "none" ? r("maint.err.refused.port-not-assigned")
+        : i.portOwner === "other" ? r("maint.err.refused.installation-mismatch")
+        : !hasControl && !i.noControl ? r("maint.flow.reason.control-or-none") : undefined;
+      return { complete: !reason, reason };
+    },
+    check: () => {
+      if (state === null) return { complete: false, reason: r("maint.flow.reason.check-needed") };
+      // a lost connection stores unknown while the marker session is open: only a check showing the marker continues
+      if (session?.kind === "marker" && state === "unknown") return { complete: false, reason: r("maint.flow.reason.marker-unknown") };
+      return { complete: true };
+    },
+    inverter: () => {
+      if (branch === "unexplained") return { complete: false, deferred: r("maint.flow.reason.after-recovery") };
+      if (scanNeeded) return { complete: false, deferred: r("maint.flow.reason.after-scan") };
+      if (single) return { complete: true, notNeeded: true };
+      return { complete: i.inverter, hard: recoveryLock };
+    },
+    start: () => {
+      if (branch === null && state === "patched-on") return { complete: false, reason: r("maint.flow.reason.patched-on-no-session") };
+      if (branch === "session" || branch === "recovery") return { complete: true };
+      if (single) return { complete: true, notNeeded: true };
+      return { complete: false };
+    },
+    measure: () => {
+      const hard = blockLock ?? recoveryLock;
+      if (single && !hard) return { complete: true, notNeeded: true };
+      return { complete: measured, hard };
+    },
+    flash: () => ({ complete: false, hard: blockLock ?? recoveryLock }),
+  };
+
+  // the recovery starts its DIP session (step 4) before the inverter statement (step 3)
+  const order: StepId[] = branch === "recovery" ? ["connections", "check", "start", "inverter", "measure", "flash"] : ids;
+  const steps = {} as Record<StepId, FlowStep>;
+  let blocker: Reason | null = null;
+  for (const id of order) {
+    const n = ids.indexOf(id) + 1;
+    const e = evalStep[id]();
+    if (i.running) steps[id] = { state: "locked", reason: r("maint.flow.reason.running") };
+    else if (e.hard) { steps[id] = { state: "locked", reason: e.hard }; blocker ??= r("maint.flow.reason.first", { n }); }
+    else if (e.deferred) steps[id] = { state: "locked", reason: e.deferred };
+    else if (blocker) steps[id] = { state: "locked", reason: blocker };
+    else if (e.complete) steps[id] = e.notNeeded ? { state: "done", notNeeded: true } : { state: "done" };
+    else { steps[id] = e.reason ? { state: "current", reason: e.reason } : { state: "current" }; blocker = r("maint.flow.reason.first", { n }); }
+  }
+
+  // End checks itself (no measurement first); it needs the pack port and is locked by a block or the unexplained marker
+  const now = state ?? stored;
+  const endLock = i.running ? r("maint.flow.reason.running")
+    : blockLock
+    ?? (now === "marker-unexplained" ? r("maint.err.refused.marker-unexplained") : null)
+    ?? (!i.port ? r("maint.flow.reason.choose-port") : i.portOwner !== "this" ? r(i.portOwner === "none" ? "maint.err.refused.port-not-assigned" : "maint.err.refused.installation-mismatch") : null);
+  const end = { shown: !!session, state: (endLock ? "locked" : "current") as StepState, ...(endLock ? { reason: endLock } : {}), next: o.end_next ?? null };
+
+  return {
+    state, branch, steps, end, scanNeeded,
+    packsUnclear: zero && !session && typeof i.scan === "number",
+    replug: needsReplug(o.installation.control, i.port),
+    idle: !i.busy && !i.running,
+  };
 }

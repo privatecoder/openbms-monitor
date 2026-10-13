@@ -16,13 +16,17 @@ export interface FwSetup {
   typed: string;
   /** maintenance allows the flash (`canFlash`); true when no installation is in use */
   unlocked: boolean;
+  /** the pack bus panel's steps 2–5 are done (`flowOf(...).steps.flash` is current) */
+  ready: boolean;
+  /** another action runs (pack check, a panel step): inputs and actions wait */
+  busy: boolean;
 }
 
 /** Which steps are usable. A checked pack counts only for the port and address it was read from. */
 export function steps(s: FwSetup) {
   // the confirmation is used up by a run: nothing is usable until the result is dismissed
-  if (s.running || s.done) return { image: false, inspect: false, confirm: false, start: false };
-  const inspect = s.port !== "" && s.image !== null;
+  if (s.running || s.done || s.busy) return { image: false, inspect: false, confirm: false, start: false };
+  const inspect = s.port !== "" && s.image !== null && s.ready;
   const confirm = inspect && s.target !== null && s.checkedFor?.port === s.port && s.checkedFor.address === s.address;
   return { image: true, inspect, confirm, start: confirm && s.typed.trim() === confirmationPhrase(s.address, s.image?.custom) && s.unlocked };
 }

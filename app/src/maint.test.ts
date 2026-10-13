@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, needsReplug, openWork, parsePacks, slavesOf, workUnchanged } from "./maint";
-import type { MaintOverview, MaintSession } from "./api";
+import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, parsePacks, preselectPort, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
-const base: MaintOverview = { installation: inst, state: null, state_at: null, session: null, blocks: [], sector_note: null };
+const base: MaintOverview = { installation: inst, state: null, state_at: null, session: null, blocks: [], sector_note: null, end_next: null };
 const session: MaintSession = { id: 1, installation: "i", kind: "marker", started: 1_000, expected_slaves: 3, done: [], failing: null };
 
 describe("banner", () => {
@@ -212,5 +212,216 @@ describe("inverter statement per work phase", () => {
     expect(keepsInverter({ installation: "a", session: 3 }, { installation: "a", session: null })).toBe(false);
     expect(keepsInverter({ installation: "a", session: 3 }, { installation: "a", session: 4 })).toBe(false);
     expect(keepsInverter({ installation: "a", session: null }, { installation: "b", session: 3 })).toBe(false);
+  });
+});
+
+describe("guided flow (flowOf)", () => {
+  const dip: MaintSession = { ...session, kind: "dip" };
+  const ov = (o: Partial<MaintOverview>): MaintOverview => ({ ...base, state_at: 1_000, ...o });
+  // the pack port /dev/b is chosen and assigned, the control channel is /dev/a; nothing checked yet
+  const input = (o: Partial<FlowInput> = {}): FlowInput => ({
+    overview: ov({ state: { state: "patched-off", slaves: 7 } }), fresh: null, noControl: false, singlePack: false, inverter: false,
+    measuredAt: null, port: "/dev/b", portOwner: "this", address: 3, imageKind: "original", scan: undefined, busy: false, running: false, ...o,
+  });
+  const states = (f: ReturnType<typeof flowOf>) => [f.steps.connections, f.steps.check, f.steps.inverter, f.steps.start, f.steps.measure, f.steps.flash].map((s) => s.state);
+  const first = (n: number) => ({ key: "maint.flow.reason.first", params: { n } });
+
+  it("without an installation only the firmware steps count", () => {
+    const f = flowOf(input({ overview: null }));
+    expect(f.steps.flash.state).toBe("current");
+    expect(f.steps.connections.state).toBe("locked");
+    expect(f.end.shown).toBe(false);
+  });
+
+  it("step 1: pack port chosen and assigned, control channel set or explicitly none", () => {
+    expect(flowOf(input({ port: "" })).steps.connections).toEqual({ state: "current", reason: { key: "maint.flow.reason.choose-port" } });
+    expect(flowOf(input({ portOwner: "none" })).steps.connections.reason?.key).toBe("maint.err.refused.port-not-assigned");
+    expect(flowOf(input({ portOwner: "other" })).steps.connections.reason?.key).toBe("maint.err.refused.installation-mismatch");
+    const noCtl = { ...inst, control: null };
+    expect(flowOf(input({ overview: ov({ installation: noCtl }) })).steps.connections.reason?.key).toBe("maint.flow.reason.control-or-none");
+    expect(flowOf(input({ overview: ov({ installation: noCtl }), noControl: true })).steps.connections.state).toBe("done");
+    // everything after the current step is locked with "first step 1"
+    expect(flowOf(input({ port: "" })).steps.check).toEqual({ state: "locked", reason: first(1) });
+  });
+
+  it("after an app restart or a lost connection the stored state is only the last confirmed one: check first", () => {
+    const f = flowOf(input({ overview: ov({ session, state: { state: "patched-on" } }), inverter: true, measuredAt: 5_000 }));
+    expect(f.state).toBeNull();
+    expect(states(f)).toEqual(["done", "current", "locked", "locked", "locked", "locked"]);
+    expect(f.steps.check.reason?.key).toBe("maint.flow.reason.check-needed");
+    expect(f.steps.flash.reason).toEqual(first(2));
+    // the open session can still be ended (End checks itself)
+    expect(f.end).toMatchObject({ shown: true, state: "current" });
+  });
+
+  it("patched-off with N > 0: activate (recommended) or the DIP way, after the inverter statement", () => {
+    const f = flowOf(input({ fresh: "ok" }));
+    expect(f.branch).toBe("activate");
+    expect(states(f)).toEqual(["done", "done", "current", "locked", "locked", "locked"]);
+    expect(f.steps.start.reason).toEqual(first(3));
+    const g = flowOf(input({ fresh: "ok", inverter: true }));
+    expect(states(g)).toEqual(["done", "done", "done", "current", "locked", "locked"]);
+    expect(g.steps.measure.reason).toEqual(first(4));
+  });
+
+  it("no-0x64 and unknown take the manual DIP way", () => {
+    expect(flowOf(input({ fresh: "ok", overview: ov({ state: { state: "no-0x64" } }) })).branch).toBe("dip");
+    expect(flowOf(input({ fresh: "ok", overview: ov({ state: { state: "unknown" } }) })).branch).toBe("dip");
+    // a failed check (e.g. no control channel answer) ends as unknown, whatever was stored before
+    const f = flowOf(input({ fresh: "failed" }));
+    expect(f.state).toBe("unknown");
+    expect(f.branch).toBe("dip");
+    expect(f.steps.check.state).toBe("done");
+  });
+
+  it("patched-off 0/0 without session: first the slave check, the inverter waits for its result", () => {
+    const zero = ov({ state: { state: "patched-off", slaves: 0 } });
+    const f = flowOf(input({ fresh: "ok", overview: zero, address: 0 }));
+    expect(f.branch).toBe("single-pack");
+    expect(f.scanNeeded).toBe(true);
+    expect(f.steps.inverter).toEqual({ state: "locked", reason: { key: "maint.flow.reason.after-scan" } });
+    expect(f.steps.start.state).toBe("current");
+    expect(f.steps.flash.state).toBe("locked");
+  });
+
+  it("0/0 and no slave answers: a single pack, nothing to prepare for the original or maintenance image", () => {
+    const zero = ov({ state: { state: "patched-off", slaves: 0 } });
+    const f = flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null }));
+    expect(f.branch).toBe("single-pack");
+    expect(f.scanNeeded).toBe(false);
+    expect(states(f)).toEqual(["done", "done", "done", "done", "done", "current"]);
+    expect([f.steps.inverter.notNeeded, f.steps.start.notNeeded, f.steps.measure.notNeeded]).toEqual([true, true, true]);
+    expect(flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null, imageKind: "maintenance" })).steps.flash.state).toBe("current");
+    // a custom image on a single pack still needs the DIP session (with the single-pack proof)
+    const c = flowOf(input({ fresh: "ok", overview: zero, address: 0, scan: null, imageKind: "custom" }));
+    expect(c.branch).toBe("dip");
+    expect(c.steps.inverter.state).toBe("current");
+  });
+
+  it("0/0 and a slave answers: pack count unclear, only the DIP session", () => {
+    const f = flowOf(input({ fresh: "ok", overview: ov({ state: { state: "patched-off", slaves: 0 } }), scan: 5 }));
+    expect(f.branch).toBe("dip");
+    expect(f.packsUnclear).toBe(true);
+    expect(f.steps.inverter.state).toBe("current");
+  });
+
+  it("patched-on with an open marker session: step 4 done, then measure, then flash", () => {
+    const on = ov({ session, state: { state: "patched-on" } });
+    const f = flowOf(input({ fresh: "ok", overview: on, inverter: true }));
+    expect(f.branch).toBe("session");
+    expect(states(f)).toEqual(["done", "done", "done", "done", "current", "locked"]);
+    expect(f.steps.flash.reason).toEqual(first(5));
+    expect(states(flowOf(input({ fresh: "ok", overview: on, inverter: true, measuredAt: 5_000 })))).toEqual(["done", "done", "done", "done", "done", "current"]);
+    // a measurement older than the last state check does not count
+    expect(flowOf(input({ fresh: "ok", overview: on, inverter: true, measuredAt: 500 })).steps.measure.state).toBe("current");
+    expect(flowOf(input({ fresh: "ok", overview: on, inverter: false, measuredAt: 5_000 })).steps.inverter.state).toBe("current");
+  });
+
+  it("patched-on without a session is not accounted for: step 4 stays locked", () => {
+    const f = flowOf(input({ fresh: "ok", overview: ov({ state: { state: "patched-on" } }), inverter: true }));
+    expect(f.branch).toBeNull();
+    expect(f.steps.start).toEqual({ state: "current", reason: { key: "maint.flow.reason.patched-on-no-session" } });
+    expect(f.steps.flash.state).toBe("locked");
+    expect(f.end.shown).toBe(false);
+  });
+
+  it("a DIP session continues with the inverter and the measurement", () => {
+    const f = flowOf(input({ fresh: "failed", overview: ov({ session: dip, state: { state: "unknown" } }), inverter: true, measuredAt: 5_000 }));
+    expect(f.branch).toBe("session");
+    expect(f.steps.flash.state).toBe("current");
+  });
+
+  it("a marker session with unknown state locks steps 3 to 6 until a check shows the marker", () => {
+    const lost = ov({ session, state: { state: "unknown" } });
+    for (const fresh of ["ok", "failed"] as const) {
+      const f = flowOf(input({ fresh, overview: lost, inverter: true, measuredAt: 5_000 }));
+      expect(f.steps.check).toEqual({ state: "current", reason: { key: "maint.flow.reason.marker-unknown" } });
+      expect(states(f).slice(2)).toEqual(["locked", "locked", "locked", "locked"]);
+    }
+    expect(flowOf(input({ fresh: "ok", overview: ov({ session, state: { state: "patched-on" } }), inverter: true, measuredAt: 5_000 })).steps.flash.state).toBe("current");
+  });
+
+  it("marker-unexplained without session: explain or start the recovery; End not offered", () => {
+    const f = flowOf(input({ fresh: "ok", overview: ov({ state: { state: "marker-unexplained" } }) }));
+    expect(f.branch).toBe("unexplained");
+    expect(f.steps.inverter).toEqual({ state: "locked", reason: { key: "maint.flow.reason.after-recovery" } });
+    expect(f.steps.start.state).toBe("current");
+    expect(f.end.shown).toBe(false);
+    // a failed read keeps the state
+    expect(flowOf(input({ fresh: "failed", overview: ov({ state: { state: "marker-unexplained" } }) })).state).toBe("marker-unexplained");
+    // in a marker session: only the statement, End locked
+    const m = flowOf(input({ fresh: "ok", overview: ov({ session, state: { state: "marker-unexplained" } }) }));
+    expect(m.branch).toBe("unexplained");
+    expect(m.end).toMatchObject({ shown: true, state: "locked", reason: { key: "maint.err.refused.marker-unexplained" } });
+  });
+
+  it("recovery: the DIP session unlocks steps 3, 5 and the flash only for address 0 with the original image", () => {
+    const rec = ov({ session: dip, state: { state: "marker-unexplained" } });
+    const ok = flowOf(input({ fresh: "ok", overview: rec, address: 0, imageKind: "original" }));
+    expect(ok.branch).toBe("recovery");
+    expect(states(ok)).toEqual(["done", "done", "current", "done", "locked", "locked"]);
+    expect(flowOf(input({ fresh: "ok", overview: rec, address: 0, inverter: true, measuredAt: 5_000 })).steps.flash.state).toBe("current");
+    const only = { key: "maint.flow.reason.recovery-only-original" };
+    for (const other of [{ address: 3 }, { address: 0, imageKind: "maintenance" as const }, { address: 0, imageKind: null }]) {
+      const f = flowOf(input({ fresh: "ok", overview: rec, inverter: true, measuredAt: 5_000, ...other }));
+      expect([f.steps.inverter, f.steps.measure, f.steps.flash]).toEqual([{ state: "locked", reason: only }, { state: "locked", reason: only }, { state: "locked", reason: only }]);
+    }
+    // End stays locked until the recovery flash produced no-0x64
+    expect(ok.end).toMatchObject({ shown: true, state: "locked" });
+    expect(flowOf(input({ fresh: "ok", overview: ov({ session: dip, state: { state: "no-0x64" } }) })).end.state).toBe("current");
+  });
+
+  it("an open block locks measure, flash and End with the block as the reason", () => {
+    const blocked = ov({ session, state: { state: "patched-on" }, blocks: [{ id: 1, pack: 4, reason: "update-unclear", expect: null, since: 0 }] });
+    const f = flowOf(input({ fresh: "ok", overview: blocked, inverter: true, measuredAt: 5_000 }));
+    const r = { key: "maint.err.refused.update-unclear" };
+    expect([f.steps.measure, f.steps.flash]).toEqual([{ state: "locked", reason: r }, { state: "locked", reason: r }]);
+    expect(f.end).toMatchObject({ state: "locked", reason: r });
+  });
+
+  it("one adapter for both buses: End follows the backend's next step", () => {
+    const one = ov({ installation: { ...inst, control: { kind: "serial", path: "/dev/b" } }, session, state: { state: "patched-on" }, end_next: "bus" });
+    const f = flowOf(input({ fresh: "ok", overview: one }));
+    expect(f.replug).toBe(true);
+    expect(f.end.next).toBe("bus");
+    expect(flowOf(input({ fresh: "ok", overview: ov({ session, state: { state: "patched-on" }, end_next: "stop" }) })).replug).toBe(false);
+  });
+
+  it("without a control channel: the DIP way, or a single pack stated by the user", () => {
+    const noCtl = ov({ installation: { ...inst, control: null } });
+    const f = flowOf(input({ overview: noCtl, noControl: true }));
+    expect(f.steps.check.state).toBe("done");
+    expect(f.branch).toBe("dip");
+    const s = flowOf(input({ overview: noCtl, noControl: true, singlePack: true }));
+    expect(s.branch).toBe("single-pack");
+    expect(states(s)).toEqual(["done", "done", "done", "done", "done", "current"]);
+  });
+
+  it("while something runs every step is locked; a busy panel only disables the actions", () => {
+    const f = flowOf(input({ fresh: "ok", running: true }));
+    expect(states(f).every((s) => s === "locked")).toBe(true);
+    expect(f.steps.check.reason?.key).toBe("maint.flow.reason.running");
+    expect(flowOf(input({ fresh: "ok", busy: true })).idle).toBe(false);
+    expect(flowOf(input({ fresh: "ok" })).idle).toBe(true);
+  });
+});
+
+describe("pack port preselection", () => {
+  const withEps = (endpoints: string[], control: ControlEndpoint | null) => ({ ...inst, endpoints, control });
+  it("preselects only the one candidate that is not the control adapter", () => {
+    expect(preselectPort(["/dev/a", "/dev/b"], withEps(["serial:/dev/a", "serial:/dev/b"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/b");
+    // several candidates: ask
+    expect(preselectPort(["/dev/a", "/dev/b", "/dev/c"], withEps(["serial:/dev/b", "serial:/dev/c"], { kind: "serial", path: "/dev/a" }))).toBe("");
+    // a candidate that is not plugged in does not count
+    expect(preselectPort(["/dev/a"], withEps(["serial:/dev/a", "serial:/dev/b"], { kind: "serial", path: "/dev/a" }))).toBe("");
+  });
+  it("the control adapter only when it is the installation's only serial endpoint", () => {
+    expect(preselectPort(["/dev/a", "/dev/x"], withEps(["serial:/dev/a"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
+    expect(preselectPort(["/dev/a", "/dev/x"], withEps(["serial:/dev/a", "tcp:gw:4196"], { kind: "serial", path: "/dev/a" }))).toBe("/dev/a");
+    // a TCP control channel is no serial endpoint
+    expect(preselectPort(["/dev/b"], withEps(["serial:/dev/b"], { kind: "tcp", addr: "gw:4196" }))).toBe("/dev/b");
+    // ports that belong to no installation are never preselected
+    expect(preselectPort(["/dev/a", "/dev/b"], withEps([], null))).toBe("");
+    expect(preselectPort(["/dev/a"], null)).toBe("");
   });
 });

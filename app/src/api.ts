@@ -100,7 +100,8 @@ export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; 
 export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null }
 export interface MaintSession { id: number; installation: string; kind: "marker" | "dip"; started: number; expected_slaves: number; done: string[]; failing: string | null }
 export interface FlashBlock { id: number; pack: number; reason: "update-interrupted" | "update-unclear" | "bootloader-unclear" | "master-unclear"; expect: string | null; since: number }
-export interface MaintOverview { installation: Installation; state: MasterState | null; state_at: number | null; session: MaintSession | null; blocks: FlashBlock[]; sector_note: string | null }
+/** `end_next`: the End step the backend allows next in this app run (after a failed step: the restart point); null without session */
+export interface MaintOverview { installation: Installation; state: MasterState | null; state_at: number | null; session: MaintSession | null; blocks: FlashBlock[]; sector_note: string | null; end_next: EndStep | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "timeout"; marker: boolean; slaves: number } | { kind: "refused"; reason: string } | { kind: "busy" }
@@ -174,6 +175,8 @@ const tauriApi = {
   /** Refused "end-sequential" when control channel and pack port are one adapter: then drive maintEndStep. */
   maintEnd: (installation: string, port: string) => invoke<EndResult>("maint_end", { installation, port }),
   maintEndStep: (installation: string, port: string, step: EndStep) => invoke<EndResult>("maint_end_step", { installation, port, step }),
+  /** 0/0 without session: quiet bus and 0x47, then the two-pass slave scan; the first slave that answered, or null */
+  maintScanSlaves: (installation: string, port: string) => invoke<number | null>("maint_scan_slaves", { installation, port }),
   maintClearBlock: (installation: string, id: number, how: "answered" | "isolated", port: string | null) => invoke<MaintOverview>("maint_clear_block", { installation, id, how, port }),
   maintMasterPlan: (installation: string, kind: FirmwareImage["kind"]) => invoke<PlanView>("maint_master_plan", { installation, kind }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
@@ -192,7 +195,7 @@ const balanceDemo = new URLSearchParams(location.search).get("balance");
 /** Browser preview without Tauri: replays a recorded capture of a 12-pack system. */
 function demoApi(): typeof tauriApi {
   const demoInst: Installation = { id: "demo", name: "Demo", endpoints: ["tcp:demo:4196"], control: null };
-  const demoOverview: MaintOverview = { installation: demoInst, state: null, state_at: null, session: null, blocks: [], sector_note: null };
+  const demoOverview: MaintOverview = { installation: demoInst, state: null, state_at: null, session: null, blocks: [], sector_note: null, end_next: null };
   const packL = new Set<(u: PackUpdate) => void>();
   const sysL = new Set<(u: SystemUpdate) => void>();
   let timer: number | undefined;
@@ -275,6 +278,7 @@ function demoApi(): typeof tauriApi {
     maintMeasure: async () => { throw new Error("desktop app only"); },
     maintEnd: async () => { throw new Error("desktop app only"); },
     maintEndStep: async () => { throw new Error("desktop app only"); },
+    maintScanSlaves: async () => { throw new Error("desktop app only"); },
     maintClearBlock: async () => { throw new Error("desktop app only"); },
     maintMasterPlan: async () => { throw new Error("desktop app only"); },
     onFirmwareProgress: async () => () => {},

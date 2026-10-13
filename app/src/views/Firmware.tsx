@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
+import { CircleCheck, FolderOpen, Lock, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type PlanView } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
@@ -8,7 +8,7 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, progressFraction, steps } from "../firmware";
-import { canFlash, errorKey, keepsInverter } from "../maint";
+import { canFlash, errorKey, flowOf, keepsInverter, preselectPort, type Monitor } from "../maint";
 import type { useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -23,8 +23,9 @@ function Step({ n, title, active, children }: { n: number; title: string; active
   );
 }
 
-export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRunning, onBack }: {
+export function Firmware({ connected, monitor, disconnects, maint, onMonitorStopped, onRunning, onBack }: {
   connected: boolean;
+  monitor: Monitor;
   /** counts the monitor connection being lost or closed in the sidebar (not stopped by this view for a flash) */
   disconnects: number;
   maint: ReturnType<typeof useMaint>;
@@ -59,6 +60,13 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
   const [isolatedConfirmed, setIsolatedConfirmed] = useState(false);
   const [endNote, setEndNote] = useState<{ installation: string; text: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // a pack bus panel action runs (check, scan, measurement, End step): port, address and image wait
+  const [panelBusy, setPanelBusy] = useState(false);
+  // step 1 without a control channel, and the single-pack statement of that way (memory only)
+  const [noControl, setNoControl] = useState(false);
+  const [singlePack, setSinglePack] = useState(false);
+  // the user chose a port (also "none"): no preselection overrides that
+  const portChosen = useRef(false);
   const startedAt = useRef(0);
   const addressRef = useRef(address);
   addressRef.current = address;
@@ -85,6 +93,15 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overview = maint.overview;
+  // the preselection: exactly one candidate of the installation, never the control adapter unless it is the only one
+  useEffect(() => {
+    if (portChosen.current || port || !overview) return;
+    const p = preselectPort(ports, overview.installation);
+    if (p) setPort(p);
+  }, [ports, overview?.installation]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setNoControl(false); setSinglePack(false); }, [overview?.installation.id]);
+  // a new port, address or image: the measurement, the pack check and the typed confirmation no longer fit
+  useEffect(() => { setMeasuredAt(null); setTarget(null); setCheckedFor(null); setTyped(""); }, [port, address, image?.sha256]);
   // a new measurement is needed after every state change; the inverter statement after every new session
   useEffect(() => { setMeasuredAt(null); }, [overview?.state_at, overview?.installation.id]);
   // one work phase: the statement survives the session its own activation opened (see keepsInverter)
@@ -126,8 +143,34 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
   const masterPending = !!overview && address === 0 && !!image
     && (!plan || planError !== null || (plan.before.includes("dip-off") && !dipOffConfirmed) || (plan.before.includes("isolated-or-released") && !isolatedConfirmed));
   const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none" });
-  const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed, unlocked: gate.ok && !masterPending });
+  const flow = flowOf({
+    overview, fresh: maint.freshFor(overview?.installation.id), noControl, singlePack, inverter, measuredAt, port,
+    portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none", address, imageKind: image?.kind ?? null,
+    scan: maint.scanOf(overview?.installation.id, port), busy: busy || panelBusy, running,
+  });
+  const ready = flow.steps.flash.state === "current";
+  const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed, unlocked: gate.ok && !masterPending, ready, busy: busy || panelBusy });
+  const inputsLocked = running || busy || panelBusy;
+  const flowReason = !ready && !running && !done && flow.steps.flash.reason ? t(flow.steps.flash.reason.key, flow.steps.flash.reason.params) : null;
   const phrase = confirmationPhrase(address, image?.custom);
+
+  const portPicker = (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-3">
+        <select className={input} value={port} disabled={inputsLocked} onChange={(e) => { portChosen.current = true; setPort(e.target.value); }} aria-label={t("fw.port")}>
+          <option value="">{t("fw.choosePort")}</option>
+          {ports.map((p) => <option key={p}>{p}</option>)}
+        </select>
+        <Button variant="ghost" size="icon" disabled={inputsLocked} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+      </div>
+      {portFree && (
+        <p className="flex flex-wrap items-center gap-3 text-sm text-discharge">{t("maint.panel.portUnassigned")}
+          <Button variant="secondary" size="sm" disabled={inputsLocked} onClick={async () => { await maint.assign({ kind: "serial", path: port, bus: "pack" }); await lookupPort(); }}>{t("maint.banner.assign")}</Button>
+        </p>
+      )}
+      {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
+    </div>
+  );
 
   const chooseImage = async () => {
     setError(null);
@@ -183,29 +226,23 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
-      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} port={port} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
+      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} portPicker={portPicker} monitor={monitor}
+        busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
+        noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
         setEndNote={(text) => setEndNote(text && overview ? { installation: overview.installation.id, text } : null)} />
       {endNote && endNote.installation === overview?.installation.id && <p className="text-sm">{endNote.text}</p>}
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">
-          <select className={input} value={port} disabled={running} onChange={(e) => setPort(e.target.value)} aria-label={t("fw.port")}>
-            <option value="">{t("fw.choosePort")}</option>
-            {ports.map((p) => <option key={p}>{p}</option>)}
-          </select>
-          <Button variant="ghost" size="icon" disabled={running} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+          {/* with an installation the port is chosen in step 1 of the pack bus panel */}
+          {!overview && portPicker}
+          {overview && <span className="flex items-center text-sm">{port ? t("maint.flow.packPort", { port }) : t("maint.flow.noPackPort")}</span>}
           <label className="flex items-center gap-2 text-sm text-muted">{t("fw.address")}
-            <select className={input} value={address} disabled={running} onChange={(e) => setAddress(Number(e.target.value))}>
+            <select className={input} value={address} disabled={inputsLocked} onChange={(e) => setAddress(Number(e.target.value))}>
               {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </label>
         </div>
-        {portFree && (
-          <p className="flex flex-wrap items-center gap-3 text-sm text-discharge">{t("maint.panel.portUnassigned")}
-            <Button variant="secondary" size="sm" onClick={async () => { await maint.assign({ kind: "serial", path: port, bus: "pack" }); await lookupPort(); }}>{t("maint.banner.assign")}</Button>
-          </p>
-        )}
-        {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
         <p className="text-sm text-muted">{t("fw.busHint")}</p>
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}
       </Step>
@@ -221,6 +258,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
 
       <Step n={3} title={t("fw.s3")} active={s.inspect}>
         <Button variant="secondary" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
+        {flowReason && <p className="flex items-center gap-2 text-sm text-muted"><Lock className="h-4 w-4 shrink-0" />{t("maint.flow.fwLocked", { reason: flowReason })}</p>}
         {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: target.firmware_version, can: target.can_protocol })}</p>}
       </Step>
 
@@ -248,6 +286,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
         )}
         <Button variant="primary" disabled={!s.start} onClick={start}>{t("fw.start")}</Button>
         {!gate.ok && gate.reason && <p className="text-sm text-alarm">{t(errorKey(gate.reason).key)}</p>}
+        {flowReason && <p className="flex items-center gap-2 text-sm text-muted"><Lock className="h-4 w-4 shrink-0" />{t("maint.flow.fwLocked", { reason: flowReason })}</p>}
       </Step>
 
       {(running || done) && (

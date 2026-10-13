@@ -14,6 +14,7 @@ import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { useMaint } from "./maintStore";
 import { api, isDemo, type Bus } from "./api";
+import type { Monitor } from "./maint";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
@@ -35,9 +36,11 @@ export default function App() {
   const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1" || MAINT_VIEWS.includes(demoView ?? ""));
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
   const current = pack !== null ? live.packs[pack] : undefined;
-  // the app stopped the monitor itself (firmware view, maintenance step): "not connected", no lost connection,
-  // so the inverter confirmation and the measurement stay
-  const monitorStopped = () => { live.reset(); setConnected(false); setPack(null); };
+  // what the monitor connection is doing, for the sidebar and the pack bus panel: three distinct "not connected" texts
+  const [monitor, setMonitor] = useState<Monitor>("offline");
+  // the app stopped the monitor itself (firmware view, maintenance step): "paused for maintenance", no lost
+  // connection, so the inverter confirmation, the measurement and the master check stay
+  const monitorStopped = () => { live.reset(); setConnected(false); setPack(null); setMonitor((m) => (m === "connected" ? "paused" : m)); };
   const onMonitorStopped = useRef(monitorStopped);
   onMonitorStopped.current = monitorStopped;
   useEffect(() => {
@@ -50,6 +53,7 @@ export default function App() {
       <div className="flex h-full bg-bg text-ink">
         <Sidebar
           connected={connected}
+          paused={monitor === "paused"}
           site={site}
           packs={Object.keys(live.packs).map(Number)}
           lastUpdate={Math.max(0, ...Object.values(live.packs).map((p) => p.updated))}
@@ -58,16 +62,16 @@ export default function App() {
           setMaintenance={(v) => { localStorage.setItem("maint.enabled", v ? "1" : "0"); setMaintenance(v); if (!v && MAINT_VIEWS.includes(view)) setView("dashboard"); }}
           view={view}
           setView={(v) => { setView(v); setPack(null); }}
-          onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); if (!isDemo) setPack(null); }}
+          onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); setMonitor("connected"); if (!isDemo) setPack(null); }}
           onDevices={live.addDevices}
           onEndpoint={(ep) => maint.attach(ep)}
-          onDisconnected={() => { live.reset(); setConnected(false); setPack(null); setDisconnects((d) => d + 1); }}
+          onDisconnected={(lost) => { live.reset(); setConnected(false); setPack(null); setDisconnects((d) => d + 1); setMonitor(lost ? "lost" : "offline"); maint.invalidateCheck(); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
           <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
             onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); }} />
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} disconnects={disconnects} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
+            <Firmware connected={connected} monitor={monitor} disconnects={disconnects} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
               onMonitorStopped={monitorStopped} />
           ) : view === "cells" ? (
             <Cells />
