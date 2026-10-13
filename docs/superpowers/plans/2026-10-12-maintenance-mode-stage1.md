@@ -2090,6 +2090,10 @@ pub async fn maint_save_installation(state: State<'_, AppState>, installation: I
         s.save_installation(&installation)?;
         Ok(installation.clone())
     })
+    .map_err(|e| match e {
+        MaintError::Store { message } if message == "endpoint-in-use" => refused("endpoint-in-use"),
+        other => other,
+    })
 }
 
 #[tauri::command]
