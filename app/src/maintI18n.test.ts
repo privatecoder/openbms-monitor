@@ -80,7 +80,7 @@ describe("maintenance texts", () => {
       for (const a of ["check", "activate", "start-dip", "scan", "account-marker", "set-slaves", "measure", "end", "end-step", "clear-block"]) {
         expect(i18n.exists(`maint.progress.action.${a}`, { lng }), `${lng} ${a}`).toBe(true);
       }
-      for (const p of ["check", "start", "stop", "end-check", "quiet", "scan", "bus", "values", "block"]) {
+      for (const p of ["check", "start", "stop", "end-check", "quiet", "scan", "scan-skipped", "bus", "values", "block"]) {
         expect(i18n.exists(`maint.progress.phase.${p}`, { lng }), `${lng} ${p}`).toBe(true);
       }
     }
