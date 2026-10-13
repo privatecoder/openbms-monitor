@@ -1,6 +1,6 @@
 ---
 title: Parameter
-short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest sie nur, sie ändert nichts.
+short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest sie nur, sie ändert nichts. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
 related: topic.buses, topic.switches
 ---
 - **Aus den Packs lesen:** nur über RS485-1/2 (19200 Baud). Die CAN-Buchse kennt den Befehl nicht. Der **Master** (DIP 0 mit Slaves) antwortet auf RS485-1/2 nicht; seine Werte bekommst du über einen BatteryMonitor-Export oder wenn er kurz allein am Bus hängt.

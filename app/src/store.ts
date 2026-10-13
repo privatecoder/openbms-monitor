@@ -37,8 +37,16 @@ export function useLiveData() {
     return () => { p.then((f) => f()); s.then((f) => f()); };
   }, []);
 
-  const setDevices = (found: [number, DeviceInfo][]) =>
+  const setDevices = (found: [number, DeviceInfo | undefined][]) =>
     setPacks(Object.fromEntries(found.map(([a, d]) => [a, { address: a, device: d, telemetry: null, status: null, error: null, updated: 0 }])));
 
-  return { packs, system, setDevices, reset: () => { setPacks({}); setSystem(null); } };
+  // device info read after polling has started (fixed pack count)
+  const addDevices = (found: [number, DeviceInfo][]) =>
+    setPacks((prev) => {
+      const next = { ...prev };
+      for (const [a, d] of found) if (next[a]) next[a] = { ...next[a], device: d };
+      return next;
+    });
+
+  return { packs, system, setDevices, addDevices, reset: () => { setPacks({}); setSystem(null); } };
 }

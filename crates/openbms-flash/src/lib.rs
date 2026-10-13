@@ -43,9 +43,9 @@ pub enum Error {
     Image(String),
     #[error("protocol: {0}")]
     Proto(String),
-    #[error("pack {0} does not answer")]
+    #[error("pack {0} does not answer (check address, wiring, baud rate and bus activity)")]
     NoAnswer(u8),
-    #[error("the bus is not quiet ({0} bytes from other devices)")]
+    #[error("the bus is not quiet ({0} bytes from other devices); stop other transmitters before updating")]
     BusBusy(usize),
     #[error("pack {0} answers 0x51 but not 0x47: not connected to RS485-1/2 (pack bus)")]
     NotPackBus(u8),
@@ -88,8 +88,8 @@ impl Error {
             Error::Transport(e) => format!("Verbindung: {e}"),
             Error::Image(e) => format!("Image: {e}"),
             Error::Proto(e) => format!("Protokoll: {e}"),
-            Error::NoAnswer(a) => format!("Pack {a} antwortet nicht"),
-            Error::BusBusy(n) => format!("Der Bus ist nicht still ({n} Byte von anderen Geräten)"),
+            Error::NoAnswer(a) => format!("Pack {a} antwortet nicht (Adresse, Verkabelung, Baudrate und Busaktivität prüfen)"),
+            Error::BusBusy(n) => format!("Der Bus ist nicht still ({n} Byte von anderen Geräten); andere Sender vor dem Update anhalten"),
             Error::NotPackBus(a) => format!("Pack {a} antwortet auf 0x51, aber nicht auf 0x47: nicht an RS485-1/2 (Pack-Bus) angeschlossen"),
             Error::NoBootloader(d) => format!("Der Bootloader hat nicht innerhalb von {d:?} geantwortet"),
             Error::PacketSize(n) => format!("Der Bootloader meldet Paketgröße {n}; unterstützt ist nur 256"),

@@ -94,9 +94,12 @@ export function PackDetail({ p, multi, onBack, site, packs }: { p: PackEntry; mu
                 ))}
               </dl>
             </Panel>
-            <Panel className="p-5">
-              <h2 className="mb-1 flex items-center gap-1.5 font-display text-xl font-semibold">{t("dash.alarms")}<InfoIcon id="topic.alarms" /></h2>
-              <AlarmList alarms={st?.alarms ?? []} />
+            {/* lg: h-0 + min-h-full keeps the list out of the row height; the row follows the other two cards and the list scrolls */}
+            <Panel className="flex max-h-96 flex-col p-5 lg:h-0 lg:max-h-none lg:min-h-full">
+              <h2 className="mb-1 flex shrink-0 items-center gap-1.5 font-display text-xl font-semibold">{t("dash.alarms")}<InfoIcon id="topic.alarms" /></h2>
+              <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
+                <AlarmList alarms={st?.alarms ?? []} />
+              </div>
             </Panel>
           </div>
 

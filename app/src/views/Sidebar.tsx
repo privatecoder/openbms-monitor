@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine } from "lucide-react";
+import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo } from "../api";
 import { Button } from "../components/ui/button";
-import { Switch } from "../components/PackPicker";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
@@ -11,12 +10,13 @@ import { RecordingEntry } from "./Recording";
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance }: {
+export function Sidebar({ connected, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance }: {
   connected: boolean;
   site: string;
   packs: number[];
   lastUpdate: number;
-  onConnected: (found: [number, DeviceInfo][], site: string, bus: Bus) => void;
+  onConnected: (found: [number, DeviceInfo | undefined][], site: string, bus: Bus) => void;
+  onDevices: (found: [number, DeviceInfo][]) => void;
   onDisconnected: () => void;
   view: string;
   setView: (v: string) => void;
@@ -26,8 +26,21 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
 }) {
   const { t, i18n } = useTranslation();
   const [kind, setKind] = useState<"tcp" | "serial">(() => (localStorage.getItem("conn.kind") as "tcp" | "serial") ?? "tcp");
-  const [target, setTarget] = useState(() => localStorage.getItem("conn.target") ?? (isDemo ? "demo:4196" : ""));
+  // network address and USB port are kept apart, so switching the kind does not overwrite the other entry
+  // (conn.target is the single field of earlier versions and seeds whichever kind was in use)
+  const [targets, setTargets] = useState(() => {
+    const legacy = localStorage.getItem("conn.target");
+    const legacyKind = localStorage.getItem("conn.kind") ?? "tcp";
+    return {
+      tcp: localStorage.getItem("conn.tcp") ?? (legacyKind === "tcp" ? legacy : null) ?? (isDemo ? "demo:4196" : ""),
+      serial: localStorage.getItem("conn.serial") ?? (legacyKind === "serial" ? legacy : null) ?? "",
+    };
+  });
+  const target = targets[kind];
+  const setTarget = (v: string) => setTargets((cur) => ({ ...cur, [kind]: v }));
   const [bus, setBus] = useState<Bus>(() => (localStorage.getItem("conn.bus") as Bus) ?? "can");
+  // 0 = search addresses 0..15; n = packs at addresses 0..n-1, polled right away without a search
+  const [packCount, setPackCount] = useState(() => Number(localStorage.getItem("conn.packs") ?? 0) || 0);
   const [ports, setPorts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -45,14 +58,38 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
     setBusy(true); if (!retry) { setMsg(null); setLost(false); }
     setLastTry(Date.now());
     try {
-      localStorage.setItem("conn.kind", kind); localStorage.setItem("conn.target", target); localStorage.setItem("conn.bus", bus);
+      localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
+      localStorage.setItem("conn.packs", String(packCount));
       await api.connect(kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus });
+      const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+      // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
+      let addrs: number[] | null = null;
+      let note = "";
+      if (bus === "can") {
+        // the master answers Modbus at once: show its system values before anything slower
+        const sys = await api.systemOnce().then(() => true, () => false);
+        if (sys) { onConnected([], target, bus); setSince(Date.now()); setLost(false); }
+        const m = await api.maintStatus().catch(() => null);
+        if (m && !m.marker) { addrs = range(m.effective_slaves + 1); note = t("conn.fromMaster", { count: addrs.length }); }
+        else if (m?.marker) note = t("conn.maintActive");
+      }
+      if (!addrs && packCount > 0) { addrs = range(packCount); note = t("conn.fixed", { count: packCount }); }
+      if (addrs) {
+        // start polling at once; name and firmware version follow from a short device query
+        onConnected(addrs.map((a) => [a, undefined]), target, bus);
+        setSince(Date.now()); setLost(false);
+        setMsg(note);
+        await api.startPolling(addrs, 2000);
+        api.scan(addrs).then(onDevices).catch(() => {});
+        return;
+      }
       const found = await api.scan();
-      if (retry && !found.length) throw new Error(t("conn.none"));
-      setMsg(found.length ? t("conn.found", { count: found.length }) : t("conn.none"));
+      if (retry && !found.length && bus !== "can") throw new Error(t("conn.none"));
+      setMsg([note, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
       onConnected(found, target, bus);
       setSince(Date.now()); setLost(false);
-      if (found.length) await api.startPolling(found.map(([a]) => a), 2000);
+      // on the CAN socket bus the system values are polled even if no pack answered
+      if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
     } catch (e) {
       if (retry) await api.disconnect().catch(() => {});
       setMsg(retry ? t("conn.retryFailed", { err: String(e) }) : String(e));
@@ -100,12 +137,14 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
-      <div className="flex items-center gap-2.5 px-5 pb-4 pt-6">
+      <div className="flex shrink-0 items-center gap-2.5 px-5 pb-4 pt-6">
         <BatteryCharging className="h-6 w-6 text-ok" aria-hidden />
         <span className="font-display text-xl font-semibold">{t("app")}</span>
       </div>
-      <nav className="space-y-1 px-3">
-        {[["dashboard", LayoutDashboard], ["diag", Gauge], ["history", ChartLine], ["params", SlidersHorizontal], ["cells", Database], ...(maintenance ? [["firmware", Cpu]] : [])].map(([id, Icon]) => {
+      {/* navigation scrolls if it ever gets long; connection and settings stay fixed at the bottom */}
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 pb-4">
+        {[["dashboard", LayoutDashboard], ["history", ChartLine], ["cells", Database],
+          ...(maintenance ? [["diag", Gauge], ["params", SlidersHorizontal], ["firmware", Cpu]] : [])].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
             <button key={id as string} onClick={() => setView(id as string)} disabled={locked}
@@ -115,7 +154,7 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
           );
         })}
       </nav>
-      <div className="mt-6 space-y-3 border-t border-line px-5 pt-5">
+      <div className="shrink-0 space-y-3 border-t border-line px-5 py-5">
         <div className="flex items-center justify-between text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("conn.title")}<InfoIcon id="topic.connection" /></span>
           <span className={cn("flex items-center gap-1.5", connected ? "text-charge" : lost ? "text-alarm" : "text-muted")}>
@@ -149,28 +188,40 @@ export function Sidebar({ connected, lastUpdate, onConnected, onDisconnected, vi
             <option value="pack">{t("conn.busPack")}</option>
           </select>
         </label>
+        <label className="flex items-center justify-between gap-3 text-sm text-muted">
+          {t("conn.packs")}
+          <select className={cn(input, "w-28")} value={packCount} onChange={(e) => setPackCount(Number(e.target.value))}>
+            <option value={0}>{t("conn.packsAuto")}</option>
+            {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>
-            {busy ? t("conn.scanning") : connected ? t("conn.reconnect") : t("conn.connect")}
+            {busy ? (packCount > 0 ? t("conn.starting") : t("conn.scanning")) : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {(connected || lost) && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
-        {msg && <p className={cn("text-sm", lost ? "text-alarm" : "text-muted")}>{msg}</p>}
-        {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
-        {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
+        {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
+        <div className="min-h-[3.75rem] space-y-0.5">
+          {msg && <p title={msg} className={cn("line-clamp-2 break-words text-sm", lost ? "text-alarm" : "text-muted")}>{msg}</p>}
+          {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
+          {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
+        </div>
       </div>
-      <div className="mt-5 border-t border-line px-3 pt-3">
-        <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
-      </div>
-      <label className="mt-auto flex items-center gap-2 border-t border-line px-5 py-3 text-sm text-muted">
-        <Switch checked={maintenance} onChange={setMaintenance} disabled={locked} />{t("maint")}
-      </label>
-      <div className="flex items-center gap-1 border-t border-line px-3 py-3">
+      <div className="flex shrink-0 items-center gap-1 border-t border-line px-3 py-3">
         <Button variant="ghost" size="sm" onClick={() => i18n.changeLanguage(i18n.language === "de" ? "en" : "de")}>
           <Languages className="h-4 w-4" />{i18n.language.toUpperCase()}
         </Button>
+        <span className="flex-1" />
         <Button variant="ghost" size="icon" onClick={() => setDark(!dark)} aria-label="Theme">
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+        <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
+        {/* maintenance functions: an icon toggle, highlighted while on; the label is the tooltip */}
+        <Button variant="ghost" size="icon" onClick={() => setMaintenance(!maintenance)} disabled={locked}
+          aria-pressed={maintenance} aria-label={t("maint")} title={t("maint")}
+          className={cn(maintenance && "bg-sunken text-ink")}>
+          <Wrench className="h-4 w-4" />
         </Button>
       </div>
     </aside>

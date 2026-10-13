@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{frame, modbus, DeviceInfo, Frame, Parameters, Status, SystemValues, Telemetry};
+use openbms_proto::{frame, modbus, DeviceInfo, Frame, MaintStatus, Parameters, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -203,6 +203,16 @@ impl Connection {
         let raw = self.read_until(|b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0));
         std::thread::sleep(self.gap);
         Ok(modbus::parse_read_response(function, &raw?)?)
+    }
+
+    /// Maintenance state of a patched master (CID2 0x64, CAN socket bus). Original firmware answers RTN 04,
+    /// which comes back as an error; the short timeout keeps a missing master from delaying the connect.
+    pub fn maint_status(&mut self) -> Result<MaintStatus> {
+        let saved = self.timeout;
+        self.timeout = Duration::from_millis(600);
+        let f = MaintStatus::request().map_err(Error::from).and_then(|r| self.ascii(&r, 0));
+        self.timeout = saved;
+        Ok(MaintStatus::parse(&f?.info)?)
     }
 
     pub fn system_values(&mut self) -> Result<SystemValues> {

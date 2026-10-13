@@ -61,6 +61,7 @@ export interface SystemValues {
 }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
+export interface MaintStatus { marker: boolean; effective_slaves: number }
 /** Recording into the history database. Off by default; changes apply at once. */
 export interface HistorySettings {
   enabled: boolean;
@@ -99,8 +100,13 @@ const tauriApi = {
   listPorts: () => invoke<string[]>("list_ports"),
   connect: (endpoint: Endpoint) => invoke<void>("connect", { endpoint }),
   disconnect: () => invoke<void>("disconnect"),
-  scan: () => invoke<[number, DeviceInfo][]>("scan"),
+  /** without addresses: search 0..15; with addresses: only read their device info */
+  scan: (addresses?: number[]) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null }),
   startPolling: (addresses: number[], intervalMs: number) => invoke<void>("start_polling", { addresses, intervalMs }),
+  /** CAN socket bus: read the master's system values once and send them as a "system" event */
+  systemOnce: () => invoke<void>("system_once"),
+  /** CAN socket bus: maintenance state of a patched master (CID2 0x64); fails on original firmware */
+  maintStatus: () => invoke<MaintStatus>("maint_status"),
   stopPolling: () => invoke<void>("stop_polling"),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
@@ -158,7 +164,9 @@ function demoApi(): typeof tauriApi {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
     connect: async () => {},
     disconnect: async () => { clearInterval(timer); },
-    scan: async () => (await load()).scan.map((s) => [s.address, s.device] as [number, DeviceInfo]),
+    scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address)).map((s) => [s.address, s.device] as [number, DeviceInfo]),
+    systemOnce: async () => { const c = await load(); sysL.forEach((f) => f({ values: c.system, error: null })); },
+    maintStatus: async () => { throw new Error("original firmware"); },
     startPolling: async (addresses, intervalMs) => {
       const c = await load();
       const tick = () => {
