@@ -1,25 +1,88 @@
-import type { ControlEndpoint, EndStep, Endpoint, FirmwareImage, Installation, MaintError, MaintOverview, MaintProgress, MasterStateName } from "./api";
+import type { ControlEndpoint, EndStep, Endpoint, FirmwareImage, FlashBlock, Installation, MaintError, MaintOverview, MaintProgress, MasterStateName, OpenWork } from "./api";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
  *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
 export type Monitor = "connected" | "paused" | "offline" | "lost";
 
-/** What the banner above every view shows; null = nothing open. */
-export interface Banner {
-  kind: "open" | "unconfirmed" | "unexplained";
-  /** "End" is offered (never for an unexplained marker) */
+/** Severity of a flash block, most severe first (same order as the backend's `block_rank`). */
+export const BLOCK_ORDER: FlashBlock["reason"][] = ["bootloader-unclear", "update-interrupted", "update-unclear", "master-unclear"];
+
+export type WorkKind = "block" | "unexplained" | "session" | "marker" | "note";
+
+/** One line of the banner: one installation with open work, named by its most pressing item. */
+export interface WorkLine {
+  id: string;
+  name: string;
+  kind: WorkKind;
+  /** since when (block, session start, marker state, sector note) */
+  at: number | null;
+  block: FlashBlock | null;
+  session: OpenWork["session"];
+  /** an open session whose master state is unknown (connection lost) */
+  unconfirmed: boolean;
+  /** the installation shown in the panel */
+  shown: boolean;
+  /** "End" is offered: only for the shown installation with an open session, no block, no unexplained marker */
   end: boolean;
-  how: "marker" | "dip";
-  since: number | null;
+  /** without End: the text key that says what must be cleared first (null for a shown session) */
+  why: string | null;
 }
 
-export function bannerOf(o: MaintOverview | null): Banner | null {
-  if (!o) return null;
-  const s = o.state?.state;
-  if (s === "marker-unexplained") return { kind: "unexplained", end: false, how: "marker", since: o.session?.started ?? null };
-  if (o.session) return { kind: s === "unknown" ? "unconfirmed" : "open", end: true, how: o.session.kind, since: o.session.started };
-  if (s === "patched-on") return { kind: "open", end: true, how: "marker", since: null };
-  return null;
+const workRank = (l: Pick<WorkLine, "kind" | "block">): number =>
+  l.kind === "block" ? BLOCK_ORDER.indexOf(l.block!.reason) : l.kind === "unexplained" ? BLOCK_ORDER.length : l.kind === "session" ? 10 : l.kind === "marker" ? 11 : 12;
+
+/** The banner's lines, one per installation with open work: blocks (by severity) and unexplained markers first, then
+ *  open sessions by start time, then a set marker without session by state time, then open sector notes. "Show" is
+ *  always offered; "End" only as `WorkLine.end` says. */
+export function openWorkLines(list: OpenWork[], shown: string | null): WorkLine[] {
+  const lines = list.map((w): WorkLine => {
+    const s = w.state?.state;
+    const kind: WorkKind = w.block ? "block" : s === "marker-unexplained" ? "unexplained" : w.session ? "session" : s === "patched-on" ? "marker" : "note";
+    const at = kind === "block" ? w.block!.since : kind === "session" ? w.session!.started : kind === "note" ? w.sector_note_at : w.state_at;
+    const isShown = w.id === shown;
+    const end = isShown && kind === "session";
+    const why = end ? null : kind === "session" ? "maint.openWork.why.showFirst" : `maint.openWork.why.${kind}`;
+    return { id: w.id, name: w.name, kind, at: at ?? null, block: w.block, session: w.session, unconfirmed: kind === "session" && s === "unknown", shown: isShown, end, why };
+  });
+  return lines.sort((a, b) => workRank(a) - workRank(b) || (a.at ?? Infinity) - (b.at ?? Infinity) || a.name.localeCompare(b.name));
+}
+
+/** An installation can be deleted only without open work: no session, no block, no set or unexplained marker and no
+ *  open note on sector 0x23000 (it is never discarded silently). The backend checks again under the port lock. */
+export function deleteAllowed(o: MaintOverview | null): boolean {
+  return !!o && !openWork(o) && !o.sector_note;
+}
+
+/** The name check of the create dialog and the setup form: null = fine, else the text key. Required, and not the
+ *  name of another installation (case-insensitive), so the picker never lists two equal entries. */
+export function nameCheck(name: string, installations: Pick<Installation, "id" | "name">[], self: string | null = null): string | null {
+  const n = name.trim().toLowerCase();
+  if (!n) return "maint.setup.err.nameRequired";
+  return installations.some((i) => i.id !== self && i.name.trim().toLowerCase() === n) ? "maint.setup.err.nameTaken" : null;
+}
+
+/** The suggested name of a new installation: „Anlage n“ with the first free n from the count + 1. */
+export function defaultName(installations: Pick<Installation, "id" | "name">[], base: string): string {
+  for (let n = installations.length + 1; ; n++) {
+    const name = `${base} ${n}`;
+    if (!nameCheck(name, installations)) return name;
+  }
+}
+
+/** A sidebar connection that belongs to no installation becomes a new one (after the name dialog): on the CAN socket
+ *  bus as its CAN socket, on the pack bus as its endpoint. */
+export function createFromAttach(ep: Endpoint): { control: ControlEndpoint | null; endpoints: string[] } {
+  return ep.bus === "can" ? { control: controlOf(ep), endpoints: [] } : { control: null, endpoints: [endpointKey(ep)] };
+}
+
+/** Whom the RS485-1/2 port belongs to (`owner`: its installation id, null = none) seen from the shown installation:
+ *  a foreign port locks every bus action ("installation-mismatch") and offers to switch to its installation. The
+ *  backend's port gate stays authoritative. */
+export function portLock(owner: string | null, shown: string | null, installations: Pick<Installation, "id" | "name">[]): { owner: "this" | "none" | "other"; switchTo: { id: string; name: string } | null } {
+  if (!shown || owner === null) return { owner: "none", switchTo: null };
+  if (owner === shown) return { owner: "this", switchTo: null };
+  const other = installations.find((i) => i.id === owner);
+  return { owner: "other", switchTo: other ? { id: other.id, name: other.name } : null };
 }
 
 /** Open maintenance work: a session, a block, or a set marker (same rule as the backend's `open_work`). */
@@ -174,11 +237,11 @@ export function parsePacks(text: string): number | null {
   return n >= 1 && n <= 16 ? n : null;
 }
 
-/** Plan steps the master-plan checklist lists as items: a step the user confirms by a checkbox (DIP 5–8 OFF,
- *  build released or master isolated) is shown once, as that checkbox. */
+/** The master-plan checklist in plan order: a step the user confirms by a checkbox (DIP 5–8 OFF, build released or
+ *  master isolated) is shown once, as that checkbox, in its position (e.g. before stop and measurement). */
 export const PLAN_CHECKBOXES = ["dip-off", "isolated-or-released"];
-export function planListSteps(before: string[]): string[] {
-  return before.filter((s) => !PLAN_CHECKBOXES.includes(s));
+export function planItems(before: string[]): { step: string; checkbox: boolean }[] {
+  return before.map((step) => ({ step, checkbox: PLAN_CHECKBOXES.includes(step) }));
 }
 
 /** "1 pack" needs a fresh 0/0 (or RTN 04) from the master, which it cannot report while its marker is on (stored state
@@ -231,7 +294,8 @@ export function failingText(f: string, t: T): string {
   if (k.inner) return clause(t(k.key, { error: clause(t(k.inner.key, k.inner.params)) }));
   if (k.key === "maint.failing.slave-count-mismatch") {
     const actual = Number(k.params?.actual), expected = Number(k.params?.expected);
-    return clause(t(k.key, { actual: t("maint.panel.slaveCount", { count: actual }), packs: t("maint.panel.packCount", { count: expected + 1 }), expected: t("maint.panel.slaveCount", { count: expected }) }));
+    // count: „eingetragen ist 1 Pack“ / „eingetragen sind 2 Packs“
+    return clause(t(k.key, { count: expected + 1, actual: t("maint.panel.slaveCount", { count: actual }), packs: t("maint.panel.packCount", { count: expected + 1 }), expected: t("maint.panel.slaveCount", { count: expected }) }));
   }
   return clause(t(k.key, k.params));
 }
@@ -510,4 +574,12 @@ export function flowOf(i: FlowInput): Flow {
     singlePackOffered,
     idle: !i.busy && !i.running,
   };
+}
+
+/** The text key of a stored note on sector 0x23000 (the backend writes it in English); null: show it as is. */
+export function sectorNoteKey(note: string): string | null {
+  if (note.startsWith("marker after first flash")) return "maint.note.first-flash";
+  if (note.startsWith("unknown image")) return "maint.note.unknown-image";
+  if (note.includes("recovered to original")) return "maint.note.recovered";
+  return null;
 }

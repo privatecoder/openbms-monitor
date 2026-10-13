@@ -1,25 +1,99 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, planListSteps, PLAN_CHECKBOXES, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
-import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
+import { acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, planItems, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, canFlash, createFromAttach, defaultName, deleteAllowed, nameCheck, openWorkLines, portLock, sectorNoteKey, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import type { ControlEndpoint, MaintOverview, MaintSession, OpenWork } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
 const base: MaintOverview = { installation: inst, state: null, state_at: null, session: null, blocks: [], sector_note: null, end_next: null };
 const session: MaintSession = { id: 1, installation: "i", kind: "marker", started: 1_000, expected_slaves: 3, done: [], failing: null };
 
-describe("banner", () => {
-  it("is hidden without session and without marker", () => {
-    expect(bannerOf(base)).toBeNull();
-    expect(bannerOf({ ...base, state: { state: "patched-off", slaves: 3 } })).toBeNull();
+describe("banner: one line per installation with open work", () => {
+  const w = (id: string, patch: Partial<OpenWork>): OpenWork => ({ id, name: id.toUpperCase(), session: null, block: null, state: null, state_at: null, sector_note_at: null, ...patch });
+  const ses = (started: number): OpenWork["session"] => ({ kind: "marker", started, expected_slaves: 3, failing: null });
+  const blk = (reason: "update-interrupted" | "update-unclear" | "bootloader-unclear" | "master-unclear", since: number) => ({ id: since, pack: 3, reason, expect: null, since });
+  it("orders blocks by severity and unexplained markers first, then sessions by start, then markers, then notes", () => {
+    const list = [
+      w("n", { sector_note_at: 1 }),
+      w("m", { state: { state: "patched-on" }, state_at: 5 }),
+      w("s2", { session: ses(20), state: { state: "patched-on" } }),
+      w("s1", { session: ses(10), state: { state: "patched-on" } }),
+      w("mu", { block: blk("master-unclear", 1) }),
+      w("x", { state: { state: "marker-unexplained" }, state_at: 2 }),
+      w("ui", { block: blk("update-interrupted", 9), session: ses(1) }),
+      w("bu", { block: blk("bootloader-unclear", 50) }),
+      w("uu", { block: blk("update-unclear", 3) }),
+    ];
+    expect(openWorkLines(list, null).map((l) => l.id)).toEqual(["bu", "ui", "uu", "mu", "x", "s1", "s2", "m", "n"]);
+    expect(openWorkLines(list, null).map((l) => l.kind)).toEqual(["block", "block", "block", "block", "unexplained", "session", "session", "marker", "note"]);
   });
-  it("shows an open session with End, also after the connection was lost", () => {
-    expect(bannerOf({ ...base, session, state: { state: "patched-on" } })).toMatchObject({ kind: "open", end: true, how: "marker" });
-    expect(bannerOf({ ...base, session, state: { state: "unknown" } })).toMatchObject({ kind: "unconfirmed", end: true });
+  it("a block line names the block, even with a session open", () => {
+    const [l] = openWorkLines([w("a", { block: blk("bootloader-unclear", 7), session: ses(1) })], "a");
+    expect(l).toMatchObject({ kind: "block", at: 7, end: false, why: "maint.openWork.why.block" });
   });
-  it("shows a marker without session, and never End for an unexplained marker", () => {
-    expect(bannerOf({ ...base, state: { state: "patched-on" } })).toMatchObject({ kind: "open", end: true });
-    expect(bannerOf({ ...base, state: { state: "marker-unexplained" } })).toMatchObject({ kind: "unexplained", end: false });
-    expect(bannerOf({ ...base, session, state: { state: "marker-unexplained" } })).toMatchObject({ kind: "unexplained", end: false });
+  it("offers End only for the shown installation with a session, no block and no unexplained marker", () => {
+    const lines = openWorkLines([
+      w("a", { session: ses(1), state: { state: "patched-on" } }),
+      w("b", { session: ses(2) }),
+      w("c", { session: ses(3), state: { state: "marker-unexplained" } }),
+      w("d", { state: { state: "patched-on" } }),
+      w("e", { sector_note_at: 4 }),
+    ], "a");
+    const by = Object.fromEntries(lines.map((l) => [l.id, l]));
+    expect(by.a).toMatchObject({ end: true, why: null, shown: true });
+    expect(by.b).toMatchObject({ end: false, why: "maint.openWork.why.showFirst" });
+    expect(by.c).toMatchObject({ kind: "unexplained", end: false, why: "maint.openWork.why.unexplained" });
+    expect(by.d).toMatchObject({ kind: "marker", end: false, why: "maint.openWork.why.marker" });
+    expect(by.e).toMatchObject({ kind: "note", end: false, why: "maint.openWork.why.note" });
+    // shown: a marker without session, a block or an unexplained marker never gets End either
+    expect(openWorkLines([w("c", { session: ses(3), state: { state: "marker-unexplained" } })], "c")[0].end).toBe(false);
+    expect(openWorkLines([w("d", { state: { state: "patched-on" } })], "d")[0].end).toBe(false);
+    expect(openWorkLines([w("e", { sector_note_at: 4 })], "e")[0].end).toBe(false);
+    expect(openWorkLines([w("f", { block: blk("update-unclear", 1), session: ses(1) })], "f")[0].end).toBe(false);
+  });
+  it("names an open session with an unknown state as unconfirmed, and it can still be ended", () => {
+    expect(openWorkLines([w("a", { session: ses(1), state: { state: "unknown" } })], "a")[0]).toMatchObject({ unconfirmed: true, end: true });
+  });
+});
+
+describe("installations: delete, names, connection, foreign port", () => {
+  it("deletes only without session, block, marker or sector note", () => {
+    expect(deleteAllowed(null)).toBe(false);
+    expect(deleteAllowed(base)).toBe(true);
+    expect(deleteAllowed({ ...base, state: { state: "no-0x64" } })).toBe(true);
+    expect(deleteAllowed({ ...base, session })).toBe(false);
+    expect(deleteAllowed({ ...base, blocks: [{ id: 1, pack: 2, reason: "update-unclear", expect: null, since: 1 }] })).toBe(false);
+    expect(deleteAllowed({ ...base, state: { state: "patched-on" } })).toBe(false);
+    expect(deleteAllowed({ ...base, state: { state: "marker-unexplained" } })).toBe(false);
+    expect(deleteAllowed({ ...base, sector_note: "unknown image on the master" })).toBe(false);
+  });
+  it("requires a name that no other installation has", () => {
+    const list = [{ id: "a", name: "Bank" }, { id: "b", name: "Lab" }];
+    expect(nameCheck("  ", list)).toBe("maint.setup.err.nameRequired");
+    expect(nameCheck(" bank ", list)).toBe("maint.setup.err.nameTaken");
+    expect(nameCheck("Bank", list, "a")).toBeNull();
+    expect(nameCheck("New", list)).toBeNull();
+    expect(defaultName(list, "Anlage")).toBe("Anlage 3");
+    expect(defaultName([...list, { id: "c", name: "Anlage 3" }], "Anlage")).toBe("Anlage 4");
+  });
+  it("a new connection becomes the CAN socket on the CAN socket bus, an endpoint on the pack bus", () => {
+    expect(createFromAttach({ kind: "tcp", addr: "GW:4196", bus: "can" })).toEqual({ control: { kind: "tcp", addr: "GW:4196" }, endpoints: [] });
+    expect(createFromAttach({ kind: "serial", path: "/dev/p", bus: "pack" })).toEqual({ control: null, endpoints: ["serial:/dev/p"] });
+  });
+  it("locks a foreign RS485-1/2 port and offers its installation", () => {
+    const list = [{ id: "a", name: "Bank" }, { id: "b", name: "Lab" }];
+    expect(portLock("a", "a", list)).toEqual({ owner: "this", switchTo: null });
+    expect(portLock(null, "a", list)).toEqual({ owner: "none", switchTo: null });
+    expect(portLock("b", "a", list)).toEqual({ owner: "other", switchTo: { id: "b", name: "Lab" } });
+    expect(portLock("gone", "a", list)).toEqual({ owner: "other", switchTo: null });
+    expect(portLock("b", null, list)).toEqual({ owner: "none", switchTo: null });
+    // the flow and the flash gate lock it with installation-mismatch
+    expect(canFlash({ overview: base, inverter: true, measuredAt: 1, address: 3, imageKind: "original", portOwner: portLock("b", "i", list).owner })).toEqual({ ok: false, reason: "installation-mismatch" });
+  });
+  it("translates the stored sector notes", () => {
+    expect(sectorNoteKey("marker after first flash of a maintenance build")).toBe("maint.note.first-flash");
+    expect(sectorNoteKey("unknown image on the master")).toBe("maint.note.unknown-image");
+    expect(sectorNoteKey("0x23000 unexplained, recovered to original without stop")).toBe("maint.note.recovered");
+    expect(sectorNoteKey("other")).toBeNull();
   });
 });
 
@@ -642,12 +716,11 @@ describe("waiting for a busy port", () => {
 });
 
 describe("master-plan checklist", () => {
-  it("shows a confirmed step once, as its checkbox", () => {
+  it("shows a confirmed step once, as its checkbox, in its step position", () => {
     const before = ["dip-off", "stop-to-zero", "measure"];
-    const lines = [...planListSteps(before), ...before.filter((s) => PLAN_CHECKBOXES.includes(s))];
-    expect(lines.filter((s) => s === "dip-off")).toHaveLength(1);
-    expect(planListSteps(before)).toEqual(["stop-to-zero", "measure"]);
-    expect(planListSteps(["isolated-or-released", "measure"])).toEqual(["measure"]);
+    expect(planItems(before)).toEqual([{ step: "dip-off", checkbox: true }, { step: "stop-to-zero", checkbox: false }, { step: "measure", checkbox: false }]);
+    expect(planItems(["isolated-or-released", "measure"]).map((i) => i.step)).toEqual(["isolated-or-released", "measure"]);
+    expect(planItems(before).filter((i) => i.step === "dip-off")).toHaveLength(1);
   });
 });
 

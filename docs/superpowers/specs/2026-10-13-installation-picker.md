@@ -1,6 +1,6 @@
 # Several installations: pick, name, create, delete
 
-Status: draft r2, 2026-10-13 (r1 reviewed: `.orch/reviewer-codex-6-sol-installation-picker-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the implemented stage 1 + guided panel (`docs/superpowers/specs/2026-10-13-maintenance-panel-flow.md`).
+Status: implemented, 2026-10-13 (draft r2; r1 reviewed: `.orch/reviewer-codex-6-sol-installation-picker-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the implemented stage 1 + guided panel (`docs/superpowers/specs/2026-10-13-maintenance-panel-flow.md`).
 
 ## Why
 
@@ -36,3 +36,13 @@ The data model already holds several installations (`maintenance.sqlite`: instal
 2. Delete: ended sessions and cleared blocks go to an archive table; an open sector note blocks deletion.
 3. Foreign RS485-1/2 port: locked in the UI with `installation-mismatch` and a switch offer; backend `port_gate` stays authoritative.
 4. Contradictions fixed: End only for an open session without block and without marker-unexplained; sector notes never discarded; delete/move serialised with flash under `port_busy`.
+
+## Implementation notes
+
+Taken during implementation where the proposal leaves room:
+
+1. **Names** are required and unique among installations (case-insensitive), on create and on rename (`valid_name` in the store, `nameCheck` in the UI), so the picker never lists two equal entries. The suggested name is „Anlage n“ with the first free n.
+2. **Commands:** `maint_installations` (picker list), `maint_open_work`, `maint_create_installation`, `maint_delete_installation`, `maint_resolve_sector_note`; `maint_installation_for` is gone from the UI and the command list (the backend keeps the implicit creation only for a single pack flashed without an installation, as before). Create, save, delete and resolve run under `port_busy` (`edit_installations`) and re-check inside one store transaction; refusals reach the UI as `endpoint-in-use`, `open-work`, `name-required`, `name-taken`, `no-sector-note`.
+3. **Sector notes** count as open work for endpoint moves and delete (`holds_ports`), not for the flash port gate (`any_open`), which stays as in stage 1. Resolved notes move to `sector_notes_resolved`; deleted installations to `maint_archive` (both `CREATE TABLE IF NOT EXISTS`).
+4. **Banner:** one line per installation, named by its most pressing item (block > unexplained marker > session > set marker > sector note); lines sorted as in point 4, within the first group by block severity, then time. „Anzeigen“ on the shown installation opens its panel. A set marker without session gets no „Beenden“ (End needs a session); its line says to check the master.
+5. **Switching** clears this run's fresh master check and slave scans; inverter statement, measurement, End progress in the UI and the panel's choices go with the panel's remount. The one-adapter mark stays per installation id and is removed on delete.

@@ -3,7 +3,7 @@
 //! All operations hold the one maintenance-operation lock (`port_busy`); a control exchange on the
 //! endpoint of the main connection runs through that connection, so no endpoint is opened twice.
 
-use crate::maint_store::{ControlEndpoint, FlashBlock, Installation, MaintSession, SessionKind, Store, StoredMasterState};
+use crate::maint_store::{ControlEndpoint, FlashBlock, Installation, MaintSession, OpenWork, SessionKind, Store, StoredMasterState};
 use crate::{lock, reserve_port, AppState, EndpointArg};
 use openbms_flash::known::ImageKind;
 use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError, Probe};
@@ -13,6 +13,7 @@ use openbms_flash::session::Progress;
 use openbms_proto::MaintStatus;
 use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
@@ -396,27 +397,72 @@ pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState,
 }
 
 #[tauri::command]
-pub async fn maint_installation_for(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<Installation, MaintError> {
-    let key = endpoint.key();
-    with_store(&state, |s| s.installation_for(&key))
-}
-
-#[tauri::command]
 pub async fn maint_installation_of(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<Option<Installation>, MaintError> {
     let key = endpoint.key();
     with_store(&state, |s| s.installation_of(&key))
 }
 
+/// All installations by creation, for the picker.
+#[tauri::command]
+pub async fn maint_installations(state: State<'_, AppState>) -> Result<Vec<Installation>, MaintError> {
+    with_store(&state, |s| s.installations())
+}
+
+/// Every installation with open work (session, block, set or unexplained marker, sector note), for the banner.
+#[tauri::command]
+pub async fn maint_open_work(state: State<'_, AppState>) -> Result<Vec<OpenWork>, MaintError> {
+    with_store(&state, |s| s.open_work_list())
+}
+
+const STORE_REFUSALS: [&str; 5] = ["endpoint-in-use", "name-required", "name-taken", "open-work", "no-sector-note"];
+
+/// A store refusal (ownership, name, open work) reaches the UI as a refusal key, anything else as a store error.
+fn store_refusal(e: MaintError) -> MaintError {
+    match e {
+        MaintError::Store { message } if STORE_REFUSALS.contains(&message.as_str()) => refused(&message),
+        other => other,
+    }
+}
+
+/// Edits that create, move or delete installations hold `port_busy` like flash, measurement and End: a flash gate
+/// that has read an installation id keeps that installation and its port until its `update-interrupted` block is
+/// written. The store re-checks open work and ownership inside its own transaction.
+pub fn edit_installations<T>(busy: &Arc<AtomicBool>, store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Store) -> Result<T, String>) -> Result<T, MaintError> {
+    let _op = reserve_port(busy).ok_or(MaintError::Busy)?;
+    with_store_arc(store, f).map_err(store_refusal)
+}
+
 #[tauri::command]
 pub async fn maint_save_installation(state: State<'_, AppState>, installation: Installation) -> Result<Installation, MaintError> {
-    with_store(&state, |s| {
+    edit_installations(&state.port_busy, &state.maint, |s| {
         s.save_installation(&installation)?;
-        Ok(installation.clone())
+        s.installations()?.into_iter().find(|i| i.id == installation.id).ok_or_else(|| "unknown installation".into())
     })
-    .map_err(|e| match e {
-        MaintError::Store { message } if message == "endpoint-in-use" => refused("endpoint-in-use"),
-        other => other,
-    })
+}
+
+/// A new installation, named by the user, with its CAN socket (control) and endpoints in one transaction.
+#[tauri::command]
+pub async fn maint_create_installation(state: State<'_, AppState>, name: String, control: Option<ControlEndpoint>, endpoints: Vec<String>) -> Result<Installation, MaintError> {
+    edit_installations(&state.port_busy, &state.maint, |s| s.create_installation(&name, control, endpoints))
+}
+
+/// Delete an installation without open work and without a sector note (refused "open-work"); its history goes
+/// to the archive, its ports are free. The in-memory End progress and slave scan of that id go too.
+#[tauri::command]
+pub async fn maint_delete_installation(state: State<'_, AppState>, installation: String) -> Result<(), MaintError> {
+    edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&installation, crate::history::now_ms()))?;
+    if let Ok(mut m) = state.end_progress.lock() {
+        m.remove(&installation);
+    }
+    note_scan(&state, &installation, None, false);
+    Ok(())
+}
+
+/// The user marks the note on sector 0x23000 as explained; it is archived, not deleted.
+#[tauri::command]
+pub async fn maint_resolve_sector_note(state: State<'_, AppState>, installation: String) -> Result<Overview, MaintError> {
+    edit_installations(&state.port_busy, &state.maint, |s| s.resolve_sector_note(&installation, crate::history::now_ms()))?;
+    overview(&state, &installation)
 }
 
 #[tauri::command]
@@ -1714,6 +1760,45 @@ mod tests {
         let s = Store::open(&dir.join("maintenance.sqlite")).unwrap();
         let id = s.installation_for("tcp:gw:1").unwrap().id;
         (s, id)
+    }
+
+    #[test]
+    fn a_flash_gate_holding_port_busy_refuses_delete_create_and_save_as_busy() {
+        let state = AppState::default();
+        let (s, id) = temp_store("race");
+        *state.maint.lock().unwrap() = Some(s);
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (busy, g2, r2) = (state.port_busy.clone(), gate.clone(), release.clone());
+        // the flash gate: holds the operation lock while it reads the installation and writes its block
+        let flash = std::thread::spawn(move || {
+            let _slot = reserve_port(&busy).unwrap();
+            g2.wait();
+            r2.wait();
+        });
+        gate.wait();
+        let del = edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&id, 1));
+        assert!(matches!(del, Err(MaintError::Busy)), "{del:?}");
+        assert!(matches!(edit_installations(&state.port_busy, &state.maint, |s| s.create_installation("B", None, vec![])), Err(MaintError::Busy)));
+        let inst = with_store(&state, |s| s.installations()).unwrap();
+        assert!(matches!(edit_installations(&state.port_busy, &state.maint, |s| s.save_installation(&inst[0])), Err(MaintError::Busy)));
+        assert_eq!(inst.len(), 1, "nothing changed while the flash holds the port");
+        release.wait();
+        flash.join().unwrap();
+        edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&id, 2)).unwrap();
+        assert!(with_store(&state, |s| s.installations()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn store_refusals_reach_the_ui_as_refusal_keys() {
+        let state = AppState::default();
+        let (s, id) = temp_store("refusals");
+        s.add_block(&id, 1, "update-unclear", 1).unwrap();
+        *state.maint.lock().unwrap() = Some(s);
+        assert!(refused_with(edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&id, 1)), "open-work"));
+        assert!(refused_with(edit_installations(&state.port_busy, &state.maint, |s| s.create_installation(" ", None, vec![])), "name-required"));
+        assert!(refused_with(edit_installations(&state.port_busy, &state.maint, |s| s.resolve_sector_note(&id, 1)), "no-sector-note"));
+        assert!(matches!(edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation("nope", 1)), Err(MaintError::Store { .. })));
     }
 
     #[test]

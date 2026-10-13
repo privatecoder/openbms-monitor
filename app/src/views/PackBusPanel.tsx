@@ -46,8 +46,26 @@ function StatusLine({ activity }: { activity: Activity }) {
   );
 }
 
-export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, activity, setActivity, noControl, setNoControl, singlePack, setSinglePack, onUserAction }: {
+/** „Anlage: [Name ▾]“: every installation by name, „keine Anlage“ while none is shown, and „Neue Anlage …“. */
+function InstallationPicker({ maint, disabled, onNew }: { maint: ReturnType<typeof useMaint>; disabled: boolean; onNew: () => void }) {
+  const { t } = useTranslation();
+  const shown = maint.overview?.installation.id ?? (maint.installation && maint.installations.some((i) => i.id === maint.installation) ? maint.installation : "");
+  return (
+    <label className="flex items-center gap-2 text-sm">{t("maint.picker.label")}
+      <select className="h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50" value={shown} disabled={disabled}
+        onChange={(e) => { const v = e.target.value; if (v === "__new__") onNew(); else if (v && v !== shown) void maint.switchTo(v); }}>
+        {!shown && <option value="">{t("maint.picker.none")}</option>}
+        {maint.installations.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+        <option value="__new__">{t("maint.picker.new")}</option>
+      </select>
+    </label>
+  );
+}
+
+export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, activity, setActivity, noControl, setNoControl, singlePack, setSinglePack, onUserAction, mismatch }: {
   maint: ReturnType<typeof useMaint>;
+  /** the RS485-1/2 port belongs to this other installation: bus actions are locked, the panel offers to switch */
+  mismatch: { id: string; name: string } | null;
   flow: Flow;
   /** the RS485-1/2 port of the installation ("" = not set up); chosen only in the setup form */
   port: string;
@@ -99,6 +117,20 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   // patched-off with N > 0: the manual DIP way instead of activating
   const [dipInstead, setDipInstead] = useState(false);
   const [setup, setSetup] = useState(false);
+  // „Neue Anlage …“: the empty setup form
+  const [creating, setCreating] = useState(false);
+  // the picker and the installation actions wait while an action, a flash or a switch runs
+  const pickerLocked = !flow.idle || maint.switching;
+  const header = (title: string) => (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{title}<InfoIcon id="topic.maintenance" /></h2>
+      <InstallationPicker maint={maint} disabled={pickerLocked} onNew={() => { setSetup(false); setCreating(true); }} />
+    </div>
+  );
+  const createForm = creating && (
+    <MaintSetup overview={null} installations={maint.installations} disabled={pickerLocked} onSaved={() => {}} onCancel={() => setCreating(false)}
+      onCreated={(inst) => { setCreating(false); void maint.switchTo(inst.id); onPortsChanged(); }} />
+  );
   // set when maintEnd was refused with end-sequential (one adapter for both buses)
   const [stepwise, setStepwise] = useState(false);
   // a sub-step of End failed: the overview's end_next is the restart point
@@ -148,7 +180,14 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   const spinning = (key: string) => mine(key) && !!activity?.running;
   const status = (key: string) => (mine(key) && activity ? <StatusLine activity={activity} /> : null);
 
-  if (!o) return <section ref={panelRef} className={cn("space-y-2 rounded-md border p-4 text-sm text-muted transition-colors", highlight ? "border-charge ring-2 ring-charge" : "border-line")}>{t("maint.panel.noInstallation")}</section>;
+  if (!o) return (
+    <section ref={panelRef} className={cn("space-y-3 rounded-md border p-4 text-sm transition-colors", highlight ? "border-charge ring-2 ring-charge" : "border-line")}>
+      {header(t("maint.panel.titleNone"))}
+      {/* no installation shown (none yet, or the shown one was deleted): which one, or a new one */}
+      {!creating && <p className="text-muted">{t(maint.installations.length ? "maint.picker.choose" : "maint.picker.empty")}</p>}
+      {createForm}
+    </section>
+  );
   const st = flow.steps;
   const s = flow.state;
   const stored = o.state?.state;
@@ -332,9 +371,8 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
 
   return (
     <section ref={panelRef} className={cn("space-y-3 rounded-md border p-4 text-sm transition-colors", highlight === "panel" ? "border-charge ring-2 ring-charge" : "border-line")}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title", { name: o.installation.name })}<InfoIcon id="topic.maintenance" /></h2>
-      </div>
+      {header(t("maint.panel.title", { name: o.installation.name }))}
+      {createForm}
       {/* the pack port in use, visible before every bus action */}
       <p className="font-medium">{port ? t("maint.flow.packPort", { port }) : t("maint.flow.noPackPort")}</p>
       {monitor !== "connected" && <p className="text-muted">{t(`maint.flow.monitor.${monitor}`)}</p>}
@@ -363,7 +401,11 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
           <p>{port ? t("maint.flow.packPort", { port: plugged(port, true) }) : t("maint.flow.noPackPort")}</p>
           {flow.replug && <p className="text-discharge">{t("maint.flow.oneAdapter")}</p>}
           <Button variant={!port ? "primary" : "secondary"} size="sm" disabled={!idle} onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
-          {setup && <MaintSetup key={o.installation.id} overview={o} disabled={!idle} onSaved={(x) => { maint.setOverview(x); setSetup(false); onPortsChanged(); }} />}
+          {/* a foreign RS485-1/2 port: every bus action stays locked; the panel offers its installation */}
+          {mismatch && <Button variant="secondary" size="sm" disabled={pickerLocked} onClick={() => void maint.switchTo(mismatch.id)}>{t("maint.banner.switch", { other: mismatch.name })}</Button>}
+          {setup && <MaintSetup key={o.installation.id} overview={o} installations={maint.installations} disabled={!idle || maint.switching}
+            onSaved={(x) => { maint.setOverview(x); setSetup(false); onPortsChanged(); void maint.refresh(x.installation.id); }}
+            onDeleted={() => { setSetup(false); void maint.forget(o.installation.id); onPortsChanged(); }} />}
           {!control && (
             <label className="flex items-center gap-2"><input type="checkbox" checked={noControl} disabled={!idle} onChange={(e) => setNoControl(e.target.checked)} />{t("maint.flow.withoutControl")}</label>
           )}
