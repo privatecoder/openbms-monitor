@@ -57,10 +57,10 @@ export function MaintSetup({ overview, onSaved }: { overview: MaintOverview; onS
         <div className="flex flex-wrap items-center gap-3">
           {t("maint.setup.packPort")}
           <select className={input} value={packPort} onChange={(e) => setPackPort(e.target.value)}><option value="">{t("conn.port")}</option>{ports.map((p) => <option key={p}>{p}</option>)}</select>
-          <Button variant="ghost" size="sm" disabled={!packPort} onClick={addPackPort}>{t("maint.setup.add")}</Button>
+          <Button variant="secondary" size="sm" disabled={!packPort} onClick={addPackPort}>{t("maint.setup.add")}</Button>
         </div>
       </div>
-      <Button variant="ghost" size="sm" onClick={save}>{t("maint.setup.save")}</Button>
+      <Button variant="primary" size="sm" onClick={save}>{t("maint.setup.save")}</Button>
       {error && <p className="text-alarm">{error}</p>}
     </div>
   );
