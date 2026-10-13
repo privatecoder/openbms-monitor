@@ -127,6 +127,13 @@ describe("start-up races", () => {
       expect(g.accepts(r1, "i", B, null)).toBe(false);
       expect(g.accepts(r2, "i", B, null)).toBe(true);
     });
+    it("a refresh begun during a check never wins, even if it answers after the check ended", () => {
+      const g = latestGuard();
+      const c = g.begin("check", "i"), r = g.begin("refresh", "i");
+      expect(g.accepts(c, "i", A, null)).toBe(true);
+      g.end(c);
+      expect(g.accepts(r, "i", B, A)).toBe(false);
+    });
     it("a failed refresh keeps the overview shown for the same id", () => {
       const g = latestGuard();
       const r = g.begin("refresh", "i");
