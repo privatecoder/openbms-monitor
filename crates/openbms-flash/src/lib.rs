@@ -12,6 +12,7 @@ pub mod boot;
 pub mod ehex;
 pub mod known;
 pub mod link;
+pub mod maint;
 pub mod session;
 pub mod sim;
 
