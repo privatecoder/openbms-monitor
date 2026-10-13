@@ -198,7 +198,6 @@ impl Store {
     }
 
     /// Some installation has an open session or an uncleared flash block.
-    #[allow(dead_code)] // used from Task 8 on
     pub fn any_open(&self) -> Result<bool, String> {
         let n: i64 = self
             .db
@@ -325,13 +324,11 @@ impl Store {
     }
 
     /// After the master was flashed back to the original image, a marker session ends as a DIP session.
-    #[allow(dead_code)] // used from Task 8 on
     pub fn set_session_kind(&self, id: i64, kind: SessionKind) -> Result<(), String> {
         self.db.execute("UPDATE maint_sessions SET kind = ?2 WHERE id = ?1", params![id, kind.as_str()]).map_err(e)?;
         Ok(())
     }
 
-    #[allow(dead_code)] // used from Task 8 on
     pub fn note_done(&self, id: i64, what: &str) -> Result<(), String> {
         let done: String = self.db.query_row("SELECT done FROM maint_sessions WHERE id = ?1", [id], |r| r.get(0)).map_err(e)?;
         let mut list: Vec<String> = serde_json::from_str(&done).unwrap_or_default();
@@ -340,33 +337,28 @@ impl Store {
         Ok(())
     }
 
-    #[allow(dead_code)] // used from Task 8 on
     pub fn set_failing(&self, id: i64, failing: Option<&str>) -> Result<(), String> {
         self.db.execute("UPDATE maint_sessions SET failing = ?2 WHERE id = ?1", params![id, failing]).map_err(e)?;
         Ok(())
     }
 
-    #[allow(dead_code)] // used from Task 8 on
     pub fn end_session(&self, id: i64, now: i64) -> Result<(), String> {
         self.db.execute("UPDATE maint_sessions SET ended = ?2, failing = NULL WHERE id = ?1", params![id, now]).map_err(e)?;
         Ok(())
     }
 
-    #[allow(dead_code)] // used from Task 8 on
     pub fn add_block(&self, inst: &str, pack: u8, reason: &str, now: i64) -> Result<i64, String> {
         self.db.execute("INSERT INTO flash_blocks(installation, pack, reason, since) VALUES (?1, ?2, ?3, ?4)", params![inst, pack, reason, now]).map_err(e)?;
         Ok(self.db.last_insert_rowid())
     }
 
     /// Unclear master update: the application runs, 0x64 did not show `expect` after the flash.
-    #[allow(dead_code)] // used from Task 8 on
     pub fn add_master_block(&self, inst: &str, expect: &str, now: i64) -> Result<i64, String> {
         self.db.execute("INSERT INTO flash_blocks(installation, pack, reason, expect, since) VALUES (?1, 0, 'master-unclear', ?2, ?3)", params![inst, expect, now]).map_err(e)?;
         Ok(self.db.last_insert_rowid())
     }
 
     /// An `update-interrupted` block becomes the reason found when the flash returned.
-    #[allow(dead_code)] // used from Task 8 on
     pub fn set_block_reason(&self, id: i64, reason: &str) -> Result<(), String> {
         self.db.execute("UPDATE flash_blocks SET reason = ?2 WHERE id = ?1", params![id, reason]).map_err(e)?;
         Ok(())
@@ -379,14 +371,13 @@ impl Store {
     }
 
     /// `how`: "answered" (pack answered 0x51/0x47), "isolated" (the user confirmed isolation or recovery),
-    /// "flashed" (the flash and its post-check passed) or "preflight" (failed before the restart).
-    #[allow(dead_code)] // used from Task 8 on
+    /// "flashed" (the flash and its post-check passed), "preflight" (failed before the restart) or "checked"
+    /// (master-unclear: a later 0x64 read showed the expected state).
     pub fn clear_block(&self, id: i64, how: &str, now: i64) -> Result<(), String> {
         self.db.execute("UPDATE flash_blocks SET cleared = ?2, how = ?3 WHERE id = ?1", params![id, now, how]).map_err(e)?;
         Ok(())
     }
 
-    #[allow(dead_code)] // used from Task 8 on
     pub fn note_sector(&self, inst: &str, note: &str, now: i64) -> Result<(), String> {
         self.db.execute("INSERT OR REPLACE INTO sector_notes(installation, note, at) VALUES (?1, ?2, ?3)", params![inst, note, now]).map_err(e)?;
         Ok(())
