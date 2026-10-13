@@ -152,7 +152,7 @@ impl Store {
             .query_row("SELECT name, control FROM installations WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()
             .map_err(e)?
-            .ok_or("unknown installation")?;
+            .ok_or("unknown-installation")?;
         let mut stmt = self.db.prepare("SELECT endpoint FROM installation_links WHERE installation = ?1 ORDER BY rowid").map_err(e)?;
         let endpoints = stmt.query_map([id], |r| r.get(0)).map_err(e)?.collect::<rusqlite::Result<Vec<String>>>().map_err(e)?;
         let control = control.map(|c| serde_json::from_str(&c)).transpose().map_err(|err| err.to_string())?;
