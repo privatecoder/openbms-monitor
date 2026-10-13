@@ -50,7 +50,7 @@ describe("maintenance texts", () => {
     const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
     const de = keys(i18n.getResourceBundle("de", "translation").maint.flow).sort();
     expect(keys(i18n.getResourceBundle("en", "translation").maint.flow).sort()).toEqual(de);
-    for (const r of ["first", "choose-port", "control-or-none", "check-needed", "marker-unknown", "after-scan", "after-recovery", "patched-on-no-session", "recovery-only-original", "running", "no-installation", "end-first"]) {
+    for (const r of ["first", "choose-port", "control-or-none", "check-needed", "marker-unknown", "after-scan", "after-recovery", "patched-on-no-session", "recovery-only-original", "marker-not-on", "running", "no-installation", "end-first"]) {
       expect(de).toContain(`reason.${r}`);
     }
     for (const m of ["paused", "offline", "lost"]) expect(de).toContain(`monitor.${m}`);
