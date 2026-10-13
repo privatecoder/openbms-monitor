@@ -656,7 +656,7 @@ pub struct EndResult {
 pub enum EndStep {
     /// marker session: `stop` and wait for 0/N (a DIP session sends no `stop`; the step passes without one)
     Stop,
-    /// pack bus: every slave polled and answering (N > 0), or the master answering 0x47 (N = 0)
+    /// pack bus: every slave polled and answering
     Bus,
     /// two Modbus reads one polling round apart (`values_pause`) over the control channel; closes the session
     Values,
@@ -679,8 +679,11 @@ pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgres
     }
 }
 
-/// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop).
-pub fn end_next(p: &EndProgress, kind: SessionKind, step: EndStep) -> Result<(), MaintError> {
+/// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A session
+/// whose slave count is out of range (N = 0 from an older build) is refused at every step: with N = 0 the
+/// bus step would pass on a master that still does not poll; the user corrects N first (`maint_set_slaves`).
+pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, step: EndStep) -> Result<(), MaintError> {
+    slaves_in_range(slaves)?;
     let stopped = p.stopped || kind == SessionKind::Dip;
     match step {
         EndStep::Stop => Ok(()),
@@ -714,7 +717,7 @@ fn end_step(state: &AppState, inst: &Installation, port: &str, step: EndStep) ->
         let map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
         end_progress_of(map.get(&inst.id), session.id)
     };
-    end_next(&progress, session.kind, step)?;
+    end_next(&progress, session.kind, session.expected_slaves, step)?;
     let r = run_end_step(state, inst, port, &session, step);
     let ok = matches!(r, Ok(EndResult { ok: true, .. }));
     let mut map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
@@ -742,15 +745,12 @@ fn run_end_step(state: &AppState, inst: &Installation, port: &str, session: &Mai
         }
         EndStep::Stop => {}
         EndStep::Bus => {
+            // N is 1..=15 here (`end_next`)
             let mut link = open_pack_for(state, port)?;
-            if n > 0 {
-                let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
-                    .map_err(|e| MaintError::Connection { message: e.to_string() })?;
-                if !round.complete(n) {
-                    return fail("pack-communication-incomplete", round.missing(n));
-                }
-            } else if bus::measure(&mut link, &mut std::io::sink()).is_err() {
-                return fail("master-not-answering", vec![]);
+            let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
+                .map_err(|e| MaintError::Connection { message: e.to_string() })?;
+            if !round.complete(n) {
+                return fail("pack-communication-incomplete", round.missing(n));
             }
         }
         EndStep::Values => {
@@ -1203,26 +1203,32 @@ mod tests {
         use SessionKind::{Dip, Marker};
         let fresh = end_progress_of(None, 7);
         // Values before Bus is refused, for both kinds
-        assert!(refused_with(end_next(&fresh, Dip, Values), "end-order"));
-        assert!(refused_with(end_next(&fresh, Marker, Values), "end-order"));
+        assert!(refused_with(end_next(&fresh, Dip, 11, Values), "end-order"));
+        assert!(refused_with(end_next(&fresh, Marker, 11, Values), "end-order"));
         // Bus before Stop: refused for a marker session, allowed for a DIP session (no stop there)
-        assert!(refused_with(end_next(&fresh, Marker, Bus), "end-order"));
-        assert!(end_next(&fresh, Dip, Bus).is_ok());
-        assert!(end_next(&fresh, Marker, Stop).is_ok());
+        assert!(refused_with(end_next(&fresh, Marker, 11, Bus), "end-order"));
+        assert!(end_next(&fresh, Dip, 11, Bus).is_ok());
+        assert!(end_next(&fresh, Marker, 11, Stop).is_ok());
         let stopped = end_record(fresh, Stop, true);
-        assert!(end_next(&stopped, Marker, Bus).is_ok());
-        assert!(refused_with(end_next(&stopped, Marker, Values), "end-order"));
+        assert!(end_next(&stopped, Marker, 11, Bus).is_ok());
+        assert!(refused_with(end_next(&stopped, Marker, 11, Values), "end-order"));
         let bus = end_record(stopped, Bus, true);
-        assert!(end_next(&bus, Marker, Values).is_ok());
+        assert!(end_next(&bus, Marker, 11, Values).is_ok());
         // a failure starts over
         let failed = end_record(bus, Values, false);
         assert_eq!(failed, EndProgress { session: 7, stopped: false, bus_ok: false });
-        assert!(refused_with(end_next(&failed, Marker, Bus), "end-order"));
+        assert!(refused_with(end_next(&failed, Marker, 11, Bus), "end-order"));
         // a new stop makes the earlier bus check stale
         assert!(!end_record(bus, Stop, true).bus_ok);
         // progress of another session does not count
         assert_eq!(end_progress_of(Some(&bus), 8), EndProgress { session: 8, stopped: false, bus_ok: false });
         assert_eq!(end_progress_of(Some(&bus), 7), bus);
+        // a session with N = 0 (stored before the slave count was checked) is refused at every step until
+        // the user corrects N
+        for step in [Stop, Bus, Values] {
+            assert!(refused_with(end_next(&bus, Dip, 0, step), "slaves-range"));
+            assert!(refused_with(end_next(&bus, Marker, 0, step), "slaves-range"));
+        }
     }
 
     /// A simulated master behind `Prep`: `check` reads the real state, `stop_to_zero` clears the marker and
