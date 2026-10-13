@@ -304,7 +304,7 @@ pub struct ScanPass {
 pub const SCAN_VALID_MS: i64 = 30 * 60 * 1000;
 
 /// Whether End's Bus step (N = 0) must scan for slaves: yes unless a pass for this installation and this
-/// session is at most `SCAN_VALID` old.
+/// session is at most `SCAN_VALID_MS` old.
 pub fn scan_needed(record: Option<&ScanPass>, installation: &str, session: Option<i64>, now: i64) -> bool {
     match record {
         Some(r) => r.installation != installation || r.session != session || now.saturating_sub(r.at) > SCAN_VALID_MS,
