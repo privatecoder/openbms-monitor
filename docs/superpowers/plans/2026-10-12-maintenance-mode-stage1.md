@@ -61,7 +61,7 @@
 8. **`update-interrupted` before every restart into the bootloader**, replaced by the result once the flash returns. A crash leaves it, and it blocks like an unclear update.
 9. **Sequential way and `stop`:** a master-flash row with `stop` needs `stop` right before the restart, which one adapter cannot do. It is refused there with a hint to use a separate control adapter.
 10. **Unclear master update** is a flash block on pack 0 with reason `master-unclear` and the expected state, with or without a session. Like every block it stops further flashes and End. It is cleared by a master check that shows the expected state (not by 0x51/0x47, because the master's application runs), or by the user's "isolated or recovered".
-11. **Endpoint ownership is guarded:** an endpoint or control adapter never moves between installations while the source or the target has open work.
+11. **Endpoint ownership is guarded:** an endpoint or control adapter never moves between installations while the source or the target has open work, and an installation with open work keeps all its endpoints and its control adapter.
 
 ## Review Focus
 
@@ -1323,7 +1323,7 @@ fn connect_tcp_within(
   - `Store::{open, installation_for, installation_of, any_open, open_work, installations, save_installation, add_master_block, master_state, set_master_state, open_session, start_session, set_session_kind, note_done, set_failing, end_session, add_block, set_block_reason, blocks, clear_block, note_sector, sector_note}`
   - `installation_of(endpoint) -> Option<Installation>` never creates one; it also finds the installation whose control channel is that endpoint (sequential way: one adapter for both buses). `installation_for` creates one for an unassigned endpoint.
   - `any_open() -> bool`: some installation has an open session, an uncleared block, or the last state `patched-on` / `marker-unexplained`. `open_work(inst) -> bool`: the same for one installation.
-  - `save_installation` refuses (`Err("endpoint-in-use")`) to move an endpoint or the control adapter between installations while the source or the target has open work; it runs in one transaction.
+  - `save_installation` refuses (`Err("endpoint-in-use")`) to move an endpoint or the control adapter between installations while the source or the target has open work, and an installation with open work may neither drop an endpoint nor change its control adapter (renaming and adding unowned endpoints stay possible); it runs in one transaction.
   - `add_master_block(inst, expect, now) -> i64`: block on pack 0 with reason `master-unclear` and the expected state.
 
 - [ ] **Step 1: Write the failing tests** (bottom of `maint_store.rs`)
@@ -1427,6 +1427,18 @@ mod tests {
         a2.endpoints.push("serial:/dev/q".into());
         assert_eq!(s.save_installation(&a2), Err("endpoint-in-use".to_string()));
         assert_eq!(s.installation_of("serial:/dev/q").unwrap().map(|i| i.id), Some(c.id.clone()));
+        // nor may it drop its blocked port (it would become ownerless, then assignable elsewhere)
+        let mut a3 = a.clone();
+        a3.endpoints.clear();
+        assert_eq!(s.save_installation(&a3), Err("endpoint-in-use".to_string()));
+        let mut a4 = a.clone();
+        a4.control = Some(ControlEndpoint::Tcp { addr: "gw2:4196".into() });
+        assert_eq!(s.save_installation(&a4), Err("endpoint-in-use".to_string()));
+        assert_eq!(s.installation_of("serial:/dev/p").unwrap().map(|i| i.id), Some(a.id.clone()));
+        // renaming stays possible
+        let mut a5 = a.clone();
+        a5.name = "Bank X".into();
+        s.save_installation(&a5).unwrap();
         // without open work the move is allowed
         let mut b3 = b.clone();
         b3.endpoints.push("serial:/dev/q".into());
@@ -1686,6 +1698,15 @@ impl Store {
     /// A move is refused while the source or the target has open work: a block or a session must never be
     /// separated from the bus it belongs to.
     pub fn save_installation(&self, i: &Installation) -> Result<(), String> {
+        // with open work the installation keeps every endpoint and its control adapter: a removed port would
+        // be ownerless and could then be assigned elsewhere, away from its block
+        if self.open_work(&i.id)? {
+            let old = self.installation(&i.id)?;
+            let kept = old.endpoints.iter().all(|ep| i.endpoints.contains(ep));
+            if !kept || old.control != i.control {
+                return Err("endpoint-in-use".into());
+            }
+        }
         let mut keys: Vec<String> = i.endpoints.clone();
         keys.extend(i.control.as_ref().map(ControlEndpoint::key));
         for key in &keys {
