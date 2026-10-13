@@ -164,7 +164,7 @@ export function packsDerived(packs: number, t: T): string {
   return `${packsLine(packs, t)} · ${t("maint.panel.dipWas", { n: slavesOf(packs) })}`;
 }
 
-const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero"];
+const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "master-unreadable"];
 
 /** Text key of a failing End check (EndResult.failing, session.failing); "stop: <MaintError JSON>" carries the
  *  dialog's error, "slave-present: <address>" the slave found, "slave-count-mismatch: <actual> <N>" the master's

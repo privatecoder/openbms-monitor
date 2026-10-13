@@ -191,7 +191,8 @@ const resources = {
           "system-values": "Systemwerte nicht lesbar",
           "master-not-zero": "Master meldet nicht 0 Slaves",
           "slave-present": "An Adresse {{addr}} antwortet ein Slave – es sind mehr als 1 Pack",
-          stop: "„stop“ fehlgeschlagen: {{error}}",
+          stop: "„stop“ ging nicht durch: {{error}}",
+          "master-unreadable": "Master über die CAN-Buchse nicht lesbar (keine Antwort oder Verbindungsfehler)",
           "slave-count-mismatch": "Der Master meldet {{actual}}, eingetragen sind {{packs}} ({{expected}}). DIP 5–8 zurückstellen oder die Packzahl ändern",
         },
         progress: {
@@ -560,7 +561,8 @@ const resources = {
           "system-values": "system values not readable",
           "master-not-zero": "master does not report 0 slaves",
           "slave-present": "a slave answers at address {{addr}} – there is more than one pack",
-          stop: "“stop” failed: {{error}}",
+          stop: "“stop” did not go through: {{error}}",
+          "master-unreadable": "the master cannot be read over the CAN socket (no answer or connection error)",
           "slave-count-mismatch": "the master reports {{actual}}, {{packs}} are entered ({{expected}}). Set DIP 5–8 back or change the pack count",
         },
         progress: {

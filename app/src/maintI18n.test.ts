@@ -11,7 +11,7 @@ const REFUSALS = [
   "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained", "slave-present",
 ];
 // every value the backend stores as a failing End check (besides "stop: …", which carries an error)
-const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop", "slave-count-mismatch"];
+const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop", "slave-count-mismatch", "master-unreadable"];
 
 describe("maintenance texts", () => {
   it("has a German and an English text for every refusal key", () => {
@@ -69,7 +69,7 @@ describe("maintenance texts", () => {
       expect(text, lng).toMatch(/\)\. /);
     }
     expect(tr("de")("maint.panel.endFailed", { what: failingText(timeout, tr("de")) }))
-      .toBe("Prüfung fehlgeschlagen: „stop“ fehlgeschlagen: Der Master hat den neuen Zustand nicht rechtzeitig gemeldet (zuletzt Marker 1, 0 Slaves). Die Wartung bleibt offen.");
+      .toBe("Prüfung fehlgeschlagen: „stop“ ging nicht durch: Der Master hat den neuen Zustand nicht rechtzeitig gemeldet (zuletzt Marker 1, 0 Slaves). Die Wartung bleibt offen.");
     expect(tr("de")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 0 1", tr("de")) }))
       .toBe("Prüfung fehlgeschlagen: Der Master meldet 0 Slaves, eingetragen sind 2 Packs (1 Slave). DIP 5–8 zurückstellen oder die Packzahl ändern. Die Wartung bleibt offen.");
     expect(tr("en")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 2 1", tr("en")) }))

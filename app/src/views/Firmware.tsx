@@ -114,8 +114,11 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   }, [overview?.session?.id, overview?.installation.id]);
   // after a lost or closed connection the operator confirms the inverter afresh and measures again
   useEffect(() => { setInverter(false); setMeasuredAt(null); setNoControl(false); setSinglePack(false); }, [disconnects]);
-  // a result belongs to the installation it was reached for
-  useEffect(() => { setActivity((a) => (a && a.installation !== overview?.installation.id ? null : a)); }, [overview?.installation.id]);
+  // a result belongs to the installation it was reached for; a transient "no overview" (reload) keeps it
+  useEffect(() => {
+    const id = overview?.installation.id;
+    if (id) setActivity((a) => (a && a.installation !== id ? null : a));
+  }, [overview?.installation.id]);
 
   // which installation owns the pack port
   const lookupPort = () => {

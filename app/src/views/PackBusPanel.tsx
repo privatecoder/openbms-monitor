@@ -326,20 +326,20 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
 
       {/* unclear updates: listed above the steps; they lock measure, flash and End */}
       {o.blocks.map((b) => {
-        const clear = (how: "answered" | "isolated") => run(`block:${b.id}`, "clear-block", async () => ({ overview: await api.maintClearBlock(o.installation.id, b.id, how, how === "answered" ? port : null), text: t("maint.result.clear-block") }));
+        const clear = (how: "answered" | "isolated") => run(`block:${b.id}:${how}`, "clear-block", async () => ({ overview: await api.maintClearBlock(o.installation.id, b.id, how, how === "answered" ? port : null), text: t("maint.result.clear-block") }));
         return (
           <div key={b.id} className="space-y-1 rounded-md border border-alarm p-2 text-alarm">
             <p className="flex gap-2"><TriangleAlert className="h-4 w-4 shrink-0" />{t(`maint.panel.block.${b.reason}`, { pack: b.pack })}</p>
             <div className="flex gap-2">
-              <ActButton variant="secondary" size="sm" spinning={spinning(`block:${b.id}`)} disabled={!idle || !port} onClick={() => clear("answered")}>{t("maint.panel.blockCheck")}</ActButton>
-              <Button variant="secondary" size="sm" disabled={!idle} onClick={() => clear("isolated")}>{t("maint.panel.blockIsolated")}</Button>
+              <ActButton variant="secondary" size="sm" spinning={spinning(`block:${b.id}:answered`)} disabled={!idle || !port} onClick={() => clear("answered")}>{t("maint.panel.blockCheck")}</ActButton>
+              <ActButton variant="secondary" size="sm" spinning={spinning(`block:${b.id}:isolated`)} disabled={!idle} onClick={() => clear("isolated")}>{t("maint.panel.blockIsolated")}</ActButton>
             </div>
-            {status(`block:${b.id}`)}
+            {status(`block:${b.id}:answered`)}{status(`block:${b.id}:isolated`)}
           </div>
         );
       })}
       {/* a cleared block takes its buttons along: its result stays here */}
-      {activity?.key.startsWith("block:") && !o.blocks.some((b) => activity.key === `block:${b.id}`) && status(activity.key)}
+      {activity?.key.startsWith("block:") && !o.blocks.some((b) => activity.key.startsWith(`block:${b.id}:`)) && status(activity.key)}
 
       <ol className="space-y-2">
         <Item n={1} title={t("maint.flow.step.connections")} step={st.connections}>

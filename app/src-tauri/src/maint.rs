@@ -10,6 +10,7 @@ use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError, Probe};
 use openbms_flash::maint::policy::{Expect, Outcome, Step};
 use openbms_flash::maint::{bus, policy, SystemClock};
 use openbms_flash::session::Progress;
+use openbms_proto::MaintStatus;
 use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -195,6 +196,32 @@ pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installati
     }
 }
 
+/// The state a `start` (1/0) or `stop` (0/N, any count without `expected`) waits for is already there.
+pub fn target_reached(action: Action, expected: Option<u8>, s: MaintStatus) -> bool {
+    match action {
+        Action::Status => true,
+        Action::Start => s.marker && s.effective_slaves == 0,
+        Action::Stop => !s.marker && expected.is_none_or(|n| s.effective_slaves == n),
+    }
+}
+
+/// `start`/`stop` over the control channel. If the first attempt went through a dead main connection and is
+/// repeated on a fresh channel (`with_control`), the repeat reads 0x64 first and continues from the state
+/// found: a target already reached is not sent again.
+fn control_dialog(state: &AppState, inst: &Installation, action: Action, expected: Option<u8>) -> Result<Result<MaintStatus, DialogError>, MaintError> {
+    let mut retry = false;
+    with_control(state, inst, |c| {
+        if std::mem::replace(&mut retry, true) {
+            if let Ok(Probe::Status(s)) = dialog::probe(c, &SystemClock::new(), Budgets::default()) {
+                if target_reached(action, expected, s) {
+                    return Ok(s);
+                }
+            }
+        }
+        dialog::dialog(c, &SystemClock::new(), action, expected, Budgets::default())
+    })
+}
+
 /// Event "maint-progress": the phase of the running panel action (`detail`: e.g. address and pass of the
 /// slave scan), so the UI can name it at the button.
 #[derive(Serialize, Clone, Debug)]
@@ -253,7 +280,7 @@ impl std::io::Write for ScanProgress<'_> {
                 continue;
             }
             if let Some((pass, address)) = scan_step(&String::from_utf8_lossy(&self.line)) {
-                progress(self.state, "scan", Some(serde_json::json!({ "address": address, "of": 15, "pass": pass, "passes": 2 })));
+                progress(self.state, "scan", Some(serde_json::json!({ "address": address, "of": bus::SLAVE_ADDRESSES, "pass": pass, "passes": bus::SLAVE_PASSES })));
             }
             self.line.clear();
         }
@@ -392,7 +419,7 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
     let now = crate::history::now_ms();
     with_store(&state, |s| s.start_session(&inst.id, SessionKind::Marker, n, now))?;
     progress(&state, "start", None);
-    let r = with_control(&state, &inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Start, None, Budgets::default()))?;
+    let r = control_dialog(&state, &inst, Action::Start, None)?;
     check(&state, &inst)?;
     r?;
     overview(&state, &installation)
@@ -820,7 +847,7 @@ pub fn stop_to_zero(state: &AppState, inst: &Installation) -> Result<(), MaintEr
     let ms = with_store(state, |s| s.master_state(&inst.id))?;
     stop_allowed(ms.as_ref().map(|(m, _)| m))?;
     progress(state, "stop", None);
-    let r = with_control(state, inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(0), Budgets::default()))?;
+    let r = control_dialog(state, inst, Action::Stop, Some(0))?;
     check(state, inst)?;
     r?;
     with_store(state, |s| match s.open_session(&inst.id)? {
@@ -990,12 +1017,16 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
         EndStep::Stop if session.kind == SessionKind::Marker => {
             // read first: a marker already off needs no `stop`, and a slave count that does not fit N is named
             progress(state, "end-check", None);
-            match stop_plan(&check(state, inst)?, n) {
+            let fresh = check(state, inst)?;
+            match stop_plan(&fresh, n) {
                 StopPlan::Skip => {}
+                StopPlan::Refuse => return Err(refused("marker-unexplained")),
                 StopPlan::Mismatch { actual } => return fail(&mismatch_failing(actual, n), vec![]),
                 StopPlan::Send => {
+                    // never a `stop` on a locked marker (it would erase the whole sector)
+                    stop_allowed(Some(&fresh))?;
                     progress(state, "stop", None);
-                    let r = with_control(state, inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(n), Budgets::default()))?;
+                    let r = control_dialog(state, inst, Action::Stop, Some(n))?;
                     check(state, inst)?;
                     if let Err(e) = r {
                         return fail(&stop_failing(MaintError::from(e), n), vec![]);
@@ -1008,10 +1039,8 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
             // count (DIP 5–8 not back yet) is named here instead of as missing packs later
             if inst.control.is_some() {
                 progress(state, "end-check", None);
-                if let Ok(fresh) = check(state, inst) {
-                    if let StopPlan::Mismatch { actual } = stop_plan(&fresh, n) {
-                        return fail(&mismatch_failing(actual, n), vec![]);
-                    }
+                if let Some(what) = dip_end_check(&check(state, inst)?, n)? {
+                    return fail(&what, vec![]);
                 }
             }
         }
@@ -1064,18 +1093,34 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
 /// What End's Stop step does after reading 0x64 (marker session): a marker already off with the session's
 /// slave count needs no `stop` (the step counts as done); a marker off with another count fails with
 /// `slave-count-mismatch` (e.g. 0/0 for N = 1 while DIP 5–8 are still OFF); anything else sends `stop`.
+/// A marker of unexplained origin is refused (no `stop`, it would erase the whole sector).
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopPlan {
     Send,
     Skip,
     Mismatch { actual: u8 },
+    Refuse,
 }
 
 pub fn stop_plan(fresh: &StoredMasterState, n: u8) -> StopPlan {
     match fresh {
+        StoredMasterState::MarkerUnexplained => StopPlan::Refuse,
         StoredMasterState::PatchedOff { slaves } if *slaves == n => StopPlan::Skip,
         StoredMasterState::PatchedOff { slaves } => StopPlan::Mismatch { actual: *slaves },
         _ => StopPlan::Send,
+    }
+}
+
+/// End's first step in a DIP session (no `stop`), after a fresh 0x64 read with a control channel: None passes,
+/// Some(failing) fails the step. A master that cannot be read fails it (`master-unreadable`) instead of passing
+/// silently; a marker of unexplained origin is refused; another slave count is the mismatch. The original
+/// firmware (no 0x64) passes: the pack bus step decides.
+pub fn dip_end_check(fresh: &StoredMasterState, n: u8) -> Result<Option<String>, MaintError> {
+    match fresh {
+        StoredMasterState::MarkerUnexplained => Err(refused("marker-unexplained")),
+        StoredMasterState::Unknown => Ok(Some("master-unreadable".into())),
+        StoredMasterState::PatchedOff { slaves } if *slaves != n => Ok(Some(mismatch_failing(*slaves, n))),
+        _ => Ok(None),
     }
 }
 
@@ -1849,6 +1894,9 @@ mod tests {
         // DIP 5–8 still OFF (0/0 for N = 1), or more slaves than entered (0/2 for N = 1)
         assert_eq!(stop_plan(&S::PatchedOff { slaves: 0 }, 1), StopPlan::Mismatch { actual: 0 });
         assert_eq!(stop_plan(&S::PatchedOff { slaves: 2 }, 1), StopPlan::Mismatch { actual: 2 });
+        // never a stop on a locked marker
+        assert_eq!(stop_plan(&S::MarkerUnexplained, 1), StopPlan::Refuse);
+        assert!(stop_allowed(Some(&S::MarkerUnexplained)).is_err());
         assert_eq!(mismatch_failing(0, 1), "slave-count-mismatch: 0 1");
         // a stop that ends at another count than N is the same mismatch; other failures carry the error
         assert_eq!(stop_failing(MaintError::Timeout { marker: false, slaves: 2 }, 1), "slave-count-mismatch: 2 1");
@@ -1861,5 +1909,29 @@ mod tests {
         assert_eq!(scan_step("slave scan: pass 1, address 7"), Some((1, 7)));
         assert_eq!(scan_step("slave scan: pass 2, address 15\n"), Some((2, 15)));
         assert_eq!(scan_step("slave scan: 3 byte(s) seen, slave at 4"), None);
+    }
+
+    #[test]
+    fn a_retried_start_or_stop_continues_from_the_state_found() {
+        let st = |marker, slaves| MaintStatus { marker, effective_slaves: slaves };
+        assert!(target_reached(Action::Start, None, st(true, 0)));
+        assert!(!target_reached(Action::Start, None, st(true, 3)));
+        assert!(!target_reached(Action::Start, None, st(false, 3)));
+        assert!(target_reached(Action::Stop, Some(3), st(false, 3)));
+        assert!(!target_reached(Action::Stop, Some(3), st(false, 0)));
+        assert!(!target_reached(Action::Stop, Some(0), st(true, 0)));
+        assert!(target_reached(Action::Stop, None, st(false, 5)));
+    }
+
+    #[test]
+    fn dip_session_end_names_a_mismatch_and_never_passes_an_unreadable_master() {
+        use StoredMasterState as S;
+        assert_eq!(dip_end_check(&S::PatchedOff { slaves: 1 }, 1).unwrap(), None);
+        // DIP 5–8 still OFF: 0/0 for N = 1
+        assert_eq!(dip_end_check(&S::PatchedOff { slaves: 0 }, 1).unwrap(), Some("slave-count-mismatch: 0 1".into()));
+        assert_eq!(dip_end_check(&S::Unknown, 1).unwrap(), Some("master-unreadable".into()));
+        assert!(refused_with(dip_end_check(&S::MarkerUnexplained, 1), "marker-unexplained"));
+        // original firmware: the pack bus step decides
+        assert_eq!(dip_end_check(&S::No0x64, 1).unwrap(), None);
     }
 }
