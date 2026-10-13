@@ -377,13 +377,17 @@ pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState,
         Err(_) => None,
     };
     let read_ok = matches!(probe, Some(Probe::Status(_) | Probe::Unsupported));
-    let expected = session.is_some_and(|s| s.kind == SessionKind::Marker);
+    let expected = session.as_ref().is_some_and(|s| s.kind == SessionKind::Marker);
     let classified: StoredMasterState = policy::classify(probe, expected).into();
     let now = crate::history::now_ms();
     with_store(state, |s| {
         let stored = s.master_state(&inst.id)?.map(|(m, _)| m);
         let m = next_state(stored.as_ref(), classified, read_ok);
         s.set_master_state(&inst.id, &m, now)?;
+        // a mismatch names a count the master reported; a read that shows another state takes it back
+        if let Some(ses) = session.as_ref().filter(|x| read_ok && mismatch_stale(x.failing.as_deref(), Some(&m), x.expected_slaves)) {
+            s.set_failing(ses.id, None)?;
+        }
         for id in resolved_master_blocks(&s.blocks(&inst.id)?, probe, read_ok) {
             s.clear_block(id, "checked", now)?;
         }
@@ -457,8 +461,8 @@ pub async fn maint_activate(state: State<'_, AppState>, installation: String, in
 }
 
 /// The slave count `N` (packs on the bus minus the master, = the master's DIP 5–8 value). A bank has 1 to 15
-/// slaves. `N` = 0 (a single pack) only when `zero_verified`: a fresh 0x64 read in the same command showed
-/// "patched, marker off, 0 slaves"; otherwise End's bus step could pass on a master that still does not poll.
+/// slaves. `N` = 0 (a single pack) only when `zero_verified`: proven in the same command (`single_pack`);
+/// otherwise End's bus step could pass on a master that still does not poll.
 pub fn slaves_allowed(n: u8, zero_verified: bool) -> Result<(), MaintError> {
     match n {
         1..=15 => Ok(()),
@@ -472,20 +476,28 @@ pub fn reports_zero(state: Option<&StoredMasterState>) -> bool {
     state == Some(&StoredMasterState::PatchedOff { slaves: 0 })
 }
 
-/// Proof of a single pack: the master reports 0/0 (which alone a bank master with DIP 5–8 OFF also does)
-/// and no slave answers on the pack bus (`slave`: the first address 1..=15 that answered 0x51).
-pub fn single_pack(state: Option<&StoredMasterState>, slave: Option<u8>) -> bool {
-    reports_zero(state) && slave.is_none()
+/// A fresh master status that allows the single-pack proof: a patched master's 0/0, or the original firmware's
+/// RTN 04 (`no-0x64`; it cannot report a slave count). Neither tells a single pack from a bank whose master has
+/// DIP 5–8 OFF: the slave scan does (slaves answer 0x51 at their address whatever the master's DIPs).
+pub fn single_pack_status(state: Option<&StoredMasterState>) -> bool {
+    reports_zero(state) || state == Some(&StoredMasterState::No0x64)
 }
 
-/// For `N` = 0 (the caller holds `port_busy`): read 0x64 now and store it; if it shows 0/0, prove on the pack
+/// Proof of a single pack: a fresh `single_pack_status` and no slave answers on the pack bus (`slave`: the
+/// first address 1..=15 that answered 0x51).
+pub fn single_pack(state: Option<&StoredMasterState>, slave: Option<u8>) -> bool {
+    single_pack_status(state) && slave.is_none()
+}
+
+/// For `N` = 0 (the caller holds `port_busy`): read 0x64 now and store it; if it shows 0/0 or RTN 04
+/// (`single_pack_status`), prove on the pack
 /// bus that it is the pack bus (quiet, 0x47 from address 0) and scan for a slave (`bus::first_slave`, two
 /// passes, fail-closed). Returns the fresh state and the scan result; a slave found is refused `slave-present`.
 /// Without a control channel nothing can be verified: `slaves-range`.
 fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, session: Option<i64>) -> Result<(StoredMasterState, Option<u8>), MaintError> {
     let r = verify_single_pack_scan(state, app, inst, port);
-    // a pass is remembered for End's pack bus step; a slave, an error or a master not at 0/0 forgets it
-    note_scan(state, &inst.id, session, matches!(&r, Ok((fresh, None)) if reports_zero(Some(fresh))));
+    // a pass is remembered for End's pack bus step; a slave, an error or another master status forgets it
+    note_scan(state, &inst.id, session, matches!(&r, Ok((fresh, None)) if single_pack_status(Some(fresh))));
     r
 }
 
@@ -499,7 +511,7 @@ fn verify_single_pack_scan(state: &AppState, app: &AppHandle, inst: &Installatio
         Err(MaintError::Refused { reason }) if reason == "no-control-channel" => return Err(refused("slaves-range")),
         r => r?,
     };
-    if !reports_zero(Some(&fresh)) {
+    if !single_pack_status(Some(&fresh)) {
         return Ok((fresh, None));
     }
     let mut link = open_pack_for(state, app, port)?;
@@ -538,7 +550,7 @@ pub async fn maint_scan_slaves(app: AppHandle, state: State<'_, AppState>, insta
 }
 
 /// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
-/// (`N` = 0 only for a proven single pack, see `single_pack`; `port`: the pack port, used only then).
+/// (`N` = 0 only for a single pack proven here, see `single_pack`; `port`: the pack port, used only then).
 #[tauri::command]
 pub async fn maint_start_dip(app: AppHandle, state: State<'_, AppState>, installation: String, expected_slaves: u8, port: String) -> Result<Overview, MaintError> {
     if expected_slaves != 0 {
@@ -611,7 +623,13 @@ pub async fn maint_set_slaves(app: AppHandle, state: State<'_, AppState>, instal
     }
     set_slaves_allowed(session.as_ref(), ms.as_ref(), expected_slaves, single)?;
     if let Some(ses) = &session {
-        with_store(&state, |s| s.set_expected_slaves(ses.id, expected_slaves))?;
+        with_store(&state, |s| {
+            s.set_expected_slaves(ses.id, expected_slaves)?;
+            if mismatch_stale(ses.failing.as_deref(), ms.as_ref(), expected_slaves) {
+                s.set_failing(ses.id, None)?;
+            }
+            Ok(())
+        })?;
     }
     state.end_progress.lock().map_err(|e| store_err(e.to_string()))?.remove(&inst.id);
     overview(&state, &installation)
@@ -974,7 +992,7 @@ pub enum EndStep {
     /// answering 0x51)
     Bus,
     /// two Modbus reads one polling round apart (`values_pause`) over the control channel, for `N` = 0 after a
-    /// fresh 0x64 status 0/0; closes the session
+    /// fresh 0x64 status 0/0 (an original master: RTN 04, `values_zero_check`); closes the session
     Values,
 }
 
@@ -998,7 +1016,7 @@ pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgres
 /// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A single pack
 /// (`N` = 0) ends only with a control channel: there is no polling round to see, so its Bus step also scans
 /// addresses 1..=15 for a slave (a bank master with DIP 5–8 still OFF reports 0/0 too) and its Values step
-/// needs a fresh 0/0 from the master (`reports_zero`). Without a control channel (or with `N` > 15) every step
+/// needs a fresh 0/0 from the master, or RTN 04 from an original one (`values_zero_check`). Without a control channel (or with `N` > 15) every step
 /// is refused until the user corrects `N`.
 pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, has_control: bool, step: EndStep) -> Result<(), MaintError> {
     slaves_allowed(slaves, has_control)?;
@@ -1142,9 +1160,12 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
         }
         EndStep::Values => {
             progress(state, "values", None);
-            // a single pack: the master must still report 0/0 now (it cannot show a polling round)
-            if n == 0 && !reports_zero(Some(&check(state, inst)?)) {
-                return fail("master-not-zero", vec![]);
+            // a single pack: the master must still report 0/0 now (it cannot show a polling round); an original
+            // master answers RTN 04 instead, it cannot report a slave count
+            if n == 0 {
+                if let Some(what) = values_zero_check(&check(state, inst)?)? {
+                    return fail(&what, vec![]);
+                }
             }
             for i in 0..2 {
                 if i == 1 {
@@ -1195,8 +1216,34 @@ pub fn dip_end_check(fresh: &StoredMasterState, n: u8) -> Result<Option<String>,
 }
 
 /// The failing End check for a master whose slave count does not match N: "slave-count-mismatch: <actual> <N>".
+/// Only ever built from a count the master reported in a 0x64 status (`PatchedOff`, or a `stop` timeout).
 pub fn mismatch_failing(actual: u8, expected: u8) -> String {
     format!("slave-count-mismatch: {actual} {expected}")
+}
+
+/// A stored `slave-count-mismatch` that no longer holds: the session's N changed, or the master state is not
+/// the reported count any more (e.g. `no-0x64` after a flash back to the original firmware, which reports no
+/// count at all). Any other failing is never stale here.
+pub fn mismatch_stale(failing: Option<&str>, state: Option<&StoredMasterState>, n: u8) -> bool {
+    let Some(rest) = failing.and_then(|f| f.strip_prefix("slave-count-mismatch: ")) else { return false };
+    let mut it = rest.split(' ').map(|x| x.parse::<u8>().ok());
+    match (it.next().flatten(), it.next().flatten()) {
+        (Some(actual), Some(expected)) => expected != n || state != Some(&StoredMasterState::PatchedOff { slaves: actual }),
+        _ => true,
+    }
+}
+
+/// End's Values step for a single pack (`N` = 0), after a fresh 0x64 read: a patched master's 0/0 or an original
+/// master's RTN 04 (`no-0x64`) passes. An unreadable master fails `master-unreadable`, a reported count other than
+/// 0 is the mismatch, a set marker `master-not-zero`; an unexplained marker is refused.
+pub fn values_zero_check(fresh: &StoredMasterState) -> Result<Option<String>, MaintError> {
+    match fresh {
+        StoredMasterState::PatchedOff { slaves: 0 } | StoredMasterState::No0x64 => Ok(None),
+        StoredMasterState::PatchedOff { slaves } => Ok(Some(mismatch_failing(*slaves, 0))),
+        StoredMasterState::Unknown => Ok(Some("master-unreadable".into())),
+        StoredMasterState::MarkerUnexplained => Err(refused("marker-unexplained")),
+        StoredMasterState::PatchedOn => Ok(Some("master-not-zero".into())),
+    }
 }
 
 /// The failing End check for a failed `stop`: a timeout with the marker off but another slave count than N is
@@ -1210,7 +1257,7 @@ pub fn stop_failing(e: MaintError, n: u8) -> String {
 
 /// End (step 5) in one call: refused while an update is unclear; marker → `stop` and wait for 0/N; then
 /// the pack bus check against N; then two Modbus reads ≥ 2 s apart over the control channel (for N = 0 after
-/// a fresh 0/0 from the master). The session
+/// a fresh 0/0 from the master, or RTN 04 from an original one). The session
 /// closes only when all of it passed. In the sequential way this is impossible in one call
 /// (`end-sequential`): the UI runs `maint_end_step` with a cable change in between.
 #[tauri::command]
@@ -1610,6 +1657,10 @@ mod tests {
     fn a_single_pack_needs_the_master_at_zero_and_no_slave_on_the_bus() {
         use StoredMasterState as S;
         assert!(single_pack(Some(&S::PatchedOff { slaves: 0 }), None));
+        // an original master answers RTN 04: the slave scan alone tells a single pack from a bank with DIP 5–8 OFF
+        assert!(single_pack(Some(&S::No0x64), None));
+        assert!(!single_pack(Some(&S::No0x64), Some(1)));
+        assert!(!single_pack(Some(&S::MarkerUnexplained), None));
         // a bank master with DIP 5-8 OFF also reports 0/0, but its slaves answer
         assert!(!single_pack(Some(&S::PatchedOff { slaves: 0 }), Some(7)));
         assert!(!single_pack(Some(&S::PatchedOff { slaves: 2 }), None));
@@ -2015,6 +2066,56 @@ mod tests {
         assert!(!target_reached(Action::Stop, Some(3), st(false, 0)));
         assert!(!target_reached(Action::Stop, Some(0), st(true, 0)));
         assert!(target_reached(Action::Stop, None, st(false, 5)));
+    }
+
+    #[test]
+    fn single_pack_n0_is_accepted_with_an_original_master_and_no_slave() {
+        use StoredMasterState as S;
+        let ses = session(SessionKind::Dip);
+        let no64 = S::No0x64;
+        // what maint_set_slaves / maint_start_dip decide after the fresh read and the slave scan
+        let decide = |fresh: &S, slave: Option<u8>| set_slaves_allowed(Some(&ses), Some(fresh), 0, single_pack(Some(fresh), slave));
+        assert!(decide(&no64, None).is_ok());
+        assert!(refused_with(decide(&no64, Some(3)), "slaves-range"));
+        assert!(refused_with(decide(&S::Unknown, None), "slaves-range"));
+        assert!(slaves_allowed(0, single_pack(Some(&no64), None)).is_ok());
+    }
+
+    #[test]
+    fn end_values_for_one_pack_accepts_rtn04_only_for_an_original_master() {
+        use StoredMasterState as S;
+        assert_eq!(values_zero_check(&S::PatchedOff { slaves: 0 }).unwrap(), None);
+        assert_eq!(values_zero_check(&S::No0x64).unwrap(), None);
+        assert_eq!(values_zero_check(&S::Unknown).unwrap(), Some("master-unreadable".into()));
+        assert_eq!(values_zero_check(&S::PatchedOff { slaves: 2 }).unwrap(), Some("slave-count-mismatch: 2 0".into()));
+        assert_eq!(values_zero_check(&S::PatchedOn).unwrap(), Some("master-not-zero".into()));
+        assert!(refused_with(values_zero_check(&S::MarkerUnexplained), "marker-unexplained"));
+        // for N > 0 an original master never yields a count: the pack bus step names missing slaves
+        assert_eq!(dip_end_check(&S::No0x64, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn a_mismatch_never_stands_without_a_reported_count() {
+        use StoredMasterState as S;
+        let m = Some("slave-count-mismatch: 0 1");
+        // the master still reports 0/0 for N = 1: the mismatch holds
+        assert!(!mismatch_stale(m, Some(&S::PatchedOff { slaves: 0 }), 1));
+        // flashed back to the original firmware (RTN 04) or unreadable: no count, the mismatch goes
+        assert!(mismatch_stale(m, Some(&S::No0x64), 1));
+        assert!(mismatch_stale(m, Some(&S::Unknown), 1));
+        assert!(mismatch_stale(m, None, 1));
+        // another count, or N corrected
+        assert!(mismatch_stale(m, Some(&S::PatchedOff { slaves: 1 }), 1));
+        assert!(mismatch_stale(m, Some(&S::PatchedOff { slaves: 0 }), 0));
+        // other failings stay
+        assert!(!mismatch_stale(Some("pack-communication-incomplete"), Some(&S::No0x64), 1));
+        assert!(!mismatch_stale(None, Some(&S::No0x64), 1));
+        // every builder of the mismatch takes a count from a 0x64 status
+        for fresh in [S::No0x64, S::Unknown, S::PatchedOn] {
+            assert!(!dip_end_check(&fresh, 1).unwrap().is_some_and(|f| f.starts_with("slave-count-mismatch")));
+            assert!(!values_zero_check(&fresh).unwrap().is_some_and(|f| f.starts_with("slave-count-mismatch")));
+            assert!(!matches!(stop_plan(&fresh, 1), StopPlan::Mismatch { .. }));
+        }
     }
 
     #[test]
