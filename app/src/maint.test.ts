@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, needsReplug, openWork, parseSlaves, workUnchanged } from "./maint";
+import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, needsReplug, openWork, parsePacks, slavesOf, workUnchanged } from "./maint";
 import type { MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -166,16 +166,23 @@ describe("workUnchanged", () => {
   });
 });
 
-describe("slave count per DIP", () => {
-  it("accepts only a whole number from 1 to 15; empty input is no value", () => {
-    expect(parseSlaves("")).toBeNull();
-    expect(parseSlaves("0")).toBeNull();
-    expect(parseSlaves("16")).toBeNull();
-    expect(parseSlaves("2.5")).toBeNull();
-    expect(parseSlaves("-3")).toBeNull();
-    expect(parseSlaves("x")).toBeNull();
-    expect(parseSlaves("1")).toBe(1);
-    expect(parseSlaves(" 15 ")).toBe(15);
+describe("pack count (master included)", () => {
+  it("accepts only a whole number from 1 to 16; empty input is no value", () => {
+    expect(parsePacks("")).toBeNull();
+    expect(parsePacks("0")).toBeNull();
+    expect(parsePacks("17")).toBeNull();
+    expect(parsePacks("2.5")).toBeNull();
+    expect(parsePacks("-3")).toBeNull();
+    expect(parsePacks("x")).toBeNull();
+    // 1 pack is selectable; the backend accepts it only when the master itself reports 0/0
+    expect(parsePacks("1")).toBe(1);
+    expect(parsePacks(" 16 ")).toBe(16);
+  });
+  it("derives the slave count the backend gets: packs minus the master", () => {
+    expect(slavesOf(1)).toBe(0);
+    expect(slavesOf(2)).toBe(1);
+    expect(slavesOf(12)).toBe(11);
+    expect(slavesOf(16)).toBe(15);
   });
 });
 
@@ -184,6 +191,7 @@ describe("failing End checks", () => {
     expect(failingKey("pack-communication-incomplete")).toEqual({ key: "maint.failing.pack-communication-incomplete" });
     expect(failingKey("master-not-answering")).toEqual({ key: "maint.failing.master-not-answering" });
     expect(failingKey("system-values")).toEqual({ key: "maint.failing.system-values" });
+    expect(failingKey("master-not-zero")).toEqual({ key: "maint.failing.master-not-zero" });
     expect(failingKey('stop: {"kind":"no-answer"}')).toEqual({ key: "maint.failing.stop", inner: { key: "maint.err.no-answer" } });
     expect(failingKey("something else")).toBeNull();
   });

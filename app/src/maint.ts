@@ -133,15 +133,33 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
   return { key: "maint.err.text", params: { text: String(e) } };
 }
 
-/** The slave count per DIP as typed: a whole number from 1 to 15, else null (the backend refuses anything else). */
-export function parseSlaves(text: string): number | null {
+/** The number of packs on the bus as typed, master included: a whole number from 1 to 16, else null. The backend
+ *  gets `slavesOf` it; 1 pack (0 slaves) it accepts only when the master itself reports "patched, 0 slaves". */
+export function parsePacks(text: string): number | null {
   const v = text.trim();
   if (!/^\d+$/.test(v)) return null;
   const n = Number(v);
-  return n >= 1 && n <= 15 ? n : null;
+  return n >= 1 && n <= 16 ? n : null;
 }
 
-const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values"];
+/** The slave count N (= the master's DIP 5–8 value) of a bank with `packs` packs, master included. */
+export function slavesOf(packs: number): number {
+  return packs - 1;
+}
+
+type T = (key: string, params?: Record<string, unknown>) => string;
+
+/** "12 Packs = 11 Slaves + 1 Master" */
+export function packsLine(packs: number, t: T): string {
+  return t("maint.panel.packsEq", { packs: t("maint.panel.packCount", { count: packs }), slaves: t("maint.panel.slaveCount", { count: slavesOf(packs) }) });
+}
+
+/** The line under the pack count input: the derived slave count and the master's DIP 5–8 value. */
+export function packsDerived(packs: number, t: T): string {
+  return `${packsLine(packs, t)} · ${t("maint.panel.dipWas", { n: slavesOf(packs) })}`;
+}
+
+const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero"];
 
 /** Text key of a failing End check (EndResult.failing, session.failing); "stop: <MaintError JSON>" carries the
  *  dialog's error. null for a value this UI does not know: it is shown as is. */
@@ -151,7 +169,7 @@ export function failingKey(f: string): { key: string; inner?: { key: string; par
   return null;
 }
 
-export function failingText(f: string, t: (key: string, params?: Record<string, unknown>) => string): string {
+export function failingText(f: string, t: T): string {
   const k = failingKey(f);
   if (!k) return f;
   return k.inner ? t(k.key, { error: t(k.inner.key, k.inner.params) }) : t(k.key);
