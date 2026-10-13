@@ -88,13 +88,16 @@ export interface FlashCheck {
   measuredAt: number | null;
   address: number;
   imageKind: FirmwareImage["kind"];
-  /** the pack port belongs to the overview's installation */
-  portAssigned: boolean;
+  /** whom the pack port belongs to: the overview's installation, no installation, or another one */
+  portOwner: "this" | "none" | "other";
 }
 
 /** Mirrors the backend gate so the start button stays honest; the backend checks everything again. */
-export function canFlash({ overview: o, inverter, measuredAt, address, imageKind, portAssigned }: FlashCheck): { ok: boolean; reason?: string } {
+export function canFlash({ overview: o, inverter, measuredAt, address, imageKind, portOwner }: FlashCheck): { ok: boolean; reason?: string } {
   if (!o) return { ok: true };
+  // the backend's port gate: with an installation in use the pack port must belong to it, maintenance or not
+  if (portOwner === "none") return { ok: false, reason: "port-not-assigned" };
+  if (portOwner === "other") return { ok: false, reason: "installation-mismatch" };
   if (o.blocks.length) return { ok: false, reason: o.blocks[0].reason };
   const s = o.state?.state;
   // the recovery row: the master back to the original image under DIP 5–8 OFF, without stop
@@ -103,7 +106,6 @@ export function canFlash({ overview: o, inverter, measuredAt, address, imageKind
   if (recovery && !o.session) return { ok: false, reason: "dip-off" };
   const maintenance = recovery || !!o.session || s === "patched-on";
   if (!maintenance) return { ok: true };
-  if (!portAssigned) return { ok: false, reason: "port-not-assigned" };
   if (!inverter) return { ok: false, reason: "inverter" };
   // a measurement counts only if it is newer than the last confirmed state
   if (measuredAt === null || (o.state_at !== null && measuredAt < o.state_at)) return { ok: false, reason: "measure" };
