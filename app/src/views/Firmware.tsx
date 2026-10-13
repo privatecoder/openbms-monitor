@@ -105,7 +105,10 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const portAvailable = ports.includes(port);
   useEffect(() => { setNoControl(false); setSinglePack(false); }, [overview?.installation.id]);
   // a new port, address or image: the measurement, the pack check and the typed confirmation no longer fit
-  useEffect(() => { setMeasuredAt(null); setTarget(null); setCheckedFor(null); setTyped(""); }, [port, address, image?.sha256]);
+  // the measurement is a property of the bus: only another port invalidates it; a new address or image
+  // invalidates the pack check and the typed confirmation
+  useEffect(() => { setMeasuredAt(null); }, [port]);
+  useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [port, address, image?.sha256]);
   // a new measurement is needed after every state change; the inverter statement after every new session
   useEffect(() => { setMeasuredAt(null); }, [overview?.state_at, overview?.installation.id]);
   // one work phase: the statement survives the session its own activation opened (see keepsInverter)
