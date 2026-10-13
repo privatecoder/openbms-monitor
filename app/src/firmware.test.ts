@@ -3,7 +3,7 @@ import { confirmationPhrase, progressFraction, steps, type FwSetup } from "./fir
 
 const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
-const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "" };
+const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "", unlocked: true };
 
 describe("firmware steps", () => {
   it("check pack needs port and image", () => {
@@ -54,5 +54,13 @@ describe("progress", () => {
     expect(progressFraction({ stage: "block", block: 0, total: 4 })).toBe(0);
     expect(progressFraction({ stage: "block", block: 2, total: 4 })).toBe(0.5);
     expect(progressFraction({ stage: "finalize", block: null, total: null })).toBe(1);
+  });
+});
+
+describe("maintenance gate", () => {
+  it("start stays locked while maintenance does not unlock it", () => {
+    const s = { ...base, typed: "FLASH 0" };
+    expect(steps({ ...s, unlocked: true }).start).toBe(true);
+    expect(steps({ ...s, unlocked: false }).start).toBe(false);
   });
 });

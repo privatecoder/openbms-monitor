@@ -56,7 +56,7 @@ export default function App() {
           <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
             onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); }} />
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} onRunning={setFlashing} onBack={() => setView("dashboard")}
+            <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
               onMonitorStopped={() => { live.reset(); setConnected(false); setPack(null); }} />
           ) : view === "cells" ? (
             <Cells />
