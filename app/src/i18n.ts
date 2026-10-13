@@ -350,6 +350,10 @@ const resources = {
           "clear-block": "Pack wird gerade geprüft", flash: "Firmware-Update läuft gerade", other: "eine andere Aktion läuft gerade (z. B. Pack prüfen)",
         },
       },
+      sn: {
+        battery: "Batterie-SN", bms: "BMS-SN", unknown: "unbekannt", first22: "(erste 22 Zeichen)", placeholder: "nicht gesetzt (Platzhalter)",
+        empty: "leer", packBusOnly: "nur über RS485-1/2 lesbar", unsupported: "von der Firmware nicht unterstützt",
+      },
       dash: {
         empty: "Wähle links Gateway oder Adapter und verbinde dich mit der Batterie.",
         head: { charging: "Lädt mit {{p}}", discharging: "Entlädt mit {{p}}", standby: "Im Leerlauf", off: "Ausgeschaltet", unknown: "Wartet auf Daten" },
@@ -770,6 +774,10 @@ const resources = {
           measure: "the bus is being measured", end: "maintenance is being ended", "end-step": "a step of ending is running",
           "clear-block": "a pack is being checked", flash: "a firmware update is running", other: "another action is running (e.g. check pack)",
         },
+      },
+      sn: {
+        battery: "Battery SN", bms: "BMS SN", unknown: "unknown", first22: "(first 22 characters)", placeholder: "not set (placeholder)",
+        empty: "empty", packBusOnly: "readable on RS485-1/2 only", unsupported: "not supported by the firmware",
       },
       dash: {
         empty: "Choose a gateway or adapter on the left and connect to the battery.",

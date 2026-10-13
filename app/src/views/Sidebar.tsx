@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
-import { api, isDemo, type Bus, type DeviceInfo, type Endpoint } from "../api";
+import { api, isDemo, type Bus, type DeviceInfo, type Endpoint, type SerialNumbers } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
@@ -18,7 +18,7 @@ const BUSY_WAIT_MS = 30_000;
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
+export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
   connected: boolean;
   /** the app stopped the monitor itself for a maintenance step (not lost, not closed by the user) */
   paused: boolean;
@@ -27,6 +27,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   lastUpdate: number;
   onConnected: (found: [number, DeviceInfo | undefined][], site: string, bus: Bus) => void;
   onDevices: (found: [number, DeviceInfo][]) => void;
+  onSerials: (address: number, serials: SerialNumbers) => void;
   /** `lost`: the link died or timed out; false: closed by the user */
   onDisconnected: (lost: boolean) => void;
   view: string;
@@ -101,7 +102,21 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     } finally { setWaiting(false); }
   };
 
+  // Serial numbers do not change while connected: read once per pack after the pack list is known, one after the
+  // other between the polls. A new connection or a disconnect starts a new generation, which ends the old reads;
+  // a failed read (port held by a flash, pack silent) leaves the value unknown without a message.
+  const serialGen = useRef(0);
+  const readSerials = async (addresses: number[]) => {
+    const gen = ++serialGen.current;
+    for (const a of addresses) {
+      if (gen !== serialGen.current) return;
+      const s = await api.serialNumbers(a).catch(() => null);
+      if (s && gen === serialGen.current) onSerials(a, s);
+    }
+  };
+
   const connect = async (retry = false) => {
+    serialGen.current += 1;
     setBusy(true); if (!retry) { setMsg(null); setLost(false); }
     setLastTry(Date.now());
     try {
@@ -129,7 +144,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         setSince(Date.now()); setLost(false);
         setMsg(note);
         await api.startPolling(addrs, 2000);
-        api.scan(addrs).then(onDevices).catch(() => {});
+        api.scan(addrs).then(onDevices).catch(() => {}).finally(() => void readSerials(addrs));
         return;
       }
       const found = await api.scan();
@@ -139,6 +154,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       setSince(Date.now()); setLost(false);
       // on the CAN socket bus the system values are polled even if no pack answered
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
+      void readSerials(found.map(([a]) => a));
     } catch (e) {
       // a cancelled wait never opened the port: nothing to close, no error
       if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
@@ -151,10 +167,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // Browser preview: connect straight away so the recorded system is visible.
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const disconnect = async () => { stopWaiting(); await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
+  const disconnect = async () => { stopWaiting(); serialGen.current += 1; await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
+    serialGen.current += 1;
     setLost(true);
     setMsg(text);
     setLastTry(Date.now());

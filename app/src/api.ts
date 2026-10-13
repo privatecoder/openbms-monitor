@@ -8,6 +8,10 @@ export type Severity = "info" | "warning" | "protection" | "fault";
 export type LimitState = "normal" | "below_limit" | "above_limit" | { other: number };
 
 export interface DeviceInfo { device_name: string; firmware_version: string; can_protocol: string }
+/** truncated: only the first 22 characters were readable (CAN socket bus); unavailable: not offered or not reachable on this bus */
+export type SerialValue =
+  | { kind: "set"; value: string; truncated: boolean } | { kind: "placeholder"; value: string } | { kind: "empty" } | { kind: "unavailable" };
+export interface SerialNumbers { battery: SerialValue; bms: SerialValue }
 export interface Telemetry {
   address: number;
   cell_voltages: number[];
@@ -136,6 +140,8 @@ const tauriApi = {
   /** CAN socket bus: maintenance state of a patched master (CID2 0x64); fails on original firmware */
   maintStatus: () => invoke<MaintStatus>("maint_status"),
   stopPolling: () => invoke<void>("stop_polling"),
+  /** battery and BMS serial number, as far as the connected bus shows them */
+  serialNumbers: (address: number) => invoke<SerialNumbers>("serial_numbers", { address }),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
   /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
@@ -239,6 +245,15 @@ function demoApi(): typeof tauriApi {
       clearInterval(timer); tick(); timer = window.setInterval(tick, intervalMs);
     },
     stopPolling: async () => { clearInterval(timer); },
+    // preview: synthetic serial numbers, one pack still with the factory placeholder
+    serialNumbers: async (address) => {
+      if (!(await load()).scan.some((s) => s.address === address)) throw new Error("timeout");
+      const n = String(address + 1).padStart(4, "0");
+      return {
+        battery: address === 2 ? { kind: "placeholder", value: "EMU110110S-XXXX-20000101-00000" } : { kind: "set", value: `DEMO-BAT-${n}`, truncated: false },
+        bms: { kind: "set", value: `SEPLOS-0000000${n}`, truncated: false },
+      };
+    },
     onPack: (f) => sub(packL, f),
     onSystem: (f) => sub(sysL, f),
     onLinkLost: async () => () => {},

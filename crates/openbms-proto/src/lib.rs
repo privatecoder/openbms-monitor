@@ -10,6 +10,7 @@ pub mod maint;
 pub mod modbus;
 pub mod params;
 mod reader;
+pub mod serial;
 pub mod status;
 pub mod telemetry;
 
@@ -20,5 +21,6 @@ pub use intra_pack::IntraPackRecord;
 pub use maint::MaintStatus;
 pub use modbus::SystemValues;
 pub use params::Parameters;
+pub use serial::{SerialNumbers, SerialValue};
 pub use status::Status;
 pub use telemetry::Telemetry;

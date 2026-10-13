@@ -1,4 +1,4 @@
-use openbms_proto::{DeviceInfo, MaintStatus, Parameters, Status, SystemValues, Telemetry};
+use openbms_proto::{DeviceInfo, MaintStatus, Parameters, SerialNumbers, Status, SystemValues, Telemetry};
 use openbms_transport::{list_serial_ports, Bus, Connection, Endpoint};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -232,6 +232,14 @@ async fn maint_status(state: State<'_, AppState>) -> Result<MaintStatus, String>
 #[tauri::command]
 async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry, String> {
     with_conn(&state.conn, &state.flashing, |c| c.telemetry(address))
+}
+
+/// Battery and BMS serial number of one pack, as far as the connected bus shows them (RS485-1/2: both; CAN socket
+/// bus: the master's battery serial number only, slaves are not asked).
+#[tauri::command]
+async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<SerialNumbers, String> {
+    let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
+    with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))
 }
 
 /// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
@@ -548,7 +556,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installation_of, maint::maint_installations, maint::maint_open_work, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_resolve_sector_note, maint::maint_overview, maint::maint_check, maint::maint_activate, maint::maint_start_dip, maint::maint_account_marker, maint::maint_set_slaves, maint::maint_measure, maint::maint_scan_slaves, maint::maint_end, maint::maint_end_step, maint::maint_clear_block, maint::maint_master_plan])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installation_of, maint::maint_installations, maint::maint_open_work, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_resolve_sector_note, maint::maint_overview, maint::maint_check, maint::maint_activate, maint::maint_start_dip, maint::maint_account_marker, maint::maint_set_slaves, maint::maint_measure, maint::maint_scan_slaves, maint::maint_end, maint::maint_end_step, maint::maint_clear_block, maint::maint_master_plan])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
