@@ -159,6 +159,14 @@ impl Store {
         Ok(Self { db })
     }
 
+    /// Run `f` in one transaction: every row it writes is stored, or (on an error) none.
+    pub fn atomic<T>(&self, f: impl FnOnce(&Self) -> Result<T, String>) -> Result<T, String> {
+        let tx = self.db.unchecked_transaction().map_err(e)?;
+        let r = f(self)?;
+        tx.commit().map_err(e)?;
+        Ok(r)
+    }
+
     fn installation(&self, id: &str) -> Result<Installation, String> {
         let (name, control): (String, Option<String>) = self
             .db
@@ -403,6 +411,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("maintenance.sqlite")
+    }
+
+    #[test]
+    fn atomic_writes_all_or_nothing() {
+        let s = Store::open(&temp("atomic")).unwrap();
+        let i = s.installation_for("tcp:gw:4196").unwrap().id;
+        let r: Result<(), String> = s.atomic(|s| {
+            s.set_master_state(&i, &StoredMasterState::Unknown, 1)?;
+            s.add_master_block(&i, "marker-on", 1)?;
+            Err("disk full".into())
+        });
+        assert!(r.is_err());
+        assert_eq!(s.master_state(&i).unwrap(), None);
+        assert!(s.blocks(&i).unwrap().is_empty());
+        s.atomic(|s| {
+            s.set_master_state(&i, &StoredMasterState::Unknown, 2)?;
+            s.add_master_block(&i, "marker-on", 2).map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(s.master_state(&i).unwrap(), Some((StoredMasterState::Unknown, 2)));
+        assert_eq!(s.blocks(&i).unwrap().len(), 1);
     }
 
     #[test]
