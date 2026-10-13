@@ -2,6 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, isDemo, type Endpoint, type MaintOverview } from "./api";
 import { attachDecision, endpointKey, errorKey, latestGuard } from "./maint";
 
+/** The setup's one-adapter confirmation ("one adapter for both buses, I move the cable"), per installation. The
+ *  backend stores only the keys; without this the control adapter is never taken as the RS485-1/2 port
+ *  (`packPortOf`), so a sidebar connection on the CAN socket adapter cannot pass for a one-adapter setup. */
+export function oneAdapterOf(id: string | null | undefined): boolean {
+  return !!id && localStorage.getItem(`maint.oneAdapter.${id}`) === "1";
+}
+export function setOneAdapter(id: string, on: boolean) {
+  if (on) localStorage.setItem(`maint.oneAdapter.${id}`, "1"); else localStorage.removeItem(`maint.oneAdapter.${id}`);
+}
+
 /** The installation in use and its maintenance overview. The banner reads from here, so it survives view
  *  changes, reconnects and (through the backend database) app restarts. */
 export function useMaint() {

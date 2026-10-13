@@ -190,20 +190,44 @@ export function keepsInverter(prev: { installation: string | null; session: numb
   return prev.session === next.session || (prev.session === null && next.session !== null);
 }
 
-/** The pack port the firmware view preselects: only the one available serial endpoint of the installation that
- *  is not the control adapter. None or several: "" (the user chooses). The control adapter only when it is the
- *  installation's only serial endpoint (a deliberate one-adapter setup). */
-export function preselectPort(ports: string[], inst: Installation | null): string {
-  if (!inst) return "";
-  const control = inst.control?.kind === "serial" ? inst.control.path : null;
-  const serial = new Set(inst.endpoints.filter((k) => k.startsWith("serial:")).map((k) => k.slice("serial:".length)));
-  if (control) serial.add(control);
-  const available = [...serial].filter((p) => ports.includes(p));
-  const candidates = available.filter((p) => p !== control);
-  if (candidates.length === 1) return candidates[0];
-  // the control adapter only as the installation's only serial endpoint and the only port plugged in
-  if (candidates.length === 0 && control && serial.size === 1 && ports.length === 1 && ports[0] === control) return control;
-  return "";
+const controlKey = (c: ControlEndpoint | null) => (c ? (c.kind === "tcp" ? endpointKey({ kind: "tcp", addr: c.addr, bus: "can" }) : endpointKey({ kind: "serial", path: c.path, bus: "can" })) : null);
+
+/** The installation's RS485-1/2 port (measure and flash packs): the first stored serial endpoint, in stored order,
+ *  that is not the control adapter. The control adapter itself only with the one-adapter confirmation (a USB
+ *  adapter moved between both buses) and no other serial endpoint. null: not set up. */
+export function packPortOf(inst: Installation | null, oneAdapter = false): string | null {
+  if (!inst) return null;
+  const control = controlKey(inst.control);
+  const other = inst.endpoints.find((k) => k.startsWith("serial:") && k !== control);
+  if (other) return other.slice("serial:".length);
+  return oneAdapter && inst.control?.kind === "serial" ? inst.control.path : null;
+}
+
+/** The CAN socket and the RS485-1/2 port are the same USB adapter. */
+export function sameAdapter(can: ControlEndpoint | null, pack: string): boolean {
+  return !!pack && can?.kind === "serial" && can.path.trim() === pack.trim();
+}
+
+/** The setup form's check before saving: null = fine, else the text key of the refusal. A stored RS485-1/2 port
+ *  can be replaced, never silently dropped; one adapter for both buses needs the explicit confirmation. */
+export function setupCheck({ can, pack, oneAdapter, storedPack }: { can: ControlEndpoint | null; pack: string; oneAdapter: boolean; storedPack: string | null }): string | null {
+  if (!pack && storedPack) return "maint.setup.err.packRequired";
+  if (sameAdapter(can, pack) && !oneAdapter) return "maint.setup.err.sameAdapter";
+  return null;
+}
+
+/** The endpoint list the setup form saves: the CAN socket and the RS485-1/2 port first (so the pack port reads
+ *  back as the first serial endpoint), then every other stored endpoint of the installation (e.g. a sidebar
+ *  connection). The old CAN key and the old pack port are replaced; an empty pack port keeps the stored one. */
+export function setupEndpoints(inst: Installation, can: ControlEndpoint | null, pack: string, oneAdapter = false): string[] {
+  const oldCan = controlKey(inst.control);
+  const oldPackPath = packPortOf(inst, oneAdapter);
+  const oldPack = oldPackPath ? endpointKey({ kind: "serial", path: oldPackPath, bus: "pack" }) : null;
+  const packKey = pack ? endpointKey({ kind: "serial", path: pack, bus: "pack" }) : oldPack;
+  const kept = inst.endpoints.filter((k) => k !== oldCan && k !== oldPack);
+  const out: string[] = [];
+  for (const k of [controlKey(can), packKey, ...kept]) if (k && !out.includes(k)) out.push(k);
+  return out;
 }
 
 export type StepId = "connections" | "check" | "inverter" | "start" | "measure" | "flash";
@@ -232,7 +256,10 @@ export interface FlowInput {
   singlePack: boolean;
   inverter: boolean;
   measuredAt: number | null;
+  /** the RS485-1/2 port in use ("" = not set up) */
   port: string;
+  /** the RS485-1/2 port is plugged in (in the list of available ports) */
+  portAvailable: boolean;
   portOwner: "this" | "none" | "other";
   address: number;
   imageKind: FirmwareImage["kind"] | null;
@@ -302,15 +329,17 @@ export function flowOf(i: FlowInput): Flow {
   const markerLock = session?.kind === "marker" && state !== null && state !== "patched-on" && state !== "unknown" && state !== "marker-unexplained"
     ? r("maint.flow.reason.marker-not-on") : null;
   const blockLock = o.blocks.length ? r(`maint.err.refused.${o.blocks[0].reason}`) : null;
+  // the RS485-1/2 port: set up (setup form) and plugged in
+  const portLock = !i.port ? r("maint.flow.reason.setup-pack") : !i.portAvailable ? r("maint.flow.reason.pack-unplugged", { port: i.port }) : undefined;
   const measured = i.measuredAt !== null && (o.state_at === null || i.measuredAt >= o.state_at);
 
   type Eval = { complete: boolean; reason?: Reason; hard?: Reason | null; deferred?: Reason; notNeeded?: boolean };
   const evalStep: Record<StepId, () => Eval> = {
     connections: () => {
-      const reason = !i.port ? r("maint.flow.reason.choose-port")
-        : i.portOwner === "none" ? r("maint.err.refused.port-not-assigned")
+      const reason = portLock
+        ?? (i.portOwner === "none" ? r("maint.err.refused.port-not-assigned")
         : i.portOwner === "other" ? r("maint.err.refused.installation-mismatch")
-        : !hasControl && !i.noControl ? r("maint.flow.reason.control-or-none") : undefined;
+        : !hasControl && !i.noControl ? r("maint.flow.reason.control-or-none") : undefined);
       return { complete: !reason, reason };
     },
     check: () => {
@@ -349,12 +378,12 @@ export function flowOf(i: FlowInput): Flow {
     else { steps[id] = e.reason ? { state: "current", reason: e.reason } : { state: "current" }; blocker = r("maint.flow.reason.first", { n }); }
   }
 
-  // End checks itself (no measurement first); it needs the pack port and is locked by a block or the unexplained marker
+  // End checks itself (no measurement first); it needs the RS485-1/2 port plugged in and is locked by a block or the unexplained marker
   const now = state ?? stored;
   const endLock = i.running ? r("maint.flow.reason.running")
     : blockLock
     ?? (now === "marker-unexplained" ? r("maint.err.refused.marker-unexplained") : null)
-    ?? (!i.port ? r("maint.flow.reason.choose-port") : i.portOwner !== "this" ? r(i.portOwner === "none" ? "maint.err.refused.port-not-assigned" : "maint.err.refused.installation-mismatch") : null);
+    ?? portLock ?? (i.portOwner !== "this" ? r(i.portOwner === "none" ? "maint.err.refused.port-not-assigned" : "maint.err.refused.installation-mismatch") : null);
   const end = { shown: !!session, state: (endLock ? "locked" : "current") as StepState, ...(endLock ? { reason: endLock } : {}), next: o.end_next ?? null };
 
   return {

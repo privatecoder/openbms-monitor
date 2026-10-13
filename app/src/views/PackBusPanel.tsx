@@ -28,12 +28,15 @@ function Item({ n, title, step, children }: { n: number | null; title: string; s
   );
 }
 
-export function PackBusPanel({ maint, flow, port, portPicker, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, setEndNote, noControl, setNoControl, singlePack, setSinglePack }: {
+export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, setEndNote, noControl, setNoControl, singlePack, setSinglePack }: {
   maint: ReturnType<typeof useMaint>;
   flow: Flow;
+  /** the RS485-1/2 port of the installation ("" = not set up); chosen only in the setup form */
   port: string;
-  /** the pack port selection (lives in the firmware view, shown in step 1) */
-  portPicker: ReactNode;
+  /** the serial ports plugged in now */
+  ports: string[];
+  /** the setup was saved: the ports may have changed */
+  onPortsChanged: () => void;
   monitor: Monitor;
   /** "End" in the banner was pressed: scroll to the End section (or the panel) and highlight it briefly */
   focusEnd: number;
@@ -98,7 +101,7 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, focusEnd,
     finally { setBusy(false); }
   };
 
-  if (!o) return <section ref={panelRef} className={cn("space-y-2 rounded-md border p-4 text-sm text-muted transition-colors", highlight ? "border-charge ring-2 ring-charge" : "border-line")}>{t("maint.panel.noInstallation")}{portPicker}</section>;
+  if (!o) return <section ref={panelRef} className={cn("space-y-2 rounded-md border p-4 text-sm text-muted transition-colors", highlight ? "border-charge ring-2 ring-charge" : "border-line")}>{t("maint.panel.noInstallation")}</section>;
   const st = flow.steps;
   const s = flow.state;
   const stored = o.state?.state;
@@ -108,6 +111,9 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, focusEnd,
   const repeat = (step: FlowStep) => idle && step.state !== "locked";
   const sequential = flow.replug || stepwise;
   const reasonText = (r: Reason | undefined) => (r ? t(r.key, r.params) : "");
+  const control = o.installation.control;
+  // a serial port that is not in the list of available ports: "… (not plugged in)"
+  const plugged = (name: string, serial: boolean) => (serial && !ports.includes(name) ? `${name} (${t("maint.flow.notPlugged")})` : name);
 
   const endNoteOf = (r: EndResult) => r.ok ? t(o.session?.expected_slaves === 0 ? "maint.panel.endOkZero" : "maint.panel.endOk") : r.missing.length ? t("maint.panel.endMissing", { list: r.missing.join(", ") }) : t("maint.panel.endFailed", { what: failingText(r.failing ?? "", t) });
   const packsField = <input type="number" min={1} max={16} className={input} value={nText} onChange={(e) => setNText(e.target.value)} aria-label={t("maint.panel.packs")} />;
@@ -242,12 +248,10 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, focusEnd,
     <section ref={panelRef} className={cn("space-y-3 rounded-md border p-4 text-sm transition-colors", highlight === "panel" ? "border-charge ring-2 ring-charge" : "border-line")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title", { name: o.installation.name })}<InfoIcon id="topic.maintenance" /></h2>
-        <Button variant="secondary" size="sm" onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
       </div>
       {/* the pack port in use, visible before every bus action */}
       <p className="font-medium">{port ? t("maint.flow.packPort", { port }) : t("maint.flow.noPackPort")}</p>
       {monitor !== "connected" && <p className="text-muted">{t(`maint.flow.monitor.${monitor}`)}</p>}
-      {setup && <MaintSetup key={o.installation.id} overview={o} onSaved={(x) => { maint.setOverview(x); setSetup(false); }} />}
 
       {/* unclear updates: listed above the steps; they lock measure, flash and End */}
       {o.blocks.map((b) => (
@@ -262,12 +266,15 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, focusEnd,
 
       <ol className="space-y-2">
         <Item n={1} title={t("maint.flow.step.connections")} step={st.connections}>
-          <p>{o.installation.control ? t("maint.flow.control", { endpoint: o.installation.control.kind === "tcp" ? o.installation.control.addr : o.installation.control.path }) : t("maint.flow.noControl")}</p>
-          {!o.installation.control && (
+          {/* read-only: the setup form is the single place to choose the two ports */}
+          <p>{control ? t("maint.flow.control", { endpoint: plugged(control.kind === "tcp" ? control.addr : control.path, control.kind === "serial") }) : t("maint.flow.noControl")}</p>
+          <p>{port ? t("maint.flow.packPort", { port: plugged(port, true) }) : t("maint.flow.noPackPort")}</p>
+          {flow.replug && <p className="text-discharge">{t("maint.flow.oneAdapter")}</p>}
+          <Button variant={!port ? "primary" : "secondary"} size="sm" disabled={!idle} onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
+          {setup && <MaintSetup key={o.installation.id} overview={o} onSaved={(x) => { maint.setOverview(x); setSetup(false); onPortsChanged(); }} />}
+          {!control && (
             <label className="flex items-center gap-2"><input type="checkbox" checked={noControl} disabled={!idle} onChange={(e) => setNoControl(e.target.checked)} />{t("maint.flow.withoutControl")}</label>
           )}
-          {portPicker}
-          {flow.replug && <p className="text-discharge">{t("maint.flow.oneAdapter")}</p>}
         </Item>
 
         <Item n={2} title={t("maint.flow.step.check")} step={st.check}>
