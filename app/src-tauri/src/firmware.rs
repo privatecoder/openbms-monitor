@@ -280,13 +280,17 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         // a panic inside the flash counts as a failure at the last reported stage
         let ok = matches!(result, Ok(Ok(_)));
         // the master's post-check stores its outcome first: the update-interrupted block is cleared only
-        // afterwards, so a crash during the settle loop leaves the record
-        let master = match &plan2 {
-            Some(plan) if ok && address == 0 => Some(crate::maint::post_master_check(&store, &inst2, plan, sequential).to_string()),
-            _ => None,
+        // afterwards, so a crash during the settle loop leaves the record; if the outcome could not be
+        // stored, the block stays
+        let (master, stored) = match &plan2 {
+            Some(plan) if ok && address == 0 => {
+                let (key, stored) = crate::maint::post_master_check(&store, &inst2, plan, sequential);
+                (Some(key.to_string()), stored)
+            }
+            _ => (None, true),
         };
         // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
-        let block = crate::maint::record_after_flash(&store, &inst2, pending, address, &release, ok, last, &mut link);
+        let block = crate::maint::record_after_flash(&store, &inst2, pending, address, &release, ok, stored, last, &mut link);
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {

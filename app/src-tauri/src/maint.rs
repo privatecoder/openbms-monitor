@@ -383,8 +383,12 @@ pub enum BlockAction {
 }
 
 /// What happens to the `update-interrupted` block written before the restart, once the flash returned.
-/// `answers` asks the pack for 0x51/0x47 and is called only when that decides.
-pub fn finish_block(ok: bool, last: Option<Progress>, answers: impl FnOnce() -> bool) -> BlockAction {
+/// `stored`: the master's post-check outcome was stored in full (true when there was none). If not, the
+/// record of the restart stays. `answers` asks the pack for 0x51/0x47 and is called only when that decides.
+pub fn finish_block(ok: bool, stored: bool, last: Option<Progress>, answers: impl FnOnce() -> bool) -> BlockAction {
+    if ok && !stored {
+        return BlockAction::Set("update-interrupted");
+    }
     if ok {
         return BlockAction::Clear("flashed");
     }
@@ -873,7 +877,7 @@ pub async fn maint_master_plan(state: State<'_, AppState>, installation: String,
 
 /// After the flash returned, before the pack port is closed: settle the `update-interrupted` block written
 /// before the restart, and note a successful flash in the open session. Returns the block reason that stays.
-/// If the store cannot be written the block stays as it is and is reported.
+/// If the store cannot be written the block stays as it is and is reported. `stored`: see `finish_block`.
 #[allow(clippy::too_many_arguments)] // the flash thread's values, one each
 pub fn record_after_flash(
     store: &Arc<Mutex<Option<Store>>>,
@@ -882,11 +886,12 @@ pub fn record_after_flash(
     address: u8,
     release: &str,
     ok: bool,
+    stored: bool,
     last: Option<Progress>,
     link: &mut Connection,
 ) -> Option<String> {
     let now = crate::history::now_ms();
-    let kept = match finish_block(ok, last, || bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6))) {
+    let kept = match finish_block(ok, stored, last, || bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6))) {
         BlockAction::Clear(how) => with_store_arc(store, |s| s.clear_block(pending, how, now)).err().map(|_| "update-interrupted".to_string()),
         BlockAction::Set(reason) => {
             let _ = with_store_arc(store, |s| s.set_block_reason(pending, reason));
@@ -927,9 +932,14 @@ pub fn outcome_key(o: Outcome) -> &'static str {
     }
 }
 
-/// Store what the post-flash check of the master found (design, "Flashing the master itself").
-/// A stored `marker-unexplained` is left only by an as-expected result (same rule as `next_state`).
+/// Store what the post-flash check of the master found (design, "Flashing the master itself"), in one
+/// transaction: all of it or nothing. A stored `marker-unexplained` is left only by an as-expected result
+/// (same rule as `next_state`).
 pub fn apply_master_outcome(s: &Store, inst: &str, plan: &policy::Plan, outcome: Outcome, now: i64) -> Result<(), String> {
+    s.atomic(|s| master_outcome_rows(s, inst, plan, outcome, now))
+}
+
+fn master_outcome_rows(s: &Store, inst: &str, plan: &policy::Plan, outcome: Outcome, now: i64) -> Result<(), String> {
     let locked = s.master_state(inst)?.is_some_and(|(m, _)| m == StoredMasterState::MarkerUnexplained);
     let next = if locked && outcome != Outcome::AsExpected { StoredMasterState::MarkerUnexplained } else { state_after(outcome, plan.after) };
     s.set_master_state(inst, &next, now)?;
@@ -956,16 +966,16 @@ pub fn apply_master_outcome(s: &Store, inst: &str, plan: &policy::Plan, outcome:
 /// After a successful flash of the master with a plan: compare 0x64 with the plan's expectation and store
 /// the result. In the sequential way (`sequential`: one adapter for both buses) the control channel is not
 /// reachable now; the result is then what an unanswered read gives (an unclear update for every row with an
-/// expectation), and the user's later check clears it. Returns the outcome key.
-pub fn post_master_check(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, plan: &policy::Plan, sequential: bool) -> &'static str {
+/// expectation), and the user's later check clears it. Returns the outcome key and whether it was stored.
+pub fn post_master_check(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, plan: &policy::Plan, sequential: bool) -> (&'static str, bool) {
     let probe = if sequential { None } else { read_settled(inst) };
     let outcome = policy::after_flash(plan.after, probe);
     let now = crate::history::now_ms();
     if with_store_arc(store, |s| apply_master_outcome(s, &inst.id, plan, outcome, now)).is_err() {
-        // nothing could be stored: never report a passed check then
-        return outcome_key(Outcome::Unclear);
+        // nothing was stored: never report a passed check then, and keep the update-interrupted block
+        return (outcome_key(Outcome::Unclear), false);
     }
-    outcome_key(outcome)
+    (outcome_key(outcome), true)
 }
 
 #[cfg(test)]
@@ -1032,11 +1042,13 @@ mod tests {
 
     #[test]
     fn finish_flash_block() {
-        assert_eq!(finish_block(true, Some(Progress::PostCheck), || unreachable!()), BlockAction::Clear("flashed"));
-        assert_eq!(finish_block(false, Some(Progress::Preflight), || unreachable!()), BlockAction::Clear("preflight"));
-        assert_eq!(finish_block(false, Some(Progress::Erase), || true), BlockAction::Clear("answered"));
-        assert_eq!(finish_block(false, Some(Progress::Erase), || false), BlockAction::Set("update-unclear"));
-        assert_eq!(finish_block(false, Some(Progress::Bootloader), || false), BlockAction::Set("bootloader-unclear"));
+        assert_eq!(finish_block(true, true, Some(Progress::PostCheck), || unreachable!()), BlockAction::Clear("flashed"));
+        assert_eq!(finish_block(false, true, Some(Progress::Preflight), || unreachable!()), BlockAction::Clear("preflight"));
+        assert_eq!(finish_block(false, true, Some(Progress::Erase), || true), BlockAction::Clear("answered"));
+        assert_eq!(finish_block(false, true, Some(Progress::Erase), || false), BlockAction::Set("update-unclear"));
+        assert_eq!(finish_block(false, true, Some(Progress::Bootloader), || false), BlockAction::Set("bootloader-unclear"));
+        // the master's post-check outcome could not be stored (fully): the record of the restart stays
+        assert_eq!(finish_block(true, false, Some(Progress::PostCheck), || unreachable!()), BlockAction::Set("update-interrupted"));
     }
 
     #[test]
