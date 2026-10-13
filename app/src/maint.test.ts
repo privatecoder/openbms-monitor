@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, needsReplug, openWork } from "./maint";
+import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, needsReplug, openWork, workUnchanged } from "./maint";
 import type { MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -146,5 +146,16 @@ describe("start-up races", () => {
       expect(g.accepts(c, "j", A, null)).toBe(false);
       expect(g.accepts(r, "j", B, null)).toBe(false);
     });
+  });
+});
+
+describe("workUnchanged", () => {
+  const start = { installation: "a", session: 3 };
+  it("writes only while installation and session are the ones the action began with", () => {
+    expect(workUnchanged(start, { installation: "a", session: 3 })).toBe(true);
+    expect(workUnchanged(start, { installation: "b", session: 3 })).toBe(false);
+    expect(workUnchanged(start, { installation: "a", session: null })).toBe(false);
+    expect(workUnchanged(start, { installation: null, session: 3 })).toBe(false);
+    expect(workUnchanged({ installation: "a", session: null }, { installation: "a", session: null })).toBe(true);
   });
 });
