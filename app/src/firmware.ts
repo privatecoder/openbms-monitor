@@ -1,4 +1,4 @@
-import type { DeviceInfo, FirmwareImage, FirmwareProgress } from "./api";
+import type { DeviceInfo, FirmwareDone, FirmwareImage, FirmwareProgress } from "./api";
 
 /** Custom images get their own phrase, so consent to one kind never covers the other. */
 export const confirmationPhrase = (address: number, custom = false) => custom ? `FLASH CUSTOM ${address}` : `FLASH ${address}`;
@@ -20,7 +20,7 @@ export function imageWarning(image: FirmwareImage): string | null {
 
 export interface FwSetup {
   running: boolean;
-  /** a result is shown; continuing needs "New update" */
+  /** a result is shown; continuing needs "New update" (or "Flash the next pack" in a maintenance session) */
   done: boolean;
   port: string;
   address: number;
@@ -52,3 +52,28 @@ export function progressFraction(p: FirmwareProgress | null): number {
   if (p.stage === "block" && p.block !== null && p.total) return p.block / p.total;
   return ["finalize", "app_restart", "post_check"].includes(p.stage) ? 1 : 0;
 }
+
+/** The buttons under a result: an open maintenance session goes on with the next pack or its End (no way back to
+ *  the monitor while it is open); without one a new update or back to the monitor. */
+export const resultActions = (sessionOpen: boolean) => (sessionOpen ? ["next", "end"] : ["again", "back"]);
+
+/** The master's post-flash check: only "as-expected" is a success ("unclear", "marker-unexplained",
+ *  "unknown-image" are not). */
+export const masterOk = (outcome: string) => outcome === "as-expected";
+
+/** The version line of a result. 0x51 reports only major.minor ("16.06"), so "from" is what the pack reported
+ *  (before the flash, else at "check pack") and "to" the flashed image's release in full ("16.06.13",
+ *  "16.06.13 MAINT"). A pack that reports another version afterwards, or a custom image, says what it reports. */
+export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, checked: string | null, image: FirmwareImage | null, t: T): { from: string; to: string } {
+  const from = done.before?.firmware_version ?? checked ?? "?";
+  const after = done.after?.firmware_version ?? null;
+  if (!image) return { from, to: after ?? "?" };
+  if (image.kind === "custom") return { from, to: after ? `${t("fw.customName")} (${t("fw.reports", { v: after })})` : t("fw.customName") };
+  // "16.06" fits "16.06.13" but not "16.06.1x" of another minor: compare whole parts
+  const fits = !after || image.release === after || image.release.startsWith(`${after}.`) || image.release.startsWith(`${after} `);
+  return { from, to: fits ? image.release : `${image.release} (${t("fw.reports", { v: after })})` };
+}
+
+/** The refusal under "start": not while a flash runs or its result is shown (the measurement it used is gone). */
+export const gateHint = (gate: { ok: boolean; reason?: string }, s: { running: boolean; done: boolean }) =>
+  !gate.ok && gate.reason && !s.running && !s.done ? gate.reason : null;

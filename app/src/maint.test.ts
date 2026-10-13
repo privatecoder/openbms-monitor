@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { acceptsProgress, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import i18n from "./i18n";
+import { acceptsProgress, busyMessage, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -579,5 +580,26 @@ describe("installation setup: CAN socket and RS485-1/2", () => {
     expect(setupCheck({ can: null, pack: "", oneAdapter: false, storedPack: null })).toBeNull();
     // and the endpoint list keeps the stored pack port when no new one is given
     expect(setupEndpoints(bench, can, "")).toContain("serial:/dev/cu.usbmodem-B");
+  });
+});
+
+describe("busy port on connect", () => {
+  it("reads the backend's busy refusal with the running action", () => {
+    expect(portBusy('{"kind":"busy","action":"check"}')).toEqual({ action: "check" });
+    expect(portBusy('{"kind":"busy","action":null}')).toEqual({ action: null });
+    expect(portBusy({ kind: "busy" })).toEqual({ action: null });
+    expect(portBusy("connection refused")).toBeNull();
+    expect(portBusy('{"kind":"refused","reason":"no-port"}')).toBeNull();
+  });
+  it("names the action while waiting and when giving up, in German and English", () => {
+    const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
+    expect(busyMessage("check", false, tr("de"))).toBe("Port belegt: Master wird gerade geprüft. Die Verbindung wird danach aufgebaut.");
+    expect(busyMessage("check", false, tr("en"))).toBe("Port busy: the master is being checked. The connection follows once it is done.");
+    expect(busyMessage(null, true, tr("de"))).toMatch(/^Port belegt: .*30 s/);
+    for (const lng of ["de", "en"]) {
+      for (const a of ["check", "activate", "start-dip", "scan", "account-marker", "set-slaves", "measure", "end", "end-step", "clear-block", "flash", "unknown-action", null]) {
+        for (const gaveUp of [false, true]) expect(busyMessage(a, gaveUp, tr(lng)), `${lng} ${a}`).not.toMatch(/conn\.|undefined/);
+      }
+    }
   });
 });
