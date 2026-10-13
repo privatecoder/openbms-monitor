@@ -12,6 +12,9 @@ import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf,
 import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
+// the measurement belongs to one flash: its result line at the button goes with it
+const dropMeasure = (a: Activity | null) => (a?.key === "measure" ? null : a);
+
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 
 function Step({ n, title, active, children }: { n: number; title: string; active: boolean; children: ReactNode }) {
@@ -23,7 +26,7 @@ function Step({ n, title, active, children }: { n: number; title: string; active
   );
 }
 
-export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDone, maint, onMonitorStopped, onRunning, onBack }: {
+export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDone, maint, onMonitorStopped, onRunning, onBack, onUserAction }: {
   connected: boolean;
   monitor: Monitor;
   /** set by "End" in the banner: scroll to the panel's End section */
@@ -35,6 +38,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   onMonitorStopped: () => void;
   onRunning: (running: boolean) => void;
   onBack: () => void;
+  /** an action on the bus starts here or in the panel (the sidebar stops waiting for a busy port) */
+  onUserAction: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
@@ -94,6 +99,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         void maint.refresh();
         // one measurement, one flash
         setMeasuredAt(null); setDipOffConfirmed(false); setIsolatedConfirmed(false);
+        // the measurement's line at its button goes with it
+        setActivity(dropMeasure);
         setNotice(d.block ? t(`maint.panel.block.${d.block}`, { pack: addressRef.current }) : null);
         setMasterOutcome(d.master);
       }),
@@ -204,7 +211,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   };
 
   const inspect = async () => {
-    setBusy(true); setError(null); setTarget(null); setCheckedFor(null);
+    onUserAction(); setBusy(true); setError(null); setTarget(null); setCheckedFor(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
     try { setTarget(await api.firmwareInspect(port, address, lang)); setCheckedFor({ port, address }); }
@@ -217,6 +224,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
     // the backend stops the monitor here too (it may have been reconnected since the check)
     if (connected) onMonitorStopped();
     const confirmation = typed;
+    onUserAction();
     setFlashed({ image, checked: target?.firmware_version ?? null }); setMasterOutcome(null);
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setError(null); setNotice(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
@@ -236,8 +244,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   // a fresh measurement and fresh master-plan confirmations; the inverter statement stays (same work phase)
   const nextPack = () => {
     reset();
-    setAddress(0); setImage(null); setPath(null); setPending(null); setImageError(null); setError(null); setCloseRefused(false); setFlashed(null);
-    setMeasuredAt(null); setDipOffConfirmed(false); setIsolatedConfirmed(false);
+    setAddress(0); setImage(null); setPath(null); setPending(null); setAllowCustom(false); setImageError(null); setError(null); setCloseRefused(false); setFlashed(null);
+    setMeasuredAt(null); setActivity(dropMeasure); setDipOffConfirmed(false); setIsolatedConfirmed(false);
   };
   const versions = done ? resultVersions(done, flashed?.checked ?? null, flashed?.image ?? image, t) : null;
   const sessionOpen = !!overview?.session;
@@ -255,7 +263,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
       <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} ports={ports} onPortsChanged={loadPorts} monitor={monitor} focusEnd={focusEnd || ownFocusEnd} onFocusDone={() => { setOwnFocusEnd(0); onFocusDone(); }}
         busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
         noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
-        activity={activity} setActivity={setActivity} />
+        activity={activity} setActivity={setActivity} onUserAction={onUserAction} />
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">

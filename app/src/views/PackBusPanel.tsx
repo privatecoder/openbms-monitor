@@ -46,7 +46,7 @@ function StatusLine({ activity }: { activity: Activity }) {
   );
 }
 
-export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, activity, setActivity, noControl, setNoControl, singlePack, setSinglePack }: {
+export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, activity, setActivity, noControl, setNoControl, singlePack, setSinglePack, onUserAction }: {
   maint: ReturnType<typeof useMaint>;
   flow: Flow;
   /** the RS485-1/2 port of the installation ("" = not set up); chosen only in the setup form */
@@ -68,6 +68,8 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   /** the running or last panel action with its phase and result; lives in the parent, so it outlasts the
    *  session (End closes it, the panel is keyed by session) and goes with a view change */
   activity: Activity | null;
+  /** an action starts (the sidebar stops waiting for a busy port) */
+  onUserAction: () => void;
   setActivity: (f: (a: Activity | null) => Activity | null) => void;
   noControl: boolean;
   setNoControl: (v: boolean) => void;
@@ -89,6 +91,8 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   // the last refusal of each pack count editor: stays under it until its next save, also when another action's
   // result has replaced the panel's one activity line
   const [editorRefusal, setEditorRefusal] = useState<{ where: "start" | "end"; text: string } | null>(null);
+  // a closed (saved, cancelled, other editor opened, new session) editor takes its refusal along
+  useEffect(() => { setEditorRefusal((r) => (r && r.where === editing ? r : null)); }, [editing]);
   const sessionId = o?.session?.id ?? null;
   useEffect(() => { setEditing(null); setNText(""); }, [sessionId]);
   const [dipConfirmed, setDipConfirmed] = useState(false);
@@ -125,7 +129,7 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
     const installation = o?.installation.id ?? "";
     const start = { installation, session: o?.session?.id ?? null, port };
     const still = () => workUnchanged(start, { ...maint.current(), port: portRef.current });
-    setBusy(true);
+    onUserAction(); setBusy(true);
     setActivity(() => ({ installation, key, action, running: true }));
     let result: Activity["result"];
     try {
@@ -222,6 +226,7 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
                 if (still()) setEditing(null);
                 return { overview: r, text: t("maint.result.set-slaves", { line: packsLine(n + 1, t) }) };
               })}>{t("maint.panel.save")}</ActButton>
+              <Button variant="ghost" size="sm" disabled={!idle} onClick={() => { setEditing(null); setActivity((a) => (a?.key === key && !a.running ? null : a)); }}>{t("maint.panel.cancel")}</Button>
             </>
           ) : (
             <Button variant="secondary" size="sm" disabled={!idle} onClick={() => { setNText(String(current)); setEditing(where); }}>{t("maint.panel.changeSlaves")}</Button>
