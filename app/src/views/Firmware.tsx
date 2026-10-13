@@ -70,7 +70,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         setDone(d); setRunning(false); onRunning(false);
         void maint.refresh();
         // one measurement, one flash
-        setMeasuredAt(null);
+        setMeasuredAt(null); setDipOffConfirmed(false); setIsolatedConfirmed(false);
         const notes: string[] = [];
         if (d.block) notes.push(t(`maint.panel.block.${d.block}`, { pack: addressRef.current }));
         if (d.master) notes.push(t(`maint.master.${d.master}`));
@@ -83,8 +83,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   const overview = maint.overview;
   // a new measurement is needed after every state change; the inverter statement after every new session
-  useEffect(() => { setMeasuredAt(null); }, [overview?.state_at]);
-  useEffect(() => { setInverter(false); }, [overview?.session?.id]);
+  useEffect(() => { setMeasuredAt(null); }, [overview?.state_at, overview?.installation.id]);
+  useEffect(() => { setInverter(false); }, [overview?.session?.id, overview?.installation.id]);
 
   // which installation owns the pack port
   const lookupPort = () => {
@@ -165,7 +165,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
-      <PackBusPanel maint={maint} port={port} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt} />
+      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} port={port} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt} />
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">
