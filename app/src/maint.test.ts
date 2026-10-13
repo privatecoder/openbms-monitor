@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -163,6 +163,11 @@ describe("workUnchanged", () => {
     expect(workUnchanged(start, { installation: "a", session: null })).toBe(false);
     expect(workUnchanged(start, { installation: null, session: 3 })).toBe(false);
     expect(workUnchanged({ installation: "a", session: null }, { installation: "a", session: null })).toBe(true);
+  });
+  it("with a port: also only while the RS485-1/2 port is the one the action began with", () => {
+    expect(workUnchanged({ ...start, port: "/dev/b" }, { installation: "a", session: 3, port: "/dev/b" })).toBe(true);
+    expect(workUnchanged({ ...start, port: "/dev/b" }, { installation: "a", session: 3, port: "/dev/c" })).toBe(false);
+    expect(workUnchanged({ ...start, port: "/dev/b" }, { installation: "a", session: 3, port: "" })).toBe(false);
   });
 });
 
@@ -494,6 +499,48 @@ describe("installation setup: CAN socket and RS485-1/2", () => {
     expect(setupCheck({ can, pack: "/dev/cu.usbserial-A", oneAdapter: false, storedPack: null })).toBe("maint.setup.err.sameAdapter");
     expect(setupCheck({ can, pack: "/dev/cu.usbserial-A", oneAdapter: true, storedPack: null })).toBeNull();
     expect(setupCheck({ can, pack: "/dev/cu.usbmodem-B", oneAdapter: false, storedPack: null })).toBeNull();
+  });
+  it("a pack port stored meanwhile (the form opened without one) is reported as such: the form reloads", () => {
+    expect(setupCheck({ can, pack: "", oneAdapter: false, storedPack: "/dev/cu.usbmodem-B", loadedPack: "" })).toBe("maint.setup.err.packSetMeanwhile");
+    expect(setupCheck({ can, pack: "", oneAdapter: false, storedPack: "/dev/cu.usbmodem-B", loadedPack: "/dev/cu.usbmodem-B" })).toBe("maint.setup.err.packRequired");
+  });
+  it("first run via the sidebar on the CAN socket: the adapter becomes the CAN socket, never RS485-1/2", () => {
+    const created = withEps(["serial:/dev/cu.usbserial-A"], null);
+    const saved = controlFromAttach(created, { kind: "serial", path: "/dev/cu.usbserial-A", bus: "can" });
+    expect(saved).toEqual({ ...created, control: can, endpoints: [] });
+    expect(packPortOf(saved!)).toBeNull();
+    // step 1 shows "CAN socket: A / RS485-1/2: not set up"; the form pre-fills CAN = A and RS485-1/2 empty
+    expect(setupFields(saved!, false)).toEqual({ name: "Bank", canKind: "serial", canValue: "/dev/cu.usbserial-A", pack: "", oneAdapter: false });
+    const f = flowOf({ overview: { ...base, installation: saved! }, fresh: null, noControl: false, singlePack: false, inverter: false, measuredAt: null,
+      port: packPortOf(saved!) ?? "", portAvailable: false, portOwner: "none", address: 0, imageKind: null, scan: undefined, busy: false, running: false });
+    expect(f.steps.connections.reason?.key).toBe("maint.flow.reason.setup-pack");
+    // a gateway on the CAN socket too
+    expect(controlFromAttach(withEps(["tcp:gw:4196"], null), { kind: "tcp", addr: "GW:4196", bus: "can" })).toEqual({ ...inst, endpoints: [], control: { kind: "tcp", addr: "GW:4196" } });
+    // the pack bus, or an installation with a control channel already: nothing to change
+    expect(controlFromAttach(withEps(["serial:/dev/b"], null), { kind: "serial", path: "/dev/b", bus: "pack" })).toBeNull();
+    expect(controlFromAttach(bench, { kind: "serial", path: "/dev/cu.usbserial-A", bus: "can" })).toBeNull();
+  });
+  it("banner assign: a CAN endpoint becomes the CAN socket, only a serial pack-bus endpoint can become RS485-1/2", () => {
+    const empty = withEps([], null);
+    const a = assignEndpoint(empty, { kind: "serial", path: "/dev/cu.usbserial-A", bus: "can" });
+    expect(a).toEqual({ ...empty, control: can, endpoints: [] });
+    expect(packPortOf(a)).toBeNull();
+    // the CAN socket already set to it: kept, never listed as an endpoint
+    expect(assignEndpoint(a, { kind: "serial", path: "/dev/cu.usbserial-A", bus: "can" })).toEqual(a);
+    // a CAN endpoint on another adapter replaces the CAN socket, it does not become RS485-1/2
+    const b = assignEndpoint(withEps(["serial:/dev/cu.usbmodem-B"], can), { kind: "serial", path: "/dev/c", bus: "can" });
+    expect(b.control).toEqual({ kind: "serial", path: "/dev/c" });
+    expect(packPortOf(b)).toBe("/dev/cu.usbmodem-B");
+    // pack bus: added as an endpoint
+    const p = assignEndpoint(a, { kind: "serial", path: "/dev/cu.usbmodem-B", bus: "pack" });
+    expect(p.endpoints).toEqual(["serial:/dev/cu.usbmodem-B"]);
+    expect(packPortOf(p)).toBe("/dev/cu.usbmodem-B");
+  });
+  it("one adapter without the tick: step 1 asks to confirm it in the setup", () => {
+    const one = withEps(["serial:/dev/cu.usbserial-A"], can);
+    const f = flowOf({ overview: { ...base, installation: one }, fresh: null, noControl: false, singlePack: false, inverter: false, measuredAt: null,
+      port: packPortOf(one) ?? "", portAvailable: false, portOwner: "none", address: 0, imageKind: null, scan: undefined, busy: false, running: false });
+    expect(f.steps.connections.reason?.key).toBe("maint.flow.reason.confirm-one-adapter");
   });
   it("a save never drops a stored RS485-1/2 port by leaving it empty", () => {
     expect(setupCheck({ can, pack: "", oneAdapter: false, storedPack: "/dev/cu.usbmodem-B" })).toBe("maint.setup.err.packRequired");

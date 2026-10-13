@@ -56,6 +56,9 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
 }) {
   const { t } = useTranslation();
   const o = maint.overview;
+  // the port in use right now (not the render value of an action that began earlier)
+  const portRef = useRef(port);
+  portRef.current = port;
   const [error, setError] = useState<string | null>(null);
   // packs on the bus, master included: no default, the user types it (an empty or out-of-range value keeps the
   // buttons locked); the backend gets N = packs − 1
@@ -93,8 +96,9 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   /** `still()` tells an action, after an await, that the installation and session it began with are still in use;
    *  if not, it must not write (overview, measurement, inverter, note). */
   const run = async (f: (still: () => boolean) => Promise<MaintOverview | void>) => {
-    const start = { installation: o?.installation.id ?? "", session: o?.session?.id ?? null };
-    const still = () => workUnchanged(start, maint.current());
+    // the RS485-1/2 port belongs to the work too: a result measured on another port must not be kept
+    const start = { installation: o?.installation.id ?? "", session: o?.session?.id ?? null, port };
+    const still = () => workUnchanged(start, { ...maint.current(), port: portRef.current });
     setBusy(true); setError(null);
     try { const r = await f(still); if (r && still()) maint.setOverview(r); }
     catch (e) { if (still()) { const k = errorKey(e); setError(t(k.key, k.params)); } await maint.refresh(); }
@@ -271,7 +275,7 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
           <p>{port ? t("maint.flow.packPort", { port: plugged(port, true) }) : t("maint.flow.noPackPort")}</p>
           {flow.replug && <p className="text-discharge">{t("maint.flow.oneAdapter")}</p>}
           <Button variant={!port ? "primary" : "secondary"} size="sm" disabled={!idle} onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
-          {setup && <MaintSetup key={o.installation.id} overview={o} onSaved={(x) => { maint.setOverview(x); setSetup(false); onPortsChanged(); }} />}
+          {setup && <MaintSetup key={o.installation.id} overview={o} disabled={!idle} onSaved={(x) => { maint.setOverview(x); setSetup(false); onPortsChanged(); }} />}
           {!control && (
             <label className="flex items-center gap-2"><input type="checkbox" checked={noControl} disabled={!idle} onChange={(e) => setNoControl(e.target.checked)} />{t("maint.flow.withoutControl")}</label>
           )}
