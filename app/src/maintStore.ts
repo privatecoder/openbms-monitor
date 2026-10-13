@@ -19,20 +19,21 @@ export function useMaint() {
   /** Load the stored overview; returns what was loaded (also when a newer request made this answer stale). */
   const refresh = useCallback(async (id = installationRef.current): Promise<MaintOverview | null> => {
     if (!id || isDemo) return null;
-    const ticket = guard.begin();
+    const ticket = guard.begin("refresh", id);
     const o = await api.maintOverview(id).catch(() => null);
-    if (guard.accepts(ticket, id, installationRef.current)) store(o);
+    if (guard.accepts(ticket, installationRef.current, o, overviewRef.current)) store(o);
     return o;
   }, [guard]);
 
   /** Re-read 0x64 (start-up, every new connection on the CAN socket bus); errors leave the stored state. */
   const check = useCallback(async (id = installationRef.current) => {
     if (!id || isDemo) return;
-    const ticket = guard.begin();
-    try {
-      const o = await api.maintCheck(id);
-      if (guard.accepts(ticket, id, installationRef.current)) store(o);
-    } catch { await refresh(id); }
+    const ticket = guard.begin("check", id);
+    let o: MaintOverview | null = null;
+    try { o = await api.maintCheck(id); } catch { /* stored state stays */ }
+    if (guard.accepts(ticket, installationRef.current, o, overviewRef.current) && o) store(o);
+    guard.end(ticket);
+    if (!o) await refresh(id);
   }, [guard, refresh]);
 
   const use = useCallback(async (id: string, recheck: boolean) => {

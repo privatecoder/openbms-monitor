@@ -37,12 +37,33 @@ export function attachDecision(current: MaintOverview | null, known: Installatio
   return inUse ? { do: "offer-assign" } : { do: "create" };
 }
 
-/** Latest-wins guard for overview requests: only the newest request for the installation still in use may store its answer. */
+export interface Ticket { kind: "refresh" | "check"; id: string; seq: number }
+
+/** Ordering of overview requests. A check (fresh 0x64 read) has precedence over a refresh (stored state):
+ *  a check answer counts unless a newer check for the same id began; a refresh answer is ignored while a check
+ *  for that id is in flight, after a check for it began later, or after a newer refresh began. A failed refresh
+ *  never replaces an overview already shown for the same id. Answers for another installation are ignored. */
 export function latestGuard() {
-  let n = 0;
+  let seq = 0;
+  const lastCheck = new Map<string, number>();
+  const lastRefresh = new Map<string, number>();
+  const inFlight = new Map<string, number>();
   return {
-    begin: () => ++n,
-    accepts: (ticket: number, requestedId: string, currentId: string | null) => ticket === n && requestedId === currentId,
+    begin(kind: Ticket["kind"], id: string): Ticket {
+      const t = { kind, id, seq: ++seq };
+      if (kind === "check") { lastCheck.set(id, t.seq); inFlight.set(id, (inFlight.get(id) ?? 0) + 1); }
+      else lastRefresh.set(id, t.seq);
+      return t;
+    },
+    /** call once when the request has answered or failed */
+    end(t: Ticket) { if (t.kind === "check") inFlight.set(t.id, Math.max(0, (inFlight.get(t.id) ?? 1) - 1)); },
+    accepts(t: Ticket, currentId: string | null, answer: MaintOverview | null, shown: MaintOverview | null): boolean {
+      if (t.id !== currentId) return false;
+      if (t.kind === "check") return (lastCheck.get(t.id) ?? 0) <= t.seq;
+      const checks = (inFlight.get(t.id) ?? 0) > 0 || (lastCheck.get(t.id) ?? 0) > t.seq;
+      if (checks || (lastRefresh.get(t.id) ?? 0) > t.seq) return false;
+      return !(answer === null && shown?.installation.id === t.id);
+    },
   };
 }
 

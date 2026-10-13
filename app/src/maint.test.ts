@@ -100,12 +100,44 @@ describe("start-up races", () => {
     expect(attachDecision(null, { ...known, id: "i" }, "i")).toEqual({ do: "use", id: "i" });
     expect(attachDecision(null, known)).toEqual({ do: "use", id: "j" });
   });
-  it("only the newest request for the current installation may store its answer", () => {
-    const g = latestGuard();
-    const a = g.begin();
-    const b = g.begin();
-    expect(g.accepts(a, "i", "i")).toBe(false);
-    expect(g.accepts(b, "i", "i")).toBe(true);
-    expect(g.accepts(b, "i", "j")).toBe(false);
+  describe("overview request ordering", () => {
+    const ov = (name: string): MaintOverview => ({ ...base, installation: { ...inst, name } });
+    const A = ov("check"), B = ov("refresh");
+    it("check starts, refresh starts and answers first, check answers: the check is shown", () => {
+      const g = latestGuard();
+      const c = g.begin("check", "i"), r = g.begin("refresh", "i");
+      expect(g.accepts(r, "i", B, null)).toBe(false);
+      expect(g.accepts(c, "i", A, null)).toBe(true);
+    });
+    it("refresh starts, check starts, refresh answers: ignored", () => {
+      const g = latestGuard();
+      const r = g.begin("refresh", "i"); g.begin("check", "i");
+      expect(g.accepts(r, "i", B, null)).toBe(false);
+    });
+    it("two checks: the newer wins", () => {
+      const g = latestGuard();
+      const c1 = g.begin("check", "i"), c2 = g.begin("check", "i");
+      expect(g.accepts(c1, "i", A, null)).toBe(false);
+      expect(g.accepts(c2, "i", A, null)).toBe(true);
+    });
+    it("a refresh after a finished check is accepted; a newer refresh beats an older one", () => {
+      const g = latestGuard();
+      const c = g.begin("check", "i"); g.end(c);
+      const r1 = g.begin("refresh", "i"), r2 = g.begin("refresh", "i");
+      expect(g.accepts(r1, "i", B, null)).toBe(false);
+      expect(g.accepts(r2, "i", B, null)).toBe(true);
+    });
+    it("a failed refresh keeps the overview shown for the same id", () => {
+      const g = latestGuard();
+      const r = g.begin("refresh", "i");
+      expect(g.accepts(r, "i", null, A)).toBe(false);
+      expect(g.accepts(r, "i", null, null)).toBe(true);
+    });
+    it("answers for another installation are ignored", () => {
+      const g = latestGuard();
+      const c = g.begin("check", "i"), r = g.begin("refresh", "i");
+      expect(g.accepts(c, "j", A, null)).toBe(false);
+      expect(g.accepts(r, "j", B, null)).toBe(false);
+    });
   });
 });
