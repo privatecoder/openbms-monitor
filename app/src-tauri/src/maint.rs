@@ -713,8 +713,9 @@ pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgres
 
 /// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A single pack
 /// (`N` = 0) ends only with a control channel: its Values step needs a fresh 0/0 from the master
-/// (`reports_zero`), because a quiet bus alone also passes on a bank master whose DIP 5–8 are still OFF.
-/// Without one (or with `N` > 15) every step is refused until the user corrects `N` (`maint_set_slaves`).
+/// (`reports_zero`), since there is no polling round to see. That read cannot tell a single pack from a bank
+/// master whose DIP 5–8 are still OFF; the pack count the user entered decides that, shown with its DIP value.
+/// Without a control channel (or with `N` > 15) every step is refused until the user corrects `N`.
 pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, has_control: bool, step: EndStep) -> Result<(), MaintError> {
     slaves_allowed(slaves, has_control)?;
     let stopped = p.stopped || kind == SessionKind::Dip;
