@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confirmationPhrase, imageLabel, imageWarning, progressFraction, steps, type FwSetup } from "./firmware";
+import { confirmationPhrase, gateHint, imageLabel, imageWarning, masterOk, progressFraction, resultActions, resultVersions, steps, type FwSetup } from "./firmware";
 import i18n from "./i18n";
 
 const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
@@ -93,5 +93,47 @@ describe("image naming", () => {
     expect(i18n.t("fw.maintWarning", { lng: "de" })).not.toMatch(/keiner bekannten/);
     // still behind the custom opt-in and its own phrase
     expect(confirmationPhrase(0, maint.custom)).toBe("FLASH CUSTOM 0");
+  });
+});
+
+describe("flash result", () => {
+  const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
+  const info = (v: string) => ({ device_name: "X", firmware_version: v, can_protocol: "CAN" });
+  const maint = { ...image!, release: "16.06.13 MAINT", kind: "maintenance" as const, custom: true };
+  const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
+
+  it("an open maintenance session continues with the next pack or its End, without a way back to the monitor", () => {
+    expect(resultActions(true)).toEqual(["next", "end"]);
+    expect(resultActions(false)).toEqual(["again", "back"]);
+    for (const lng of ["de", "en"]) for (const k of ["fw.next", "fw.endMaint", "fw.again", "fw.back"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+    expect(i18n.t("fw.next", { lng: "de" })).toBe("Nächstes Pack flashen");
+    expect(i18n.t("fw.endMaint", { lng: "en" })).toBe("End maintenance");
+  });
+
+  it("only the expected master state counts as success", () => {
+    expect(masterOk("as-expected")).toBe(true);
+    for (const o of ["unclear", "marker-unexplained", "unknown-image"]) expect(masterOk(o)).toBe(false);
+  });
+
+  it("the version line names the image in full, the maintenance build with MAINT", () => {
+    const done = { before: info("16.06"), after: info("16.06") };
+    expect(resultVersions(done, "16.06", maint, tr("de"))).toEqual({ from: "16.06", to: "16.06.13 MAINT" });
+    expect(resultVersions(done, "16.06", image, tr("de"))).toEqual({ from: "16.06", to: "16.06.13" });
+    expect(resultVersions({ before: info("16.04"), after: info("16.06") }, null, image, tr("de"))).toEqual({ from: "16.04", to: "16.06.13" });
+  });
+  it("without a 0x51 answer before the flash the pack check's version is used", () => {
+    expect(resultVersions({ before: null, after: info("16.06") }, "16.05", image, tr("de")).from).toBe("16.05");
+  });
+  it("a pack that reports another version than the image says so; a custom image shows what the pack reports", () => {
+    expect(resultVersions({ before: info("16.06"), after: info("16.04") }, null, image, tr("de")).to).toBe("16.06.13 (Pack meldet 16.04)");
+    expect(resultVersions({ before: info("16.06"), after: info("16.06") }, null, custom, tr("en")).to).toBe("custom firmware (pack reports 16.06)");
+    expect(resultVersions({ before: info("16.06"), after: null }, null, custom, tr("de")).to).toBe("eigene Firmware");
+  });
+
+  it("no lock or refusal hint while a flash runs or its result is shown", () => {
+    expect(gateHint({ ok: false, reason: "measure" }, { running: false, done: false })).toBe("measure");
+    expect(gateHint({ ok: false, reason: "measure" }, { running: false, done: true })).toBeNull();
+    expect(gateHint({ ok: false, reason: "measure" }, { running: true, done: false })).toBeNull();
+    expect(gateHint({ ok: true }, { running: false, done: false })).toBeNull();
   });
 });

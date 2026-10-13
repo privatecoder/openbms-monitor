@@ -7,7 +7,7 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { confirmationPhrase, imageLabel, imageWarning, progressFraction, steps } from "../firmware";
+import { confirmationPhrase, gateHint, imageLabel, imageWarning, masterOk, progressFraction, resultActions, resultVersions, steps } from "../firmware";
 import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, type Activity, type Monitor } from "../maint";
 import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
@@ -57,6 +57,12 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<FirmwareProgress | null>(null);
   const [done, setDone] = useState<FirmwareDone | null>(null);
+  // what the last run flashed: the image and the version "check pack" read (for the result's version line)
+  const [flashed, setFlashed] = useState<{ image: FirmwareImage; checked: string | null } | null>(null);
+  // the master's post-flash check of the last run ("as-expected" is a success, the others are not)
+  const [masterOutcome, setMasterOutcome] = useState<string | null>(null);
+  // "End maintenance" under a result: the same scroll and highlight as the banner's End
+  const [ownFocusEnd, setOwnFocusEnd] = useState(0);
   const [closeRefused, setCloseRefused] = useState(false);
   const [inverter, setInverter] = useState(false);
   const [measuredAt, setMeasuredAt] = useState<number | null>(null);
@@ -88,10 +94,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         void maint.refresh();
         // one measurement, one flash
         setMeasuredAt(null); setDipOffConfirmed(false); setIsolatedConfirmed(false);
-        const notes: string[] = [];
-        if (d.block) notes.push(t(`maint.panel.block.${d.block}`, { pack: addressRef.current }));
-        if (d.master) notes.push(t(`maint.master.${d.master}`));
-        setNotice(notes.length ? notes.join(" ") : null);
+        setNotice(d.block ? t(`maint.panel.block.${d.block}`, { pack: addressRef.current }) : null);
+        setMasterOutcome(d.master);
       }),
       api.onFirmwareBusy(() => setCloseRefused(true)),
       api.onMaintProgress((ev) => setActivity((a) => (a && acceptsProgress(a, ev) ? { ...a, phase: ev } : a))),
@@ -213,6 +217,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
     // the backend stops the monitor here too (it may have been reconnected since the check)
     if (connected) onMonitorStopped();
     const confirmation = typed;
+    setFlashed({ image, checked: target?.firmware_version ?? null }); setMasterOutcome(null);
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setError(null); setNotice(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
     try {
@@ -226,7 +231,17 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
     }
   };
 
-  const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); };
+  const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); setNotice(null); setMasterOutcome(null); };
+  // the next pack of the open session: the firmware steps from the start (the port stays with the installation),
+  // a fresh measurement and fresh master-plan confirmations; the inverter statement stays (same work phase)
+  const nextPack = () => {
+    reset();
+    setAddress(0); setImage(null); setPath(null); setPending(null); setImageError(null); setError(null); setCloseRefused(false); setFlashed(null);
+    setMeasuredAt(null); setDipOffConfirmed(false); setIsolatedConfirmed(false);
+  };
+  const versions = done ? resultVersions(done, flashed?.checked ?? null, flashed?.image ?? image, t) : null;
+  const sessionOpen = !!overview?.session;
+  const hint = gateHint(gate, { running, done: done !== null });
 
   if (isDemo) return <div className="max-w-2xl space-y-3"><h1 className="font-display text-2xl font-semibold">{t("fw.title")}</h1><p className="text-muted">{t("fw.demo")}</p></div>;
 
@@ -237,7 +252,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
-      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} ports={ports} onPortsChanged={loadPorts} monitor={monitor} focusEnd={focusEnd} onFocusDone={onFocusDone}
+      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} ports={ports} onPortsChanged={loadPorts} monitor={monitor} focusEnd={focusEnd || ownFocusEnd} onFocusDone={() => { setOwnFocusEnd(0); onFocusDone(); }}
         busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
         noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
         activity={activity} setActivity={setActivity} />
@@ -304,7 +319,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
           </div>
         )}
         <Button variant="primary" disabled={!s.start} onClick={start}>{t("fw.start")}</Button>
-        {!gate.ok && gate.reason && <p className="text-sm text-alarm">{t(errorKey(gate.reason).key)}</p>}
+        {hint && <p className="text-sm text-alarm">{t(errorKey(hint).key)}</p>}
         {flowReason && <p className="flex items-center gap-2 text-sm text-muted"><Lock className="h-4 w-4 shrink-0" />{t("maint.flow.fwLocked", { reason: flowReason })}</p>}
       </Step>
 
@@ -321,7 +336,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
           {done && (
             <div className="space-y-2">
               {done.ok ? (
-                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />{t("fw.okTitle")}: {t("fw.okText", { from: done.before?.firmware_version, to: done.after?.firmware_version })}</p>
+                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />{t("fw.okTitle")}: {t("fw.okText", versions!)}</p>
               ) : (
                 <>
                   <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.failTitle")}</p>
@@ -330,12 +345,17 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
                   <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
                 </>
               )}
+              {masterOutcome && (masterOk(masterOutcome)
+                ? <p className="flex items-center gap-2 text-sm text-ok"><CircleCheck className="h-4 w-4 shrink-0" />{t(`maint.master.${masterOutcome}`)}</p>
+                : <p className="flex items-center gap-2 text-sm text-alarm"><TriangleAlert className="h-4 w-4 shrink-0" />{t(`maint.master.${masterOutcome}`)}</p>)}
               {notice && <p className="text-sm text-alarm">{notice}</p>}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>
-                <Button variant="secondary" size="sm" onClick={reset}>{t("fw.again")}</Button>
-                <Button variant="primary" size="sm" onClick={onBack}>{t("fw.back")}</Button>
+                {resultActions(sessionOpen).map((a) => a === "next" ? <Button key={a} variant="secondary" size="sm" onClick={nextPack}>{t("fw.next")}</Button>
+                  : a === "end" ? <Button key={a} variant="primary" size="sm" onClick={() => setOwnFocusEnd(Date.now())}>{t("fw.endMaint")}</Button>
+                  : a === "again" ? <Button key={a} variant="secondary" size="sm" onClick={reset}>{t("fw.again")}</Button>
+                  : <Button key={a} variant="primary" size="sm" onClick={onBack}>{t("fw.back")}</Button>)}
               </div>
             </div>
           )}

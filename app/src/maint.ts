@@ -138,6 +138,24 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
   return { key: "maint.err.text", params: { text: String(e) } };
 }
 
+/** The backend's refusal of `connect` while another operation holds the port: `{kind: "busy", action}` with the
+ *  running maintenance action ("check", …, "flash"; null when it has none, e.g. "check pack"). Else null. */
+export function portBusy(e: unknown): { action: string | null } | null {
+  let v: unknown = e;
+  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  if (!v || typeof v !== "object" || (v as { kind?: unknown }).kind !== "busy") return null;
+  const a = (v as { action?: unknown }).action;
+  return { action: typeof a === "string" ? a : null };
+}
+
+const BUSY_ACTIONS = ["check", "activate", "start-dip", "scan", "account-marker", "set-slaves", "measure", "end", "end-step", "clear-block", "flash"];
+
+/** "Port busy: the master is being checked." and what happens next: waiting for it, or given up after the wait. */
+export function busyMessage(action: string | null, gaveUp: boolean, t: (key: string, params?: Record<string, unknown>) => string): string {
+  const what = t(`conn.busyAction.${action && BUSY_ACTIONS.includes(action) ? action : "other"}`);
+  return t(gaveUp ? "conn.busyGaveUp" : "conn.busyWait", { what });
+}
+
 /** The number of packs on the bus as typed, master included: a whole number from 1 to 16, else null. The backend
  *  gets `slavesOf` it; 1 pack (0 slaves) it accepts only when the master itself reports "patched, 0 slaves". */
 export function parsePacks(text: string): number | null {

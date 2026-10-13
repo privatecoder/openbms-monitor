@@ -247,7 +247,7 @@ const resources = {
         failBefore: "Es wurde nichts geschrieben; das Pack startet seine alte Firmware von selbst wieder.",
         failPostCheck: "Die neue Firmware ist gestartet, hat aber nicht alle Prüfabfragen beantwortet. Die Werte des Packs im Monitor prüfen.",
         failAfter: "Das Pack ist vermutlich im Update-Modus. Nicht einfach neu starten: Log sichern und Hilfe lesen.",
-        log: "Log", showLog: "Im Ordner zeigen", back: "Zurück zum Monitor", again: "Neues Update",
+        log: "Log", showLog: "Im Ordner zeigen", back: "Zurück zum Monitor", again: "Neues Update", next: "Nächstes Pack flashen", endMaint: "Wartung beenden", reports: "Pack meldet {{v}}",
       },
       par: {
         title: "Parameter", intro: "Einstellungen der Packs lesen und vergleichen: aus den Packs über RS485-1/2 oder aus BatteryMonitor-Exporten. Die App ändert nichts am BMS.",
@@ -299,6 +299,14 @@ const resources = {
         packs: "Packs", packsAuto: "suchen", fixed: "{{count}} Packs festgelegt", fromMaster: "{{count}} Packs laut Master", maintActive: "Wartungsmodus des Masters aktiv, Packs werden gesucht.",
         connected: "Verbunden", offline: "Nicht verbunden", paused: "Für Wartung angehalten", found: "{{count}} Packs gefunden", none: "Keine Packs gefunden. Prüfe Bus, Baudrate und Verkabelung.",
         demo: "Vorschau mit aufgezeichneten Werten",
+        busyWait: "Port belegt: {{what}}. Die Verbindung wird danach aufgebaut.",
+        busyGaveUp: "Port belegt: {{what}}. Nach 30 s nicht frei geworden; bitte später erneut verbinden.",
+        busyAction: {
+          check: "Master wird gerade geprüft", activate: "Wartungsmodus wird gerade aktiviert", "start-dip": "Wartung per DIP wird gerade begonnen",
+          scan: "Slaves werden gerade gesucht", "account-marker": "Marker wird gerade eingetragen", "set-slaves": "Packzahl wird gerade geändert",
+          measure: "Bus wird gerade gemessen", end: "Wartung wird gerade beendet", "end-step": "ein Schritt zum Beenden läuft gerade",
+          "clear-block": "Pack wird gerade geprüft", flash: "Firmware-Update läuft gerade", other: "eine andere Aktion läuft gerade (z. B. Pack prüfen)",
+        },
       },
       dash: {
         empty: "Wähle links Gateway oder Adapter und verbinde dich mit der Batterie.",
@@ -618,7 +626,7 @@ const resources = {
         failBefore: "Nothing was written; the pack restarts its old firmware by itself.",
         failPostCheck: "The new firmware started but did not answer all checks. Check the pack's values in the monitor.",
         failAfter: "The pack is probably in update mode. Do not just restart it: keep the log and read the help.",
-        log: "Log", showLog: "Show in folder", back: "Back to monitor", again: "New update",
+        log: "Log", showLog: "Show in folder", back: "Back to monitor", again: "New update", next: "Flash the next pack", endMaint: "End maintenance", reports: "pack reports {{v}}",
       },
       par: {
         title: "Parameters", intro: "Read and compare the packs' settings: from the packs via RS485-1/2 or from BatteryMonitor exports. The app changes nothing in the BMS.",
@@ -670,6 +678,14 @@ const resources = {
         packs: "Packs", packsAuto: "search", fixed: "{{count}} packs set", fromMaster: "{{count}} packs according to the master", maintActive: "Master maintenance mode active, searching packs.",
         connected: "Connected", offline: "Not connected", paused: "Paused for maintenance", found: "{{count}} packs found", none: "No packs found. Check bus, baud rate and wiring.",
         demo: "Preview with recorded values",
+        busyWait: "Port busy: {{what}}. The connection follows once it is done.",
+        busyGaveUp: "Port busy: {{what}}. Still not free after 30 s; please connect again later.",
+        busyAction: {
+          check: "the master is being checked", activate: "maintenance mode is being activated", "start-dip": "maintenance by DIP is being started",
+          scan: "slaves are being searched", "account-marker": "the marker is being recorded", "set-slaves": "the pack count is being changed",
+          measure: "the bus is being measured", end: "maintenance is being ended", "end-step": "a step of ending is running",
+          "clear-block": "a pack is being checked", flash: "a firmware update is running", other: "another action is running (e.g. check pack)",
+        },
       },
       dash: {
         empty: "Choose a gateway or adapter on the left and connect to the battery.",

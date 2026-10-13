@@ -91,7 +91,19 @@ pub(crate) fn lock(m: &Mutex<Option<Connection>>) -> Result<std::sync::MutexGuar
 }
 
 const FLASHING: &str = "a firmware update is running";
-const PORT_BUSY: &str = "the port is busy with another operation";
+
+/// The refusal of `connect` while another operation holds the port, as JSON for the UI (`portBusy` in maint.ts):
+/// `{"kind":"busy","action":…}` names the running maintenance action, "flash" for a firmware update, or null
+/// (e.g. "check pack"); the UI says so and connects once the port is free.
+fn port_busy_error(action: Option<&str>) -> String {
+    serde_json::json!({ "kind": "busy", "action": action }).to_string()
+}
+
+/// What holds the port now, for `port_busy_error`.
+fn current_action(state: &AppState) -> Option<&'static str> {
+    let maint = state.maint_action.lock().ok().and_then(|a| a.as_ref().map(|(_, a)| *a));
+    maint.or_else(|| state.flashing.load(Ordering::SeqCst).then_some("flash"))
+}
 
 struct PortSlot(Arc<AtomicBool>);
 
@@ -124,7 +136,7 @@ fn list_ports() -> Vec<String> {
 
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<(), String> {
-    let _port_slot = reserve_port(&state.port_busy).ok_or(PORT_BUSY)?;
+    let _port_slot = reserve_port(&state.port_busy).ok_or_else(|| port_busy_error(current_action(&state)))?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
     }
@@ -560,5 +572,20 @@ mod port_reservation_tests {
         assert!(reserve_port(&busy).is_none());
         drop(slot);
         assert!(reserve_port(&busy).is_some());
+    }
+
+    #[test]
+    fn a_busy_port_names_the_running_action() {
+        let state = AppState::default();
+        assert_eq!(current_action(&state), None);
+        let v: serde_json::Value = serde_json::from_str(&port_busy_error(current_action(&state))).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "busy", "action": null }));
+        *state.maint_action.lock().unwrap() = Some(("inst".into(), "check"));
+        assert_eq!(current_action(&state), Some("check"));
+        let v: serde_json::Value = serde_json::from_str(&port_busy_error(current_action(&state))).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "busy", "action": "check" }));
+        *state.maint_action.lock().unwrap() = None;
+        state.flashing.store(true, Ordering::SeqCst);
+        assert_eq!(current_action(&state), Some("flash"));
     }
 }

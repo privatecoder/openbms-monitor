@@ -6,7 +6,12 @@ import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
+import { busyMessage, portBusy } from "../maint";
 import { RecordingEntry } from "./Recording";
+
+// a busy port: try again every BUSY_POLL_MS, give up after BUSY_WAIT_MS
+const BUSY_POLL_MS = 500;
+const BUSY_WAIT_MS = 30_000;
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
@@ -58,6 +63,20 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
   useEffect(() => { api.listPorts().then(setPorts).catch(() => setPorts([])); }, [kind]);
   useEffect(() => { document.documentElement.classList.toggle("dark", dark); try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
 
+  // a maintenance action or a pack check holds the port: say which, and connect once it has finished
+  const connectWhenFree = async (ep: Endpoint) => {
+    const until = Date.now() + BUSY_WAIT_MS;
+    for (;;) {
+      try { await api.connect(ep); return; } catch (e) {
+        const b = portBusy(e);
+        if (!b) throw e;
+        if (Date.now() >= until) throw new Error(busyMessage(b.action, true, t));
+        setMsg(busyMessage(b.action, false, t));
+        await new Promise((r) => setTimeout(r, BUSY_POLL_MS));
+      }
+    }
+  };
+
   const connect = async (retry = false) => {
     setBusy(true); if (!retry) { setMsg(null); setLost(false); }
     setLastTry(Date.now());
@@ -65,7 +84,7 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       localStorage.setItem("conn.packs", String(packCount));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
-      await api.connect(ep);
+      await connectWhenFree(ep);
       void onEndpoint(ep);
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
@@ -98,7 +117,8 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
     } catch (e) {
       if (retry) await api.disconnect().catch(() => {});
-      setMsg(retry ? t("conn.retryFailed", { err: String(e) }) : String(e));
+      const err = e instanceof Error ? e.message : String(e);
+      setMsg(retry ? t("conn.retryFailed", { err }) : err);
     } finally { setBusy(false); }
   };
 
