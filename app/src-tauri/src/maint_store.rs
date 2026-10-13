@@ -27,6 +27,20 @@ pub fn endpoint_key(tcp: bool, s: &str) -> String {
     if tcp { format!("tcp:{}", s.trim().to_ascii_lowercase()) } else { format!("serial:{}", s.trim()) }
 }
 
+/// Accepts `tcp:<addr>` / `serial:<path>` (prefix in any case) and returns the canonical key.
+pub fn normalize_key(s: &str) -> Result<String, String> {
+    let s = s.trim();
+    let (prefix, rest) = s.split_once(':').ok_or("bad endpoint")?;
+    if rest.trim().is_empty() {
+        return Err("bad endpoint".into());
+    }
+    match prefix.to_ascii_lowercase().as_str() {
+        "tcp" => Ok(endpoint_key(true, rest)),
+        "serial" => Ok(endpoint_key(false, rest)),
+        _ => Err("bad endpoint".into()),
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ControlEndpoint {
@@ -198,7 +212,7 @@ impl Store {
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM maint_sessions WHERE ended IS NULL)
                       + (SELECT COUNT(*) FROM flash_blocks WHERE cleared IS NULL)
-                      + (SELECT COUNT(*) FROM master_state WHERE state LIKE '%\"patched-on\"%' OR state LIKE '%\"marker-unexplained\"%')",
+                      + (SELECT COUNT(*) FROM master_state WHERE json_extract(state, '$.state') IN ('patched-on', 'marker-unexplained'))",
                 [],
                 |r| r.get(0),
             )
@@ -216,21 +230,41 @@ impl Store {
     /// A move is refused while the source or the target has open work: a block or a session must never be
     /// separated from the bus it belongs to.
     pub fn save_installation(&self, i: &Installation) -> Result<(), String> {
+        let old = self.installation(&i.id)?; // unknown id: Err, no rows for a nonexistent installation
+        let mut endpoints: Vec<String> = Vec::new();
+        for ep in &i.endpoints {
+            let k = normalize_key(ep)?;
+            if !endpoints.contains(&k) {
+                endpoints.push(k);
+            }
+        }
+        let control_key = i.control.as_ref().map(ControlEndpoint::key);
+        let own_open = self.open_work(&i.id)?;
         // with open work the installation keeps every endpoint and its control adapter: a removed port would
         // be ownerless and could then be assigned elsewhere, away from its block
-        if self.open_work(&i.id)? {
-            let old = self.installation(&i.id)?;
-            let kept = old.endpoints.iter().all(|ep| i.endpoints.contains(ep));
-            if !kept || old.control != i.control {
+        if own_open {
+            let kept = old.endpoints.iter().all(|ep| endpoints.contains(ep));
+            if !kept || old.control.as_ref().map(ControlEndpoint::key) != control_key {
                 return Err("endpoint-in-use".into());
             }
         }
-        let mut keys: Vec<String> = i.endpoints.clone();
-        keys.extend(i.control.as_ref().map(ControlEndpoint::key));
-        for key in &keys {
-            if let Some(owner) = self.installation_of(key)? {
-                if owner.id != i.id && (self.open_work(&owner.id)? || self.open_work(&i.id)?) {
+        // one physical key belongs to one installation: a foreign control is never taken over, a foreign
+        // endpoint only if neither side has open work
+        let others: Vec<Installation> = self.installations()?.into_iter().filter(|o| o.id != i.id).collect();
+        let mut take_over: Vec<String> = Vec::new();
+        let keys = endpoints.iter().chain(control_key.iter());
+        for key in keys {
+            for o in &others {
+                if o.control.as_ref().is_some_and(|c| &c.key() == key) {
                     return Err("endpoint-in-use".into());
+                }
+                if o.endpoints.contains(key) {
+                    if own_open || self.open_work(&o.id)? {
+                        return Err("endpoint-in-use".into());
+                    }
+                    if control_key.as_ref() == Some(key) {
+                        take_over.push(key.clone());
+                    }
                 }
             }
         }
@@ -238,7 +272,10 @@ impl Store {
         let tx = self.db.unchecked_transaction().map_err(e)?;
         tx.execute("UPDATE installations SET name = ?2, control = ?3 WHERE id = ?1", params![i.id, i.name, control]).map_err(e)?;
         tx.execute("DELETE FROM installation_endpoints WHERE installation = ?1", [&i.id]).map_err(e)?;
-        for ep in &i.endpoints {
+        for key in &take_over {
+            tx.execute("DELETE FROM installation_endpoints WHERE endpoint = ?1", [key]).map_err(e)?;
+        }
+        for ep in &endpoints {
             tx.execute("INSERT OR REPLACE INTO installation_endpoints(endpoint, installation) VALUES (?1, ?2)", params![ep, i.id]).map_err(e)?;
         }
         tx.commit().map_err(e)
@@ -504,5 +541,77 @@ mod tests {
         assert_eq!(v, serde_json::json!({ "state": "no-0x64" }));
         let v = serde_json::to_value(StoredMasterState::PatchedOff { slaves: 3 }).unwrap();
         assert_eq!(v, serde_json::json!({ "state": "patched-off", "slaves": 3 }));
+    }
+
+    #[test]
+    fn one_key_has_one_owner() {
+        let s = Store::open(&temp("owner")).unwrap();
+        let x = s.installation_for("serial:/dev/k").unwrap();
+        let mut a = s.installation_for("tcp:gw:4196").unwrap();
+        a.control = Some(ControlEndpoint::Serial { path: "/dev/k".into() });
+        s.save_installation(&a).unwrap(); // x has no open work: the key moves to a as its control
+        assert!(s.installation(&x.id).unwrap().endpoints.is_empty());
+        s.add_block(&a.id, 1, "update-unclear", 1).unwrap();
+        assert_eq!(s.installation_of("serial:/dev/k").unwrap().map(|i| i.id), Some(a.id.clone()));
+        // a third installation cannot claim a control key as endpoint
+        let mut c = s.installation_for("serial:/dev/z").unwrap();
+        c.endpoints.push("serial:/dev/k".into());
+        assert_eq!(s.save_installation(&c), Err("endpoint-in-use".to_string()));
+        // nor take it as its own control
+        c.endpoints.pop();
+        c.control = Some(ControlEndpoint::Serial { path: "/dev/k".into() });
+        assert_eq!(s.save_installation(&c), Err("endpoint-in-use".to_string()));
+    }
+
+    #[test]
+    fn unknown_id_and_bad_or_differently_cased_keys() {
+        let s = Store::open(&temp("keys")).unwrap();
+        let ghost = Installation { id: "nope".into(), name: "x".into(), endpoints: vec!["tcp:a:1".into()], control: None };
+        assert!(s.save_installation(&ghost).is_err());
+        assert_eq!(s.installation_of("tcp:a:1").unwrap(), None);
+        assert_eq!(normalize_key("TCP: GW:4196 ").unwrap(), "tcp:gw:4196");
+        assert_eq!(normalize_key("Serial:/dev/X").unwrap(), "serial:/dev/X");
+        assert_eq!(normalize_key("nonsense"), Err("bad endpoint".to_string()));
+        assert_eq!(normalize_key("tcp:"), Err("bad endpoint".to_string()));
+        let a = s.installation_for("tcp:gw:4196").unwrap();
+        s.add_block(&a.id, 2, "update-unclear", 1).unwrap();
+        let mut b = s.installation_for("serial:/dev/p").unwrap();
+        b.endpoints.push("TCP:GW:4196".into());
+        assert_eq!(s.save_installation(&b), Err("endpoint-in-use".to_string()));
+        let mut a2 = a.clone();
+        a2.endpoints = vec!["TCP:GW:4196".into()];
+        s.save_installation(&a2).unwrap();
+        assert_eq!(s.installation(&a.id).unwrap().endpoints, vec!["tcp:gw:4196".to_string()]);
+    }
+
+    #[test]
+    fn open_work_by_master_state() {
+        let s = Store::open(&temp("states")).unwrap();
+        let i = s.installation_for("tcp:gw:4196").unwrap();
+        for (st, open) in [
+            (StoredMasterState::MarkerUnexplained, true),
+            (StoredMasterState::PatchedOn, true),
+            (StoredMasterState::No0x64, false),
+            (StoredMasterState::Unknown, false),
+            (StoredMasterState::PatchedOff { slaves: 3 }, false),
+        ] {
+            s.set_master_state(&i.id, &st, 1).unwrap();
+            assert_eq!((s.any_open().unwrap(), s.open_work(&i.id).unwrap()), (open, open), "{st:?}");
+        }
+    }
+
+    #[test]
+    fn sources_with_a_session_or_a_set_marker_cannot_lose_an_endpoint() {
+        let s = Store::open(&temp("sources")).unwrap();
+        let a = s.installation_for("serial:/dev/p").unwrap();
+        let b = s.installation_for("tcp:gw:4196").unwrap();
+        let c = s.installation_for("serial:/dev/q").unwrap();
+        s.start_session(&a.id, SessionKind::Dip, 3, 1).unwrap();
+        s.set_master_state(&c.id, &StoredMasterState::PatchedOn, 1).unwrap();
+        let mut b2 = b.clone();
+        b2.endpoints.push("serial:/dev/p".into());
+        assert_eq!(s.save_installation(&b2), Err("endpoint-in-use".to_string()));
+        b2.endpoints = vec!["tcp:gw:4196".into(), "serial:/dev/q".into()];
+        assert_eq!(s.save_installation(&b2), Err("endpoint-in-use".to_string()));
     }
 }
