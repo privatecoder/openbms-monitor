@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { confirmationPhrase, gateHint, imageLabel, imageWarning, masterOk, progressFraction, resultActions, resultVersions, steps, type FwSetup } from "./firmware";
+import { confirmationPhrase, imageLabel, imageWarning, progressFraction, resultVersions, steps, type FwSetup } from "./firmware";
 import i18n from "./i18n";
 
 const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
-const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "", unlocked: true, ready: true, busy: false };
+const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "", busy: false };
 
 describe("firmware steps", () => {
   it("check pack needs port and image", () => {
@@ -31,12 +31,6 @@ describe("firmware steps", () => {
     expect(steps({ ...custom, typed: "FLASH CUSTOM 0" }).start).toBe(true);
     expect(steps({ ...custom, typed: "FLASH 0" }).start).toBe(false);
     expect(steps({ ...base, typed: "FLASH CUSTOM 0" }).start).toBe(false);
-  });
-  it("check pack and start follow the guided flow (steps 2–5 of the pack bus panel)", () => {
-    const s = steps({ ...base, typed: "FLASH 0", ready: false });
-    expect([s.inspect, s.confirm, s.start]).toEqual([false, false, false]);
-    // choosing an image stays free during the preparation
-    expect(s.image).toBe(true);
   });
   it("another action (pack check, measurement, End step) locks the inputs while it runs", () => {
     expect(steps({ ...base, typed: "FLASH 0", busy: true })).toEqual({ image: false, inspect: false, confirm: false, start: false });
@@ -67,22 +61,14 @@ describe("progress", () => {
   });
 });
 
-describe("maintenance gate", () => {
-  it("start stays locked while maintenance does not unlock it", () => {
-    const s = { ...base, typed: "FLASH 0" };
-    expect(steps({ ...s, unlocked: true }).start).toBe(true);
-    expect(steps({ ...s, unlocked: false }).start).toBe(false);
-  });
-});
-
 describe("image naming", () => {
-  const maint = { ...image!, release: "16.06.13 MAINT", kind: "maintenance" as const, custom: true };
+  const maint = { ...image!, release: "16.06.13 MAINT 1.1", kind: "maintenance" as const, custom: true };
   const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
   const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
   it("names the maintenance build as known, not as custom firmware", () => {
-    expect(imageLabel(maint, tr("de"), true)).toBe("Wartungs-Build 16.06.13 MAINT (bekannte Prüfsumme)");
-    expect(imageLabel(maint, tr("en"), true)).toBe("maintenance build 16.06.13 MAINT (known checksum)");
-    expect(imageLabel(maint, tr("de"))).toBe("Wartungs-Build 16.06.13 MAINT");
+    expect(imageLabel(maint, tr("de"), true)).toBe("Wartungs-Build 16.06.13 MAINT 1.1 (bekannte Prüfsumme)");
+    expect(imageLabel(maint, tr("en"), true)).toBe("maintenance build 16.06.13 MAINT 1.1 (known checksum)");
+    expect(imageLabel(maint, tr("de"))).toBe("Wartungs-Build 16.06.13 MAINT 1.1");
     expect(imageLabel(custom, tr("de"), true)).toBe("eigene Firmware");
     expect(imageLabel(image!, tr("de"), true)).toBe("16.06.13");
   });
@@ -99,25 +85,12 @@ describe("image naming", () => {
 describe("flash result", () => {
   const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
   const info = (v: string) => ({ device_name: "X", firmware_version: v, can_protocol: "CAN" });
-  const maint = { ...image!, release: "16.06.13 MAINT", kind: "maintenance" as const, custom: true };
+  const maint = { ...image!, release: "16.06.13 MAINT 1.1", kind: "maintenance" as const, custom: true };
   const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
-
-  it("an open maintenance session continues with the next pack or its End, without a way back to the monitor", () => {
-    expect(resultActions(true)).toEqual(["next", "end"]);
-    expect(resultActions(false)).toEqual(["again", "back"]);
-    for (const lng of ["de", "en"]) for (const k of ["fw.next", "fw.endMaint", "fw.again", "fw.back"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
-    expect(i18n.t("fw.next", { lng: "de" })).toBe("Nächstes Pack flashen");
-    expect(i18n.t("fw.endMaint", { lng: "en" })).toBe("End maintenance");
-  });
-
-  it("only the expected master state counts as success", () => {
-    expect(masterOk("as-expected")).toBe(true);
-    for (const o of ["unclear", "marker-unexplained", "unknown-image"]) expect(masterOk(o)).toBe(false);
-  });
 
   it("the version line names the image in full, the maintenance build with MAINT", () => {
     const done = { before: info("16.06"), after: info("16.06") };
-    expect(resultVersions(done, "16.06", maint, tr("de"))).toEqual({ from: "16.06", to: "16.06.13 MAINT" });
+    expect(resultVersions(done, "16.06", maint, tr("de"))).toEqual({ from: "16.06", to: "16.06.13 MAINT 1.1" });
     expect(resultVersions(done, "16.06", image, tr("de"))).toEqual({ from: "16.06", to: "16.06.13" });
     expect(resultVersions({ before: info("16.04"), after: info("16.06") }, null, image, tr("de"))).toEqual({ from: "16.04", to: "16.06.13" });
   });
@@ -128,12 +101,5 @@ describe("flash result", () => {
     expect(resultVersions({ before: info("16.06"), after: info("16.04") }, null, image, tr("de")).to).toBe("16.06.13 (Pack meldet 16.04)");
     expect(resultVersions({ before: info("16.06"), after: info("16.06") }, null, custom, tr("en")).to).toBe("custom firmware (pack reports 16.06)");
     expect(resultVersions({ before: info("16.06"), after: null }, null, custom, tr("de")).to).toBe("eigene Firmware");
-  });
-
-  it("no lock or refusal hint while a flash runs or its result is shown", () => {
-    expect(gateHint({ ok: false, reason: "measure" }, { running: false, done: false })).toBe("measure");
-    expect(gateHint({ ok: false, reason: "measure" }, { running: false, done: true })).toBeNull();
-    expect(gateHint({ ok: false, reason: "measure" }, { running: true, done: false })).toBeNull();
-    expect(gateHint({ ok: true }, { running: false, done: false })).toBeNull();
   });
 });

@@ -15,7 +15,7 @@ import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { useMaint } from "./maintStore";
 import { api, isDemo, type Bus } from "./api";
-import { openWorkLines, type Monitor } from "./maint";
+import type { Monitor } from "./maint";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
@@ -27,16 +27,10 @@ export default function App() {
   const live = useLiveData();
   const maint = useMaint();
   const [connected, setConnected] = useState(false);
-  // lost or closed in the sidebar: the firmware view asks for the inverter confirmation again
-  const [disconnects, setDisconnects] = useState(0);
   const [site, setSite] = useState("");
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
   const [flashing, setFlashing] = useState(false);
-  // a pack bus panel action runs (firmware view): the banner does not switch installations meanwhile
-  const [panelBusy, setPanelBusy] = useState(false);
-  // "End" in the banner: the firmware view scrolls to the panel's End section (also when it is already open)
-  const [focusEnd, setFocusEnd] = useState(0);
   // counts actions the user starts in the firmware view or the pack bus panel: the sidebar's wait for a busy port stops
   const [userActions, setUserActions] = useState(0);
   const userAction = () => setUserActions((n) => n + 1);
@@ -44,10 +38,9 @@ export default function App() {
   const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1" || MAINT_VIEWS.includes(demoView ?? ""));
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
   const current = pack !== null ? live.packs[pack] : undefined;
-  // what the monitor connection is doing, for the sidebar and the pack bus panel: three distinct "not connected" texts
+  // what the monitor connection is doing, for the sidebar: three distinct "not connected" texts
   const [monitor, setMonitor] = useState<Monitor>("offline");
-  // the app stopped the monitor itself (firmware view, maintenance step): "paused for maintenance", no lost
-  // connection, so the inverter confirmation, the measurement and the master check stay
+  // the app stopped the monitor itself (firmware view, pack bus panel): "paused for maintenance", no lost connection
   const monitorStopped = () => { live.reset(); setConnected(false); setPack(null); setMonitor((m) => (m === "connected" ? "paused" : m)); };
   const onMonitorStopped = useRef(monitorStopped);
   onMonitorStopped.current = monitorStopped;
@@ -56,7 +49,7 @@ export default function App() {
     return () => { un.then((f) => f()); };
   }, []);
 
-  // the banner's „Anzeigen“/„Beenden“: the firmware view with the pack bus panel
+  // the banner's „Anzeigen“: the firmware view with the pack bus panel
   const openPanel = () => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); setPack(null); };
   const endpointText = (ep: { kind: string; addr?: string; path?: string }) => ep.addr ?? ep.path ?? "";
 
@@ -79,18 +72,15 @@ export default function App() {
           onDevices={live.addDevices}
           onSerials={live.setSerials}
           onEndpoint={(ep) => maint.attach(ep)}
-          onDisconnected={(lost) => { live.reset(); setConnected(false); setPack(null); setDisconnects((d) => d + 1); setMonitor(lost ? "lost" : "offline"); maint.invalidateCheck(); }}
+          onDisconnected={(lost) => { live.reset(); setConnected(false); setPack(null); setMonitor(lost ? "lost" : "offline"); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
-          <MaintBanner lines={openWorkLines(maint.work, maint.installation)} failed={maint.workFailed} overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
-            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo}
-            switchLocked={flashing ? t("maint.openWork.lockedFlash") : panelBusy ? t("maint.openWork.lockedAction") : maint.switching ? t("maint.openWork.lockedSwitch") : null}
-            onShow={(id) => { if (id !== maint.installation) void maint.switchTo(id); openPanel(); }}
-            onEnd={() => { openPanel(); setFocusEnd(Date.now()); }} />
+          <MaintBanner alerts={maint.alerts} failed={maint.alertsFailed} flashing={flashing} unassigned={maint.unassigned} shownName={maint.current?.name ?? null}
+            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onChanged={() => void maint.loadLists()}
+            onShow={(id) => { if (id !== maint.installation) void maint.switchTo(id); openPanel(); }} />
           {maint.naming && <NameDialog key={maint.naming.suggested + endpointText(maint.naming.endpoint)} endpoint={maint.naming.endpoint} suggested={maint.naming.suggested} onConfirm={maint.confirmNaming} onCancel={maint.cancelNaming} />}
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} monitor={monitor} disconnects={disconnects} focusEnd={focusEnd} onFocusDone={() => setFocusEnd(0)} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction}
-              onMonitorStopped={monitorStopped} onPanelBusy={setPanelBusy} />
+            <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (

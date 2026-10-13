@@ -1,127 +1,72 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { failingText, packsDerived, packsLine } from "./maint";
+import { busLine, masterLine } from "./maint";
+import type { MasterView } from "./api";
 
-// every refusal key the backend can send (reasons, block reasons used as refusals, refusal_key values)
-const REFUSALS = [
-  "control-on-pack-bus", "dip-off", "dip-session-open", "end-order", "end-sequential", "endpoint-in-use", "how",
-  "installation-mismatch", "inverter", "isolated-or-released", "marker-unexplained", "master-unclear", "no-block",
-  "no-control-channel", "no-port", "no-session", "not-patched-off", "pack-not-answering", "port-not-assigned",
-  "state-changed", "stop-needs-control-channel", "update-interrupted", "update-unclear", "bootloader-unclear",
-  "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained", "slave-present",
-  "open-work", "name-required", "name-taken", "no-sector-note",
-];
-// every value the backend stores as a failing End check (besides "stop: …", which carries an error)
-const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop", "slave-count-mismatch", "master-unreadable"];
+// the sources that use maintenance texts, as text (vite's raw import)
+const sources = import.meta.glob(["./views/PackBusPanel.tsx", "./views/MaintBanner.tsx", "./views/MaintSetup.tsx", "./views/Firmware.tsx", "./views/NameDialog.tsx", "./maint.ts", "./maintStore.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+
+// every refusal key the backend can send
+const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation"];
+const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
 
 describe("maintenance texts", () => {
-  it("has a German and an English text for every refusal key", () => {
-    expect(REFUSALS).toHaveLength(33);
+  it("every literal key the panel, banner, setup and firmware view use exists in German and English", () => {
+    const used = new Set<string>();
+    for (const text of Object.values(sources)) for (const m of text.matchAll(/["`]((?:maint|fw|conn)\.[A-Za-z0-9.-]+)["`]/g)) used.add(m[1]);
+    // localStorage keys, not texts
+    for (const k of ["maint.installation", "maint.enabled"]) used.delete(k);
+    expect(used.size).toBeGreaterThan(40);
+    for (const lng of ["de", "en"]) for (const k of used) expect(i18n.exists(k, { lng }) || i18n.exists(`${k}_other`, { lng }), `${lng} ${k}`).toBe(true);
+  });
+  it("has the keys built at run time", () => {
+    const dynamic = [
+      ...REFUSALS.map((r) => `maint.err.refused.${r}`),
+      ...["match", "stored", "unchecked"].flatMap((b) => [`maint.bank.${b}`, `maint.bank.flash.${b}`]),
+      ...["connection", "unsupported", "no-answer", "rejected", "timeout", "busy", "store", "text", "other-bank", "bootloader-pending"].map((k) => `maint.err.${k}`),
+      ...["live", "scan", "halt", "release", "flash", "other"].map((a) => `conn.busyAction.${a}`),
+    ];
+    for (const lng of ["de", "en"]) for (const k of dynamic) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+  });
+  it("German and English have the same maintenance keys", () => {
+    const de = keys(i18n.getResourceBundle("de", "translation").maint).sort();
+    expect(keys(i18n.getResourceBundle("en", "translation").maint).sort()).toEqual(de);
+  });
+  it("the guided panel's texts are gone", () => {
     for (const lng of ["de", "en"]) {
-      for (const k of REFUSALS) {
-        const key = `maint.err.refused.${k}`;
-        expect(i18n.exists(key, { lng }), `${lng} ${key}`).toBe(true);
-        expect(i18n.t(key, { lng })).not.toBe(key);
+      for (const k of ["maint.flow", "maint.openWork", "maint.failing", "maint.plan", "maint.progress", "maint.note", "maint.state", "maint.master", "fw.next", "fw.endMaint"]) {
+        expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(false);
       }
     }
   });
-  it("has a German and an English text for every failing End check and the new panel texts", () => {
-    for (const lng of ["de", "en"]) {
-      for (const key of [...FAILING.map((k) => `maint.failing.${k}`), "maint.panel.changeSlaves", "maint.panel.packsEq", "maint.panel.dipWas", "maint.panel.save", "maint.panel.dipZeroHint", "maint.panel.packs", "maint.panel.endOkZero"]) {
-        expect(i18n.exists(key, { lng }), `${lng} ${key}`).toBe(true);
-      }
-    }
+  it("names the spec's texts", () => {
+    const de = (k: string, p?: Record<string, unknown>) => i18n.t(k, { ...p, lng: "de" });
+    expect(de("maint.halt")).toBe("Master anhalten");
+    expect(de("maint.release")).toBe("Master freigeben");
+    expect(de("maint.live.quiet")).toBe("Bus ruhig");
+    expect(de("maint.live.polling", { count: 3 })).toBe("Master fragt 3 Slaves ab");
+    expect(de("maint.packs.inverter")).toBe("Während der Wartung meldet der Master dem Wechselrichter nur sein eigenes Pack.");
+    expect(de("maint.banner.marker", { name: "A", since: "14:02" })).toContain("Wartungsmodus aktiv: Master fragt keine Slaves ab");
+    expect(de("maint.err.other-bank", { serial: "X" })).toBe("An diesem Anschluss hängt eine andere Anlage (BMS-SN X).");
+    expect(de("maint.bank.adopt")).toBe("Diese Anlage hat einen neuen Master: Seriennummer übernehmen");
+    expect(de("maint.bank.unchecked")).toContain("Anlage nicht geprüft");
+    expect(de("maint.banner.pendingConfirm", { pack: 3 })).toBe("Pack 3 ist abgeklemmt oder repariert");
   });
-  it("the setup names two ports, CAN socket and RS485-1/2; the endpoint list and its wording are gone", () => {
-    for (const lng of ["de", "en"]) {
-      for (const k of ["can", "rs485", "networkLater", "notPlugged", "oneAdapter", "err.sameAdapter", "err.packRequired", "err.packSetMeanwhile", "save"]) {
-        expect(i18n.exists(`maint.setup.${k}`, { lng }), `${lng} ${k}`).toBe(true);
-      }
-      for (const k of ["endpoints", "packPort", "add", "remove", "control"]) expect(i18n.exists(`maint.setup.${k}`, { lng }), `${lng} ${k}`).toBe(false);
-      expect(i18n.exists("maint.panel.portUnassigned", { lng })).toBe(false);
-      const all = JSON.stringify(i18n.getResourceBundle(lng, "translation"));
-      expect(all).not.toMatch(/USB-Port am Pack-Bus|USB port on the pack bus|Pack-Port|pack port/i);
-    }
-    expect(i18n.t("maint.setup.rs485", { lng: "de" })).toBe("RS485-1/2 (Packs messen und flashen, 19200 Baud)");
-    expect(i18n.t("maint.flow.packPort", { lng: "de", port: "/dev/x" })).toBe("RS485-1/2: /dev/x");
-    expect(i18n.t("maint.flow.packPort", { lng: "en", port: "/dev/x" })).toBe("RS485-1/2: /dev/x");
-  });
-  it("shows the pack count with the derived slave count and DIP value", () => {
+  it("status lines in both languages", () => {
     const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
-    expect(packsLine(8, tr("de"))).toBe("8 Packs = 7 Slaves + 1 Master");
-    expect(packsLine(8, tr("en"))).toBe("8 packs = 7 slaves + 1 master");
-    expect(packsDerived(8, tr("de"))).toBe("8 Packs = 7 Slaves + 1 Master · DIP 5–8 des Masters standen auf 7");
-    expect(packsDerived(8, tr("en"))).toBe("8 packs = 7 slaves + 1 master · the master's DIP 5–8 were set to 7");
-    expect(packsLine(2, tr("de"))).toBe("2 Packs = 1 Slave + 1 Master");
-    expect(packsLine(1, tr("en"))).toBe("1 pack = 0 slaves + 1 master");
-  });
-  it("failing texts end without a period: they go into „Prüfung fehlgeschlagen: …. Die Wartung bleibt offen.“", () => {
-    for (const lng of ["de", "en"]) {
-      for (const k of FAILING) expect(i18n.t(`maint.failing.${k}`, { lng, addr: 7, error: "x" }), `${lng} ${k}`).not.toMatch(/\.$/);
-    }
-    expect(i18n.t("maint.failing.slave-present", { lng: "de", addr: 7 })).toBe("An Adresse 7 antwortet ein Slave – es sind mehr als 1 Pack");
-  });
-  it("composes End's failure text with clean punctuation, also around a stop timeout", () => {
-    const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
-    const timeout = 'stop: {"kind":"timeout","marker":true,"slaves":0}';
-    for (const lng of ["de", "en"]) {
-      const text = tr(lng)("maint.panel.endFailed", { what: failingText(timeout, tr(lng)) });
-      expect(text, lng).not.toMatch(/\)\.\)|\.\)|\.\.|\)\)/);
-      expect(text, lng).toMatch(/\)\. /);
-    }
-    expect(tr("de")("maint.panel.endFailed", { what: failingText(timeout, tr("de")) }))
-      .toBe("Prüfung fehlgeschlagen: „stop“ ging nicht durch: Der Master hat den neuen Zustand nicht rechtzeitig gemeldet (zuletzt Marker 1, 0 Slaves). Die Wartung bleibt offen.");
-    expect(tr("de")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 0 1", tr("de")) }))
-      .toBe("Prüfung fehlgeschlagen: Der Master meldet 0 Slaves, eingetragen sind 2 Packs (1 Slave). DIP 5–8 zurückstellen oder die Packzahl ändern. Die Wartung bleibt offen.");
-    expect(tr("en")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 2 1", tr("en")) }))
-      .toBe("Check failed: the master reports 2 slaves, 2 packs are entered (1 slave). Set DIP 5–8 back or change the pack count. Maintenance stays open.");
-    // one pack entered (N = 0): singular verb
-    expect(failingText("slave-count-mismatch: 2 0", tr("de"))).toBe("Der Master meldet 2 Slaves, eingetragen ist 1 Pack (0 Slaves). DIP 5–8 zurückstellen oder die Packzahl ändern");
-    expect(failingText("slave-count-mismatch: 2 0", tr("en"))).toBe("the master reports 2 slaves, 1 pack is entered (0 slaves). Set DIP 5–8 back or change the pack count");
-    expect(failingText("slave-count-mismatch: 0 2", tr("de"))).toContain("eingetragen sind 3 Packs (2 Slaves)");
-    expect(failingText("slave-count-mismatch: 0 2", tr("en"))).toContain("3 packs are entered (2 slaves)");
-  });
-  it("has the picker, name dialog, banner and delete texts in German and English", () => {
-    const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
-    for (const part of ["picker", "nameDialog", "openWork", "note", "setup"]) {
-      const de = keys(i18n.getResourceBundle("de", "translation").maint[part]).sort();
-      expect(keys(i18n.getResourceBundle("en", "translation").maint[part]).sort(), part).toEqual(de);
-    }
-    for (const r of ["bootloader-unclear", "update-interrupted", "update-unclear", "master-unclear"]) expect(i18n.exists(`maint.openWork.block.${r}`, { lng: "de" })).toBe(true);
-    for (const w of ["block", "unexplained", "showFirst", "marker", "note"]) expect(i18n.exists(`maint.openWork.why.${w}`, { lng: "en" })).toBe(true);
-    expect(i18n.t("maint.setup.deleteConfirm", { lng: "de", name: "X" })).toBe("Anlage „X“ löschen? Ihre Anschlüsse werden frei.");
-    expect(i18n.t("maint.openWork.block.bootloader-unclear", { lng: "de", name: "Labor", pack: 3, since: "14:02" })).toBe("Labor: Pack 3 eventuell im Bootloader seit 14:02");
-  });
-  it("has progress texts for every panel action and phase, in German and English", () => {
-    for (const lng of ["de", "en"]) {
-      for (const a of ["check", "activate", "start-dip", "scan", "account-marker", "set-slaves", "measure", "end", "end-step", "clear-block"]) {
-        expect(i18n.exists(`maint.progress.action.${a}`, { lng }), `${lng} ${a}`).toBe(true);
-      }
-      for (const p of ["check", "start", "stop", "end-check", "quiet", "scan", "scan-skipped", "bus", "values", "block"]) {
-        expect(i18n.exists(`maint.progress.phase.${p}`, { lng }), `${lng} ${p}`).toBe(true);
-      }
-    }
-    expect(i18n.t("maint.progress.phase.scan", { lng: "de", address: 7, of: 15, pass: 1, passes: 2 })).toBe("Suche Slaves (Adresse 7 von 15, Durchgang 1 von 2) …");
-  });
-  it("the guided flow has the same texts in German and English, with every reason flowOf can name", () => {
-    const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
-    const de = keys(i18n.getResourceBundle("de", "translation").maint.flow).sort();
-    expect(keys(i18n.getResourceBundle("en", "translation").maint.flow).sort()).toEqual(de);
-    for (const r of ["first", "setup-pack", "pack-unplugged", "confirm-one-adapter", "control-or-none", "check-needed", "marker-unknown", "after-scan", "after-recovery", "patched-on-no-session", "recovery-only-original", "marker-not-on", "running", "no-installation", "end-first"]) {
-      expect(de).toContain(`reason.${r}`);
-    }
-    for (const m of ["paused", "offline", "lost"]) expect(de).toContain(`monitor.${m}`);
-    for (const lng of ["de", "en"]) expect(i18n.exists("conn.paused", { lng })).toBe(true);
-    // three distinct monitor texts
-    for (const lng of ["de", "en"]) expect(new Set(["paused", "offline", "lost"].map((m) => i18n.t(`maint.flow.monitor.${m}`, { lng }))).size).toBe(3);
+    const m: MasterView = { kind: "maint", version: "16.06.13 MAINT 1.1", build_id: "fe381985bfff8ad0", marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false };
+    expect(masterLine(m, tr("de")).text).toBe("16.06.13 MAINT 1.1 · Marker aus · fragt 3 Slaves ab");
+    expect(masterLine({ ...m, kind: "legacy", version: null, marker: "on", slaves: 0 }, tr("de")).text).toBe("16.06 MAINT-1.0-kompatibel · Marker an (Wartung) · fragt 0 Slaves ab");
+    expect(masterLine({ ...m, marker: "foreign", marker_word: "12345678" }, tr("en"))).toEqual({ tone: "alarm", text: "16.06.13 MAINT 1.1 · marker sector with unknown content (12345678) · polls 3 slaves" });
+    expect(masterLine({ ...m, kind: "unknown-build" }, tr("de")).text).toContain("Unbekannter Wartungs-Build 16.06.13 MAINT 1.1 (Build-ID fe381985bfff8ad0)");
+    expect(masterLine({ ...m, kind: "no-0x64", marker: null, slaves: null }, tr("de")).text).toBe("Original 16.06 (0x64 nicht unterstützt)");
+    expect(busLine({ bus: "polling", polled: [1, 2], bus_error: null, master: null, master_error: null }, false, tr("en")).text).toBe("Master polls 2 slaves");
+    expect(busLine(null, false, tr("de")).text).toBe("Prüfe den Pack-Bus …");
   });
   it("German quotes are „…“", () => {
     const values = (o: unknown): string[] => Object.values(o as Record<string, unknown>).flatMap((v) => (typeof v === "object" && v ? values(v) : [String(v)]));
-    const text = values(i18n.getResourceBundle("de", "translation").maint.flow).join(" ");
+    const text = values(i18n.getResourceBundle("de", "translation").maint).join(" ");
     expect(text).not.toMatch(/["”]/);
     expect((text.match(/„/g) ?? []).length).toBe((text.match(/“/g) ?? []).length);
-  });
-  it("never says exclusive", () => {
-    for (const lng of ["de", "en"]) expect(JSON.stringify(i18n.getResourceBundle(lng, "translation").maint)).not.toMatch(/exklusiv|exclusive/i);
   });
 });

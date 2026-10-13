@@ -97,35 +97,33 @@ export interface ImportStats { rows: number; skipped: number; from: number | nul
 export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean }
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
-/** End of a flash. written = W F E was sent, so after an error the board may have no application. */
-export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; block: string | null; master: string | null }
+/** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
+ *  pack may hang in its bootloader and its record stays. */
+export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean }
+/** The right-bank check of a flash: "none" without an installation. */
+export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none" }
 
-export type MasterStateName = "patched-off" | "patched-on" | "no-0x64" | "unknown" | "marker-unexplained";
-export interface MasterState { state: MasterStateName; slaves?: number }
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
-export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null }
-export interface MaintSession { id: number; installation: string; kind: "marker" | "dip"; started: number; expected_slaves: number; done: string[]; failing: string | null }
-export interface FlashBlock { id: number; pack: number; reason: "update-interrupted" | "update-unclear" | "bootloader-unclear" | "master-unclear"; expect: string | null; since: number }
-/** `end_next`: the End step the backend allows next in this app run (after a failed step: the restart point); null without session */
-export interface MaintOverview { installation: Installation; state: MasterState | null; state_at: number | null; session: MaintSession | null; blocks: FlashBlock[]; sector_note: string | null; end_next: EndStep | null }
-/** One installation with open work, for the banner (`maint_open_work`): its session, most severe block, master state and
- *  the time of an unresolved note on sector 0x23000. */
-export interface OpenWork {
-  id: string; name: string;
-  session: { kind: "marker" | "dip"; started: number; expected_slaves: number; failing: string | null } | null;
-  block: FlashBlock | null; state: MasterState | null; state_at: number | null; sector_note_at: number | null;
+/** An address book entry: endpoints may belong to several installations; `master_serial` is set by the backend. */
+export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null }
+/** The master as read over the CAN socket bus (0x64/03, after RTN 05 0x64/02). */
+export interface MasterView {
+  kind: "maint" | "unknown-build" | "legacy" | "no-0x64" | "unknown";
+  version: string | null; build_id: string | null;
+  marker: "off" | "on" | "foreign" | null; marker_word: string | null; slaves: number | null;
+  may_halt: boolean; may_release: boolean;
 }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "timeout"; marker: boolean; slaves: number } | { kind: "refused"; reason: string } | { kind: "busy" }
-  | { kind: "measure"; message: string } | { kind: "store"; message: string };
-export interface EndResult { ok: boolean; missing: number[]; failing: string | null }
-export type EndStep = "stop" | "bus" | "values";
-/** Event "maint-progress": the phase of the running pack bus panel action (`detail`: e.g. address and pass of the slave scan). */
-export interface MaintProgress { installation: string; action: string; phase: string; detail: Record<string, unknown> | null }
-export type PlanStep = "dip-off" | "stop-to-zero" | "measure" | "isolated-or-released";
-export interface PlanView { before: PlanStep[]; after: "marker-on" | "zero" | "zero-or-unexplained" | "unsupported" | "no-assumption"; recovery: boolean }
-export interface FlashMaint { installation: string; inverterConfirmed: boolean; dipOffConfirmed: boolean; isolatedConfirmed: boolean }
+  | { kind: "store"; message: string } | { kind: "other-bank"; serial: string } | { kind: "bootloader-pending"; pack: number };
+/** The panel's live status: a short listen on the pack bus, and with a CAN socket the master read. */
+export interface LiveStatus { bus: "quiet" | "polling" | "traffic" | "no-port" | "error"; polled: number[]; bus_error: string | null; master: MasterView | null; master_error: MaintError | null }
+export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked" | "none"; serial: string | null }
+export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[] }
+/** A pack that may hang in its bootloader after an interrupted flash, per pack bus endpoint. */
+export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number }
+export interface Alerts { markers: { installation: string; name: string; at: number }[]; pending: Pending[] }
 
 
 const inTauri = "__TAURI_INTERNALS__" in window;
@@ -150,7 +148,6 @@ const tauriApi = {
   onLinkLost: (f: (err: string) => void) => listen<string>("link-lost", (e) => f(e.payload)),
   /** A maintenance step (measurement, End, block check) stopped the monitor to use the pack port: not a lost link. */
   onMonitorStopped: (f: () => void) => listen("monitor-stopped", () => f()),
-  onMaintProgress: (f: (p: MaintProgress) => void) => listen<MaintProgress>("maint-progress", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
@@ -173,36 +170,25 @@ const tauriApi = {
   /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
   firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
   /** Returns at once; progress and result arrive as events. */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, maint: FlashMaint | null) =>
-    invoke<void>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, maint }),
-  /** lookup only; null = the endpoint is not assigned to any installation */
-  maintInstallationOf: (endpoint: Endpoint) => invoke<Installation | null>("maint_installation_of", { endpoint }),
-  maintSaveInstallation: (installation: Installation) => invoke<Installation>("maint_save_installation", { installation }),
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null) =>
+    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
-  maintOpenWork: () => invoke<OpenWork[]>("maint_open_work"),
-  /** refused "name-required", "name-taken", "endpoint-in-use"; nothing is created then */
+  /** lookup only: every installation that lists the endpoint or has it as CAN socket */
+  maintInstallationsOf: (endpoint: Endpoint) => invoke<Installation[]>("maint_installations_of", { endpoint }),
+  maintSaveInstallation: (installation: Installation) => invoke<Installation>("maint_save_installation", { installation }),
+  /** refused "name-required", "name-taken"; nothing is created then */
   maintCreateInstallation: (name: string, control: ControlEndpoint | null, endpoints: string[]) => invoke<Installation>("maint_create_installation", { name, control, endpoints }),
-  /** refused "open-work" (session, block, marker or sector note) or busy while another operation holds the port */
   maintDeleteInstallation: (installation: string) => invoke<void>("maint_delete_installation", { installation }),
-  maintResolveSectorNote: (installation: string) => invoke<MaintOverview>("maint_resolve_sector_note", { installation }),
-  maintOverview: (installation: string) => invoke<MaintOverview>("maint_overview", { installation }),
-  /** reads 0x64 over the control channel and stores the classified state */
-  maintCheck: (installation: string) => invoke<MaintOverview>("maint_check", { installation }),
-  maintActivate: (installation: string, inverterConfirmed: boolean) => invoke<MaintOverview>("maint_activate", { installation, inverterConfirmed }),
-  /** `port`: the pack port; used for N = 0 (single-pack proof: no slave answers on the pack bus) */
-  maintStartDip: (installation: string, expectedSlaves: number, port: string) => invoke<MaintOverview>("maint_start_dip", { installation, expectedSlaves, port }),
-  maintAccountMarker: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_account_marker", { installation, expectedSlaves }),
-  /** Correct the slave count per DIP of the open session; End starts over. */
-  maintSetSlaves: (installation: string, expectedSlaves: number, port: string) => invoke<MaintOverview>("maint_set_slaves", { installation, expectedSlaves, port }),
-  /** returns the time of the passed measurement (ms) */
-  maintMeasure: (installation: string, port: string) => invoke<number>("maint_measure", { installation, port }),
-  /** Refused "end-sequential" when control channel and pack port are one adapter: then drive maintEndStep. */
-  maintEnd: (installation: string, port: string) => invoke<EndResult>("maint_end", { installation, port }),
-  maintEndStep: (installation: string, port: string, step: EndStep) => invoke<EndResult>("maint_end_step", { installation, port, step }),
-  /** 0/0 without session: quiet bus and 0x47, then the two-pass slave scan; the first slave that answered, or null */
-  maintScanSlaves: (installation: string, port: string) => invoke<number | null>("maint_scan_slaves", { installation, port }),
-  maintClearBlock: (installation: string, id: number, how: "answered" | "isolated", port: string | null) => invoke<MaintOverview>("maint_clear_block", { installation, id, how, port }),
-  maintMasterPlan: (installation: string, kind: FirmwareImage["kind"]) => invoke<PlanView>("maint_master_plan", { installation, kind }),
+  /** the master's new serial number becomes the stored one */
+  maintAdoptMasterSerial: (installation: string, serial: string) => invoke<Installation>("maint_adopt_master_serial", { installation, serial }),
+  maintAlerts: () => invoke<Alerts>("maint_alerts"),
+  /** „Pack X ist abgeklemmt oder repariert“ */
+  maintClearPending: (id: number) => invoke<void>("maint_clear_pending", { id }),
+  /** refused busy while a flash or another operation runs */
+  maintLive: (installation: string | null, port: string) => invoke<LiveStatus>("maint_live", { installation, port }),
+  maintScanPacks: (installation: string | null, port: string) => invoke<PackScan>("maint_scan_packs", { installation, port }),
+  maintHalt: (installation: string) => invoke<MasterView>("maint_halt", { installation }),
+  maintRelease: (installation: string) => invoke<MasterView>("maint_release", { installation }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
   onFirmwareDone: (f: (d: FirmwareDone) => void) => listen<FirmwareDone>("firmware-done", (e) => f(e.payload)),
   /** The window was not closed because a flash is running. */
@@ -218,8 +204,6 @@ const balanceDemo = new URLSearchParams(location.search).get("balance");
 
 /** Browser preview without Tauri: replays a recorded capture of a 12-pack system. */
 function demoApi(): typeof tauriApi {
-  const demoInst: Installation = { id: "demo", name: "Demo", endpoints: ["tcp:demo:4196"], control: null };
-  const demoOverview: MaintOverview = { installation: demoInst, state: null, state_at: null, session: null, blocks: [], sector_note: null, end_next: null };
   const packL = new Set<(u: PackUpdate) => void>();
   const sysL = new Set<(u: SystemUpdate) => void>();
   let timer: number | undefined;
@@ -260,7 +244,6 @@ function demoApi(): typeof tauriApi {
     onSystem: (f) => sub(sysL, f),
     onLinkLost: async () => () => {},
     onMonitorStopped: async () => () => {},
-    onMaintProgress: async () => () => {},
     // preview: keep own cells in browser storage
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),
@@ -300,25 +283,18 @@ function demoApi(): typeof tauriApi {
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
-    maintInstallationOf: async () => demoInst,
-    maintSaveInstallation: async () => { throw new Error("desktop app only"); },
     maintInstallations: async () => [],
-    maintOpenWork: async () => [],
+    maintInstallationsOf: async () => [],
+    maintSaveInstallation: async () => { throw new Error("desktop app only"); },
     maintCreateInstallation: async () => { throw new Error("desktop app only"); },
     maintDeleteInstallation: async () => { throw new Error("desktop app only"); },
-    maintResolveSectorNote: async () => { throw new Error("desktop app only"); },
-    maintOverview: async () => demoOverview,
-    maintCheck: async () => demoOverview,
-    maintActivate: async () => { throw new Error("desktop app only"); },
-    maintStartDip: async () => { throw new Error("desktop app only"); },
-    maintAccountMarker: async () => { throw new Error("desktop app only"); },
-    maintSetSlaves: async () => { throw new Error("desktop app only"); },
-    maintMeasure: async () => { throw new Error("desktop app only"); },
-    maintEnd: async () => { throw new Error("desktop app only"); },
-    maintEndStep: async () => { throw new Error("desktop app only"); },
-    maintScanSlaves: async () => { throw new Error("desktop app only"); },
-    maintClearBlock: async () => { throw new Error("desktop app only"); },
-    maintMasterPlan: async () => { throw new Error("desktop app only"); },
+    maintAdoptMasterSerial: async () => { throw new Error("desktop app only"); },
+    maintAlerts: async () => ({ markers: [], pending: [] }),
+    maintClearPending: async () => { throw new Error("desktop app only"); },
+    maintLive: async () => { throw new Error("desktop app only"); },
+    maintScanPacks: async () => { throw new Error("desktop app only"); },
+    maintHalt: async () => { throw new Error("desktop app only"); },
+    maintRelease: async () => { throw new Error("desktop app only"); },
     onFirmwareProgress: async () => () => {},
     onFirmwareDone: async () => () => {},
     onFirmwareBusy: async () => () => {},
