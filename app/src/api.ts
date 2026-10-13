@@ -92,7 +92,25 @@ export interface FirmwareImage { release: string; device: string; bytes: number;
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application. */
-export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string }
+export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; block: string | null; master: string | null }
+
+export type MasterStateName = "patched-off" | "patched-on" | "no-0x64" | "unknown" | "marker-unexplained";
+export interface MasterState { state: MasterStateName; slaves?: number }
+export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
+export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null }
+export interface MaintSession { id: number; installation: string; kind: "marker" | "dip"; started: number; expected_slaves: number; done: string[]; failing: string | null }
+export interface FlashBlock { id: number; pack: number; reason: "update-interrupted" | "update-unclear" | "bootloader-unclear" | "master-unclear"; expect: string | null; since: number }
+export interface MaintOverview { installation: Installation; state: MasterState | null; state_at: number | null; session: MaintSession | null; blocks: FlashBlock[]; sector_note: string | null }
+export type MaintError =
+  | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
+  | { kind: "timeout"; marker: boolean; slaves: number } | { kind: "refused"; reason: string } | { kind: "busy" }
+  | { kind: "measure"; message: string } | { kind: "store"; message: string };
+export interface EndResult { ok: boolean; missing: number[]; failing: string | null }
+export type EndStep = "stop" | "bus" | "values";
+export type PlanStep = "dip-off" | "stop-to-zero" | "measure" | "isolated-or-released";
+export interface PlanView { before: PlanStep[]; after: "marker-on" | "zero" | "zero-or-unexplained" | "unsupported" | "no-assumption"; recovery: boolean }
+export interface FlashMaint { installation: string; inverterConfirmed: boolean; dipOffConfirmed: boolean; isolatedConfirmed: boolean }
+
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -134,8 +152,25 @@ const tauriApi = {
   /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
   firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
   /** Returns at once; progress and result arrive as events. */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
-    invoke<void>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang }),
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, maint: FlashMaint | null) =>
+    invoke<void>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, maint }),
+  maintInstallationFor: (endpoint: Endpoint) => invoke<Installation>("maint_installation_for", { endpoint }),
+  /** lookup only; null = the endpoint is not assigned to any installation */
+  maintInstallationOf: (endpoint: Endpoint) => invoke<Installation | null>("maint_installation_of", { endpoint }),
+  maintSaveInstallation: (installation: Installation) => invoke<Installation>("maint_save_installation", { installation }),
+  maintOverview: (installation: string) => invoke<MaintOverview>("maint_overview", { installation }),
+  /** reads 0x64 over the control channel and stores the classified state */
+  maintCheck: (installation: string) => invoke<MaintOverview>("maint_check", { installation }),
+  maintActivate: (installation: string, inverterConfirmed: boolean) => invoke<MaintOverview>("maint_activate", { installation, inverterConfirmed }),
+  maintStartDip: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_start_dip", { installation, expectedSlaves }),
+  maintAccountMarker: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_account_marker", { installation, expectedSlaves }),
+  /** returns the time of the passed measurement (ms) */
+  maintMeasure: (installation: string, port: string) => invoke<number>("maint_measure", { installation, port }),
+  /** Refused "end-sequential" when control channel and pack port are one adapter: then drive maintEndStep. */
+  maintEnd: (installation: string, port: string) => invoke<EndResult>("maint_end", { installation, port }),
+  maintEndStep: (installation: string, port: string, step: EndStep) => invoke<EndResult>("maint_end_step", { installation, port, step }),
+  maintClearBlock: (installation: string, id: number, how: "answered" | "isolated", port: string | null) => invoke<MaintOverview>("maint_clear_block", { installation, id, how, port }),
+  maintMasterPlan: (installation: string, kind: FirmwareImage["kind"]) => invoke<PlanView>("maint_master_plan", { installation, kind }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
   onFirmwareDone: (f: (d: FirmwareDone) => void) => listen<FirmwareDone>("firmware-done", (e) => f(e.payload)),
   /** The window was not closed because a flash is running. */
@@ -151,6 +186,8 @@ const balanceDemo = new URLSearchParams(location.search).get("balance");
 
 /** Browser preview without Tauri: replays a recorded capture of a 12-pack system. */
 function demoApi(): typeof tauriApi {
+  const demoInst: Installation = { id: "demo", name: "Demo", endpoints: ["tcp:demo:4196"], control: null };
+  const demoOverview: MaintOverview = { installation: demoInst, state: null, state_at: null, session: null, blocks: [], sector_note: null };
   const packL = new Set<(u: PackUpdate) => void>();
   const sysL = new Set<(u: SystemUpdate) => void>();
   let timer: number | undefined;
@@ -220,6 +257,19 @@ function demoApi(): typeof tauriApi {
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
+    maintInstallationFor: async () => demoInst,
+    maintInstallationOf: async () => demoInst,
+    maintSaveInstallation: async () => { throw new Error("desktop app only"); },
+    maintOverview: async () => demoOverview,
+    maintCheck: async () => demoOverview,
+    maintActivate: async () => { throw new Error("desktop app only"); },
+    maintStartDip: async () => { throw new Error("desktop app only"); },
+    maintAccountMarker: async () => { throw new Error("desktop app only"); },
+    maintMeasure: async () => { throw new Error("desktop app only"); },
+    maintEnd: async () => { throw new Error("desktop app only"); },
+    maintEndStep: async () => { throw new Error("desktop app only"); },
+    maintClearBlock: async () => { throw new Error("desktop app only"); },
+    maintMasterPlan: async () => { throw new Error("desktop app only"); },
     onFirmwareProgress: async () => () => {},
     onFirmwareDone: async () => () => {},
     onFirmwareBusy: async () => () => {},
