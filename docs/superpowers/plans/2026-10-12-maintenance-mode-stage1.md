@@ -35,7 +35,7 @@
 - `marker-unexplained`:
   - no `stop` is sent or offered, no "End", no hint to restore the DIPs, no inverter release;
   - the only way out is the recovery row (original image under DIP 5–8 OFF, no `stop`) or the user's statement that they set the marker earlier.
-- An unclear update (`update-unclear`, `bootloader-unclear`, `update-interrupted`) blocks every further flash for this installation and the End of maintenance. It is persistent and is cleared only when that pack answers 0x51 and 0x47 again, or when the user confirms it was isolated or recovered. `update-interrupted` is written **before** the pack is restarted and replaced or cleared when the flash returns, so a crash or power loss of the computer leaves it behind.
+- An unclear update (`update-unclear`, `bootloader-unclear`, `update-interrupted`, `master-unclear`) blocks every further flash for this installation and the End of maintenance. It is persistent and is cleared only when that pack answers 0x51 and 0x47 again, or when the user confirms it was isolated or recovered. `update-interrupted` is written **before** the pack is restarted and replaced or cleared when the flash returns, so a crash or power loss of the computer leaves it behind.
 - The backend is the authority for every gate. `firmware_start` finds the installation from the pack port itself; the optional UI argument only carries the operator's confirmations. An unassigned pack port is refused while any installation has an open session or block.
 - Stage 2 (TCP flashing through the gateway) is **not** part of this plan. The firmware view keeps its serial-only pack port.
 - Checks that must pass before every commit:
@@ -60,7 +60,8 @@
 7. **The pack port decides the installation** (`firmware_start`, measurement, end, block check). A new connection never silently switches the installation in use; the user assigns endpoints explicitly (banner, setup, firmware view).
 8. **`update-interrupted` before every restart into the bootloader**, replaced by the result once the flash returns. A crash leaves it, and it blocks like an unclear update.
 9. **Sequential way and `stop`:** a master-flash row with `stop` needs `stop` right before the restart, which one adapter cannot do. It is refused there with a hint to use a separate control adapter.
-10. **Unclear master update** is kept as the session's `failing` (`master-unclear:<expected>`), not as a flash block: the master's application runs, only 0x64 does not show the expected state. It blocks End and is cleared by a master check that shows the expected state.
+10. **Unclear master update** is a flash block on pack 0 with reason `master-unclear` and the expected state, with or without a session. Like every block it stops further flashes and End. It is cleared by a master check that shows the expected state (not by 0x51/0x47, because the master's application runs), or by the user's "isolated or recovered".
+11. **Endpoint ownership is guarded:** an endpoint or control adapter never moves between installations while the source or the target has open work.
 
 ## Review Focus
 
@@ -1319,9 +1320,11 @@ fn connect_tcp_within(
   - `ControlEndpoint::{Serial{path}, Tcp{addr}}` with `key()`
   - `StoredMasterState` (serde tag `state`, kebab names incl. `"no-0x64"`), with `From<policy::MasterState>` and `Into<policy::MasterState>`
   - `SessionKind::{Marker, Dip}`, `MaintSession`, `FlashBlock`
-  - `Store::{open, installation_for, installation_of, any_open, installations, save_installation, master_state, set_master_state, open_session, start_session, set_session_kind, note_done, set_failing, end_session, add_block, set_block_reason, blocks, clear_block, note_sector, sector_note}`
+  - `Store::{open, installation_for, installation_of, any_open, open_work, installations, save_installation, add_master_block, master_state, set_master_state, open_session, start_session, set_session_kind, note_done, set_failing, end_session, add_block, set_block_reason, blocks, clear_block, note_sector, sector_note}`
   - `installation_of(endpoint) -> Option<Installation>` never creates one; it also finds the installation whose control channel is that endpoint (sequential way: one adapter for both buses). `installation_for` creates one for an unassigned endpoint.
-  - `any_open() -> bool`: some installation has an open session, an uncleared block, or the last state `patched-on` / `marker-unexplained`.
+  - `any_open() -> bool`: some installation has an open session, an uncleared block, or the last state `patched-on` / `marker-unexplained`. `open_work(inst) -> bool`: the same for one installation.
+  - `save_installation` refuses (`Err("endpoint-in-use")`) to move an endpoint or the control adapter between installations while the source or the target has open work; it runs in one transaction.
+  - `add_master_block(inst, expect, now) -> i64`: block on pack 0 with reason `master-unclear` and the expected state.
 
 - [ ] **Step 1: Write the failing tests** (bottom of `maint_store.rs`)
 
@@ -1408,6 +1411,41 @@ mod tests {
     }
 
     #[test]
+    fn an_endpoint_with_open_work_cannot_move() {
+        let s = Store::open(&temp("move")).unwrap();
+        let a = s.installation_for("serial:/dev/p").unwrap();
+        let b = s.installation_for("tcp:gw:4196").unwrap();
+        s.add_block(&a.id, 3, "bootloader-unclear", 1).unwrap();
+        // moving the blocked bus's port to another installation would hide the block
+        let mut b2 = b.clone();
+        b2.endpoints.push("serial:/dev/p".into());
+        assert_eq!(s.save_installation(&b2), Err("endpoint-in-use".to_string()));
+        assert_eq!(s.installation_of("serial:/dev/p").unwrap().map(|i| i.id), Some(a.id.clone()));
+        // nor may a target with open work take over a foreign endpoint
+        let c = s.installation_for("serial:/dev/q").unwrap();
+        let mut a2 = a.clone();
+        a2.endpoints.push("serial:/dev/q".into());
+        assert_eq!(s.save_installation(&a2), Err("endpoint-in-use".to_string()));
+        assert_eq!(s.installation_of("serial:/dev/q").unwrap().map(|i| i.id), Some(c.id.clone()));
+        // without open work the move is allowed
+        let mut b3 = b.clone();
+        b3.endpoints.push("serial:/dev/q".into());
+        s.save_installation(&b3).unwrap();
+        assert_eq!(s.installation_of("serial:/dev/q").unwrap().map(|i| i.id), Some(b.id.clone()));
+        assert!(s.open_work(&a.id).unwrap());
+        assert!(!s.open_work(&b.id).unwrap());
+    }
+
+    #[test]
+    fn master_block_keeps_its_expectation() {
+        let s = Store::open(&temp("masterblock")).unwrap();
+        let i = s.installation_for("serial:/dev/p").unwrap();
+        s.add_master_block(&i.id, "marker-on", 1).unwrap();
+        let b = &s.blocks(&i.id).unwrap()[0];
+        assert_eq!((b.pack, b.reason.as_str(), b.expect.as_deref()), (0, "master-unclear", Some("marker-on")));
+    }
+
+    #[test]
     fn interrupted_block_is_replaced_or_cleared() {
         let s = Store::open(&temp("interrupted")).unwrap();
         let i = s.installation_for("serial:/dev/p").unwrap();
@@ -1450,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS master_state(installation TEXT PRIMARY KEY, state TEX
 CREATE TABLE IF NOT EXISTS maint_sessions(id INTEGER PRIMARY KEY, installation TEXT NOT NULL, kind TEXT NOT NULL,
   started INTEGER NOT NULL, expected_slaves INTEGER NOT NULL, done TEXT NOT NULL DEFAULT '[]', failing TEXT, ended INTEGER);
 CREATE TABLE IF NOT EXISTS flash_blocks(id INTEGER PRIMARY KEY, installation TEXT NOT NULL, pack INTEGER NOT NULL,
-  reason TEXT NOT NULL, since INTEGER NOT NULL, cleared INTEGER, how TEXT);
+  reason TEXT NOT NULL, expect TEXT, since INTEGER NOT NULL, cleared INTEGER, how TEXT);
 CREATE TABLE IF NOT EXISTS sector_notes(installation TEXT PRIMARY KEY, note TEXT NOT NULL, at INTEGER NOT NULL);
 ";
 
@@ -1552,9 +1590,12 @@ pub struct MaintSession {
 pub struct FlashBlock {
     pub id: i64,
     pub pack: u8,
-    /// "update-interrupted" (written before the restart, still there after a crash), "update-unclear" or
-    /// "bootloader-unclear"
+    /// "update-interrupted" (written before the restart, still there after a crash), "update-unclear",
+    /// "bootloader-unclear", or "master-unclear" (the master's application runs, 0x64 shows not what the
+    /// master-flash table expected)
     pub reason: String,
+    /// for "master-unclear": the expected state after the flash ("marker-on", "zero", "unsupported" …)
+    pub expect: Option<String>,
     pub since: i64,
 }
 
@@ -1642,14 +1683,34 @@ impl Store {
     }
 
     /// Name, control channel and endpoints; an endpoint listed here moves away from any other installation.
+    /// A move is refused while the source or the target has open work: a block or a session must never be
+    /// separated from the bus it belongs to.
     pub fn save_installation(&self, i: &Installation) -> Result<(), String> {
-        let control = i.control.as_ref().map(serde_json::to_string).transpose().map_err(|err| err.to_string())?;
-        self.db.execute("UPDATE installations SET name = ?2, control = ?3 WHERE id = ?1", params![i.id, i.name, control]).map_err(e)?;
-        self.db.execute("DELETE FROM installation_endpoints WHERE installation = ?1", [&i.id]).map_err(e)?;
-        for ep in &i.endpoints {
-            self.db.execute("INSERT OR REPLACE INTO installation_endpoints(endpoint, installation) VALUES (?1, ?2)", params![ep, i.id]).map_err(e)?;
+        let mut keys: Vec<String> = i.endpoints.clone();
+        keys.extend(i.control.as_ref().map(ControlEndpoint::key));
+        for key in &keys {
+            if let Some(owner) = self.installation_of(key)? {
+                if owner.id != i.id && (self.open_work(&owner.id)? || self.open_work(&i.id)?) {
+                    return Err("endpoint-in-use".into());
+                }
+            }
         }
-        Ok(())
+        let control = i.control.as_ref().map(serde_json::to_string).transpose().map_err(|err| err.to_string())?;
+        let tx = self.db.unchecked_transaction().map_err(e)?;
+        tx.execute("UPDATE installations SET name = ?2, control = ?3 WHERE id = ?1", params![i.id, i.name, control]).map_err(e)?;
+        tx.execute("DELETE FROM installation_endpoints WHERE installation = ?1", [&i.id]).map_err(e)?;
+        for ep in &i.endpoints {
+            tx.execute("INSERT OR REPLACE INTO installation_endpoints(endpoint, installation) VALUES (?1, ?2)", params![ep, i.id]).map_err(e)?;
+        }
+        tx.commit().map_err(e)
+    }
+
+    /// The installation has an open session, an uncleared block, or the last state is a set marker.
+    pub fn open_work(&self, inst: &str) -> Result<bool, String> {
+        let state = self.master_state(inst)?.map(|(m, _)| m);
+        Ok(self.open_session(inst)?.is_some()
+            || !self.blocks(inst)?.is_empty()
+            || matches!(state, Some(StoredMasterState::PatchedOn | StoredMasterState::MarkerUnexplained)))
     }
 
     pub fn master_state(&self, inst: &str) -> Result<Option<(StoredMasterState, i64)>, String> {
@@ -1723,6 +1784,12 @@ impl Store {
         Ok(self.db.last_insert_rowid())
     }
 
+    /// Unclear master update: the application runs, 0x64 did not show `expect` after the flash.
+    pub fn add_master_block(&self, inst: &str, expect: &str, now: i64) -> Result<i64, String> {
+        self.db.execute("INSERT INTO flash_blocks(installation, pack, reason, expect, since) VALUES (?1, 0, 'master-unclear', ?2, ?3)", params![inst, expect, now]).map_err(e)?;
+        Ok(self.db.last_insert_rowid())
+    }
+
     /// An `update-interrupted` block becomes the reason found when the flash returned.
     pub fn set_block_reason(&self, id: i64, reason: &str) -> Result<(), String> {
         self.db.execute("UPDATE flash_blocks SET reason = ?2 WHERE id = ?1", params![id, reason]).map_err(e)?;
@@ -1730,8 +1797,8 @@ impl Store {
     }
 
     pub fn blocks(&self, inst: &str) -> Result<Vec<FlashBlock>, String> {
-        let mut stmt = self.db.prepare("SELECT id, pack, reason, since FROM flash_blocks WHERE installation = ?1 AND cleared IS NULL ORDER BY id").map_err(e)?;
-        let rows = stmt.query_map([inst], |r| Ok(FlashBlock { id: r.get(0)?, pack: r.get(1)?, reason: r.get(2)?, since: r.get(3)? })).map_err(e)?;
+        let mut stmt = self.db.prepare("SELECT id, pack, reason, expect, since FROM flash_blocks WHERE installation = ?1 AND cleared IS NULL ORDER BY id").map_err(e)?;
+        let rows = stmt.query_map([inst], |r| Ok(FlashBlock { id: r.get(0)?, pack: r.get(1)?, reason: r.get(2)?, expect: r.get(3)?, since: r.get(4)? })).map_err(e)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
     }
 
@@ -1753,7 +1820,7 @@ impl Store {
 }
 ```
 
-- [ ] **Step 4: Run them.** `cargo test -p openbms-monitor maint_store` → PASS (6 tests). Then clippy.
+- [ ] **Step 4: Run them.** `cargo test -p openbms-monitor maint_store` → PASS (8 tests). Then clippy.
 - [ ] **Step 5: Commit.** `feat(app): maintenance store for installations, sessions and flash blocks`
 
 ---
@@ -2050,6 +2117,7 @@ pub async fn maint_start_dip(state: State<'_, AppState>, installation: String, e
 #[tauri::command]
 pub async fn maint_account_marker(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
     let now = crate::history::now_ms();
+    // Task 8 adds here: account_allowed(with_store(&state, |s| s.open_session(&installation))?.as_ref())?;
     with_store(&state, |s| {
         if s.open_session(&installation)?.is_none() {
             s.start_session(&installation, SessionKind::Marker, expected_slaves, now)?;
@@ -2096,9 +2164,9 @@ Add `maint::maint_installation_for, maint::maint_installation_of, maint::maint_s
 **Files:**
 - Modify: `app/src-tauri/src/maint.rs`:
   - commands `maint_measure`, `maint_end`, `maint_clear_block`, `maint_master_plan`;
-  - pure fns `flash_gate`, `port_gate`, `block_reason`, `finish_block`, `end_allowed`, `master_unclear`, `clears_master_unclear`, `end_timeout`, `state_after`;
+  - pure fns `flash_gate`, `port_gate`, `must_stop_monitor`, `account_allowed`, `block_reason`, `finish_block`, `end_allowed`, `clears_master_unclear`, `end_timeout`, `state_after`;
   - the trait `Prep` with `prepare_flash` (everything before the restart, in order) and its app implementation `AppPrep`;
-  - `check` (Task 7) clears a resolved `master-unclear`.
+  - `check` (Task 7) clears a resolved `master-unclear` block; `maint_account_marker` (Task 7) refuses while a DIP session is open.
 - Modify: `app/src-tauri/src/firmware.rs`:
   - `firmware_start` takes `maint: Option<FlashMaint>`;
   - the port gate, `prepare_flash`, the `update-interrupted` block before the restart, the block after a failure, the post-flash 0x64 check;
@@ -2120,11 +2188,13 @@ Add `maint::maint_installation_for, maint::maint_installation_of, maint::maint_s
   - `Snapshot { session, state, blocks }`, trait `Prep`, `prepare_flash(p: &mut impl Prep, address: u8, image: ImageKind, c: &FlashMaint) -> Result<Option<policy::Plan>, MaintError>`
   - `block_reason(last: Option<Progress>) -> Option<&'static str>`
   - `BlockAction::{Clear(&'static str), Set(&'static str)}`, `finish_block(ok: bool, last: Option<Progress>, answers: impl FnOnce() -> bool) -> BlockAction`
-  - `end_allowed(blocks: &[FlashBlock], session: &MaintSession) -> Result<(), MaintError>`
-  - `master_unclear(expect: Expect) -> String`, `clears_master_unclear(failing: Option<&str>, probe: Option<Probe>) -> bool`
+  - `end_allowed(blocks: &[FlashBlock]) -> Result<(), MaintError>`
+  - `clears_master_unclear(expect: &str, probe: Option<Probe>) -> bool`
+  - `must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool`, `open_pack_for(state, port) -> Result<Connection, MaintError>` (every pack-bus open goes through it)
+  - `account_allowed(session: Option<&MaintSession>) -> Result<(), MaintError>`
   - `end_timeout(n: u8) -> Duration`
   - `state_after(outcome: Outcome, expect: Expect) -> StoredMasterState`
-  - refusal keys added by this task (Task 10 has the texts): `installation-mismatch`, `port-not-assigned`, `state-changed`, `stop-needs-control-channel`, `master-unclear`, `update-interrupted`
+  - refusal keys added by this task (Task 10 has the texts): `installation-mismatch`, `port-not-assigned`, `state-changed`, `stop-needs-control-channel`, `master-unclear`, `update-interrupted`, `dip-session-open`
 
 - [ ] **Step 1: Write the failing tests** (add to `maint.rs` tests)
 
@@ -2136,7 +2206,7 @@ Add `maint::maint_installation_for, maint::maint_installation_of, maint::maint_s
     use openbms_proto::MaintStatus;
 
     fn block(pack: u8) -> FlashBlock {
-        FlashBlock { id: 1, pack, reason: "update-unclear".into(), since: 0 }
+        FlashBlock { id: 1, pack, reason: "update-unclear".into(), expect: None, since: 0 }
     }
 
     fn session(kind: SessionKind) -> MaintSession {
@@ -2197,27 +2267,39 @@ Add `maint::maint_installation_for, maint::maint_installation_of, maint::maint_s
 
     #[test]
     fn end_refused_with_open_block_or_unclear_master() {
-        let mut ses = session(SessionKind::Marker);
-        assert!(end_allowed(&[], &ses).is_ok());
-        assert!(refused_with(end_allowed(&[block(2)], &ses), "update-unclear"));
-        ses.failing = Some(master_unclear(Expect::MarkerOn));
-        assert!(refused_with(end_allowed(&[], &ses), "master-unclear"));
-        // a failed end check is not a reason to refuse the next attempt
-        ses.failing = Some("pack-communication-incomplete".into());
-        assert!(end_allowed(&[], &ses).is_ok());
+        assert!(end_allowed(&[]).is_ok());
+        assert!(refused_with(end_allowed(&[block(2)]), "update-unclear"));
+        let master = FlashBlock { id: 2, pack: 0, reason: "master-unclear".into(), expect: Some("marker-on".into()), since: 0 };
+        assert!(refused_with(end_allowed(&[master]), "master-unclear"));
     }
 
     #[test]
     fn master_unclear_clears_only_on_the_expected_state() {
         let st = |marker, n| Some(Probe::Status(MaintStatus { marker, effective_slaves: n }));
-        let f = master_unclear(Expect::MarkerOn);
-        assert_eq!(f, "master-unclear:marker-on");
-        assert!(clears_master_unclear(Some(&f), st(true, 0)));
-        assert!(!clears_master_unclear(Some(&f), st(true, 2)));
-        assert!(!clears_master_unclear(Some(&f), None));
-        assert!(clears_master_unclear(Some(&master_unclear(Expect::Unsupported)), Some(Probe::Unsupported)));
-        assert!(!clears_master_unclear(Some("pack-communication-incomplete"), st(true, 0)));
-        assert!(!clears_master_unclear(None, st(true, 0)));
+        assert!(clears_master_unclear("marker-on", st(true, 0)));
+        assert!(!clears_master_unclear("marker-on", st(true, 2)));
+        assert!(!clears_master_unclear("marker-on", None));
+        assert!(clears_master_unclear("unsupported", Some(Probe::Unsupported)));
+        assert!(!clears_master_unclear("no-assumption", st(false, 0)));
+    }
+
+    #[test]
+    fn every_pack_bus_open_frees_the_port_first() {
+        let pack = |k: &str| (k.to_string(), Bus::PackBus);
+        let can = |k: &str| (k.to_string(), Bus::CanSocketBus);
+        // monitor on the pack bus, any adapter: it would see (and disturb) the bus
+        assert!(must_stop_monitor(Some(&pack("serial:/dev/b")), "serial:/dev/a"));
+        // monitor on the CAN socket bus, same adapter (sequential way): the port is held
+        assert!(must_stop_monitor(Some(&can("serial:/dev/a")), "serial:/dev/a"));
+        assert!(!must_stop_monitor(Some(&can("tcp:gw:4196")), "serial:/dev/a"));
+        assert!(!must_stop_monitor(None, "serial:/dev/a"));
+    }
+
+    #[test]
+    fn account_marker_never_rewrites_a_dip_recovery() {
+        assert!(account_allowed(None).is_ok());
+        assert!(account_allowed(Some(&session(SessionKind::Marker))).is_ok());
+        assert!(refused_with(account_allowed(Some(&session(SessionKind::Dip))), "dip-session-open"));
     }
 
     #[test]
@@ -2434,15 +2516,27 @@ pub fn finish_block(ok: bool, last: Option<Progress>, answers: impl FnOnce() -> 
     }
 }
 
-/// End is refused while an update is unclear: the inverter must not get its battery back then.
-pub fn end_allowed(blocks: &[FlashBlock], session: &MaintSession) -> Result<(), MaintError> {
-    if let Some(b) = blocks.first() {
-        return Err(refused(&b.reason));
+/// End is refused while an update is unclear (any block, the master's included): the inverter must not
+/// get its battery back then.
+pub fn end_allowed(blocks: &[FlashBlock]) -> Result<(), MaintError> {
+    match blocks.first() {
+        Some(b) => Err(refused(&b.reason)),
+        None => Ok(()),
     }
-    if session.failing.as_deref().is_some_and(|f| f.starts_with("master-unclear")) {
-        return Err(refused("master-unclear"));
+}
+
+/// Before the pack bus is opened: the monitor holds that adapter, or it polls the pack bus.
+pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
+    main.is_some_and(|(key, bus)| matches!(bus, Bus::PackBus) || key == pack_key)
+}
+
+/// "I set the marker myself" turns an unexplained marker into a marker session. A DIP session (the
+/// recovery) stays what it is: its End sends no `stop` and expects the polls of a quiet master.
+pub fn account_allowed(session: Option<&MaintSession>) -> Result<(), MaintError> {
+    match session {
+        Some(s) if s.kind == SessionKind::Dip => Err(refused("dip-session-open")),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 pub fn expect_key(e: Expect) -> &'static str {
@@ -2455,15 +2549,10 @@ pub fn expect_key(e: Expect) -> &'static str {
     }
 }
 
-/// The session's `failing` after a master flash whose post-check did not show the expected state.
-pub fn master_unclear(expect: Expect) -> String {
-    format!("master-unclear:{}", expect_key(expect))
-}
-
-/// A later master check that shows the expected state resolves an unclear master update.
-pub fn clears_master_unclear(failing: Option<&str>, probe: Option<Probe>) -> bool {
-    let Some(key) = failing.and_then(|f| f.strip_prefix("master-unclear:")) else { return false };
-    let expect = match key {
+/// A later master check that shows the expected state (`expect_key` of the plan) resolves an unclear
+/// master update.
+pub fn clears_master_unclear(expect: &str, probe: Option<Probe>) -> bool {
+    let expect = match expect {
         "marker-on" => Expect::MarkerOn,
         "zero" => Expect::Zero,
         "zero-or-unexplained" => Expect::ZeroOrUnexplained,
@@ -2600,14 +2689,18 @@ pub fn measure(state: &AppState, inst: &Installation, port: &str) -> Result<i64,
             return Err(refused("state-changed"));
         }
     }
-    let pack_key = crate::maint_store::endpoint_key(false, port);
-    let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
-    if main.is_some_and(|(key, bus)| matches!(bus, Bus::PackBus) || key == pack_key) {
-        crate::stop_monitor(state).map_err(|m| MaintError::Connection { message: m })?;
-    }
-    let mut link = open_pack(port)?;
+    let mut link = open_pack_for(state, port)?;
     bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
     Ok(crate::history::now_ms())
+}
+
+/// Open the pack bus port; first stop the monitor when it holds that adapter or polls the pack bus.
+pub fn open_pack_for(state: &AppState, port: &str) -> Result<Connection, MaintError> {
+    let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
+    if must_stop_monitor(main.as_ref(), &crate::maint_store::endpoint_key(false, port)) {
+        crate::stop_monitor(state).map_err(|m| MaintError::Connection { message: m })?;
+    }
+    open_pack(port)
 }
 
 /// `stop` and wait for 0/0, refusing in the locked state. The master is now quiet because of DIP 5–8 OFF,
@@ -2691,7 +2784,7 @@ pub async fn maint_end(state: State<'_, AppState>, installation: String, port: S
     let (session, ms, blocks) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?, s.blocks(&inst.id)?)))?;
     let session = session.ok_or_else(|| refused("no-session"))?;
     stop_allowed(ms.as_ref().map(|(m, _)| m))?;
-    end_allowed(&blocks, &session)?;
+    end_allowed(&blocks)?;
     let n = session.expected_slaves;
     let fail = |what: &str, missing: Vec<u8>| -> Result<EndResult, MaintError> {
         with_store(&state, |s| s.set_failing(session.id, Some(what)))?;
@@ -2704,7 +2797,7 @@ pub async fn maint_end(state: State<'_, AppState>, installation: String, port: S
             return fail(&format!("stop: {}", serde_json::to_string(&MaintError::from(e)).unwrap_or_default()), vec![]);
         }
     }
-    let mut link = open_pack(&port)?;
+    let mut link = open_pack_for(&state, &port)?;
     if n > 0 {
         let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
             .map_err(|e| MaintError::Connection { message: e.to_string() })?;
@@ -2735,11 +2828,20 @@ pub async fn maint_clear_block(state: State<'_, AppState>, installation: String,
     let blocks = with_store(&state, |s| s.blocks(&installation))?;
     let b = blocks.iter().find(|b| b.id == id).ok_or_else(|| refused("no-block"))?;
     match how.as_str() {
+        // the master's application runs; only a 0x64 check that shows the expected state resolves it
+        "answered" if b.reason == "master-unclear" => {
+            let inst = self::installation(&state, &installation)?;
+            check(&state, &inst)?;
+            if with_store(&state, |s| s.blocks(&installation))?.iter().any(|x| x.id == id) {
+                return Err(refused("master-unclear"));
+            }
+            return overview(&state, &installation);
+        }
         "answered" => {
             let port = port.as_deref().ok_or_else(|| refused("no-port"))?;
             let inst = self::installation(&state, &installation)?;
             port_of(&state, &inst, port)?;
-            let mut link = open_pack(port)?;
+            let mut link = open_pack_for(&state, port)?;
             if !bus::app_answers(&mut link, &mut std::io::sink(), b.pack, Duration::from_secs(2)) {
                 return Err(refused("pack-not-answering"));
             }
@@ -2799,7 +2901,7 @@ pub fn installation_by_id(state: &AppState, id: &str) -> Result<Installation, Ma
 }
 ```
 
-Also extend `check` (Task 7): keep the probe, and after storing the state clear a resolved unclear master update:
+Also extend `check` (Task 7): keep the probe, and after storing the state clear a resolved unclear master update. And replace the placeholder comment in `maint_account_marker` (Task 7) with the line it names: `account_allowed(with_store(&state, |s| s.open_session(&installation))?.as_ref())?;`.
 
 ```rust
 pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState, MaintError> {
@@ -2810,10 +2912,12 @@ pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState,
     let now = crate::history::now_ms();
     with_store(state, |s| {
         s.set_master_state(&inst.id, &m, now)?;
-        match &session {
-            Some(ses) if clears_master_unclear(ses.failing.as_deref(), probe) => s.set_failing(ses.id, None),
-            _ => Ok(()),
+        for b in s.blocks(&inst.id)? {
+            if b.reason == "master-unclear" && b.expect.as_deref().is_some_and(|x| clears_master_unclear(x, probe)) {
+                s.clear_block(b.id, "checked", now)?;
+            }
         }
+        Ok(())
     })?;
     Ok(m)
 }
@@ -2866,7 +2970,7 @@ The gate runs before `try_begin`, so a refusal leaves no `update-interrupted` bl
     - `let inst2 = inst.clone();`
     - `let plan2 = master_plan.clone();`
   - The thread cannot use `State`. Add `with_store_arc(store: &Arc<Mutex<Option<Store>>>, f)` to `maint.rs` (same body as `with_store`), and two helpers that take the `Arc` and the installation:
-    - `record_after_flash(store, inst, pending: i64, address, ok, last, link: &mut Connection) -> Option<String>` (the block reason, if one stays)
+    - `record_after_flash(store, inst, pending: i64, address, release: &str, ok, last, link: &mut Connection) -> Option<String>` (the block reason, if one stays; `release` from `info.release`, cloned into the thread)
     - `post_master_check(store, inst, plan) -> Option<String>` (the outcome key)
   - **Order:** call `record_after_flash` **before** `drop(link)`; today the thread drops the link right after the flash. Move `drop(link)` below it.
   - **`record_after_flash`:** `finish_block(ok, last, || bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6)))`:
@@ -2874,7 +2978,7 @@ The gate runs before `try_begin`, so a refusal leaves no `update-interrupted` bl
     - `Set(reason)` → `set_block_reason(pending, reason)`, return `Some(reason)`.
     - On success with a session open: `note_done(session.id, &format!("flash {address} {}", info.release))`.
   - **Success at address 0 with a plan (`post_master_check`):**
-    1. Open the control channel directly with `Connection::open(&control_endpoint(..))`. The main connection was stopped before the flash, so the backend must not assume it exists. In the sequential way (`same_adapter`) skip the check: store `Unknown` and `set_failing(.., Some(&master_unclear(plan.after)))`; the user re-checks after moving the cable, and `check` clears it.
+    1. Open the control channel directly with `Connection::open(&control_endpoint(..))`. The main connection was stopped before the flash, so the backend must not assume it exists. In the sequential way (`same_adapter`) skip the check: store `Unknown` and `add_master_block(.., expect_key(plan.after), now)`; the user re-checks after moving the cable, and `check` clears it.
     2. Read 0x64 every 500 ms for up to 6 s until `policy::settled(probe)`; keep the last probe.
     3. `policy::after_flash(plan.after, probe)` → store the state with `state_after`:
 
@@ -2884,7 +2988,7 @@ The gate runs before `try_begin`, so a refusal leaves no `update-interrupted` bl
        | `AsExpected` + `Zero` / `ZeroOrUnexplained` | `PatchedOff { slaves: 0 }` | — |
        | `AsExpected` + `Unsupported` | `No0x64` | `set_session_kind(Dip)` |
        | `MarkerUnexplained` | `MarkerUnexplained`; `note_sector(.., "marker after first flash of a maintenance build", now)` | — |
-       | `Unclear` | `Unknown` | `set_failing(.., Some(&master_unclear(plan.after)))` |
+       | `Unclear` | `Unknown`; `add_master_block(.., expect_key(plan.after), now)` (with or without a session) | — |
        | `UnknownImage` | `Unknown`; `note_sector(.., "unknown image on the master", now)` | — |
 
     4. If `plan.recovery`, also `note_sector(.., "0x23000 unexplained, recovered to original without stop", now)`.
@@ -2910,7 +3014,7 @@ The gate runs before `try_begin`, so a refusal leaves no `update-interrupted` bl
   - TS types `MasterStateName`, `MasterState`, `ControlEndpoint`, `Installation`, `MaintSession`, `FlashBlock`, `MaintOverview`, `MaintError`, `EndResult`, `PlanView`
   - api methods `maintInstallationFor`, `maintInstallationOf`, `maintSaveInstallation`, `maintOverview`, `maintCheck`, `maintActivate`, `maintStartDip`, `maintAccountMarker`, `maintMeasure`, `maintEnd`, `maintClearBlock`, `maintMasterPlan`
   - `firmwareStart` gains a last argument `maint: FlashMaint | null`
-  - `maint.ts`: `bannerOf(o) -> Banner | null`, `endpointKey(ep: Endpoint) -> string`, `needsReplug(control, packPort) -> boolean`, `errorKey(e) -> { key: string; params?: Record<string, unknown> }`, `canFlash({ overview, inverter, measuredAt, address, imageKind, portAssigned }) -> { ok: boolean; reason?: string }`. The backend repeats every check; `canFlash` only keeps the start button honest.
+  - `maint.ts`: `bannerOf(o) -> Banner | null`, `openWork(o) -> boolean`, `attachDecision(current, known) -> Attach`, `endpointKey(ep: Endpoint) -> string`, `needsReplug(control, packPort) -> boolean`, `errorKey(e) -> { key: string; params?: Record<string, unknown> }`, `canFlash({ overview, inverter, measuredAt, address, imageKind, portAssigned }) -> { ok: boolean; reason?: string }`. The backend repeats every check; `canFlash` only keeps the start button honest.
 
 - [ ] **Step 1: Types and API** (append to `api.ts` types)
 
@@ -2920,7 +3024,7 @@ export interface MasterState { state: MasterStateName; slaves?: number }
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
 export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null }
 export interface MaintSession { id: number; installation: string; kind: "marker" | "dip"; started: number; expected_slaves: number; done: string[]; failing: string | null }
-export interface FlashBlock { id: number; pack: number; reason: "update-interrupted" | "update-unclear" | "bootloader-unclear"; since: number }
+export interface FlashBlock { id: number; pack: number; reason: "update-interrupted" | "update-unclear" | "bootloader-unclear" | "master-unclear"; expect: string | null; since: number }
 export interface MaintOverview { installation: Installation; state: MasterState | null; state_at: number | null; session: MaintSession | null; blocks: FlashBlock[]; sector_note: string | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
@@ -2962,7 +3066,7 @@ Update the existing `firmwareStart` call in `Firmware.tsx` to pass `null` for no
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { bannerOf, canFlash, endpointKey, errorKey, needsReplug } from "./maint";
+import { attachDecision, bannerOf, canFlash, endpointKey, errorKey, needsReplug, openWork } from "./maint";
 import type { MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -2993,7 +3097,7 @@ describe("flash unlock", () => {
     expect(canFlash({ ...ok, measuredAt: null })).toEqual({ ok: false, reason: "measure" });
   });
   it("is blocked by an unclear update and by an unexplained marker", () => {
-    expect(canFlash({ ...ok, overview: { ...ok.overview, blocks: [{ id: 1, pack: 2, reason: "update-unclear", since: 0 }] } }).reason).toBe("update-unclear");
+    expect(canFlash({ ...ok, overview: { ...ok.overview, blocks: [{ id: 1, pack: 2, reason: "update-unclear", expect: null, since: 0 }] } }).reason).toBe("update-unclear");
     expect(canFlash({ ...ok, overview: { ...base, state: { state: "marker-unexplained" } } }).reason).toBe("marker-unexplained");
   });
   it("a measurement older than the last state check does not count", () => {
@@ -3007,7 +3111,7 @@ describe("flash unlock", () => {
     expect(canFlash({ ...ok, portAssigned: false }).reason).toBe("port-not-assigned");
   });
   it("an interrupted update blocks like an unclear one", () => {
-    expect(canFlash({ ...ok, overview: { ...ok.overview, blocks: [{ id: 2, pack: 4, reason: "update-interrupted", since: 0 }] } }).reason).toBe("update-interrupted");
+    expect(canFlash({ ...ok, overview: { ...ok.overview, blocks: [{ id: 2, pack: 4, reason: "update-interrupted", expect: null, since: 0 }] } }).reason).toBe("update-interrupted");
   });
   it("an unexplained marker allows only the recovery: master, original image, DIP session", () => {
     const locked = { ...base, state: { state: "marker-unexplained" as const } };
@@ -3026,6 +3130,18 @@ describe("helpers", () => {
     expect(needsReplug({ kind: "serial", path: "/dev/a" }, "/dev/b")).toBe(false);
     expect(needsReplug({ kind: "tcp", addr: "gw:4196" }, "/dev/a")).toBe(false);
     expect(needsReplug(null, "/dev/a")).toBe(false);
+  });
+  it("a known endpoint of another installation never hides open work", () => {
+    const other = { ...inst, id: "j", name: "Other" };
+    const open = { ...base, session };
+    expect(openWork(open)).toBe(true);
+    expect(openWork(base)).toBe(false);
+    expect(attachDecision(open, other)).toEqual({ do: "offer-switch", id: "j", name: "Other" });
+    expect(attachDecision(base, other)).toEqual({ do: "use", id: "j" });
+    expect(attachDecision(open, inst)).toEqual({ do: "use", id: "i" });
+    expect(attachDecision(null, other)).toEqual({ do: "use", id: "j" });
+    expect(attachDecision(open, null)).toEqual({ do: "offer-assign" });
+    expect(attachDecision(null, null)).toEqual({ do: "create" });
   });
   it("names endpoints like the backend", () => {
     expect(endpointKey({ kind: "tcp", addr: " Gateway.local:4196 ", bus: "can" })).toBe("tcp:gateway.local:4196");
@@ -3049,7 +3165,7 @@ describe("helpers", () => {
 - [ ] **Step 4: Implement** `app/src/maint.ts`
 
 ```ts
-import type { ControlEndpoint, Endpoint, FirmwareImage, MaintError, MaintOverview } from "./api";
+import type { ControlEndpoint, Endpoint, FirmwareImage, Installation, MaintError, MaintOverview } from "./api";
 
 /** What the banner above every view shows; null = nothing open. */
 export interface Banner {
@@ -3067,6 +3183,21 @@ export function bannerOf(o: MaintOverview | null): Banner | null {
   if (o.session) return { kind: s === "unknown" ? "unconfirmed" : "open", end: true, how: o.session.kind, since: o.session.started };
   if (s === "patched-on") return { kind: "open", end: true, how: "marker", since: null };
   return null;
+}
+
+/** Open maintenance work: a session, a block, or a set marker (same rule as the backend's `open_work`). */
+export function openWork(o: MaintOverview | null): boolean {
+  const s = o?.state?.state;
+  return !!o && (!!o.session || o.blocks.length > 0 || s === "patched-on" || s === "marker-unexplained");
+}
+
+export type Attach = { do: "use"; id: string } | { do: "create" } | { do: "offer-assign" } | { do: "offer-switch"; id: string; name: string };
+
+/** What a new connection does to the installation in use: switch only when nothing open would vanish. */
+export function attachDecision(current: MaintOverview | null, known: Installation | null): Attach {
+  if (known && (!current || known.id === current.installation.id || !openWork(current))) return { do: "use", id: known.id };
+  if (known) return { do: "offer-switch", id: known.id, name: known.name };
+  return current ? { do: "offer-assign" } : { do: "create" };
 }
 
 /** Same key as the backend's `endpoint_key`: the physical endpoint, independent of the bus. */
@@ -3143,8 +3274,8 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
 **Interfaces:**
 - Consumes: Task 9.
 - Produces:
-  - `useMaint()` returns `{ overview, setOverview, installation, unassigned, attach(endpoint: Endpoint), assign(endpoint: Endpoint), refresh(), check() }`; `installation` is the id, persisted in `localStorage["maint.installation"]`. `unassigned`: the last connected endpoint that belongs to no installation while another one is in use.
-  - `<MaintBanner overview unassigned onAssign onEnd />`
+  - `useMaint()` returns `{ overview, setOverview, installation, unassigned, other, attach(endpoint: Endpoint), assign(endpoint: Endpoint), switchTo(id: string), refresh(), check() }`; `installation` is the id, persisted in `localStorage["maint.installation"]`. `unassigned`: the last connected endpoint that belongs to no installation while another one is in use. `other`: `{ id, name }` of a known installation the connection belongs to, not switched to because the current one has open work.
+  - `<MaintBanner overview unassigned other onAssign onSwitch onEnd />`
   - `<MaintSetup overview onSaved />` (name, control channel, and the pack-bus ports of the installation)
   - `Sidebar` prop `onEndpoint(endpoint: Endpoint)`
 
@@ -3153,7 +3284,7 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
 ```ts
 import { useCallback, useEffect, useState } from "react";
 import { api, isDemo, type Endpoint, type MaintOverview } from "./api";
-import { endpointKey } from "./maint";
+import { attachDecision, endpointKey } from "./maint";
 
 /** The installation in use and its maintenance overview. The banner reads from here, so it survives view
  *  changes, reconnects and (through the backend database) app restarts. */
@@ -3161,6 +3292,7 @@ export function useMaint() {
   const [installation, setInstallation] = useState<string | null>(() => localStorage.getItem("maint.installation"));
   const [overview, setOverview] = useState<MaintOverview | null>(null);
   const [unassigned, setUnassigned] = useState<Endpoint | null>(null);
+  const [other, setOther] = useState<{ id: string; name: string } | null>(null);
 
   const refresh = useCallback(async (id = installation) => {
     if (!id || isDemo) return;
@@ -3179,20 +3311,26 @@ export function useMaint() {
     if (recheck) await check(id); else await refresh(id);
   }, [check, refresh]);
 
-  /** A new connection: switch to its installation if it has one. An endpoint without one never silently
-   *  replaces the installation in use (its session and blocks would vanish from view); the banner offers
-   *  to assign it instead. Only without any installation in use a new one is created. */
+  /** A new connection (`attachDecision`): never silently replaces an installation with open work (its
+   *  session and blocks would vanish from view); the banner offers to assign or to switch instead. */
   const attach = useCallback(async (endpoint: Endpoint) => {
     if (isDemo) return;
     const known = await api.maintInstallationOf(endpoint).catch(() => null);
-    if (known) {
-      setUnassigned(null);
-      return use(known.id, endpoint.bus === "can" && !!known.control);
+    const d = attachDecision(installation ? overview : null, known);
+    setUnassigned(d.do === "offer-assign" ? endpoint : null);
+    setOther(d.do === "offer-switch" ? { id: d.id, name: d.name } : null);
+    if (d.do === "use") await use(d.id, endpoint.bus === "can" && !!known?.control);
+    if (d.do === "create") {
+      const created = await api.maintInstallationFor(endpoint).catch(() => null);
+      if (created) await use(created.id, false);
     }
-    if (installation) { setUnassigned(endpoint); return; }
-    const created = await api.maintInstallationFor(endpoint).catch(() => null);
-    if (created) await use(created.id, false);
-  }, [installation, use]);
+  }, [installation, overview, use]);
+
+  /** Explicit switch from the banner. */
+  const switchTo = useCallback(async (id: string) => {
+    setOther(null);
+    await use(id, false);
+  }, [use]);
 
   /** Add an endpoint to the installation in use (explicit, from the banner or the firmware view). */
   const assign = useCallback(async (endpoint: Endpoint) => {
@@ -3213,7 +3351,7 @@ export function useMaint() {
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { installation, overview, setOverview, unassigned, attach, assign, refresh, check };
+  return { installation, overview, setOverview, unassigned, other, attach, assign, switchTo, refresh, check };
 }
 ```
 
@@ -3227,13 +3365,26 @@ import { bannerOf } from "../maint";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 
-export function MaintBanner({ overview, unassigned, onAssign, onEnd }: { overview: MaintOverview | null; unassigned: Endpoint | null; onAssign: () => void; onEnd: () => void }) {
+export function MaintBanner({ overview, unassigned, other, onAssign, onSwitch, onEnd }: {
+  overview: MaintOverview | null;
+  unassigned: Endpoint | null;
+  other: { id: string; name: string } | null;
+  onAssign: () => void;
+  onSwitch: (id: string) => void;
+  onEnd: () => void;
+}) {
   const { t } = useTranslation();
   const b = bannerOf(overview);
-  const assign = unassigned && overview && (
+  const assign = overview && (unassigned || other) && (
     <div role="status" className="mb-6 flex items-center gap-3 rounded-md border border-discharge p-3 text-sm">
-      <p className="flex-1">{t("maint.banner.unassigned", { endpoint: unassigned.kind === "tcp" ? unassigned.addr : unassigned.path, name: overview.installation.name })}</p>
-      <Button variant="ghost" size="sm" onClick={onAssign}>{t("maint.banner.assign")}</Button>
+      {unassigned && <>
+        <p className="flex-1">{t("maint.banner.unassigned", { endpoint: unassigned.kind === "tcp" ? unassigned.addr : unassigned.path, name: overview.installation.name })}</p>
+        <Button variant="ghost" size="sm" onClick={onAssign}>{t("maint.banner.assign")}</Button>
+      </>}
+      {other && <>
+        <p className="flex-1">{t("maint.banner.other", { other: other.name, name: overview.installation.name })}</p>
+        <Button variant="ghost" size="sm" onClick={() => onSwitch(other.id)}>{t("maint.banner.switch", { other: other.name })}</Button>
+      </>}
     </div>
   );
   if (!b) return assign || null;
@@ -3330,7 +3481,7 @@ export function MaintSetup({ overview, onSaved }: { overview: MaintOverview; onS
 - [ ] **Step 4: Wire App and Sidebar.**
   - `App.tsx`:
     - `const maint = useMaint();`
-    - render `<MaintBanner overview={maint.overview} unassigned={maint.unassigned} onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onEnd={() => setView("firmware")} />` as the first child inside `<main>` (End lives in the Pack bus panel);
+    - render `<MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other} onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => setView("firmware")} />` as the first child inside `<main>` (End lives in the Pack bus panel);
     - pass `maint` to `<Firmware maint={maint} …/>`;
     - pass `onEndpoint={(ep) => maint.attach(ep)}` to `Sidebar`.
   - `Sidebar.tsx`:
@@ -3352,6 +3503,8 @@ export function MaintSetup({ overview, onSaved }: { overview: MaintOverview; onS
           failing: "Letzte Prüfung beim Beenden fehlgeschlagen: {{what}}",
           unassigned: "Die Verbindung {{endpoint}} gehört zu keiner Anlage. Angezeigt wird weiter „{{name}}“.",
           assign: "Dieser Anlage zuordnen",
+          other: "Die Verbindung gehört zu „{{other}}“. Weiter angezeigt wird „{{name}}“, weil dort eine Wartung oder Sperre offen ist.",
+          switch: "Zu „{{other}}“ wechseln",
         },
         setup: {
           name: "Name der Anlage", control: "Steuerkanal (CAN-Buchse, 9600 Baud)",
@@ -3378,6 +3531,8 @@ export function MaintSetup({ overview, onSaved }: { overview: MaintOverview; onS
             "port-not-assigned": "Der Pack-Port ist keiner Anlage zugeordnet, während eine Wartung offen ist. Erst zuordnen.",
             "stop-needs-control-channel": "Dieser Schritt braucht „stop“ direkt vor dem Flashen und damit einen eigenen Adapter für den Steuerkanal.",
             "master-unclear": "Das Update des Masters ist unklar. Erst den Master prüfen; Beenden ist bis dahin gesperrt.",
+            "dip-session-open": "Eine Wiederherstellung per DIP läuft; die Herkunft des Markers lässt sich dabei nicht nachtragen.",
+            "endpoint-in-use": "Dieser Anschluss gehört zu einer Anlage mit offener Wartung oder Sperre und kann nicht umziehen.",
           },
         },
       },
@@ -3398,6 +3553,8 @@ EN (same keys):
           failing: "Last end check failed: {{what}}",
           unassigned: "The connection {{endpoint}} belongs to no installation. Still showing “{{name}}”.",
           assign: "Assign to this installation",
+          other: "The connection belongs to “{{other}}”. Still showing “{{name}}” because maintenance or a block is open there.",
+          switch: "Switch to “{{other}}”",
         },
         setup: {
           name: "Installation name", control: "Control channel (CAN socket, 9600 baud)",
@@ -3424,6 +3581,8 @@ EN (same keys):
             "port-not-assigned": "The pack port belongs to no installation while maintenance is open. Assign it first.",
             "stop-needs-control-channel": "This step needs “stop” right before the flash, so a separate adapter for the control channel.",
             "master-unclear": "The master's update is unclear. Check the master first; End is blocked until then.",
+            "dip-session-open": "A recovery by DIP is running; the marker's origin cannot be stated now.",
+            "endpoint-in-use": "This connection belongs to an installation with open maintenance or a block and cannot move.",
           },
         },
       },
@@ -3535,7 +3694,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
         <div className="space-y-2">
           <p className="text-alarm">{t("maint.banner.unexplainedHint")}</p>
           <label className="flex items-center gap-2">{t("maint.panel.slaves")}<input type="number" min={0} max={15} className={input} value={n} onChange={(e) => setN(Number(e.target.value))} /></label>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>
+          {o.session?.kind !== "dip" && <Button variant="ghost" size="sm" disabled={busy} onClick={() => run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
           {/* the recovery row: DIP session first, then the original image on address 0 (firmware view below) */}
           {!o.session && (
             <div className="space-y-2 border-t border-line pt-2">
@@ -3631,7 +3790,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
           inverterHint: "Wartungsmodus und DIP 5–8 AUS halten den Wechselrichter nicht an. Der Master meldet nur noch sein eigenes Pack: DCL fällt sofort auf ein Pack, CCL sinkt nur mit 1 A/s. Während der Master selbst geflasht wird, endet CAN ganz. Das ist eine Angabe des Bedieners, keine technische Prüfung.",
           measure: "Bus messen", quietAt: "Bus still um {{time}}",
           replugControl: "Kabel an die CAN-Buchse stecken.", replugPack: "Kabel an RS485-1/2 stecken.",
-          block: { "update-unclear": "Update an Pack {{pack}} unklar: weitere Updates gesperrt.", "bootloader-unclear": "Pack {{pack}} ist eventuell im Bootloader: weitere Updates gesperrt.", "update-interrupted": "Update an Pack {{pack}} läuft oder wurde unterbrochen (App beendet, Rechner aus): weitere Updates gesperrt, bis das Pack geprüft ist." },
+          block: { "master-unclear": "Update des Masters unklar: Er meldet nicht den erwarteten Zustand. „Pack prüfen“ fragt den Master erneut ab.", "update-unclear": "Update an Pack {{pack}} unklar: weitere Updates gesperrt.", "bootloader-unclear": "Pack {{pack}} ist eventuell im Bootloader: weitere Updates gesperrt.", "update-interrupted": "Update an Pack {{pack}} läuft oder wurde unterbrochen (App beendet, Rechner aus): weitere Updates gesperrt, bis das Pack geprüft ist." },
           portUnassigned: "Dieser Port gehört noch zu keiner Anlage.",
           recoveryHint: "Weg zurück ohne „stop“: DIP 5–8 notieren und auf AUS stellen, dann unten den Master (Adresse 0) mit der Original-Firmware flashen.",
           startRecovery: "Wiederherstellung per DIP beginnen",
@@ -3673,7 +3832,7 @@ EN:
           inverterHint: "Maintenance mode and DIP 5–8 OFF do not stop the inverter. The master then reports only its own pack: DCL drops to one pack at once, CCL only ramps down 1 A/s. While the master itself is flashed, CAN stops entirely. This is an operator statement, not a technical check.",
           measure: "Measure bus", quietAt: "Bus quiet at {{time}}",
           replugControl: "Plug the cable into the CAN socket.", replugPack: "Plug the cable into RS485-1/2.",
-          block: { "update-unclear": "Update of pack {{pack}} unclear: further updates blocked.", "bootloader-unclear": "Pack {{pack}} may be in its bootloader: further updates blocked.", "update-interrupted": "Update of pack {{pack}} running or interrupted (app closed, computer off): further updates blocked until the pack is checked." },
+          block: { "master-unclear": "Master update unclear: it does not report the expected state. “Check pack” asks the master again.", "update-unclear": "Update of pack {{pack}} unclear: further updates blocked.", "bootloader-unclear": "Pack {{pack}} may be in its bootloader: further updates blocked.", "update-interrupted": "Update of pack {{pack}} running or interrupted (app closed, computer off): further updates blocked until the pack is checked." },
           portUnassigned: "This port belongs to no installation yet.",
           recoveryHint: "Way back without “stop”: note DIP 5–8 and set them OFF, then flash the master (address 0) below with the original firmware.",
           startRecovery: "Start recovery by DIP",
@@ -3712,7 +3871,7 @@ EN:
 - Modify: `docs/superpowers/specs/2026-10-12-maintenance-mode-design.md`:
   - Backend: own file `maintenance.sqlite` instead of the history database, with the reason;
   - master-flash table: rows `no-0x64 → original` and `no-0x64 → custom`;
-  - decisions 7–10 of this plan (pack port decides the installation, `update-interrupted`, sequential way and `stop`, unclear master update);
+  - decisions 7–11 of this plan (pack port decides the installation, `update-interrupted`, sequential way and `stop`, unclear master update as a block, guarded endpoint ownership);
   - status: "stage 1 implemented".
 - Modify: `app/src/views/PackBusPanel.tsx` (`<InfoIcon id="topic.maintenance" />` next to the title)
 
