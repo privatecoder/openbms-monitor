@@ -3433,7 +3433,7 @@ export function MaintBanner({ overview, unassigned, other, onAssign, onSwitch, o
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, type ControlEndpoint, type MaintOverview } from "../api";
-import { endpointKey } from "../maint";
+import { endpointKey, errorKey } from "../maint";
 import { Button } from "../components/ui/button";
 
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
@@ -3462,7 +3462,7 @@ export function MaintSetup({ overview, onSaved }: { overview: MaintOverview; onS
     try {
       await api.maintSaveInstallation({ ...inst, name, control, endpoints });
       onSaved(await api.maintOverview(inst.id));
-    } catch (e) { setError(String(e)); }
+    } catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
   };
 
   return (
