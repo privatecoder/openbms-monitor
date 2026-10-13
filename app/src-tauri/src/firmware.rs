@@ -47,6 +47,10 @@ struct FirmwareDone {
     before: Option<DeviceInfo>,
     after: Option<DeviceInfo>,
     log: String,
+    /// the flash block that stays for this pack ("update-unclear", "bootloader-unclear", ...), if any
+    block: Option<String>,
+    /// master flash with a plan: the post-flash 0x64 check ("as-expected" | "unclear" | "marker-unexplained" | "unknown-image")
+    master: Option<String>,
 }
 
 fn lang(code: &str) -> Lang {
@@ -203,10 +207,12 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))
 }
 
-/// Validates everything again, then flashes on its own thread and returns at once.
+/// Validates everything again, runs the maintenance gate (the pack port decides the installation; master
+/// state, blocks, confirmations, master-flash plan and a fresh measurement), then flashes on its own thread
+/// and returns at once. Gate refusals reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<(), String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, maint: Option<crate::maint::FlashMaint>) -> Result<(), String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -219,10 +225,31 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     }
     let port_slot = reserve_port(&state.port_busy)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
+    // maintenance gate: the pack port decides the installation; then everything before the restart
+    let to_text = |e: crate::maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let confirm = maint.unwrap_or_default();
+    let key = crate::maint_store::endpoint_key(false, &port);
+    let (owner, any_open) = crate::maint::with_store(&state, |s| Ok((s.installation_of(&key)?, s.any_open()?))).map_err(to_text)?;
+    let ui = (!confirm.installation.is_empty()).then_some(confirm.installation.as_str());
+    crate::maint::port_gate(owner.as_ref().map(|i| i.id.as_str()), ui, any_open).map_err(to_text)?;
+    let inst = match owner {
+        Some(i) => i,
+        None => crate::maint::with_store(&state, |s| s.installation_for(&key)).map_err(to_text)?,
+    };
+    let master_plan = crate::maint::prepare_flash(
+        &mut crate::maint::AppPrep { state: &state, inst: &inst, port: &port },
+        address,
+        crate::maint::image_kind(info.kind),
+        &confirm,
+    )
+    .map_err(to_text)?;
+    let sequential = crate::maint::same_adapter(&inst, &port);
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
     let slot = FlashSlot(state.flashing.clone());
+    // written before the restart, so a crash or power loss leaves it behind
+    let pending = crate::maint::with_store(&state, |s| s.add_block(&inst.id, address, "update-interrupted", crate::history::now_ms())).map_err(to_text)?;
     let prepared = (|| {
         stop_monitor(&state)?;
         let link = open_port(&port, l)?;
@@ -230,7 +257,17 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
         Ok::<_, String>((link, log, log_path))
     })();
-    let (mut link, mut log, log_path) = prepared?;
+    let (mut link, mut log, log_path) = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = crate::maint::with_store(&state, |s| s.clear_block(pending, "preflight", crate::history::now_ms()));
+            return Err(e);
+        }
+    };
+    let store = state.maint.clone();
+    let inst2 = inst.clone();
+    let plan2 = master_plan.clone();
+    let release = info.release.clone();
     std::thread::spawn(move || {
         let mut last = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -239,12 +276,20 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
                 let _ = app.emit("firmware-progress", progress_event(p));
             })
         }));
+        // a panic inside the flash counts as a failure at the last reported stage
+        let ok = matches!(result, Ok(Ok(_)));
+        // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
+        let block = crate::maint::record_after_flash(&store, &inst2, pending, address, &release, ok, last, &mut link);
         drop(link);
+        let master = match &plan2 {
+            Some(plan) if ok && address == 0 => Some(crate::maint::post_master_check(&store, &inst2, plan, sequential).to_string()),
+            _ => None,
+        };
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, block, master },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, block, master },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, block, master },
         };
         drop(slot);
         drop(port_slot);
