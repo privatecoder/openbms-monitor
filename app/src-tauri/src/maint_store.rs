@@ -110,6 +110,27 @@ pub struct Store {
     db: Connection,
 }
 
+/// (installation, endpoint) of the one-owner table of earlier versions in stored order, without the installation's
+/// own CAN socket key.
+fn migrated_pack_endpoints(db: &Connection) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = db
+        .prepare("SELECT e.installation, e.endpoint, i.control FROM installation_endpoints e LEFT JOIN installations i ON i.id = e.installation ORDER BY e.rowid")
+        .map_err(e)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))
+        .map_err(e)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(e)?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, ep, control)| {
+            let key = control.as_deref().and_then(|c| serde_json::from_str::<ControlEndpoint>(c).ok()).map(|c| c.key());
+            key.as_deref() != Some(ep.as_str())
+        })
+        .map(|(i, ep, _)| (i, ep))
+        .collect())
+}
+
 fn e(err: rusqlite::Error) -> String {
     err.to_string()
 }
@@ -125,16 +146,47 @@ impl Store {
     }
 
     fn init(db: Connection) -> Result<Self, String> {
-        let had_links: bool = db
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'installation_links'", [], |r| r.get::<_, i64>(0))
-            .map_err(e)?
-            > 0;
+        let has = |name: &str| -> Result<bool, String> {
+            Ok(db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |r| r.get::<_, i64>(0)).map_err(e)? > 0)
+        };
+        let (had_links, had_pending, had_read) = (has("installation_links")?, has("bootloader_pending")?, has("master_read")?);
+        let (old_blocks, old_state) = (has("flash_blocks")?, has("master_state")?);
+        // the new tables and the copies of earlier versions' open state: all of it or nothing
+        let tx = db.unchecked_transaction().map_err(e)?;
         db.execute_batch(SCHEMA).map_err(e)?;
-        if !had_links {
-            // once, when the table is new: the endpoints of the one-owner table of earlier versions, in their order
-            db.execute("INSERT OR IGNORE INTO installation_links(installation, endpoint) SELECT installation, endpoint FROM installation_endpoints ORDER BY rowid", [])
-                .map_err(e)?;
+        let mut pack_eps: Vec<(String, String)> = Vec::new();
+        if !had_links || !had_pending {
+            pack_eps = migrated_pack_endpoints(&db)?;
         }
+        if !had_links {
+            // the endpoints of the one-owner table, in their order; the installation's own CAN socket key is not a
+            // pack bus endpoint
+            for (inst, ep) in &pack_eps {
+                db.execute("INSERT OR IGNORE INTO installation_links(installation, endpoint) VALUES (?1, ?2)", params![inst, ep]).map_err(e)?;
+            }
+        }
+        if !had_pending && old_blocks {
+            // an unclear or interrupted update stays visible: one record per serial pack bus endpoint of its installation
+            let mut stmt = db
+                .prepare("SELECT installation, pack, since FROM flash_blocks WHERE cleared IS NULL AND reason IN ('update-interrupted', 'bootloader-unclear', 'update-unclear') ORDER BY id")
+                .map_err(e)?;
+            let blocks = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u8>(1)?, r.get::<_, i64>(2)?))).map_err(e)?.collect::<rusqlite::Result<Vec<_>>>().map_err(e)?;
+            for (inst, pack, since) in blocks {
+                for (_, ep) in pack_eps.iter().filter(|(i, ep)| *i == inst && ep.starts_with("serial:")) {
+                    db.execute("INSERT INTO bootloader_pending(endpoint, pack, release, since) VALUES (?1, ?2, '', ?3)", params![ep, pack, since]).map_err(e)?;
+                }
+            }
+        }
+        if !had_read && old_state {
+            // a set marker stays in the banner until a read shows it off
+            db.execute(
+                "INSERT OR IGNORE INTO master_read(installation, data, marker_on, at) SELECT installation, '{}', 1, at FROM master_state
+                 WHERE json_extract(state, '$.state') IN ('patched-on', 'marker-unexplained')",
+                [],
+            )
+            .map_err(e)?;
+        }
+        tx.commit().map_err(e)?;
         Ok(Self { db })
     }
 
@@ -241,6 +293,11 @@ impl Store {
     #[cfg(test)]
     pub fn master_read(&self, inst: &str) -> Result<Option<(String, i64)>, String> {
         self.db.query_row("SELECT data, at FROM master_read WHERE installation = ?1", [inst], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(e)
+    }
+
+    /// The last master read worth keeping showed the marker on.
+    pub fn marker_last_on(&self, inst: &str) -> Result<bool, String> {
+        Ok(self.db.query_row("SELECT marker_on FROM master_read WHERE installation = ?1", [inst], |r| r.get::<_, bool>(0)).optional().map_err(e)?.unwrap_or(false))
     }
 
     /// Installations whose last read showed the marker on (banner), oldest first.
@@ -404,23 +461,37 @@ mod tests {
                  CREATE TABLE flash_blocks(id INTEGER PRIMARY KEY, installation TEXT NOT NULL, pack INTEGER NOT NULL, reason TEXT NOT NULL,
                    expect TEXT, since INTEGER NOT NULL, cleared INTEGER, how TEXT);
                  INSERT INTO installations VALUES ('old', 'Old', '{\"kind\":\"tcp\",\"addr\":\"gw:4196\"}', 1);
+                 INSERT INTO installations VALUES ('one', 'One', '{\"kind\":\"serial\",\"path\":\"/dev/c\"}', 2);
                  INSERT INTO installation_endpoints VALUES ('serial:/dev/p', 'old');
                  INSERT INTO installation_endpoints VALUES ('tcp:gw:4196', 'old');
-                 INSERT INTO flash_blocks(installation, pack, reason, since) VALUES ('old', 3, 'update-unclear', 1);",
+                 INSERT INTO installation_endpoints VALUES ('serial:/dev/c', 'one');
+                 INSERT INTO flash_blocks(installation, pack, reason, since) VALUES ('old', 3, 'update-unclear', 1);
+                 INSERT INTO flash_blocks(installation, pack, reason, since) VALUES ('old', 4, 'master-unclear', 2);
+                 INSERT INTO flash_blocks(installation, pack, reason, since, cleared) VALUES ('old', 5, 'bootloader-unclear', 3, 4);
+                 INSERT INTO master_state VALUES ('old', '{\"state\":\"patched-on\"}', 7);
+                 INSERT INTO master_state VALUES ('one', '{\"state\":\"no-0x64\"}', 8);",
             )
             .unwrap();
         }
         let s = Store::open(&path).unwrap();
         let old = s.installation("old").unwrap();
-        assert_eq!((old.name.as_str(), old.endpoints.clone()), ("Old", vec!["serial:/dev/p".to_string(), "tcp:gw:4196".to_string()]));
+        assert_eq!((old.name.as_str(), old.endpoints.clone()), ("Old", vec!["serial:/dev/p".to_string()]));
         assert_eq!(old.control, Some(ControlEndpoint::Tcp { addr: "gw:4196".into() }));
+        // the CAN socket key of an installation is no pack bus link
+        assert!(s.installation("one").unwrap().endpoints.is_empty());
+        // the open unclear update stays visible on the serial pack bus endpoint; master-unclear and cleared ones do not
+        assert_eq!(s.all_pending().unwrap().iter().map(|p| (p.endpoint.as_str(), p.pack, p.since)).collect::<Vec<_>>(), vec![("serial:/dev/p", 3, 1)]);
+        // a set marker stays in the banner
+        assert_eq!(s.markers_on().unwrap().iter().map(|m| (m.installation.as_str(), m.at)).collect::<Vec<_>>(), vec![("old", 7)]);
+        assert!(s.marker_last_on("old").unwrap() && !s.marker_last_on("one").unwrap());
         // the copy runs once: endpoints removed later are not copied back at the next start
         s.save_installation(&Installation { endpoints: vec![], ..old }).unwrap();
         drop(s);
         let s = Store::open(&path).unwrap();
         assert!(s.installation("old").unwrap().endpoints.is_empty());
+        assert_eq!(s.all_pending().unwrap().len(), 1, "the copies run once");
         // the old tables stay, unread
         let n: i64 = s.db.query_row("SELECT COUNT(*) FROM flash_blocks", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 3);
     }
 }

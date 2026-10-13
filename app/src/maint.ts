@@ -73,20 +73,25 @@ export function assignEndpoint(inst: Installation, ep: Endpoint): Installation {
   return inst.endpoints.includes(key) ? inst : { ...inst, endpoints: [...inst.endpoints, key] };
 }
 
-/** The installation's RS485-1/2 port (flash packs): the first stored serial endpoint that is not its CAN socket; the
- *  CAN socket adapter itself only when it is the one serial endpoint listed (one adapter moved between the buses).
+/** The installation's RS485-1/2 port (flash packs): the first stored serial endpoint that is not its CAN socket.
  *  null: not set up. */
 export function packPortOf(inst: Pick<Installation, "endpoints" | "control"> | null): string | null {
   if (!inst) return null;
-  const serial = inst.endpoints.filter((k) => k.startsWith("serial:"));
-  const pick = serial.find((k) => k !== controlKey(inst.control)) ?? serial[0];
+  const pick = inst.endpoints.find((k) => k.startsWith("serial:") && k !== controlKey(inst.control));
   return pick ? pick.slice("serial:".length) : null;
+}
+
+/** RS485-1/2 was set to the CAN socket's adapter: the panel names it instead of watching a bus it cannot tell. */
+export function packIsCanAdapter(inst: Pick<Installation, "endpoints" | "control"> | null): boolean {
+  const ctl = controlKey(inst?.control ?? null);
+  return !!inst && inst.control?.kind === "serial" && !packPortOf(inst) && inst.endpoints.includes(ctl!);
 }
 
 /** The setup form's fields from a stored installation. */
 export function setupFields(inst: Installation) {
   const c = inst.control;
-  return { name: inst.name, canKind: (c?.kind ?? "serial") as ControlEndpoint["kind"], canValue: c ? (c.kind === "tcp" ? c.addr : c.path) : "", pack: packPortOf(inst) ?? "" };
+  const pack = packPortOf(inst) ?? (packIsCanAdapter(inst) && c?.kind === "serial" ? c.path : "");
+  return { name: inst.name, canKind: (c?.kind ?? "serial") as ControlEndpoint["kind"], canValue: c ? (c.kind === "tcp" ? c.addr : c.path) : "", pack };
 }
 
 /** The endpoint list the setup form saves: the RS485-1/2 port first (it reads back as the pack port), then every
@@ -94,6 +99,7 @@ export function setupFields(inst: Installation) {
 export function setupEndpoints(inst: Pick<Installation, "endpoints" | "control">, pack: string): string[] {
   const oldPack = packPortOf(inst);
   const oldPackKey = oldPack ? `serial:${oldPack}` : null;
+  // the CAN socket key is dropped below unless it is chosen as RS485-1/2 again
   const ctl = controlKey(inst.control);
   const kept = inst.endpoints.filter((k) => k !== oldPackKey && k !== ctl);
   const out: string[] = [];

@@ -278,7 +278,7 @@ pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, Main
 
 const PACK_BUS_BAUD: u32 = 19_200;
 /// A little more than one polling cycle of the master (every slave once a second).
-const LISTEN: Duration = Duration::from_millis(1200);
+pub const LISTEN: Duration = Duration::from_millis(1200);
 
 /// Before the pack bus is opened: the monitor holds that adapter, or it polls the pack bus.
 pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
