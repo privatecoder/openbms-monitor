@@ -95,7 +95,7 @@ export function Firmware({ connected, onMonitorStopped, onRunning, onBack }: {
     setError(null); setDone(null); setProgress(null); setCloseRefused(false); setTyped(""); setTarget(null); setCheckedFor(null);
     try {
       setRunning(true); onRunning(true); startedAt.current = Date.now();
-      await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang);
+      await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang, null);
     } catch (e) { setRunning(false); onRunning(false); setError(String(e)); }
   };
 
