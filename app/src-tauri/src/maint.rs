@@ -1,19 +1,18 @@
-//! Maintenance of a multi-pack bank (design: docs/superpowers/specs/2026-10-12-maintenance-mode-design.md):
-//! the 0x64 dialog over the control channel, the master state and the session per installation.
-//! All operations hold the one maintenance-operation lock (`port_busy`); a control exchange on the
-//! endpoint of the main connection runs through that connection, so no endpoint is opened twice.
+//! Maintenance of a bank (design: docs/superpowers/specs/2026-10-13-simple-flash-flow.md): the live status of
+//! the pack bus and the master, the pack list, the master's marker (`start`/`stop` over the CAN socket bus), the
+//! right-bank check and the packs that may hang in their bootloader. All bus operations hold the one operation
+//! lock (`port_busy`); a control exchange on the endpoint of the main connection runs through that connection,
+//! so no endpoint is opened twice.
 
-use crate::maint_store::{ControlEndpoint, FlashBlock, Installation, MaintSession, OpenWork, SessionKind, Store, StoredMasterState};
+use crate::maint_store::{endpoint_key, ControlEndpoint, Installation, MarkerOn, Pending, Store};
 use crate::{lock, reserve_port, AppState, EndpointArg};
-use openbms_flash::known::ImageKind;
-use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError, Probe};
-use openbms_flash::maint::policy::{Expect, Outcome, Step};
-use openbms_flash::maint::{bus, policy, SystemClock};
+use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError};
+use openbms_flash::maint::policy::Master;
+use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::session::Progress;
-use openbms_proto::MaintStatus;
+use openbms_proto::{DeviceInfo, MaintStatus, MarkerWord, SerialValue};
 use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
@@ -30,8 +29,11 @@ pub enum MaintError {
     /// not allowed in the current state; `reason` is a stable key for the UI text
     Refused { reason: String },
     Busy,
-    Measure { message: String },
     Store { message: String },
+    /// the master at this pack bus answers with another BMS serial number than the installation stored
+    OtherBank { serial: String },
+    /// a pack on this pack bus endpoint may hang in its bootloader: no other address is flashed there
+    BootloaderPending { pack: u8 },
 }
 
 impl From<DialogError> for MaintError {
@@ -50,20 +52,8 @@ fn store_err(message: String) -> MaintError {
     MaintError::Store { message }
 }
 
-fn refused(reason: &str) -> MaintError {
+pub fn refused(reason: &str) -> MaintError {
     MaintError::Refused { reason: reason.into() }
-}
-
-#[derive(Serialize)]
-pub struct Overview {
-    installation: Installation,
-    state: Option<StoredMasterState>,
-    state_at: Option<i64>,
-    session: Option<MaintSession>,
-    blocks: Vec<FlashBlock>,
-    sector_note: Option<String>,
-    /// the End step allowed next in this app run (`next_end_step`); None without an open session
-    end_next: Option<EndStep>,
 }
 
 pub fn with_store<T>(state: &AppState, f: impl FnOnce(&Store) -> Result<T, String>) -> Result<T, MaintError> {
@@ -77,26 +67,37 @@ pub fn with_store_arc<T>(store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Stor
     f(s).map_err(store_err)
 }
 
-pub fn overview(state: &AppState, inst: &str) -> Result<Overview, MaintError> {
-    let mut o = with_store(state, |s| {
-        let installation = s.installations()?.into_iter().find(|i| i.id == inst).ok_or("unknown installation")?;
-        let ms = s.master_state(inst)?;
-        Ok(Overview {
-            installation,
-            state_at: ms.as_ref().map(|(_, at)| *at),
-            state: ms.map(|(m, _)| m),
-            session: s.open_session(inst)?,
-            blocks: s.blocks(inst)?,
-            sector_note: s.sector_note(inst)?,
-            end_next: None,
-        })
-    })?;
-    if let Some(session) = &o.session {
-        let map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
-        o.end_next = Some(next_end_step(&end_progress_of(map.get(inst), session.id), session.kind));
+/// A store refusal (name) reaches the UI as a refusal key, anything else as a store error.
+fn store_refusal(e: MaintError) -> MaintError {
+    match e {
+        MaintError::Store { message } if ["name-required", "name-taken", "unknown installation"].contains(&message.as_str()) => refused(&message),
+        other => other,
     }
-    Ok(o)
 }
+
+pub fn installation(state: &AppState, id: &str) -> Result<Installation, MaintError> {
+    with_store(state, |s| s.installation(id)).map_err(store_refusal)
+}
+
+/// The operation that holds the port now, for the sidebar's "port busy" text; cleared on drop.
+pub struct ActionScope<'a>(&'a AppState);
+
+impl Drop for ActionScope<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut a) = self.0.maint_action.lock() {
+            *a = None;
+        }
+    }
+}
+
+pub fn begin_action<'a>(state: &'a AppState, action: &'static str) -> ActionScope<'a> {
+    if let Ok(mut a) = state.maint_action.lock() {
+        *a = Some(action);
+    }
+    ActionScope(state)
+}
+
+// --- control channel (CAN socket bus) ---
 
 pub fn uses_main_connection(main: Option<&(String, Bus)>, control_key: &str) -> bool {
     matches!(main, Some((key, Bus::CanSocketBus)) if key == control_key)
@@ -120,11 +121,6 @@ pub fn route_with(main: Option<&(String, Bus)>, control_key: &str, main_conn_pre
     }
 }
 
-#[cfg(test)]
-fn route(main: Option<&(String, Bus)>, control_key: &str) -> Route {
-    route_with(main, control_key, true)
-}
-
 fn control_endpoint(c: &ControlEndpoint) -> Endpoint {
     match c {
         ControlEndpoint::Serial { path } => Endpoint::Serial { path: path.clone(), baud: Bus::CanSocketBus.baud() },
@@ -138,15 +134,13 @@ pub fn link_dead(message: &str) -> bool {
     message.contains("I/O") || message.contains("connection closed") || message.ends_with("not connected")
 }
 
-/// After an exchange through the main connection failed with a dead link (e.g. a reconnect in the sidebar left
-/// a dead socket behind), the exchange runs once more on a freshly opened control endpoint. An exchange on an
-/// own connection, or any other failure (no answer, timeout, rejected), is not repeated.
+/// After an exchange through the main connection failed with a dead link, the exchange runs once more on a
+/// freshly opened control endpoint. An exchange on an own connection, or any other failure, is not repeated.
 pub fn retry_fresh(through_main: bool, error: Option<&str>) -> bool {
     through_main && error.is_some_and(link_dead)
 }
 
-/// Drop a dead main connection like the polling thread does on link loss: polling stops, the connection and
-/// its route go, the UI hears "link-lost".
+/// Drop a dead main connection like the polling thread does on link loss.
 fn drop_dead_main(state: &AppState, error: &str) {
     if let Ok(p) = state.polling.lock() {
         p.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -166,8 +160,8 @@ fn drop_dead_main(state: &AppState, error: &str) {
 }
 
 /// Run `f` on the control channel: through the main connection when it is that endpoint on the CAN socket
-/// bus (the polling thread waits for the mutex meanwhile), otherwise on a connection opened for this dialog.
-/// A dead main connection is dropped and the exchange repeated once on its own channel (`retry_fresh`).
+/// bus, otherwise on a connection opened for this exchange. A dead main connection is dropped and the
+/// exchange repeated once on its own channel (`retry_fresh`).
 pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installation, mut f: impl FnMut(&mut Connection) -> Result<T, E>) -> Result<Result<T, E>, MaintError> {
     let control = inst.control.as_ref().ok_or_else(|| refused("no-control-channel"))?;
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
@@ -197,210 +191,213 @@ pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installati
     }
 }
 
-/// The state a `start` (1/0) or `stop` (0/N, any count without `expected`) waits for is already there.
-pub fn target_reached(action: Action, expected: Option<u8>, s: MaintStatus) -> bool {
+/// The state a `start` (1/0) or `stop` (marker off) waits for is already there.
+pub fn target_reached(action: Action, s: MaintStatus) -> bool {
     match action {
         Action::Status => true,
         Action::Start => s.marker && s.effective_slaves == 0,
-        Action::Stop => !s.marker && expected.is_none_or(|n| s.effective_slaves == n),
+        Action::Stop => !s.marker,
     }
 }
 
-/// `start`/`stop` over the control channel. If the first attempt went through a dead main connection and is
-/// repeated on a fresh channel (`with_control`), the repeat reads 0x64 first and continues from the state
-/// found: a target already reached is not sent again.
-fn control_dialog(state: &AppState, inst: &Installation, action: Action, expected: Option<u8>) -> Result<Result<MaintStatus, DialogError>, MaintError> {
+/// `start`/`stop` over the control channel. A repeat on a fresh channel (`with_control`) reads the status
+/// first: a target already reached is not sent again.
+fn control_dialog(state: &AppState, inst: &Installation, action: Action) -> Result<Result<MaintStatus, DialogError>, MaintError> {
     let mut retry = false;
     with_control(state, inst, |c| {
         if std::mem::replace(&mut retry, true) {
-            if let Ok(Probe::Status(s)) = dialog::probe(c, &SystemClock::new(), Budgets::default()) {
-                if target_reached(action, expected, s) {
+            if let Ok(s) = dialog::dialog(c, &SystemClock::new(), Action::Status, None, Budgets::default()) {
+                if target_reached(action, s) {
                     return Ok(s);
                 }
             }
         }
-        dialog::dialog(c, &SystemClock::new(), action, expected, Budgets::default())
+        dialog::dialog(c, &SystemClock::new(), action, None, Budgets::default())
     })
 }
 
-/// Event "maint-progress": the phase of the running panel action (`detail`: e.g. address and pass of the
-/// slave scan), so the UI can name it at the button.
-#[derive(Serialize, Clone, Debug)]
-pub struct MaintProgress {
-    installation: String,
-    action: &'static str,
-    phase: &'static str,
-    detail: Option<serde_json::Value>,
+/// The master as the UI shows it (status line, panel buttons).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct MasterView {
+    /// "maint" (known build) | "unknown-build" | "legacy" (MAINT 1.0 compatible) | "no-0x64" | "unknown"
+    pub kind: &'static str,
+    /// what the master reports, e.g. "16.06.13 MAINT 1.1"
+    pub version: Option<String>,
+    pub build_id: Option<String>,
+    /// "off" | "on" | "foreign"
+    pub marker: Option<&'static str>,
+    /// the raw marker word (MAINT 1.1), 8 hex digits
+    pub marker_word: Option<String>,
+    pub slaves: Option<u8>,
+    pub may_halt: bool,
+    pub may_release: bool,
 }
 
-/// The panel action running now; its progress events name it. Cleared on drop (one action at a time: the
-/// commands hold `port_busy`).
-pub struct ActionScope<'a>(&'a AppState);
-
-impl Drop for ActionScope<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut a) = self.0.maint_action.lock() {
-            *a = None;
-        }
-    }
-}
-
-pub fn begin_action<'a>(state: &'a AppState, installation: &str, action: &'static str) -> ActionScope<'a> {
-    if let Ok(mut a) = state.maint_action.lock() {
-        *a = Some((installation.to_string(), action));
-    }
-    ActionScope(state)
-}
-
-/// Tell the UI the phase of the running action; nothing when no panel action runs (e.g. inside a flash).
-pub fn progress(state: &AppState, phase: &'static str, detail: Option<serde_json::Value>) {
-    let Some((installation, action)) = state.maint_action.lock().ok().and_then(|a| a.clone()) else { return };
-    if let Some(app) = state.app.get() {
-        let _ = app.emit("maint-progress", MaintProgress { installation, action, phase, detail });
-    }
-}
-
-/// Pass and address of a slave scan log line ("slave scan: pass 1, address 7").
-pub fn scan_step(line: &str) -> Option<(u8, u8)> {
-    let rest = line.trim().strip_prefix("slave scan: pass ")?;
-    let (pass, address) = rest.split_once(", address ")?;
-    Some((pass.parse().ok()?, address.parse().ok()?))
-}
-
-/// The slave scan's log as progress events ("Adresse 7 von 15, Durchgang 1 von 2").
-struct ScanProgress<'a> {
-    state: &'a AppState,
-    line: Vec<u8>,
-}
-
-impl std::io::Write for ScanProgress<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        for &b in buf {
-            if b != b'\n' {
-                self.line.push(b);
-                continue;
-            }
-            if let Some((pass, address)) = scan_step(&String::from_utf8_lossy(&self.line)) {
-                progress(self.state, "scan", Some(serde_json::json!({ "address": address, "of": bus::SLAVE_ADDRESSES, "pass": pass, "passes": bus::SLAVE_PASSES })));
-            }
-            self.line.clear();
-        }
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A slave scan that found no slave: installation, session (if one was open) and when (wall clock, ms, so a
-/// sleeping laptop counts).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScanPass {
-    pub installation: String,
-    pub session: Option<i64>,
-    pub at: i64,
-}
-
-/// How long a passed slave scan counts for End's pack bus step.
-pub const SCAN_VALID_MS: i64 = 30 * 60 * 1000;
-
-/// Whether End's Bus step (N = 0) must scan for slaves: yes unless a pass for this installation and this
-/// session is at most `SCAN_VALID_MS` old.
-pub fn scan_needed(record: Option<&ScanPass>, installation: &str, session: Option<i64>, now: i64) -> bool {
-    match record {
-        Some(r) => r.installation != installation || r.session != session || now.saturating_sub(r.at) > SCAN_VALID_MS,
-        None => true,
-    }
-}
-
-/// Remember a scan that found no slave, or (`passed` false: a slave, an error) forget the installation's record.
-fn note_scan(state: &AppState, installation: &str, session: Option<i64>, passed: bool) {
-    let Ok(mut rec) = state.scan_pass.lock() else { return };
-    if passed {
-        *rec = Some(ScanPass { installation: installation.to_string(), session, at: crate::history::now_ms() });
-    } else if rec.as_ref().is_some_and(|r| r.installation == installation) {
-        *rec = None;
-    }
-}
-
-/// `bus::first_slave` with its progress shown.
-fn scan_for_slave(state: &AppState, link: &mut Connection) -> openbms_flash::Result<Option<u8>> {
-    bus::first_slave(link, &SystemClock::new(), &mut ScanProgress { state, line: vec![] }, bus::SLAVE_WINDOW)
-}
-
-/// The quiet-bus check on the pack bus (2 s quiet, 0x47 from address 0), with its phase shown.
-fn quiet_bus(state: &AppState, link: &mut Connection) -> openbms_flash::Result<()> {
-    progress(state, "quiet", None);
-    bus::measure(link, &mut std::io::sink())
-}
-
-pub fn stop_allowed(state: Option<&StoredMasterState>) -> Result<(), MaintError> {
-    if state == Some(&StoredMasterState::MarkerUnexplained) {
-        return Err(refused("marker-unexplained"));
-    }
-    Ok(())
-}
-
-fn installation(state: &AppState, id: &str) -> Result<Installation, MaintError> {
-    with_store(state, |s| s.installations()?.into_iter().find(|i| i.id == id).ok_or_else(|| "unknown installation".into()))
-}
-
-/// The state to store after a read. A failed read (no usable answer) never clears `marker-unexplained`:
-/// only a successful read may change it.
-pub fn next_state(stored: Option<&StoredMasterState>, classified: StoredMasterState, read_ok: bool) -> StoredMasterState {
-    if !read_ok && stored == Some(&StoredMasterState::MarkerUnexplained) {
-        return StoredMasterState::MarkerUnexplained;
-    }
-    classified
-}
-
-/// Unclear master updates (`master-unclear`) that a successful read resolves: the read shows the state the
-/// master-flash plan expected. A failed read resolves nothing.
-pub fn resolved_master_blocks(blocks: &[FlashBlock], probe: Option<Probe>, read_ok: bool) -> Vec<i64> {
-    if !read_ok {
-        return vec![];
-    }
-    blocks
-        .iter()
-        .filter(|b| b.reason == "master-unclear" && b.expect.as_deref().is_some_and(|x| clears_master_unclear(x, probe)))
-        .map(|b| b.id)
-        .collect()
-}
-
-/// Read 0x64 and store the state. A connection or dialog failure stores `unknown` (never `no-0x64`; a stored
-/// `marker-unexplained` stays); a refusal (no control channel, control on the pack bus) is returned and stores nothing.
-/// A successful read that shows the expected state clears an unclear master update.
-pub fn check(state: &AppState, inst: &Installation) -> Result<StoredMasterState, MaintError> {
-    let session = with_store(state, |s| s.open_session(&inst.id))?;
-    let probe = match with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default())) {
-        Ok(p) => p.ok(),
-        Err(e @ MaintError::Refused { .. }) => return Err(e),
-        Err(_) => None,
+pub fn master_view(m: &Master) -> MasterView {
+    let info = match m {
+        Master::Maint { info, .. } | Master::UnknownBuild(info) => Some(info),
+        _ => None,
     };
-    let read_ok = matches!(probe, Some(Probe::Status(_) | Probe::Unsupported));
-    let expected = session.as_ref().is_some_and(|s| s.kind == SessionKind::Marker);
-    let classified: StoredMasterState = policy::classify(probe, expected).into();
-    let now = crate::history::now_ms();
-    with_store(state, |s| {
-        let stored = s.master_state(&inst.id)?.map(|(m, _)| m);
-        let m = next_state(stored.as_ref(), classified, read_ok);
-        s.set_master_state(&inst.id, &m, now)?;
-        // a mismatch names a count the master reported; a read that shows another state takes it back
-        if let Some(ses) = session.as_ref().filter(|x| read_ok && mismatch_stale(x.failing.as_deref(), Some(&m), x.expected_slaves)) {
-            s.set_failing(ses.id, None)?;
-        }
-        for id in resolved_master_blocks(&s.blocks(&inst.id)?, probe, read_ok) {
-            s.clear_block(id, "checked", now)?;
-        }
-        Ok(m)
-    })
+    MasterView {
+        kind: match m {
+            Master::Maint { .. } => "maint",
+            Master::UnknownBuild(_) => "unknown-build",
+            Master::Legacy(_) => "legacy",
+            Master::No0x64 => "no-0x64",
+            Master::Unknown => "unknown",
+        },
+        version: info.map(|i| i.version()),
+        build_id: info.map(|i| i.build_id_hex()),
+        marker: m.marker().map(|w| match w {
+            MarkerWord::Off => "off",
+            MarkerWord::On => "on",
+            MarkerWord::Foreign(_) => "foreign",
+        }),
+        marker_word: info.map(|i| format!("{:08X}", i.marker_word)),
+        slaves: m.effective_slaves(),
+        may_halt: m.may_halt(),
+        may_release: m.may_release(),
+    }
 }
 
-#[tauri::command]
-pub async fn maint_installation_of(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<Option<Installation>, MaintError> {
-    let key = endpoint.key();
-    with_store(&state, |s| s.installation_of(&key))
+/// Read the master (`03` → RTN 05 → `02`) and keep what it showed for the banner. A read without a valid answer
+/// never replaces the last one: a set marker stays visible until a read shows it off.
+pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {
+    let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()))?
+        .map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    let m = Master::of(Some(probe));
+    if m != Master::Unknown {
+        let v = master_view(&m);
+        let data = serde_json::to_string(&v).unwrap_or_default();
+        with_store(state, |s| s.set_master_read(&inst.id, &data, v.marker == Some("on"), crate::history::now_ms()))?;
+    }
+    Ok(m)
 }
+
+// --- pack bus ---
+
+const PACK_BUS_BAUD: u32 = 19_200;
+/// A little more than one polling cycle of the master (every slave once a second).
+const LISTEN: Duration = Duration::from_millis(1200);
+
+/// Before the pack bus is opened: the monitor holds that adapter, or it polls the pack bus.
+pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
+    main.is_some_and(|(key, bus)| matches!(bus, Bus::PackBus) || key == pack_key)
+}
+
+/// Open the pack bus port; first stop the monitor when it holds that adapter or polls the pack bus, and tell
+/// the UI ("monitor-stopped"): a stop by the app is no lost connection.
+pub fn open_pack_for(state: &AppState, app: &AppHandle, port: &str) -> Result<Connection, MaintError> {
+    let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
+    if must_stop_monitor(main.as_ref(), &endpoint_key(false, port)) {
+        crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
+    }
+    Connection::open(&Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD }).map_err(|e| MaintError::Connection { message: e.to_string() })
+}
+
+/// "quiet" (no byte), "polling" (the master polls slaves) or "traffic" (bytes, but no poll of the master).
+pub fn bus_state(t: &bus::Traffic) -> &'static str {
+    if t.quiet() {
+        "quiet"
+    } else if t.polled.is_empty() {
+        "traffic"
+    } else {
+        "polling"
+    }
+}
+
+/// The right-bank check against the master's BMS serial number (0xA4 at address 0 on the pack bus).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bank {
+    Match,
+    /// first read for this installation: stored now
+    Stored(String),
+    /// another bank hangs on this pack bus
+    Mismatch(String),
+    /// no serial number to compare (no answer, not offered, empty, the factory placeholder)
+    Unchecked,
+}
+
+pub fn bank_check(stored: Option<&str>, read: &SerialValue) -> Bank {
+    match (read, stored) {
+        (SerialValue::Set { value, .. }, None) => Bank::Stored(value.clone()),
+        (SerialValue::Set { value, .. }, Some(s)) if s == value => Bank::Match,
+        (SerialValue::Set { value, .. }, Some(_)) => Bank::Mismatch(value.clone()),
+        _ => Bank::Unchecked,
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct BankView {
+    /// "match" | "stored" | "mismatch" | "unchecked" | "none" (no installation selected)
+    pub state: &'static str,
+    pub serial: Option<String>,
+}
+
+pub fn bank_view(b: &Bank) -> BankView {
+    match b {
+        Bank::Match => BankView { state: "match", serial: None },
+        Bank::Stored(s) => BankView { state: "stored", serial: Some(s.clone()) },
+        Bank::Mismatch(s) => BankView { state: "mismatch", serial: Some(s.clone()) },
+        Bank::Unchecked => BankView { state: "unchecked", serial: None },
+    }
+}
+
+/// Read the master's BMS serial number on the open pack bus link and compare it with the installation; the first
+/// value is stored without asking.
+pub fn check_bank(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, link: &mut Connection) -> Result<Bank, MaintError> {
+    let read = match link.bms_serial(0) {
+        Ok(v) => v,
+        Err(e) if link_dead(&e.to_string()) => return Err(MaintError::Connection { message: e.to_string() }),
+        Err(_) => SerialValue::NoAnswer,
+    };
+    let b = bank_check(inst.master_serial.as_deref(), &read);
+    if let Bank::Stored(s) = &b {
+        with_store_arc(store, |st| st.set_master_serial(&inst.id, s, crate::history::now_ms()))?;
+    }
+    Ok(b)
+}
+
+/// The bootloader-pending rule: flashing another address than a pending pack on the same endpoint is refused.
+pub fn pending_refusal(pending: &[Pending], address: u8) -> Result<(), MaintError> {
+    match pending.iter().find(|p| p.pack != address) {
+        Some(p) => Err(MaintError::BootloaderPending { pack: p.pack }),
+        None => Ok(()),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AfterFlash {
+    /// clear the pending record, with this `how`
+    Clear(&'static str),
+    /// the pack may hang in its bootloader: the record stays
+    Keep,
+}
+
+/// What happens to the pending record written before the restart, once the flash returned. A failure in the
+/// preflight changed nothing; after the restart the pack counts as answering only when it does (`answers` asks
+/// for 0x51/0x47 and runs only when that decides).
+pub fn after_flash(ok: bool, last: Option<Progress>, answers: impl FnOnce() -> bool) -> AfterFlash {
+    if ok {
+        return AfterFlash::Clear("flashed");
+    }
+    match last {
+        None | Some(Progress::Preflight) => AfterFlash::Clear("preflight"),
+        _ if answers() => AfterFlash::Clear("answered"),
+        _ => AfterFlash::Keep,
+    }
+}
+
+/// After the flash returned, before the pack port is closed: settle the pending record. Returns whether it stays
+/// (a record that cannot be cleared stays too).
+pub fn settle_pending(store: &Arc<Mutex<Option<Store>>>, pending: i64, address: u8, ok: bool, last: Option<Progress>, link: &mut Connection) -> bool {
+    match after_flash(ok, last, || bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6))) {
+        AfterFlash::Clear(how) => with_store_arc(store, |s| s.clear_pending(pending, how, crate::history::now_ms())).is_err(),
+        AfterFlash::Keep => true,
+    }
+}
+
+// --- commands ---
 
 /// All installations by creation, for the picker.
 #[tauri::command]
@@ -408,1647 +405,239 @@ pub async fn maint_installations(state: State<'_, AppState>) -> Result<Vec<Insta
     with_store(&state, |s| s.installations())
 }
 
-/// Every installation with open work (session, block, set or unexplained marker, sector note), for the banner.
+/// The installations that list this endpoint or have it as CAN socket (lookup only).
 #[tauri::command]
-pub async fn maint_open_work(state: State<'_, AppState>) -> Result<Vec<OpenWork>, MaintError> {
-    with_store(&state, |s| s.open_work_list())
-}
-
-const STORE_REFUSALS: [&str; 5] = ["endpoint-in-use", "name-required", "name-taken", "open-work", "no-sector-note"];
-
-/// A store refusal (ownership, name, open work) reaches the UI as a refusal key, anything else as a store error.
-fn store_refusal(e: MaintError) -> MaintError {
-    match e {
-        MaintError::Store { message } if STORE_REFUSALS.contains(&message.as_str()) => refused(&message),
-        other => other,
-    }
-}
-
-/// Edits that create, move or delete installations hold `port_busy` like flash, measurement and End: a flash gate
-/// that has read an installation id keeps that installation and its port until its `update-interrupted` block is
-/// written. The store re-checks open work and ownership inside its own transaction.
-pub fn edit_installations<T>(busy: &Arc<AtomicBool>, store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Store) -> Result<T, String>) -> Result<T, MaintError> {
-    let _op = reserve_port(busy).ok_or(MaintError::Busy)?;
-    with_store_arc(store, f).map_err(store_refusal)
+pub async fn maint_installations_of(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<Vec<Installation>, MaintError> {
+    let key = endpoint.key();
+    with_store(&state, |s| s.installations_of(&key))
 }
 
 #[tauri::command]
 pub async fn maint_save_installation(state: State<'_, AppState>, installation: Installation) -> Result<Installation, MaintError> {
-    edit_installations(&state.port_busy, &state.maint, |s| {
+    with_store(&state, |s| {
         s.save_installation(&installation)?;
-        s.installations()?.into_iter().find(|i| i.id == installation.id).ok_or_else(|| "unknown installation".into())
+        s.installation(&installation.id)
     })
+    .map_err(store_refusal)
 }
 
-/// A new installation, named by the user, with its CAN socket (control) and endpoints in one transaction.
 #[tauri::command]
 pub async fn maint_create_installation(state: State<'_, AppState>, name: String, control: Option<ControlEndpoint>, endpoints: Vec<String>) -> Result<Installation, MaintError> {
-    edit_installations(&state.port_busy, &state.maint, |s| s.create_installation(&name, control, endpoints))
+    with_store(&state, |s| s.create_installation(&name, control, endpoints)).map_err(store_refusal)
 }
 
-/// Delete an installation without open work and without a sector note (refused "open-work"); its history goes
-/// to the archive, its ports are free. The in-memory End progress and slave scan of that id go too.
 #[tauri::command]
 pub async fn maint_delete_installation(state: State<'_, AppState>, installation: String) -> Result<(), MaintError> {
-    edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&installation, crate::history::now_ms()))?;
-    if let Ok(mut m) = state.end_progress.lock() {
-        m.remove(&installation);
-    }
-    note_scan(&state, &installation, None, false);
-    Ok(())
+    with_store(&state, |s| s.delete_installation(&installation)).map_err(store_refusal)
 }
 
-/// The user marks the note on sector 0x23000 as explained; it is archived, not deleted.
+/// „Diese Anlage hat einen neuen Master“: the serial number the master now reports becomes the stored one.
 #[tauri::command]
-pub async fn maint_resolve_sector_note(state: State<'_, AppState>, installation: String) -> Result<Overview, MaintError> {
-    edit_installations(&state.port_busy, &state.maint, |s| s.resolve_sector_note(&installation, crate::history::now_ms()))?;
-    overview(&state, &installation)
-}
-
-#[tauri::command]
-pub async fn maint_overview(state: State<'_, AppState>, installation: String) -> Result<Overview, MaintError> {
-    overview(&state, &installation)
-}
-
-#[tauri::command]
-pub async fn maint_check(state: State<'_, AppState>, installation: String) -> Result<Overview, MaintError> {
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "check");
-    let inst = self::installation(&state, &installation)?;
-    progress(&state, "check", None);
-    check(&state, &inst)?;
-    overview(&state, &installation)
-}
-
-/// `patched-off` → session (kind marker, N = DIP count) → `start` → wait for 1/0. The session is stored
-/// before `start`, so an interruption leaves a visible open session; a failed start re-reads 0x64.
-#[tauri::command]
-pub async fn maint_activate(state: State<'_, AppState>, installation: String, inverter_confirmed: bool) -> Result<Overview, MaintError> {
-    if !inverter_confirmed {
-        return Err(refused("inverter"));
+pub async fn maint_adopt_master_serial(state: State<'_, AppState>, installation: String, serial: String) -> Result<Installation, MaintError> {
+    if serial.trim().is_empty() {
+        return Err(refused("no-serial"));
     }
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "activate");
-    let inst = self::installation(&state, &installation)?;
-    progress(&state, "check", None);
-    let n = match check(&state, &inst)? {
-        StoredMasterState::PatchedOff { slaves } => slaves,
-        _ => return Err(refused("not-patched-off")),
-    };
-    // a marker session needs a polling master: 0/0 is a single pack, it takes the DIP way
-    slaves_allowed(n, false)?;
-    let now = crate::history::now_ms();
-    with_store(&state, |s| s.start_session(&inst.id, SessionKind::Marker, n, now))?;
-    progress(&state, "start", None);
-    let r = control_dialog(&state, &inst, Action::Start, None)?;
-    check(&state, &inst)?;
-    r?;
-    overview(&state, &installation)
-}
-
-/// The slave count `N` (packs on the bus minus the master, = the master's DIP 5–8 value). A bank has 1 to 15
-/// slaves. `N` = 0 (a single pack) only when `zero_verified`: proven in the same command (`single_pack`);
-/// otherwise End's bus step could pass on a master that still does not poll.
-pub fn slaves_allowed(n: u8, zero_verified: bool) -> Result<(), MaintError> {
-    match n {
-        1..=15 => Ok(()),
-        0 if zero_verified => Ok(()),
-        _ => Err(refused("slaves-range")),
-    }
-}
-
-/// The master itself reported "patched, marker off, 0 slaves" (status 0/0).
-pub fn reports_zero(state: Option<&StoredMasterState>) -> bool {
-    state == Some(&StoredMasterState::PatchedOff { slaves: 0 })
-}
-
-/// A fresh master status that allows the single-pack proof: a patched master's 0/0, or the original firmware's
-/// RTN 04 (`no-0x64`; it cannot report a slave count). Neither tells a single pack from a bank whose master has
-/// DIP 5–8 OFF: the slave scan does (slaves answer 0x51 at their address whatever the master's DIPs).
-pub fn single_pack_status(state: Option<&StoredMasterState>) -> bool {
-    reports_zero(state) || state == Some(&StoredMasterState::No0x64)
-}
-
-/// Proof of a single pack: a fresh `single_pack_status` and no slave answers on the pack bus (`slave`: the
-/// first address 1..=15 that answered 0x51).
-pub fn single_pack(state: Option<&StoredMasterState>, slave: Option<u8>) -> bool {
-    single_pack_status(state) && slave.is_none()
-}
-
-/// For `N` = 0 (the caller holds `port_busy`): read 0x64 now and store it; if it shows 0/0 or RTN 04
-/// (`single_pack_status`), prove on the pack
-/// bus that it is the pack bus (quiet, 0x47 from address 0) and scan for a slave (`bus::first_slave`, two
-/// passes, fail-closed). Returns the fresh state and the scan result; a slave found is refused `slave-present`.
-/// Without a control channel nothing can be verified: `slaves-range`.
-fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, session: Option<i64>) -> Result<(StoredMasterState, Option<u8>), MaintError> {
-    let r = verify_single_pack_scan(state, app, inst, port);
-    // a pass is remembered for End's pack bus step; a slave, an error or another master status forgets it
-    note_scan(state, &inst.id, session, matches!(&r, Ok((fresh, None)) if single_pack_status(Some(fresh))));
-    r
-}
-
-fn verify_single_pack_scan(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<(StoredMasterState, Option<u8>), MaintError> {
-    if port.is_empty() {
-        return Err(refused("no-port"));
-    }
-    port_of(state, inst, port)?;
-    progress(state, "check", None);
-    let fresh = match check(state, inst) {
-        Err(MaintError::Refused { reason }) if reason == "no-control-channel" => return Err(refused("slaves-range")),
-        r => r?,
-    };
-    if !single_pack_status(Some(&fresh)) {
-        return Ok((fresh, None));
-    }
-    let mut link = open_pack_for(state, app, port)?;
-    quiet_bus(state, &mut link).map_err(|e| MaintError::Measure { message: e.to_string() })?;
-    let slave = scan_for_slave(state, &mut link).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    if slave.is_some() {
-        return Err(refused("slave-present"));
-    }
-    Ok((fresh, slave))
-}
-
-/// Step 4 of the panel for a master that reports 0/0 without a session: 0/0 alone does not prove a single
-/// pack (a bank master with DIP 5–8 OFF reads the same). On the pack bus: quiet and 0x47 from address 0
-/// (it is the pack bus), then the slave scan (`bus::first_slave`, two passes, fail-closed). Returns the
-/// first slave that answered, None when none did. Only reads; stores nothing.
-#[tauri::command]
-pub async fn maint_scan_slaves(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<Option<u8>, MaintError> {
-    if port.is_empty() {
-        return Err(refused("no-port"));
-    }
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "scan");
-    // an attempt forgets the earlier pass; only a pass records again
-    note_scan(&state, &installation, None, false);
-    let inst = self::installation(&state, &installation)?;
-    port_of(&state, &inst, &port)?;
-    let session = with_store(&state, |s| s.open_session(&inst.id))?.map(|x| x.id);
-    let mut link = open_pack_for(&state, &app, &port)?;
-    if let Err(e) = quiet_bus(&state, &mut link) {
-        note_scan(&state, &inst.id, session, false);
-        return Err(MaintError::Measure { message: e.to_string() });
-    }
-    let r = scan_for_slave(&state, &mut link);
-    note_scan(&state, &inst.id, session, matches!(r, Ok(None)));
-    r.map_err(|e| MaintError::Connection { message: e.to_string() })
-}
-
-/// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
-/// (`N` = 0 only for a single pack proven here, see `single_pack`; `port`: the pack port, used only then).
-#[tauri::command]
-pub async fn maint_start_dip(app: AppHandle, state: State<'_, AppState>, installation: String, expected_slaves: u8, port: String) -> Result<Overview, MaintError> {
-    if expected_slaves != 0 {
-        slaves_allowed(expected_slaves, false)?;
-    }
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "start-dip");
-    let inst = self::installation(&state, &installation)?;
-    let mut scanned = false;
-    if expected_slaves == 0 {
-        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port, None)?;
-        scanned = single_pack(Some(&fresh), slave);
-        slaves_allowed(0, scanned)?;
-    }
-    let now = crate::history::now_ms();
-    let started = with_store(&state, |s| s.start_session(&inst.id, SessionKind::Dip, expected_slaves, now))?;
-    if scanned {
-        // the pass belongs to the session that now exists
-        note_scan(&state, &inst.id, Some(started.id), true);
-    }
-    overview(&state, &installation)
-}
-
-/// The user states where an unexplained marker comes from ("I set it earlier"): a marker session with `N`.
-#[tauri::command]
-pub async fn maint_account_marker(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
-    // a set marker is never a verified 0/0 single pack
-    slaves_allowed(expected_slaves, false)?;
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "account-marker");
-    let inst = self::installation(&state, &installation)?;
-    let now = crate::history::now_ms();
-    let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
-    account_allowed(session.as_ref(), ms.as_ref().map(|(m, _)| m))?;
     with_store(&state, |s| {
-        if s.open_session(&inst.id)?.is_none() {
-            s.start_session(&inst.id, SessionKind::Marker, expected_slaves, now)?;
-        }
-        s.set_master_state(&inst.id, &StoredMasterState::PatchedOn, now)
-    })?;
-    overview(&state, &installation)
-}
-
-/// Correcting `N` of an open session: never in the locked state (its only ways out are the recovery row
-/// and the user's statement). `single`: for `N` = 0, a single pack proven in this command (`single_pack`).
-pub fn set_slaves_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>, n: u8, single: bool) -> Result<(), MaintError> {
-    if session.is_none() {
-        return Err(refused("no-session"));
-    }
-    stop_allowed(state)?;
-    slaves_allowed(n, single)
-}
-
-/// A session with a wrong `N` could never be closed: the user corrects the slave count per DIP. End
-/// starts over, its earlier steps were checked against the old count.
-#[tauri::command]
-pub async fn maint_set_slaves(app: AppHandle, state: State<'_, AppState>, installation: String, expected_slaves: u8, port: String) -> Result<Overview, MaintError> {
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "set-slaves");
-    let inst = self::installation(&state, &installation)?;
-    let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
-    let mut ms = ms.map(|(m, _)| m);
-    let mut single = false;
-    if expected_slaves == 0 {
-        // nothing stored counts for N = 0: prove a single pack now (session and lock checked first)
-        set_slaves_allowed(session.as_ref(), ms.as_ref(), 1, false)?;
-        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port, session.as_ref().map(|x| x.id))?;
-        single = single_pack(Some(&fresh), slave);
-        ms = Some(fresh);
-    }
-    set_slaves_allowed(session.as_ref(), ms.as_ref(), expected_slaves, single)?;
-    if let Some(ses) = &session {
-        with_store(&state, |s| {
-            s.set_expected_slaves(ses.id, expected_slaves)?;
-            if mismatch_stale(ses.failing.as_deref(), ms.as_ref(), expected_slaves) {
-                s.set_failing(ses.id, None)?;
-            }
-            Ok(())
-        })?;
-    }
-    state.end_progress.lock().map_err(|e| store_err(e.to_string()))?.remove(&inst.id);
-    overview(&state, &installation)
-}
-
-pub struct GateInput<'a> {
-    pub session: Option<&'a MaintSession>,
-    pub state: Option<&'a StoredMasterState>,
-    pub blocks: &'a [FlashBlock],
-    pub inverter_confirmed: bool,
-}
-
-/// Checks before every flash of an installation (the fresh measurement follows in `prepare_flash`).
-pub fn flash_gate(g: &GateInput) -> Result<(), MaintError> {
-    if let Some(b) = g.blocks.first() {
-        return Err(refused(&b.reason));
-    }
-    if g.state == Some(&StoredMasterState::MarkerUnexplained) {
-        return Err(refused("marker-unexplained"));
-    }
-    let maintenance = g.session.is_some() || g.state == Some(&StoredMasterState::PatchedOn);
-    if maintenance && !g.inverter_confirmed {
-        return Err(refused("inverter"));
-    }
-    Ok(())
-}
-
-/// The pack port decides the installation, not the UI. `port_inst`: installation the port is assigned to;
-/// `ui_inst`: the installation the UI shows; `any_open`: some installation has open maintenance work.
-/// An unassigned port is refused when the UI named an installation (the user assigns it there; a new
-/// installation would block later with `installation-mismatch`) or while any installation has open work.
-pub fn port_gate(port_inst: Option<&str>, ui_inst: Option<&str>, any_open: bool) -> Result<(), MaintError> {
-    match (port_inst, ui_inst) {
-        (Some(p), Some(u)) if p != u => Err(refused("installation-mismatch")),
-        (None, Some(_)) => Err(refused("port-not-assigned")),
-        (None, _) if any_open => Err(refused("port-not-assigned")),
-        _ => Ok(()),
-    }
-}
-
-/// Control channel and pack port are one USB adapter (sequential way).
-pub fn same_adapter(inst: &Installation, port: &str) -> bool {
-    inst.control.as_ref().is_some_and(|c| c.key() == crate::maint_store::endpoint_key(false, port))
-}
-
-/// Which block a failed flash leaves until the pack answers as an application again. A failure in the
-/// preflight changes nothing; after the restart the bootloader may hold the bus.
-pub fn block_reason(last: Option<Progress>) -> Option<&'static str> {
-    match last {
-        None | Some(Progress::Preflight) => None,
-        Some(Progress::Bootloader) => Some("bootloader-unclear"),
-        Some(_) => Some("update-unclear"),
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum BlockAction {
-    /// clear the `update-interrupted` block, with this `how`
-    Clear(&'static str),
-    /// keep it, with this reason
-    Set(&'static str),
-}
-
-/// What happens to the `update-interrupted` block written before the restart, once the flash returned.
-/// `stored`: the master's post-check outcome was stored in full (true when there was none). If not, the
-/// record of the restart stays. `answers` asks the pack for 0x51/0x47 and is called only when that decides.
-pub fn finish_block(ok: bool, stored: bool, last: Option<Progress>, answers: impl FnOnce() -> bool) -> BlockAction {
-    if ok && !stored {
-        return BlockAction::Set("update-interrupted");
-    }
-    if ok {
-        return BlockAction::Clear("flashed");
-    }
-    match block_reason(last) {
-        None => BlockAction::Clear("preflight"),
-        Some(_) if answers() => BlockAction::Clear("answered"),
-        Some(r) => BlockAction::Set(r),
-    }
-}
-
-/// End is refused while an update is unclear (any block, the master's included): the inverter must not
-/// get its battery back then.
-pub fn end_allowed(blocks: &[FlashBlock]) -> Result<(), MaintError> {
-    match blocks.first() {
-        Some(b) => Err(refused(&b.reason)),
-        None => Ok(()),
-    }
-}
-
-/// Before the pack bus is opened: the monitor holds that adapter, or it polls the pack bus.
-pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
-    main.is_some_and(|(key, bus)| matches!(bus, Bus::PackBus) || key == pack_key)
-}
-
-/// "I set the marker myself" turns an unexplained marker into a marker session; only that state is
-/// accounted for this way. A DIP session (the recovery) stays what it is: its End sends no `stop` and
-/// expects the polls of a quiet master.
-pub fn account_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>) -> Result<(), MaintError> {
-    if state != Some(&StoredMasterState::MarkerUnexplained) {
-        return Err(refused("not-marker-unexplained"));
-    }
-    match session {
-        Some(s) if s.kind == SessionKind::Dip => Err(refused("dip-session-open")),
-        _ => Ok(()),
-    }
-}
-
-pub fn expect_key(e: Expect) -> &'static str {
-    match e {
-        Expect::MarkerOn => "marker-on",
-        Expect::Zero => "zero",
-        Expect::ZeroOrUnexplained => "zero-or-unexplained",
-        Expect::Unsupported => "unsupported",
-        Expect::NoAssumption => "no-assumption",
-    }
-}
-
-/// A later master check that shows the expected state (`expect_key` of the plan) resolves an unclear
-/// master update.
-pub fn clears_master_unclear(expect: &str, probe: Option<Probe>) -> bool {
-    let expect = match expect {
-        "marker-on" => Expect::MarkerOn,
-        "zero" => Expect::Zero,
-        "zero-or-unexplained" => Expect::ZeroOrUnexplained,
-        "unsupported" => Expect::Unsupported,
-        _ => return false,
-    };
-    policy::after_flash(expect, probe) == Outcome::AsExpected
-}
-
-/// Listening time for the end round: two full polling rounds (150 ms per slave) plus 2 s, at least 4 s.
-pub fn end_timeout(n: u8) -> Duration {
-    (Duration::from_millis(300) * u32::from(n) + Duration::from_secs(2)).max(Duration::from_secs(4))
-}
-
-/// Pause between the two Modbus reads of End: one full polling round (150 ms per slave) plus 1 s, at least 2 s.
-pub fn values_pause(n: u8) -> Duration {
-    (Duration::from_millis(150) * u32::from(n) + Duration::from_secs(1)).max(Duration::from_secs(2))
-}
-
-pub fn state_after(outcome: Outcome, expect: Expect) -> StoredMasterState {
-    use policy::{Expect as E, Outcome as O};
-    match (outcome, expect) {
-        (O::AsExpected, E::MarkerOn) => StoredMasterState::PatchedOn,
-        (O::AsExpected, E::Zero | E::ZeroOrUnexplained) => StoredMasterState::PatchedOff { slaves: 0 },
-        (O::AsExpected, E::Unsupported) => StoredMasterState::No0x64,
-        (O::MarkerUnexplained, _) => StoredMasterState::MarkerUnexplained,
-        _ => StoredMasterState::Unknown,
-    }
-}
-
-#[derive(serde::Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct FlashMaint {
-    pub installation: String,
-    pub inverter_confirmed: bool,
-    pub dip_off_confirmed: bool,
-    pub isolated_confirmed: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct Snapshot {
-    pub session: Option<MaintSession>,
-    pub state: Option<StoredMasterState>,
-    pub blocks: Vec<FlashBlock>,
-}
-
-/// The side effects `prepare_flash` needs, so its order can be tested against a simulated master.
-pub trait Prep {
-    fn has_control(&self) -> bool;
-    /// one adapter for both buses: no UART1 exchange is possible inside the flash
-    fn sequential(&self) -> bool;
-    fn snapshot(&mut self) -> Result<Snapshot, MaintError>;
-    /// read 0x64 and store the classified state
-    fn check(&mut self) -> Result<(), MaintError>;
-    /// `stop`, wait for 0/0, store it, and turn an open session into a DIP session
-    fn stop_to_zero(&mut self) -> Result<(), MaintError>;
-    /// fresh status matching the stored state, then the pack bus measurement
-    fn measure(&mut self) -> Result<(), MaintError>;
-}
-
-/// Everything before the pack is restarted into its bootloader, in the order of the design: fresh master
-/// state, gate, master-flash plan (DIP, `stop`), fresh measurement. Returns the master plan for the
-/// post-check. Without any maintenance information (a single pack) nothing is done here; the flash's own
-/// preflight (quiet bus, 0x51/0x47) still refuses a polling master.
-pub fn prepare_flash(p: &mut impl Prep, address: u8, image: ImageKind, c: &FlashMaint) -> Result<Option<policy::Plan>, MaintError> {
-    let uart1 = p.has_control() && !p.sequential();
-    if address == 0 && uart1 {
-        p.check()?;
-    }
-    let snap = p.snapshot()?;
-    let state = snap.state.as_ref();
-    let plan = if address == 0 && (snap.session.is_some() || state.is_some()) {
-        let m: policy::MasterState = state.map(Into::into).unwrap_or(policy::MasterState::Unknown);
-        Some(policy::master_flash_plan(m, image).map_err(|r| refused(refusal_key(r)))?)
-    } else {
-        None
-    };
-    let recovery = plan.as_ref().is_some_and(|p| p.recovery);
-    if recovery {
-        // the recovery row is the one way out of the locked state; blocks and the inverter still count
-        if let Some(b) = snap.blocks.first() {
-            return Err(refused(&b.reason));
-        }
-        if !c.inverter_confirmed {
-            return Err(refused("inverter"));
-        }
-    } else {
-        flash_gate(&GateInput { session: snap.session.as_ref(), state, blocks: &snap.blocks, inverter_confirmed: c.inverter_confirmed })?;
-    }
-    if let Some(plan) = &plan {
-        if plan.before.contains(&Step::DipOff) && (!c.dip_off_confirmed || snap.session.is_none()) {
-            return Err(refused("dip-off"));
-        }
-        if plan.before.contains(&Step::IsolatedOrReleased) && !c.isolated_confirmed {
-            return Err(refused("isolated-or-released"));
-        }
-        if plan.before.contains(&Step::StopToZero) {
-            if !uart1 {
-                return Err(refused("stop-needs-control-channel"));
-            }
-            p.stop_to_zero()?;
-        }
-    }
-    if plan.is_some() || snap.session.is_some() || state == Some(&StoredMasterState::PatchedOn) {
-        p.measure()?;
-    }
-    Ok(plan)
-}
-const PACK_BUS_BAUD: u32 = 19_200;
-
-fn open_pack(port: &str) -> Result<Connection, MaintError> {
-    Connection::open(&Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD }).map_err(|e| MaintError::Connection { message: e.to_string() })
-}
-
-/// The fresh 0x64 status a measurement needs. An open marker session always needs 1/0, whatever was stored
-/// (a lost connection stores `unknown`, and the marker may have been cleared meanwhile). Without a UART1 read
-/// in the same command (`uart1` false: no control channel, or one adapter for both buses) only a confirmed
-/// `patched-on` is trusted; anything else is refused `state-unknown` until a check shows the marker.
-/// Without a marker session the stored state decides (`policy::fresh_status`, nothing stored = unchecked).
-pub fn measure_fresh(stored: Option<&StoredMasterState>, session: Option<SessionKind>, uart1: bool) -> Result<policy::Fresh, MaintError> {
-    if session == Some(SessionKind::Marker) {
-        if !uart1 && stored != Some(&StoredMasterState::PatchedOn) {
-            return Err(refused("state-unknown"));
-        }
-        return Ok(policy::Fresh::MarkerOn);
-    }
-    Ok(stored.map(|m| policy::fresh_status(m.into())).unwrap_or(policy::Fresh::Unchecked))
-}
-
-/// The measurement of step 3. First, whenever a fresh status is needed (`measure_fresh`) and the control
-/// channel is a separate adapter, a fresh 0x64 status that must match it; a mismatch re-checks the master
-/// and refuses. Then on the pack bus 2 s quiet and 0x47 from address 0. Stops the monitor when it holds the
-/// pack port or polls the pack bus.
-pub fn measure(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<i64, MaintError> {
-    let (ms, session) = with_store(state, |s| Ok((s.master_state(&inst.id)?, s.open_session(&inst.id)?)))?;
-    let uart1 = inst.control.is_some() && !same_adapter(inst, port);
-    let fresh = measure_fresh(ms.as_ref().map(|(m, _)| m), session.map(|s| s.kind), uart1)?;
-    if fresh != policy::Fresh::Unchecked && uart1 {
-        progress(state, "check", None);
-        let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()))?.ok();
-        if !policy::fresh_matches(fresh, probe) {
-            check(state, inst)?;
-            return Err(refused("state-changed"));
-        }
-    }
-    let mut link = open_pack_for(state, app, port)?;
-    quiet_bus(state, &mut link).map_err(|e| MaintError::Measure { message: e.to_string() })?;
-    Ok(crate::history::now_ms())
-}
-
-/// Open the pack bus port; first stop the monitor when it holds that adapter or polls the pack bus, and tell
-/// the UI ("monitor-stopped"): a stop by the app is no lost connection.
-pub fn open_pack_for(state: &AppState, app: &AppHandle, port: &str) -> Result<Connection, MaintError> {
-    let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
-    if must_stop_monitor(main.as_ref(), &crate::maint_store::endpoint_key(false, port)) {
-        crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
-    }
-    open_pack(port)
-}
-
-/// `stop` and wait for 0/0, refusing in the locked state. The master is now quiet because of DIP 5–8 OFF,
-/// so an open session continues (and later ends) as a DIP session.
-pub fn stop_to_zero(state: &AppState, inst: &Installation) -> Result<(), MaintError> {
-    let ms = with_store(state, |s| s.master_state(&inst.id))?;
-    stop_allowed(ms.as_ref().map(|(m, _)| m))?;
-    progress(state, "stop", None);
-    let r = control_dialog(state, inst, Action::Stop, Some(0))?;
-    check(state, inst)?;
-    r?;
-    with_store(state, |s| match s.open_session(&inst.id)? {
-        Some(ses) => s.set_session_kind(ses.id, SessionKind::Dip),
-        None => Ok(()),
+        s.set_master_serial(&installation, serial.trim(), crate::history::now_ms())?;
+        s.installation(&installation)
     })
+    .map_err(store_refusal)
 }
 
-pub struct AppPrep<'a> {
-    pub state: &'a AppState,
-    pub app: &'a AppHandle,
-    pub inst: &'a Installation,
-    pub port: &'a str,
-}
-
-impl Prep for AppPrep<'_> {
-    fn has_control(&self) -> bool {
-        self.inst.control.is_some()
-    }
-    fn sequential(&self) -> bool {
-        same_adapter(self.inst, self.port)
-    }
-    fn snapshot(&mut self) -> Result<Snapshot, MaintError> {
-        let id = &self.inst.id;
-        with_store(self.state, |s| {
-            Ok(Snapshot { session: s.open_session(id)?, state: s.master_state(id)?.map(|(m, _)| m), blocks: s.blocks(id)? })
-        })
-    }
-    fn check(&mut self) -> Result<(), MaintError> {
-        check(self.state, self.inst).map(|_| ())
-    }
-    fn stop_to_zero(&mut self) -> Result<(), MaintError> {
-        stop_to_zero(self.state, self.inst)
-    }
-    fn measure(&mut self) -> Result<(), MaintError> {
-        measure(self.state, self.app, self.inst, self.port).map(|_| ())
-    }
-}
-
-/// The pack port must belong to the installation (as a main endpoint or as the control adapter).
-fn port_of(state: &AppState, inst: &Installation, port: &str) -> Result<(), MaintError> {
-    let key = crate::maint_store::endpoint_key(false, port);
-    let (owner, any_open) = with_store(state, |s| Ok((s.installation_of(&key)?, s.any_open()?)))?;
-    port_gate(owner.as_ref().map(|i| i.id.as_str()), Some(&inst.id), any_open)
+/// What stays visible until it is resolved: a set marker and packs that may hang in their bootloader.
+#[derive(Serialize)]
+pub struct Alerts {
+    markers: Vec<MarkerOn>,
+    pending: Vec<Pending>,
 }
 
 #[tauri::command]
-pub async fn maint_measure(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<i64, MaintError> {
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "measure");
-    let inst = self::installation(&state, &installation)?;
-    port_of(&state, &inst, &port)?;
-    measure(&state, &app, &inst, &port)
+pub async fn maint_alerts(state: State<'_, AppState>) -> Result<Alerts, MaintError> {
+    with_store(&state, |s| Ok(Alerts { markers: s.markers_on()?, pending: s.all_pending()? }))
+}
+
+/// The user's confirmation „Pack X ist abgeklemmt oder repariert“.
+#[tauri::command]
+pub async fn maint_clear_pending(state: State<'_, AppState>, id: i64) -> Result<(), MaintError> {
+    with_store(&state, |s| s.clear_pending(id, "confirmed", crate::history::now_ms()))
 }
 
 #[derive(Serialize)]
-pub struct EndResult {
-    ok: bool,
-    missing: Vec<u8>,
-    failing: Option<String>,
+pub struct LiveStatus {
+    /// "quiet" | "polling" | "traffic" | "no-port" (not set or cannot be opened) | "error"
+    bus: &'static str,
+    polled: Vec<u8>,
+    bus_error: Option<String>,
+    /// with a CAN socket endpoint: what the master reported (kind "unknown" after a failed read)
+    master: Option<MasterView>,
+    master_error: Option<MaintError>,
 }
 
-/// The three steps of End. In the sequential way (one adapter for both buses) the UI drives them one by
-/// one and the user moves the cable between them: `stop` and the Modbus reads need the CAN socket bus,
-/// the polling-round check needs the pack bus.
-#[derive(serde::Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum EndStep {
-    /// marker session: `stop` and wait for 0/N (a DIP session sends no `stop`; the step passes without one)
-    Stop,
-    /// pack bus: every slave polled and answering (`N` = 0: quiet bus, 0x47 answered by address 0, no slave
-    /// answering 0x51)
-    Bus,
-    /// two Modbus reads one polling round apart (`values_pause`) over the control channel, for `N` = 0 after a
-    /// fresh 0x64 status 0/0 (an original master: RTN 04, `values_zero_check`); closes the session
-    Values,
-}
-
-/// Steps of End that passed in this app run, for one session. Only in memory: after a restart End starts
-/// again from its first step.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EndProgress {
-    pub session: i64,
-    pub stopped: bool,
-    pub bus_ok: bool,
-}
-
-/// The progress that counts for `session`: progress of another session starts over.
-pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgress {
-    match stored {
-        Some(p) if p.session == session => *p,
-        _ => EndProgress { session, ..Default::default() },
+/// The panel's live status (every 2 s while it is open): a short listen on the pack bus (sends nothing) and,
+/// with a CAN socket endpoint, the master read. Refused (busy) while a flash or another operation runs.
+#[tauri::command]
+pub async fn maint_live(app: AppHandle, state: State<'_, AppState>, installation: Option<String>, port: String) -> Result<LiveStatus, MaintError> {
+    if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(MaintError::Busy);
     }
-}
-
-/// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A single pack
-/// (`N` = 0) ends only with a control channel: there is no polling round to see, so its Bus step also scans
-/// addresses 1..=15 for a slave (a bank master with DIP 5–8 still OFF reports 0/0 too) and its Values step
-/// needs a fresh 0/0 from the master, or RTN 04 from an original one (`values_zero_check`). Without a control channel (or with `N` > 15) every step
-/// is refused until the user corrects `N`.
-pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, has_control: bool, step: EndStep) -> Result<(), MaintError> {
-    slaves_allowed(slaves, has_control)?;
-    let stopped = p.stopped || kind == SessionKind::Dip;
-    match step {
-        EndStep::Stop => Ok(()),
-        EndStep::Bus if stopped => Ok(()),
-        EndStep::Values if stopped && p.bus_ok => Ok(()),
-        _ => Err(refused("end-order")),
-    }
-}
-
-/// The step End allows next (`end_next` accepts it): Stop for a marker session that has not stopped yet,
-/// then Bus, then Values. After a failed step this is the restart point (`end_record` starts over).
-pub fn next_end_step(p: &EndProgress, kind: SessionKind) -> EndStep {
-    if !p.stopped && kind == SessionKind::Marker {
-        EndStep::Stop
-    } else if !p.bus_ok {
-        EndStep::Bus
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, "live");
+    let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
+    let (bus, polled, bus_error) = if port.is_empty() {
+        ("no-port", vec![], None)
     } else {
-        EndStep::Values
-    }
-}
-
-/// The progress after `step` ran: a failure starts End over; a passed step counts, and a new `stop`
-/// makes an earlier bus check stale.
-pub fn end_record(p: EndProgress, step: EndStep, ok: bool) -> EndProgress {
-    if !ok {
-        return EndProgress { session: p.session, ..Default::default() };
-    }
-    match step {
-        EndStep::Stop => EndProgress { stopped: true, bus_ok: false, ..p },
-        EndStep::Bus => EndProgress { bus_ok: true, ..p },
-        EndStep::Values => p,
-    }
-}
-
-/// Run one step of End for the open session; the refusals (unclear update, locked marker, order) are
-/// checked at every step.
-fn end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, step: EndStep) -> Result<EndResult, MaintError> {
-    let (session, ms, blocks) = with_store(state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?, s.blocks(&inst.id)?)))?;
-    let session = session.ok_or_else(|| refused("no-session"))?;
-    stop_allowed(ms.as_ref().map(|(m, _)| m))?;
-    end_allowed(&blocks)?;
-    let progress = {
-        let map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
-        end_progress_of(map.get(&inst.id), session.id)
+        match open_pack_for(&state, &app, &port) {
+            Err(e) => ("no-port", vec![], Some(serde_json::to_string(&e).unwrap_or_default())),
+            Ok(mut link) => match bus::listen(&mut link, &SystemClock::new(), LISTEN) {
+                Ok(t) => (bus_state(&t), t.polled.into_iter().collect(), None),
+                Err(e) => ("error", vec![], Some(e.to_string())),
+            },
+        }
     };
-    end_next(&progress, session.kind, session.expected_slaves, inst.control.is_some(), step)?;
-    let r = run_end_step(state, app, inst, port, &session, step);
-    let ok = matches!(r, Ok(EndResult { ok: true, .. }));
-    let mut map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
-    if ok && step == EndStep::Values {
-        map.remove(&inst.id);
-    } else {
-        map.insert(inst.id.clone(), end_record(progress, step, ok));
-    }
-    r
-}
-
-fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &str, session: &MaintSession, step: EndStep) -> Result<EndResult, MaintError> {
-    let n = session.expected_slaves;
-    let fail = |what: &str, missing: Vec<u8>| -> Result<EndResult, MaintError> {
-        with_store(state, |s| s.set_failing(session.id, Some(what)))?;
-        Ok(EndResult { ok: false, missing, failing: Some(what.into()) })
+    let (master, master_error) = match &inst {
+        Some(i) if i.control.is_some() => match read_master(&state, i) {
+            Ok(m) => (Some(master_view(&m)), None),
+            Err(e) => (Some(master_view(&Master::Unknown)), Some(e)),
+        },
+        _ => (None, None),
     };
-    match step {
-        EndStep::Stop if session.kind == SessionKind::Marker => {
-            // read first: a marker already off needs no `stop`, and a slave count that does not fit N is named
-            progress(state, "end-check", None);
-            let fresh = check(state, inst)?;
-            match stop_plan(&fresh, n) {
-                StopPlan::Skip => {}
-                StopPlan::Refuse => return Err(refused("marker-unexplained")),
-                StopPlan::Mismatch { actual } => return fail(&mismatch_failing(actual, n), vec![]),
-                StopPlan::Send => {
-                    // never a `stop` on a locked marker (it would erase the whole sector)
-                    stop_allowed(Some(&fresh))?;
-                    progress(state, "stop", None);
-                    let r = control_dialog(state, inst, Action::Stop, Some(n))?;
-                    check(state, inst)?;
-                    if let Err(e) = r {
-                        return fail(&stop_failing(MaintError::from(e), n), vec![]);
-                    }
-                }
-            }
-        }
-        EndStep::Stop => {
-            // a DIP session sends no `stop`; with a control channel a master that still reports another slave
-            // count (DIP 5–8 not back yet) is named here instead of as missing packs later
-            if inst.control.is_some() {
-                progress(state, "end-check", None);
-                if let Some(what) = dip_end_check(&check(state, inst)?, n)? {
-                    return fail(&what, vec![]);
-                }
-            }
-        }
-        EndStep::Bus if n == 0 => {
-            // a single pack: nothing polls, the master answers 0x47 on a quiet bus, and no slave answers
-            progress(state, "bus", None);
-            // an attempt forgets the earlier pass; it is put back when the scan is skipped, recorded on a pass
-            let recent = state.scan_pass.lock().ok().and_then(|r| r.clone());
-            note_scan(state, &inst.id, Some(session.id), false);
-            let mut link = open_pack_for(state, app, port)?;
-            match quiet_bus(state, &mut link) {
-                Ok(()) => {}
-                Err(openbms_flash::Error::MasterSilent) => return fail("master-not-answering", vec![]),
-                Err(e) => return Err(MaintError::Measure { message: e.to_string() }),
-            }
-            // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF); a pass of this
-            // session within the last 30 minutes (e.g. when the pack count was set to 1) is not repeated
-            let now = crate::history::now_ms();
-            match recent {
-                Some(r) if !scan_needed(Some(&r), &inst.id, Some(session.id), now) => {
-                    let minutes = now.saturating_sub(r.at) / 60_000;
-                    if let Ok(mut rec) = state.scan_pass.lock() {
-                        *rec = Some(r);
-                    }
-                    progress(state, "scan-skipped", Some(serde_json::json!({ "minutes": minutes })));
-                }
-                _ => {
-                    let r = scan_for_slave(state, &mut link);
-                    note_scan(state, &inst.id, Some(session.id), matches!(r, Ok(None)));
-                    match r {
-                        Ok(None) => {}
-                        Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
-                        Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
-                    }
-                }
-            }
-        }
-        EndStep::Bus => {
-            // N is 1..=15 here (`end_next`)
-            progress(state, "bus", None);
-            let mut link = open_pack_for(state, app, port)?;
-            let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
-                .map_err(|e| MaintError::Connection { message: e.to_string() })?;
-            if !round.complete(n) {
-                return fail("pack-communication-incomplete", round.missing(n));
-            }
-        }
-        EndStep::Values => {
-            progress(state, "values", None);
-            // a single pack: the master must still report 0/0 now (it cannot show a polling round); an original
-            // master answers RTN 04 instead, it cannot report a slave count
-            if n == 0 {
-                if let Some(what) = values_zero_check(&check(state, inst)?)? {
-                    return fail(&what, vec![]);
-                }
-            }
-            for i in 0..2 {
-                if i == 1 {
-                    std::thread::sleep(values_pause(n));
-                }
-                if with_control(state, inst, |c| c.system_values())?.is_err() {
-                    return fail("system-values", vec![]);
-                }
-            }
-            with_store(state, |s| s.end_session(session.id, crate::history::now_ms()))?;
-        }
-    }
-    Ok(EndResult { ok: true, missing: vec![], failing: None })
-}
-
-/// What End's Stop step does after reading 0x64 (marker session): a marker already off with the session's
-/// slave count needs no `stop` (the step counts as done); a marker off with another count fails with
-/// `slave-count-mismatch` (e.g. 0/0 for N = 1 while DIP 5–8 are still OFF); anything else sends `stop`.
-/// A marker of unexplained origin is refused (no `stop`, it would erase the whole sector).
-#[derive(Debug, PartialEq, Eq)]
-pub enum StopPlan {
-    Send,
-    Skip,
-    Mismatch { actual: u8 },
-    Refuse,
-}
-
-pub fn stop_plan(fresh: &StoredMasterState, n: u8) -> StopPlan {
-    match fresh {
-        StoredMasterState::MarkerUnexplained => StopPlan::Refuse,
-        StoredMasterState::PatchedOff { slaves } if *slaves == n => StopPlan::Skip,
-        StoredMasterState::PatchedOff { slaves } => StopPlan::Mismatch { actual: *slaves },
-        _ => StopPlan::Send,
-    }
-}
-
-/// End's first step in a DIP session (no `stop`), after a fresh 0x64 read with a control channel: None passes,
-/// Some(failing) fails the step. A master that cannot be read fails it (`master-unreadable`) instead of passing
-/// silently; a marker of unexplained origin is refused; another slave count is the mismatch. The original
-/// firmware (no 0x64) passes: the pack bus step decides.
-pub fn dip_end_check(fresh: &StoredMasterState, n: u8) -> Result<Option<String>, MaintError> {
-    match fresh {
-        StoredMasterState::MarkerUnexplained => Err(refused("marker-unexplained")),
-        StoredMasterState::Unknown => Ok(Some("master-unreadable".into())),
-        StoredMasterState::PatchedOff { slaves } if *slaves != n => Ok(Some(mismatch_failing(*slaves, n))),
-        _ => Ok(None),
-    }
-}
-
-/// The failing End check for a master whose slave count does not match N: "slave-count-mismatch: <actual> <N>".
-/// Only ever built from a count the master reported in a 0x64 status (`PatchedOff`, or a `stop` timeout).
-pub fn mismatch_failing(actual: u8, expected: u8) -> String {
-    format!("slave-count-mismatch: {actual} {expected}")
-}
-
-/// A stored `slave-count-mismatch` that no longer holds: the session's N changed, or the master state is not
-/// the reported count any more (e.g. `no-0x64` after a flash back to the original firmware, which reports no
-/// count at all). Any other failing is never stale here.
-pub fn mismatch_stale(failing: Option<&str>, state: Option<&StoredMasterState>, n: u8) -> bool {
-    let Some(rest) = failing.and_then(|f| f.strip_prefix("slave-count-mismatch: ")) else { return false };
-    let mut it = rest.split(' ').map(|x| x.parse::<u8>().ok());
-    match (it.next().flatten(), it.next().flatten()) {
-        (Some(actual), Some(expected)) => expected != n || state != Some(&StoredMasterState::PatchedOff { slaves: actual }),
-        _ => true,
-    }
-}
-
-/// End's Values step for a single pack (`N` = 0), after a fresh 0x64 read: a patched master's 0/0 or an original
-/// master's RTN 04 (`no-0x64`) passes. An unreadable master fails `master-unreadable`, a reported count other than
-/// 0 is the mismatch, a set marker `master-not-zero`; an unexplained marker is refused.
-pub fn values_zero_check(fresh: &StoredMasterState) -> Result<Option<String>, MaintError> {
-    match fresh {
-        StoredMasterState::PatchedOff { slaves: 0 } | StoredMasterState::No0x64 => Ok(None),
-        StoredMasterState::PatchedOff { slaves } => Ok(Some(mismatch_failing(*slaves, 0))),
-        StoredMasterState::Unknown => Ok(Some("master-unreadable".into())),
-        StoredMasterState::MarkerUnexplained => Err(refused("marker-unexplained")),
-        StoredMasterState::PatchedOn => Ok(Some("master-not-zero".into())),
-    }
-}
-
-/// The failing End check for a failed `stop`: a timeout with the marker off but another slave count than N is
-/// the slave count mismatch (`stop` worked, the master polls a different number); anything else carries the error.
-pub fn stop_failing(e: MaintError, n: u8) -> String {
-    match e {
-        MaintError::Timeout { marker: false, slaves } if slaves != n => mismatch_failing(slaves, n),
-        e => format!("stop: {}", serde_json::to_string(&e).unwrap_or_default()),
-    }
-}
-
-/// End (step 5) in one call: refused while an update is unclear; marker → `stop` and wait for 0/N; then
-/// the pack bus check against N; then two Modbus reads ≥ 2 s apart over the control channel (for N = 0 after
-/// a fresh 0/0 from the master, or RTN 04 from an original one). The session
-/// closes only when all of it passed. In the sequential way this is impossible in one call
-/// (`end-sequential`): the UI runs `maint_end_step` with a cable change in between.
-#[tauri::command]
-pub async fn maint_end(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<EndResult, MaintError> {
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "end");
-    let inst = self::installation(&state, &installation)?;
-    port_of(&state, &inst, &port)?;
-    if same_adapter(&inst, &port) {
-        return Err(refused("end-sequential"));
-    }
-    let mut last = EndResult { ok: false, missing: vec![], failing: None };
-    for step in [EndStep::Stop, EndStep::Bus, EndStep::Values] {
-        last = end_step(&state, &app, &inst, &port, step)?;
-        if !last.ok {
-            break;
-        }
-    }
-    Ok(last)
-}
-
-/// One step of End (see `EndStep`); refused (`end-order`) before its predecessors passed in this app run.
-#[tauri::command]
-pub async fn maint_end_step(app: AppHandle, state: State<'_, AppState>, installation: String, port: String, step: EndStep) -> Result<EndResult, MaintError> {
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "end-step");
-    let inst = self::installation(&state, &installation)?;
-    port_of(&state, &inst, &port)?;
-    end_step(&state, &app, &inst, &port, step)
-}
-
-/// Clear a flash block: "answered" checks the pack on the pack bus (0x51 and 0x47), "isolated" is the
-/// user's confirmation that the pack was isolated or recovered.
-#[tauri::command]
-pub async fn maint_clear_block(app: AppHandle, state: State<'_, AppState>, installation: String, id: i64, how: String, port: Option<String>) -> Result<Overview, MaintError> {
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
-    let _a = begin_action(&state, &installation, "clear-block");
-    let blocks = with_store(&state, |s| s.blocks(&installation))?;
-    let b = blocks.iter().find(|b| b.id == id).ok_or_else(|| refused("no-block"))?;
-    match how.as_str() {
-        // the master's application runs; only a 0x64 check that shows the expected state resolves it
-        "answered" if b.reason == "master-unclear" => {
-            let inst = self::installation(&state, &installation)?;
-            progress(&state, "check", None);
-            check(&state, &inst)?;
-            if with_store(&state, |s| s.blocks(&installation))?.iter().any(|x| x.id == id) {
-                return Err(refused("master-unclear"));
-            }
-            return overview(&state, &installation);
-        }
-        "answered" => {
-            let port = port.as_deref().ok_or_else(|| refused("no-port"))?;
-            let inst = self::installation(&state, &installation)?;
-            port_of(&state, &inst, port)?;
-            let mut link = open_pack_for(&state, &app, port)?;
-            progress(&state, "block", Some(serde_json::json!({ "pack": b.pack })));
-            if !bus::app_answers(&mut link, &mut std::io::sink(), b.pack, Duration::from_secs(2)) {
-                return Err(refused("pack-not-answering"));
-            }
-        }
-        "isolated" => {}
-        _ => return Err(refused("how")),
-    }
-    with_store(&state, |s| s.clear_block(id, &how, crate::history::now_ms()))?;
-    overview(&state, &installation)
+    Ok(LiveStatus { bus, polled, bus_error, master, master_error })
 }
 
 #[derive(Serialize)]
-pub struct PlanView {
-    before: Vec<&'static str>,
-    after: &'static str,
-    recovery: bool,
+pub struct PackScan {
+    packs: Vec<(u8, DeviceInfo)>,
+    bank: BankView,
+    /// pending bootloader records cleared because their pack answered
+    cleared: Vec<u8>,
 }
 
-pub fn image_kind(kind: &str) -> ImageKind {
-    match kind {
-        "original" => ImageKind::Original,
-        "maintenance" => ImageKind::Maintenance,
-        _ => ImageKind::Custom,
-    }
-}
-
-pub fn plan_view(p: &policy::Plan) -> PlanView {
-    PlanView {
-        before: p.before.iter().map(|s| match s {
-            Step::DipOff => "dip-off",
-            Step::StopToZero => "stop-to-zero",
-            Step::Measure => "measure",
-            Step::IsolatedOrReleased => "isolated-or-released",
-        }).collect(),
-        after: expect_key(p.after),
-        recovery: p.recovery,
-    }
-}
-
-pub fn refusal_key(r: policy::Refusal) -> &'static str {
-    match r {
-        policy::Refusal::QuietFirst => "quiet-first",
-        policy::Refusal::Unknown => "state-unknown",
-        policy::Refusal::Locked => "marker-unexplained",
-    }
-}
-
+/// One `0x51` scan of addresses 0–15 on the pack bus (when the bus became quiet, or the re-scan button). A pending
+/// pack that answers is cleared; with an installation selected the master's serial number is compared.
 #[tauri::command]
-pub async fn maint_master_plan(state: State<'_, AppState>, installation: String, kind: String) -> Result<PlanView, MaintError> {
-    let ms = with_store(&state, |s| s.master_state(&installation))?;
-    let m: policy::MasterState = ms.as_ref().map(|(m, _)| m.into()).unwrap_or(policy::MasterState::Unknown);
-    policy::master_flash_plan(m, image_kind(&kind)).map(|p| plan_view(&p)).map_err(|r| refused(refusal_key(r)))
-}
-
-/// After the flash returned, before the pack port is closed: settle the `update-interrupted` block written
-/// before the restart, and note a successful flash in the open session. Returns the block reason that stays.
-/// If the store cannot be written the block stays as it is and is reported. `stored`: see `finish_block`.
-#[allow(clippy::too_many_arguments)] // the flash thread's values, one each
-pub fn record_after_flash(
-    store: &Arc<Mutex<Option<Store>>>,
-    inst: &Installation,
-    pending: i64,
-    address: u8,
-    release: &str,
-    ok: bool,
-    stored: bool,
-    last: Option<Progress>,
-    link: &mut Connection,
-) -> Option<String> {
-    let now = crate::history::now_ms();
-    let kept = match finish_block(ok, stored, last, || bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6))) {
-        BlockAction::Clear(how) => with_store_arc(store, |s| s.clear_block(pending, how, now)).err().map(|_| "update-interrupted".to_string()),
-        BlockAction::Set(reason) => {
-            let _ = with_store_arc(store, |s| s.set_block_reason(pending, reason));
-            Some(reason.to_string())
-        }
+pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, installation: Option<String>, port: String) -> Result<PackScan, MaintError> {
+    if port.is_empty() {
+        return Err(refused("no-port"));
+    }
+    if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(MaintError::Busy);
+    }
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(&state, "scan");
+    let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
+    let mut link = open_pack_for(&state, &app, &port)?;
+    let packs = link.scan(0..=15);
+    let found: Vec<u8> = packs.iter().map(|(a, _)| *a).collect();
+    let cleared = with_store(&state, |s| s.clear_answered(&endpoint_key(false, &port), &found, crate::history::now_ms()))?;
+    let bank = match &inst {
+        Some(i) if found.contains(&0) => bank_view(&check_bank(&state.maint, i, &mut link)?),
+        Some(_) => bank_view(&Bank::Unchecked),
+        None => BankView { state: "none", serial: None },
     };
-    if ok {
-        let _ = with_store_arc(store, |s| match s.open_session(&inst.id)? {
-            Some(ses) => s.note_done(ses.id, &format!("flash {address} {release}")),
-            None => Ok(()),
-        });
-    }
-    kept
+    Ok(PackScan { packs, bank, cleared })
 }
 
-/// Read 0x64 on a control channel opened for this check, every 500 ms for up to 6 s until the answer is
-/// final; the last read counts. None when there is no control channel or it cannot be opened.
-fn read_settled(inst: &Installation) -> Option<Probe> {
-    use openbms_flash::maint::Clock;
-    let control = inst.control.as_ref()?;
-    let mut c = Connection::open(&control_endpoint(control)).ok()?;
-    let clock = SystemClock::new();
-    loop {
-        let probe = dialog::probe(&mut c, &clock, Budgets::default()).ok();
-        if policy::settled(probe) || clock.now() >= Duration::from_secs(6) {
-            return probe;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
+/// „Master anhalten“: `start` on a trusted maintenance build with the marker off, then a fresh read.
+#[tauri::command]
+pub async fn maint_halt(state: State<'_, AppState>, installation: String) -> Result<MasterView, MaintError> {
+    marker_action(&state, &installation, Action::Start)
 }
 
-pub fn outcome_key(o: Outcome) -> &'static str {
-    match o {
-        Outcome::AsExpected => "as-expected",
-        Outcome::Unclear => "unclear",
-        Outcome::MarkerUnexplained => "marker-unexplained",
-        Outcome::UnknownImage => "unknown-image",
-    }
+/// „Master freigeben“: `stop`, only when 0x64 shows the marker on (never automatic), then a fresh read.
+#[tauri::command]
+pub async fn maint_release(state: State<'_, AppState>, installation: String) -> Result<MasterView, MaintError> {
+    marker_action(&state, &installation, Action::Stop)
 }
 
-/// Store what the post-flash check of the master found (design, "Flashing the master itself"), in one
-/// transaction: all of it or nothing. A stored `marker-unexplained` is left only by an as-expected result
-/// (same rule as `next_state`).
-pub fn apply_master_outcome(s: &Store, inst: &str, plan: &policy::Plan, outcome: Outcome, now: i64) -> Result<(), String> {
-    s.atomic(|s| master_outcome_rows(s, inst, plan, outcome, now))
-}
-
-fn master_outcome_rows(s: &Store, inst: &str, plan: &policy::Plan, outcome: Outcome, now: i64) -> Result<(), String> {
-    let locked = s.master_state(inst)?.is_some_and(|(m, _)| m == StoredMasterState::MarkerUnexplained);
-    let next = if locked && outcome != Outcome::AsExpected { StoredMasterState::MarkerUnexplained } else { state_after(outcome, plan.after) };
-    s.set_master_state(inst, &next, now)?;
-    match outcome {
-        // back on the original image: the master is quiet only through DIP 5–8 OFF from now on
-        Outcome::AsExpected if plan.after == Expect::Unsupported => {
-            if let Some(ses) = s.open_session(inst)? {
-                s.set_session_kind(ses.id, SessionKind::Dip)?;
-            }
-        }
-        Outcome::MarkerUnexplained => s.note_sector(inst, "marker after first flash of a maintenance build", now)?,
-        Outcome::Unclear => {
-            s.add_master_block(inst, expect_key(plan.after), now)?;
-        }
-        Outcome::UnknownImage => s.note_sector(inst, "unknown image on the master", now)?,
-        Outcome::AsExpected => {}
+fn marker_action(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
+    if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(MaintError::Busy);
     }
-    if plan.recovery {
-        s.note_sector(inst, "0x23000 unexplained, recovered to original without stop", now)?;
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _a = begin_action(state, if action == Action::Start { "halt" } else { "release" });
+    let inst = self::installation(state, installation)?;
+    let m = read_master(state, &inst)?;
+    let allowed = if action == Action::Start { m.may_halt() } else { m.may_release() };
+    if !allowed {
+        return Err(refused(if action == Action::Start { "halt-not-offered" } else { "release-not-offered" }));
     }
-    Ok(())
-}
-
-/// After a successful flash of the master with a plan: compare 0x64 with the plan's expectation and store
-/// the result. In the sequential way (`sequential`: one adapter for both buses) the control channel is not
-/// reachable now; the result is then what an unanswered read gives (an unclear update for every row with an
-/// expectation), and the user's later check clears it. Returns the outcome key and whether it was stored.
-pub fn post_master_check(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, plan: &policy::Plan, sequential: bool) -> (&'static str, bool) {
-    let probe = if sequential { None } else { read_settled(inst) };
-    let outcome = policy::after_flash(plan.after, probe);
-    let now = crate::history::now_ms();
-    if with_store_arc(store, |s| apply_master_outcome(s, &inst.id, plan, outcome, now)).is_err() {
-        // nothing was stored: never report a passed check then, and keep the update-interrupted block
-        return (outcome_key(Outcome::Unclear), false);
-    }
-    (outcome_key(outcome), true)
+    let r = control_dialog(state, &inst, action)?;
+    // the read after the dialog decides what is shown, also after a failed one
+    let after = read_master(state, &inst);
+    r?;
+    Ok(master_view(&after?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openbms_flash::known::ImageKind;
-    use openbms_flash::maint::dialog::Probe;
-    use openbms_flash::maint::policy::{self, Expect};
-    use openbms_flash::session::Progress;
-    use openbms_proto::MaintStatus;
-
-    fn block(pack: u8) -> FlashBlock {
-        FlashBlock { id: 1, pack, reason: "update-unclear".into(), expect: None, since: 0 }
-    }
-
-    fn session(kind: SessionKind) -> MaintSession {
-        MaintSession { id: 1, installation: "i".into(), kind, started: 0, expected_slaves: 11, done: vec![], failing: None }
-    }
+    use openbms_proto::MaintInfo;
 
     fn refused_with(r: Result<impl std::fmt::Debug, MaintError>, key: &str) -> bool {
         matches!(r, Err(MaintError::Refused { reason }) if reason == key)
     }
 
-    #[test]
-    fn scan_needed_only_without_a_recent_pass_of_this_session() {
-        let now = 10_000_000_i64;
-        let rec = |inst: &str, session: Option<i64>, age: i64| ScanPass { installation: inst.into(), session, at: now - age };
-        let min = 60_000;
-        assert!(scan_needed(None, "a", Some(1), now));
-        assert!(scan_needed(Some(&rec("b", Some(1), min)), "a", Some(1), now));
-        assert!(scan_needed(Some(&rec("a", Some(2), min)), "a", Some(1), now));
-        assert!(scan_needed(Some(&rec("a", None, min)), "a", Some(1), now));
-        assert!(scan_needed(Some(&rec("a", Some(1), SCAN_VALID_MS + 1000)), "a", Some(1), now));
-        assert!(!scan_needed(Some(&rec("a", Some(1), SCAN_VALID_MS)), "a", Some(1), now));
-        assert!(!scan_needed(Some(&rec("a", Some(1), min)), "a", Some(1), now));
+    fn pending(pack: u8) -> Pending {
+        Pending { id: 1, endpoint: "serial:/dev/p".into(), pack, release: "16.06.13".into(), since: 0 }
     }
 
     #[test]
-    fn a_scan_that_found_a_slave_forgets_the_pass() {
-        let state = AppState::default();
-        note_scan(&state, "a", Some(1), true);
-        note_scan(&state, "b", Some(1), false);
-        assert!(state.scan_pass.lock().unwrap().is_some());
-        note_scan(&state, "a", Some(1), false);
-        assert!(state.scan_pass.lock().unwrap().is_none());
+    fn a_pending_pack_blocks_only_other_addresses_on_its_endpoint() {
+        assert!(pending_refusal(&[], 3).is_ok());
+        assert!(pending_refusal(&[pending(3)], 3).is_ok());
+        assert!(matches!(pending_refusal(&[pending(3)], 4), Err(MaintError::BootloaderPending { pack: 3 })));
+        let v = serde_json::to_value(MaintError::BootloaderPending { pack: 3 }).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "bootloader-pending", "pack": 3 }));
     }
 
     #[test]
-    fn flash_gate_refuses_without_inverter_or_with_block() {
-        fn g(session: Option<&MaintSession>, state: Option<&StoredMasterState>, blocks: &[FlashBlock], inverter: bool) -> Result<(), MaintError> {
-            flash_gate(&GateInput { session, state, blocks, inverter_confirmed: inverter })
+    fn after_flash_by_stage() {
+        assert_eq!(after_flash(true, Some(Progress::PostCheck), || unreachable!()), AfterFlash::Clear("flashed"));
+        assert_eq!(after_flash(false, None, || unreachable!()), AfterFlash::Clear("preflight"));
+        assert_eq!(after_flash(false, Some(Progress::Preflight), || unreachable!()), AfterFlash::Clear("preflight"));
+        assert_eq!(after_flash(false, Some(Progress::Bootloader), || false), AfterFlash::Keep);
+        assert_eq!(after_flash(false, Some(Progress::Block { index: 3, total: 200 }), || false), AfterFlash::Keep);
+        assert_eq!(after_flash(false, Some(Progress::Erase), || true), AfterFlash::Clear("answered"));
+    }
+
+    #[test]
+    fn the_right_bank_by_the_masters_serial_number() {
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        assert_eq!(bank_check(None, &set("SN-A")), Bank::Stored("SN-A".into()));
+        assert_eq!(bank_check(Some("SN-A"), &set("SN-A")), Bank::Match);
+        assert_eq!(bank_check(Some("SN-A"), &set("SN-B")), Bank::Mismatch("SN-B".into()));
+        for v in [SerialValue::NoAnswer, SerialValue::Unavailable, SerialValue::Empty, SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }] {
+            assert_eq!(bank_check(Some("SN-A"), &v), Bank::Unchecked);
+            assert_eq!(bank_check(None, &v), Bank::Unchecked);
         }
-        let ses = session(SessionKind::Marker);
-        let on = StoredMasterState::PatchedOn;
-        assert!(g(Some(&ses), Some(&on), &[], true).is_ok());
-        assert!(refused_with(g(Some(&ses), Some(&on), &[], false), "inverter"));
-        assert!(refused_with(g(Some(&ses), Some(&on), &[block(3)], true), "update-unclear"));
-        assert!(refused_with(g(None, Some(&StoredMasterState::MarkerUnexplained), &[], true), "marker-unexplained"));
-        // a single pack without maintenance: nothing to confirm
-        assert!(g(None, Some(&StoredMasterState::PatchedOff { slaves: 0 }), &[], false).is_ok());
-        assert!(g(None, None, &[], false).is_ok());
+        assert_eq!(bank_view(&Bank::Mismatch("SN-B".into())), BankView { state: "mismatch", serial: Some("SN-B".into()) });
+        let v = serde_json::to_value(MaintError::OtherBank { serial: "SN-B".into() }).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "other-bank", "serial": "SN-B" }));
     }
 
     #[test]
-    fn port_gate_is_fail_closed() {
-        assert!(port_gate(Some("a"), Some("a"), true).is_ok());
-        // no UI argument: the port's own installation is used, the gate runs on it
-        assert!(port_gate(Some("a"), None, true).is_ok());
-        assert!(refused_with(port_gate(Some("a"), Some("b"), false), "installation-mismatch"));
-        // an unassigned port while maintenance is open anywhere
-        assert!(refused_with(port_gate(None, Some("a"), true), "port-not-assigned"));
-        // the UI named an installation, but the port belongs to none: assign it first, never a new installation
-        assert!(refused_with(port_gate(None, Some("a"), false), "port-not-assigned"));
-        assert!(refused_with(port_gate(None, None, true), "port-not-assigned"));
-        // a single pack, nothing open: allowed (the port gets an installation of its own)
-        assert!(port_gate(None, None, false).is_ok());
+    fn the_bus_state_of_a_listen() {
+        let mut t = bus::Traffic::default();
+        assert_eq!(bus_state(&t), "quiet");
+        t.bytes = 12;
+        assert_eq!(bus_state(&t), "traffic");
+        t.polled.insert(1);
+        assert_eq!(bus_state(&t), "polling");
     }
 
     #[test]
-    fn block_reason_by_stage() {
-        assert_eq!(block_reason(None), None);
-        assert_eq!(block_reason(Some(Progress::Preflight)), None);
-        assert_eq!(block_reason(Some(Progress::Bootloader)), Some("bootloader-unclear"));
-        assert_eq!(block_reason(Some(Progress::Erase)), Some("update-unclear"));
-        assert_eq!(block_reason(Some(Progress::Block { index: 3, total: 200 })), Some("update-unclear"));
-        assert_eq!(block_reason(Some(Progress::PostCheck)), Some("update-unclear"));
-    }
-
-    #[test]
-    fn finish_flash_block() {
-        assert_eq!(finish_block(true, true, Some(Progress::PostCheck), || unreachable!()), BlockAction::Clear("flashed"));
-        assert_eq!(finish_block(false, true, Some(Progress::Preflight), || unreachable!()), BlockAction::Clear("preflight"));
-        assert_eq!(finish_block(false, true, Some(Progress::Erase), || true), BlockAction::Clear("answered"));
-        assert_eq!(finish_block(false, true, Some(Progress::Erase), || false), BlockAction::Set("update-unclear"));
-        assert_eq!(finish_block(false, true, Some(Progress::Bootloader), || false), BlockAction::Set("bootloader-unclear"));
-        // the master's post-check outcome could not be stored (fully): the record of the restart stays
-        assert_eq!(finish_block(true, false, Some(Progress::PostCheck), || unreachable!()), BlockAction::Set("update-interrupted"));
-    }
-
-    #[test]
-    fn end_refused_with_open_block_or_unclear_master() {
-        assert!(end_allowed(&[]).is_ok());
-        assert!(refused_with(end_allowed(&[block(2)]), "update-unclear"));
-        let master = FlashBlock { id: 2, pack: 0, reason: "master-unclear".into(), expect: Some("marker-on".into()), since: 0 };
-        assert!(refused_with(end_allowed(&[master]), "master-unclear"));
-    }
-
-    #[test]
-    fn master_unclear_clears_only_on_the_expected_state() {
-        let st = |marker, n| Some(Probe::Status(MaintStatus { marker, effective_slaves: n }));
-        assert!(clears_master_unclear("marker-on", st(true, 0)));
-        assert!(!clears_master_unclear("marker-on", st(true, 2)));
-        assert!(!clears_master_unclear("marker-on", None));
-        assert!(clears_master_unclear("unsupported", Some(Probe::Unsupported)));
-        assert!(!clears_master_unclear("no-assumption", st(false, 0)));
-    }
-
-    #[test]
-    fn every_pack_bus_open_frees_the_port_first() {
-        let pack = |k: &str| (k.to_string(), Bus::PackBus);
-        let can = |k: &str| (k.to_string(), Bus::CanSocketBus);
-        // monitor on the pack bus, any adapter: it would see (and disturb) the bus
-        assert!(must_stop_monitor(Some(&pack("serial:/dev/b")), "serial:/dev/a"));
-        // monitor on the CAN socket bus, same adapter (sequential way): the port is held
-        assert!(must_stop_monitor(Some(&can("serial:/dev/a")), "serial:/dev/a"));
-        assert!(!must_stop_monitor(Some(&can("tcp:gw:4196")), "serial:/dev/a"));
-        assert!(!must_stop_monitor(None, "serial:/dev/a"));
-    }
-
-    #[test]
-    fn account_marker_never_rewrites_a_dip_recovery() {
-        let locked = Some(&StoredMasterState::MarkerUnexplained);
-        assert!(account_allowed(None, locked).is_ok());
-        assert!(account_allowed(Some(&session(SessionKind::Marker)), locked).is_ok());
-        assert!(refused_with(account_allowed(Some(&session(SessionKind::Dip)), locked), "dip-session-open"));
-    }
-
-    #[test]
-    fn account_marker_only_for_an_unexplained_marker() {
-        assert!(refused_with(account_allowed(None, None), "not-marker-unexplained"));
-        assert!(refused_with(account_allowed(None, Some(&StoredMasterState::PatchedOn)), "not-marker-unexplained"));
-        assert!(refused_with(account_allowed(None, Some(&StoredMasterState::PatchedOff { slaves: 3 })), "not-marker-unexplained"));
-    }
-
-    #[test]
-    fn slave_count_is_one_to_fifteen_or_a_verified_zero() {
-        for verified in [false, true] {
-            assert!(slaves_allowed(1, verified).is_ok());
-            assert!(slaves_allowed(15, verified).is_ok());
-            assert!(refused_with(slaves_allowed(16, verified), "slaves-range"));
-        }
-        // a single pack only when a fresh read of the master showed 0/0
-        assert!(refused_with(slaves_allowed(0, false), "slaves-range"));
-        assert!(slaves_allowed(0, true).is_ok());
-    }
-
-    #[test]
-    fn only_a_patched_master_with_marker_off_and_zero_slaves_reports_zero() {
-        use StoredMasterState as S;
-        assert!(reports_zero(Some(&S::PatchedOff { slaves: 0 })));
-        assert!(!reports_zero(Some(&S::PatchedOff { slaves: 1 })));
-        assert!(!reports_zero(Some(&S::PatchedOn)));
-        assert!(!reports_zero(Some(&S::MarkerUnexplained)));
-        assert!(!reports_zero(Some(&S::No0x64)));
-        assert!(!reports_zero(Some(&S::Unknown)));
-        assert!(!reports_zero(None));
-    }
-
-    #[test]
-    fn slave_count_changes_only_in_an_open_session() {
-        let on = StoredMasterState::PatchedOn;
-        let ses = session(SessionKind::Dip);
-        assert!(set_slaves_allowed(Some(&ses), Some(&on), 4, false).is_ok());
-        assert!(set_slaves_allowed(Some(&ses), None, 4, false).is_ok());
-        assert!(refused_with(set_slaves_allowed(None, Some(&on), 4, false), "no-session"));
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&on), 0, false), "slaves-range"));
-        // N = 0 only for a single pack proven in the command
-        let zero = StoredMasterState::PatchedOff { slaves: 0 };
-        assert!(set_slaves_allowed(Some(&ses), Some(&zero), 0, true).is_ok());
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&zero), 0, false), "slaves-range"));
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 4, false), "marker-unexplained"));
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 0, true), "marker-unexplained"));
-    }
-
-    #[test]
-    fn a_single_pack_needs_the_master_at_zero_and_no_slave_on_the_bus() {
-        use StoredMasterState as S;
-        assert!(single_pack(Some(&S::PatchedOff { slaves: 0 }), None));
-        // an original master answers RTN 04: the slave scan alone tells a single pack from a bank with DIP 5–8 OFF
-        assert!(single_pack(Some(&S::No0x64), None));
-        assert!(!single_pack(Some(&S::No0x64), Some(1)));
-        assert!(!single_pack(Some(&S::MarkerUnexplained), None));
-        // a bank master with DIP 5-8 OFF also reports 0/0, but its slaves answer
-        assert!(!single_pack(Some(&S::PatchedOff { slaves: 0 }), Some(7)));
-        assert!(!single_pack(Some(&S::PatchedOff { slaves: 2 }), None));
-        assert!(!single_pack(Some(&S::PatchedOn), None));
-        assert!(!single_pack(Some(&S::Unknown), None));
-        assert!(!single_pack(None, None));
-    }
-
-    #[test]
-    fn values_pause_covers_a_full_polling_round() {
-        assert_eq!(values_pause(0), std::time::Duration::from_secs(2));
-        assert_eq!(values_pause(1), std::time::Duration::from_secs(2));
-        assert_eq!(values_pause(11), std::time::Duration::from_millis(11 * 150 + 1000));
-        assert_eq!(values_pause(15), std::time::Duration::from_millis(15 * 150 + 1000));
-    }
-
-    #[test]
-    fn end_round_waits_long_enough_for_a_full_bank() {
-        // 150 ms per slave answer (code 0x13F6/0x14AE), two rounds, plus margin
-        assert!(end_timeout(11) >= std::time::Duration::from_millis(3300 + 2000));
-        assert!(end_timeout(1) >= std::time::Duration::from_secs(4));
-    }
-
-    #[test]
-    fn state_after_master_flash() {
-        use policy::{Expect as E, Outcome as O};
-        assert_eq!(state_after(O::AsExpected, E::MarkerOn), StoredMasterState::PatchedOn);
-        assert_eq!(state_after(O::AsExpected, E::Zero), StoredMasterState::PatchedOff { slaves: 0 });
-        assert_eq!(state_after(O::AsExpected, E::Unsupported), StoredMasterState::No0x64);
-        assert_eq!(state_after(O::MarkerUnexplained, E::ZeroOrUnexplained), StoredMasterState::MarkerUnexplained);
-        assert_eq!(state_after(O::Unclear, E::MarkerOn), StoredMasterState::Unknown);
-        assert_eq!(state_after(O::UnknownImage, E::NoAssumption), StoredMasterState::Unknown);
-    }
-
-    #[test]
-    fn a_check_clears_only_a_master_block_it_resolves() {
-        let st = |marker, n| Some(Probe::Status(MaintStatus { marker, effective_slaves: n }));
-        let master = |id, expect: &str| FlashBlock { id, pack: 0, reason: "master-unclear".into(), expect: Some(expect.into()), since: 0 };
-        let blocks = [master(1, "marker-on"), master(2, "unsupported"), block(3)];
-        assert_eq!(resolved_master_blocks(&blocks, st(true, 0), true), vec![1]);
-        assert_eq!(resolved_master_blocks(&blocks, Some(Probe::Unsupported), true), vec![2]);
-        // a pack block is never cleared by a master check; a failed read clears nothing
-        assert!(resolved_master_blocks(&[block(3)], st(true, 0), true).is_empty());
-        assert!(resolved_master_blocks(&blocks, None, false).is_empty());
-    }
-
-    fn temp_store(name: &str) -> (Store, String) {
-        let dir = std::env::temp_dir().join(format!("openbms-maint8-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let s = Store::open(&dir.join("maintenance.sqlite")).unwrap();
-        let id = s.installation_for("tcp:gw:1").unwrap().id;
-        (s, id)
-    }
-
-    #[test]
-    fn a_flash_gate_holding_port_busy_refuses_delete_create_and_save_as_busy() {
-        let state = AppState::default();
-        let (s, id) = temp_store("race");
-        *state.maint.lock().unwrap() = Some(s);
-        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let (busy, g2, r2) = (state.port_busy.clone(), gate.clone(), release.clone());
-        // the flash gate: holds the operation lock while it reads the installation and writes its block
-        let flash = std::thread::spawn(move || {
-            let _slot = reserve_port(&busy).unwrap();
-            g2.wait();
-            r2.wait();
-        });
-        gate.wait();
-        let del = edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&id, 1));
-        assert!(matches!(del, Err(MaintError::Busy)), "{del:?}");
-        assert!(matches!(edit_installations(&state.port_busy, &state.maint, |s| s.create_installation("B", None, vec![])), Err(MaintError::Busy)));
-        let inst = with_store(&state, |s| s.installations()).unwrap();
-        assert!(matches!(edit_installations(&state.port_busy, &state.maint, |s| s.save_installation(&inst[0])), Err(MaintError::Busy)));
-        assert_eq!(inst.len(), 1, "nothing changed while the flash holds the port");
-        release.wait();
-        flash.join().unwrap();
-        edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&id, 2)).unwrap();
-        assert!(with_store(&state, |s| s.installations()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn store_refusals_reach_the_ui_as_refusal_keys() {
-        let state = AppState::default();
-        let (s, id) = temp_store("refusals");
-        s.add_block(&id, 1, "update-unclear", 1).unwrap();
-        *state.maint.lock().unwrap() = Some(s);
-        assert!(refused_with(edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation(&id, 1)), "open-work"));
-        assert!(refused_with(edit_installations(&state.port_busy, &state.maint, |s| s.create_installation(" ", None, vec![])), "name-required"));
-        assert!(refused_with(edit_installations(&state.port_busy, &state.maint, |s| s.resolve_sector_note(&id, 1)), "no-sector-note"));
-        assert!(matches!(edit_installations(&state.port_busy, &state.maint, |s| s.delete_installation("nope", 1)), Err(MaintError::Store { .. })));
-    }
-
-    #[test]
-    fn post_flash_outcome_is_stored_by_the_table() {
-        use policy::{Expect as E, Outcome as O, Plan};
-        let plan = |after, recovery| Plan { before: vec![], after, recovery };
-        // back on the original as expected: the session continues as a DIP session
-        let (s, i) = temp_store("orig");
-        s.start_session(&i, SessionKind::Marker, 2, 0).unwrap();
-        apply_master_outcome(&s, &i, &plan(E::Unsupported, false), O::AsExpected, 5).unwrap();
-        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::No0x64);
-        assert_eq!(s.open_session(&i).unwrap().unwrap().kind, SessionKind::Dip);
-        assert!(s.blocks(&i).unwrap().is_empty());
-        // unclear: unknown plus a master block with the expectation, also without a session
-        let (s, i) = temp_store("unclear");
-        apply_master_outcome(&s, &i, &plan(E::MarkerOn, false), O::Unclear, 5).unwrap();
-        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::Unknown);
-        let b = s.blocks(&i).unwrap();
-        assert_eq!((b[0].reason.as_str(), b[0].expect.as_deref()), ("master-unclear", Some("marker-on")));
-        // marker after the first flash of a maintenance build: locked, with a sector note
-        let (s, i) = temp_store("unexpl");
-        apply_master_outcome(&s, &i, &plan(E::ZeroOrUnexplained, false), O::MarkerUnexplained, 5).unwrap();
-        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::MarkerUnexplained);
-        assert!(s.sector_note(&i).unwrap().is_some());
-        // the recovery row leaves its note
-        let (s, i) = temp_store("recovery");
-        apply_master_outcome(&s, &i, &plan(E::Unsupported, true), O::AsExpected, 5).unwrap();
-        assert!(s.sector_note(&i).unwrap().unwrap().contains("recovered to original without stop"));
-        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::No0x64);
-        // an unclear recovery keeps the lock, and still blocks
-        let (s, i) = temp_store("recovery-unclear");
-        s.set_master_state(&i, &StoredMasterState::MarkerUnexplained, 1).unwrap();
-        apply_master_outcome(&s, &i, &plan(E::Unsupported, true), O::Unclear, 5).unwrap();
-        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::MarkerUnexplained);
-        assert_eq!(s.blocks(&i).unwrap()[0].reason, "master-unclear");
-    }
-
-    #[test]
-    fn the_overview_names_the_next_end_step() {
-        use EndStep::*;
-        use SessionKind::{Dip, Marker};
-        let fresh = end_progress_of(None, 7);
-        assert_eq!(next_end_step(&fresh, Marker), Stop);
-        // a DIP session sends no stop: it starts with the bus check
-        assert_eq!(next_end_step(&fresh, Dip), Bus);
-        let stopped = end_record(fresh, Stop, true);
-        assert_eq!(next_end_step(&stopped, Marker), Bus);
-        let bus = end_record(stopped, Bus, true);
-        assert_eq!(next_end_step(&bus, Marker), Values);
-        // after a failed step the restart point
-        assert_eq!(next_end_step(&end_record(bus, Values, false), Marker), Stop);
-        assert_eq!(next_end_step(&end_record(end_record(fresh, Bus, true), Values, false), Dip), Bus);
-        // progress of another session does not count
-        assert_eq!(next_end_step(&end_progress_of(Some(&bus), 8), Marker), Stop);
-        assert_eq!(serde_json::to_value(Values).unwrap(), serde_json::json!("values"));
-    }
-
-    #[test]
-    fn end_steps_run_in_order_and_start_over_after_a_failure() {
-        use EndStep::*;
-        use SessionKind::{Dip, Marker};
-        let fresh = end_progress_of(None, 7);
-        // Values before Bus is refused, for both kinds
-        assert!(refused_with(end_next(&fresh, Dip, 11, true, Values), "end-order"));
-        assert!(refused_with(end_next(&fresh, Marker, 11, true, Values), "end-order"));
-        // Bus before Stop: refused for a marker session, allowed for a DIP session (no stop there)
-        assert!(refused_with(end_next(&fresh, Marker, 11, true, Bus), "end-order"));
-        assert!(end_next(&fresh, Dip, 11, true, Bus).is_ok());
-        assert!(end_next(&fresh, Marker, 11, true, Stop).is_ok());
-        let stopped = end_record(fresh, Stop, true);
-        assert!(end_next(&stopped, Marker, 11, true, Bus).is_ok());
-        assert!(refused_with(end_next(&stopped, Marker, 11, true, Values), "end-order"));
-        let bus = end_record(stopped, Bus, true);
-        assert!(end_next(&bus, Marker, 11, true, Values).is_ok());
-        // a failure starts over
-        let failed = end_record(bus, Values, false);
-        assert_eq!(failed, EndProgress { session: 7, stopped: false, bus_ok: false });
-        assert!(refused_with(end_next(&failed, Marker, 11, true, Bus), "end-order"));
-        // a new stop makes the earlier bus check stale
-        assert!(!end_record(bus, Stop, true).bus_ok);
-        // progress of another session does not count
-        assert_eq!(end_progress_of(Some(&bus), 8), EndProgress { session: 8, stopped: false, bus_ok: false });
-        assert_eq!(end_progress_of(Some(&bus), 7), bus);
-        // a single pack (N = 0) ends in the same order when there is a control channel (its Values step needs
-        // a fresh 0/0); without one it is refused at every step until the user corrects N
-        assert!(end_next(&fresh, Dip, 0, true, Bus).is_ok());
-        assert!(refused_with(end_next(&fresh, Dip, 0, true, Values), "end-order"));
-        assert!(end_next(&bus, Dip, 0, true, Values).is_ok());
-        assert!(refused_with(end_next(&fresh, Marker, 0, true, Bus), "end-order"));
-        for step in [Stop, Bus, Values] {
-            assert!(refused_with(end_next(&bus, Dip, 0, false, step), "slaves-range"));
-            assert!(refused_with(end_next(&bus, Marker, 0, false, step), "slaves-range"));
-            assert!(refused_with(end_next(&bus, Dip, 16, true, step), "slaves-range"));
-        }
-        assert!(end_next(&bus, Dip, 11, false, Values).is_ok());
-    }
-
-    /// A simulated master behind `Prep`: `check` reads the real state, `stop_to_zero` clears the marker and
-    /// turns the session into a DIP session, `measure` compares the fresh status with the stored state.
-    struct FakePrep {
-        master: StoredMasterState,
-        snap: Snapshot,
-        control: bool,
-        sequential: bool,
-        calls: Vec<&'static str>,
-    }
-
-    fn probe_of(m: &StoredMasterState) -> Option<Probe> {
-        let st = |marker, n| Some(Probe::Status(MaintStatus { marker, effective_slaves: n }));
-        match m {
-            StoredMasterState::PatchedOn | StoredMasterState::MarkerUnexplained => st(true, 0),
-            StoredMasterState::PatchedOff { slaves } => st(false, *slaves),
-            StoredMasterState::No0x64 => Some(Probe::Unsupported),
-            StoredMasterState::Unknown => None,
-        }
-    }
-
-    impl Prep for FakePrep {
-        fn has_control(&self) -> bool { self.control }
-        fn sequential(&self) -> bool { self.sequential }
-        fn snapshot(&mut self) -> Result<Snapshot, MaintError> { Ok(self.snap.clone()) }
-        fn check(&mut self) -> Result<(), MaintError> {
-            self.calls.push("check");
-            self.snap.state = Some(self.master.clone());
-            Ok(())
-        }
-        fn stop_to_zero(&mut self) -> Result<(), MaintError> {
-            self.calls.push("stop");
-            self.master = StoredMasterState::PatchedOff { slaves: 0 };
-            self.snap.state = Some(self.master.clone());
-            if let Some(s) = self.snap.session.as_mut() { s.kind = SessionKind::Dip; }
-            Ok(())
-        }
-        fn measure(&mut self) -> Result<(), MaintError> {
-            self.calls.push("measure");
-            let uart1 = self.control && !self.sequential;
-            let fresh = measure_fresh(self.snap.state.as_ref(), self.snap.session.as_ref().map(|s| s.kind), uart1)?;
-            if !uart1 || policy::fresh_matches(fresh, probe_of(&self.master)) { Ok(()) } else { Err(refused("state-changed")) }
-        }
-    }
-
-    fn fake(master: StoredMasterState, stored: Option<StoredMasterState>, session: Option<MaintSession>) -> FakePrep {
-        FakePrep { master, snap: Snapshot { session, state: stored, blocks: vec![] }, control: true, sequential: false, calls: vec![] }
-    }
-
-    const ALL: FlashMaint = FlashMaint { installation: String::new(), inverter_confirmed: true, dip_off_confirmed: true, isolated_confirmed: true };
-
-    #[test]
-    fn master_changes_in_flash_order() {
-        use StoredMasterState as S;
-        // patched-on -> original: check, stop (0/0 now), then the measurement expects 0/0, not 1/0
-        let mut p = fake(S::PatchedOn, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
-        let plan = prepare_flash(&mut p, 0, ImageKind::Original, &ALL).unwrap().unwrap();
-        assert_eq!(plan.after, Expect::Unsupported);
-        assert_eq!(p.calls, ["check", "stop", "measure"]);
-        assert_eq!(p.snap.session.unwrap().kind, SessionKind::Dip);
-        // patched-on -> custom: the same order
-        let mut p = fake(S::PatchedOn, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
-        assert!(prepare_flash(&mut p, 0, ImageKind::Custom, &ALL).is_ok());
-        assert_eq!(p.calls, ["check", "stop", "measure"]);
-        // patched-on -> maintenance build: no stop
-        let mut p = fake(S::PatchedOn, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
-        assert!(prepare_flash(&mut p, 0, ImageKind::Maintenance, &ALL).is_ok());
-        assert_eq!(p.calls, ["check", "measure"]);
-    }
-
-    #[test]
-    fn recovery_runs_without_stop_and_only_to_the_original() {
-        use StoredMasterState as S;
-        let mut p = fake(S::MarkerUnexplained, Some(S::MarkerUnexplained), Some(session(SessionKind::Dip)));
-        let plan = prepare_flash(&mut p, 0, ImageKind::Original, &ALL).unwrap().unwrap();
-        assert!(plan.recovery);
-        assert_eq!(p.calls, ["check", "measure"]);
-        // without the DIP session the DIP step is not confirmed
-        let mut p = fake(S::MarkerUnexplained, Some(S::MarkerUnexplained), None);
-        assert!(refused_with(prepare_flash(&mut p, 0, ImageKind::Original, &ALL), "dip-off"));
-        let mut p = fake(S::MarkerUnexplained, Some(S::MarkerUnexplained), Some(session(SessionKind::Dip)));
-        assert!(refused_with(prepare_flash(&mut p, 0, ImageKind::Maintenance, &ALL), "marker-unexplained"));
-        // a slave is never flashed while the marker is unexplained
-        let mut p = fake(S::MarkerUnexplained, Some(S::MarkerUnexplained), Some(session(SessionKind::Dip)));
-        assert!(refused_with(prepare_flash(&mut p, 3, ImageKind::Original, &ALL), "marker-unexplained"));
-    }
-
-    #[test]
-    fn a_state_change_before_the_restart_refuses() {
-        use StoredMasterState as S;
-        // slave flash in a marker session, but someone cleared the marker meanwhile
-        let mut p = fake(S::PatchedOff { slaves: 11 }, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
-        assert!(refused_with(prepare_flash(&mut p, 3, ImageKind::Original, &ALL), "state-changed"));
-        // the master check re-reads the state first and refuses with the decision table
-        let mut p = fake(S::PatchedOff { slaves: 11 }, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
-        assert!(refused_with(prepare_flash(&mut p, 0, ImageKind::Maintenance, &ALL), "quiet-first"));
-    }
-
-    #[test]
-    fn a_marker_session_with_unknown_state_needs_a_fresh_marker_before_a_slave_flash() {
-        use StoredMasterState as S;
-        // the connection was lost (stored unknown), meanwhile someone cleared the marker: bus quiet and
-        // 0x47 alone must not pass, the fresh status must be 1/0
-        let mut p = fake(S::PatchedOff { slaves: 7 }, Some(S::Unknown), Some(session(SessionKind::Marker)));
-        assert!(refused_with(prepare_flash(&mut p, 3, ImageKind::Original, &ALL), "state-changed"));
-        // the marker is still set: the slave flash passes
-        let mut p = fake(S::PatchedOn, Some(S::Unknown), Some(session(SessionKind::Marker)));
-        assert!(prepare_flash(&mut p, 3, ImageKind::Original, &ALL).is_ok());
-        assert_eq!(p.calls, ["measure"]);
-        // one adapter for both buses: no UART1 read in the same command, so stored unknown is refused
-        let mut p = fake(S::PatchedOn, Some(S::Unknown), Some(session(SessionKind::Marker)));
-        p.sequential = true;
-        assert!(refused_with(prepare_flash(&mut p, 3, ImageKind::Original, &ALL), "state-unknown"));
-        // a DIP session with unknown state keeps the manual way: only the pack bus measurement counts
-        let mut p = fake(S::Unknown, Some(S::Unknown), Some(session(SessionKind::Dip)));
-        assert!(prepare_flash(&mut p, 3, ImageKind::Original, &ALL).is_ok());
-    }
-
-    #[test]
-    fn the_fresh_status_of_a_marker_session_is_always_1_0() {
-        use policy::Fresh;
-        use StoredMasterState as S;
-        let marker = Some(SessionKind::Marker);
-        assert_eq!(measure_fresh(Some(&S::Unknown), marker, true).unwrap(), Fresh::MarkerOn);
-        assert_eq!(measure_fresh(None, marker, true).unwrap(), Fresh::MarkerOn);
-        assert_eq!(measure_fresh(Some(&S::PatchedOn), marker, true).unwrap(), Fresh::MarkerOn);
-        assert!(refused_with(measure_fresh(Some(&S::Unknown), marker, false), "state-unknown"));
-        // the sequential way keeps working on a confirmed marker
-        assert_eq!(measure_fresh(Some(&S::PatchedOn), marker, false).unwrap(), Fresh::MarkerOn);
-        // without a marker session the stored state decides, as before
-        assert_eq!(measure_fresh(Some(&S::Unknown), Some(SessionKind::Dip), true).unwrap(), Fresh::Unchecked);
-        assert_eq!(measure_fresh(Some(&S::PatchedOff { slaves: 0 }), None, true).unwrap(), Fresh::Zero);
-        assert_eq!(measure_fresh(None, None, true).unwrap(), Fresh::Unchecked);
-    }
-
-    #[test]
-    fn single_pack_and_sequential_way() {
-        use StoredMasterState as S;
-        // single pack, nothing known, no control channel: the flash's own preflight decides
-        let mut p = fake(S::Unknown, None, None);
-        p.control = false;
-        assert_eq!(prepare_flash(&mut p, 0, ImageKind::Original, &FlashMaint::default()).unwrap(), None);
-        assert!(p.calls.is_empty());
-        // no-0x64 -> original needs the DIP session
-        let mut p = fake(S::No0x64, Some(S::No0x64), None);
-        assert!(refused_with(prepare_flash(&mut p, 0, ImageKind::Original, &ALL), "dip-off"));
-        let mut p = fake(S::No0x64, Some(S::No0x64), Some(session(SessionKind::Dip)));
-        assert!(prepare_flash(&mut p, 0, ImageKind::Original, &ALL).is_ok());
-        assert_eq!(p.calls, ["check", "measure"]);
-        // sequential way: no UART1 exchange inside the flash, so a row with `stop` is refused
-        let mut p = fake(S::PatchedOn, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
-        p.sequential = true;
-        assert!(refused_with(prepare_flash(&mut p, 0, ImageKind::Original, &ALL), "stop-needs-control-channel"));
-        assert!(p.calls.is_empty());
+    fn the_master_view_names_version_marker_and_actions() {
+        let info = |word: u32, id: [u8; 8]| MaintInfo { base: [16, 6, 13], patch: [1, 1], marker_word: word, effective_slaves: 0, build_id: id };
+        let known = [0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0];
+        let v = master_view(&Master::of(Some(dialog::Probe::Info(info(0, known)))));
+        assert_eq!((v.kind, v.version.as_deref(), v.marker, v.marker_word.as_deref()), ("maint", Some("16.06.13 MAINT 1.1"), Some("on"), Some("00000000")));
+        assert!(v.may_release && !v.may_halt);
+        let v = master_view(&Master::of(Some(dialog::Probe::Info(info(0x0102_0304, known)))));
+        assert_eq!((v.marker, v.may_release, v.may_halt), (Some("foreign"), false, false));
+        let v = master_view(&Master::of(Some(dialog::Probe::Info(info(0, [0; 8])))));
+        assert_eq!((v.kind, v.may_release), ("unknown-build", false));
+        let v = master_view(&Master::No0x64);
+        assert_eq!((v.kind, v.marker, v.version), ("no-0x64", None, None));
     }
 
     #[test]
@@ -2057,161 +646,48 @@ mod tests {
         let pack = ("serial:/dev/a".to_string(), Bus::PackBus);
         assert!(uses_main_connection(Some(&can), "serial:/dev/a"));
         assert!(!uses_main_connection(Some(&can), "serial:/dev/b"));
-        // same adapter on the pack bus: the control exchange would go to the wrong bus
         assert!(!uses_main_connection(Some(&pack), "serial:/dev/a"));
-        assert!(!uses_main_connection(None, "serial:/dev/a"));
-    }
-
-    #[test]
-    fn same_adapter_on_the_pack_bus_is_refused_not_opened_twice() {
-        let pack = ("serial:/dev/a".to_string(), Bus::PackBus);
-        assert!(matches!(route(Some(&pack), "serial:/dev/a"), Route::Refused));
-        assert!(matches!(route(Some(&pack), "serial:/dev/b"), Route::Open));
-    }
-
-    #[test]
-    fn stop_is_refused_while_marker_unexplained() {
-        assert!(matches!(stop_allowed(Some(&StoredMasterState::MarkerUnexplained)), Err(MaintError::Refused { .. })));
-        assert!(stop_allowed(Some(&StoredMasterState::PatchedOn)).is_ok());
-    }
-
-    #[test]
-    fn dialog_errors_map_to_typed_ui_errors() {
-        use openbms_flash::maint::dialog::DialogError as D;
-        assert!(matches!(MaintError::from(D::Unsupported), MaintError::Unsupported));
-        assert!(matches!(MaintError::from(D::NoAnswer), MaintError::NoAnswer));
-        assert!(matches!(MaintError::from(D::Link(openbms_flash::Error::Transport("x".into()))), MaintError::Connection { .. }));
-        let v = serde_json::to_value(MaintError::Rejected { rtn: 5 }).unwrap();
-        assert_eq!(v, serde_json::json!({ "kind": "rejected", "rtn": 5 }));
-    }
-
-    #[test]
-    fn control_on_the_main_endpoint_opens_its_own_channel_when_the_main_connection_is_gone() {
-        let can = ("serial:/dev/a".to_string(), Bus::CanSocketBus);
+        assert!(matches!(route_with(Some(&pack), "serial:/dev/a", true), Route::Refused));
+        assert!(matches!(route_with(Some(&pack), "serial:/dev/b", true), Route::Open));
         assert!(matches!(route_with(Some(&can), "serial:/dev/a", true), Route::Main));
         assert!(matches!(route_with(Some(&can), "serial:/dev/a", false), Route::Open));
     }
 
     #[test]
-    fn a_failed_read_never_clears_marker_unexplained() {
-        use StoredMasterState as S;
-        assert_eq!(next_state(Some(&S::MarkerUnexplained), S::Unknown, false), S::MarkerUnexplained);
-        assert_eq!(next_state(Some(&S::MarkerUnexplained), S::PatchedOff { slaves: 3 }, true), S::PatchedOff { slaves: 3 });
-        assert_eq!(next_state(Some(&S::PatchedOn), S::Unknown, false), S::Unknown);
-    }
-
-    #[test]
     fn a_dead_main_connection_is_retried_once_on_a_fresh_channel() {
-        // the error as it arrives from a dialog on a socket the gateway closed
         assert!(retry_fresh(true, Some("connection: transport: I/O: Broken pipe (os error 32)")));
         assert!(retry_fresh(true, Some("connection closed by the gateway")));
-        assert!(retry_fresh(true, Some("not connected")));
-        // an answer problem is no dead link: no retry
         assert!(!retry_fresh(true, Some("the master at address 0 does not answer")));
-        assert!(!retry_fresh(true, Some("no answer within 600ms")));
         assert!(!retry_fresh(true, None));
-        // an own channel is never retried
         assert!(!retry_fresh(false, Some("connection: transport: I/O: Broken pipe")));
-    }
-
-    #[test]
-    fn end_stop_reads_first_and_names_a_slave_count_mismatch() {
-        use StoredMasterState as S;
-        assert_eq!(stop_plan(&S::PatchedOn, 1), StopPlan::Send);
-        assert_eq!(stop_plan(&S::Unknown, 1), StopPlan::Send);
-        // marker already off with N slaves: nothing to stop
-        assert_eq!(stop_plan(&S::PatchedOff { slaves: 3 }, 3), StopPlan::Skip);
-        // DIP 5–8 still OFF (0/0 for N = 1), or more slaves than entered (0/2 for N = 1)
-        assert_eq!(stop_plan(&S::PatchedOff { slaves: 0 }, 1), StopPlan::Mismatch { actual: 0 });
-        assert_eq!(stop_plan(&S::PatchedOff { slaves: 2 }, 1), StopPlan::Mismatch { actual: 2 });
-        // never a stop on a locked marker
-        assert_eq!(stop_plan(&S::MarkerUnexplained, 1), StopPlan::Refuse);
-        assert!(stop_allowed(Some(&S::MarkerUnexplained)).is_err());
-        assert_eq!(mismatch_failing(0, 1), "slave-count-mismatch: 0 1");
-        // a stop that ends at another count than N is the same mismatch; other failures carry the error
-        assert_eq!(stop_failing(MaintError::Timeout { marker: false, slaves: 2 }, 1), "slave-count-mismatch: 2 1");
-        assert_eq!(stop_failing(MaintError::Timeout { marker: true, slaves: 0 }, 1), r#"stop: {"kind":"timeout","marker":true,"slaves":0}"#);
-        assert_eq!(stop_failing(MaintError::NoAnswer, 1), r#"stop: {"kind":"no-answer"}"#);
-    }
-
-    #[test]
-    fn the_slave_scan_log_becomes_progress() {
-        assert_eq!(scan_step("slave scan: pass 1, address 7"), Some((1, 7)));
-        assert_eq!(scan_step("slave scan: pass 2, address 15\n"), Some((2, 15)));
-        assert_eq!(scan_step("slave scan: 3 byte(s) seen, slave at 4"), None);
     }
 
     #[test]
     fn a_retried_start_or_stop_continues_from_the_state_found() {
         let st = |marker, slaves| MaintStatus { marker, effective_slaves: slaves };
-        assert!(target_reached(Action::Start, None, st(true, 0)));
-        assert!(!target_reached(Action::Start, None, st(true, 3)));
-        assert!(!target_reached(Action::Start, None, st(false, 3)));
-        assert!(target_reached(Action::Stop, Some(3), st(false, 3)));
-        assert!(!target_reached(Action::Stop, Some(3), st(false, 0)));
-        assert!(!target_reached(Action::Stop, Some(0), st(true, 0)));
-        assert!(target_reached(Action::Stop, None, st(false, 5)));
+        assert!(target_reached(Action::Start, st(true, 0)));
+        assert!(!target_reached(Action::Start, st(true, 3)));
+        assert!(target_reached(Action::Stop, st(false, 3)));
+        assert!(!target_reached(Action::Stop, st(true, 0)));
     }
 
     #[test]
-    fn single_pack_n0_is_accepted_with_an_original_master_and_no_slave() {
-        use StoredMasterState as S;
-        let ses = session(SessionKind::Dip);
-        let no64 = S::No0x64;
-        // what maint_set_slaves / maint_start_dip decide after the fresh read and the slave scan
-        let decide = |fresh: &S, slave: Option<u8>| set_slaves_allowed(Some(&ses), Some(fresh), 0, single_pack(Some(fresh), slave));
-        assert!(decide(&no64, None).is_ok());
-        assert!(refused_with(decide(&no64, Some(3)), "slaves-range"));
-        assert!(refused_with(decide(&S::Unknown, None), "slaves-range"));
-        assert!(slaves_allowed(0, single_pack(Some(&no64), None)).is_ok());
+    fn every_pack_bus_open_frees_the_port_first() {
+        let pack = |k: &str| (k.to_string(), Bus::PackBus);
+        let can = |k: &str| (k.to_string(), Bus::CanSocketBus);
+        assert!(must_stop_monitor(Some(&pack("serial:/dev/b")), "serial:/dev/a"));
+        assert!(must_stop_monitor(Some(&can("serial:/dev/a")), "serial:/dev/a"));
+        assert!(!must_stop_monitor(Some(&can("tcp:gw:4196")), "serial:/dev/a"));
+        assert!(!must_stop_monitor(None, "serial:/dev/a"));
     }
 
     #[test]
-    fn end_values_for_one_pack_accepts_rtn04_only_for_an_original_master() {
-        use StoredMasterState as S;
-        assert_eq!(values_zero_check(&S::PatchedOff { slaves: 0 }).unwrap(), None);
-        assert_eq!(values_zero_check(&S::No0x64).unwrap(), None);
-        assert_eq!(values_zero_check(&S::Unknown).unwrap(), Some("master-unreadable".into()));
-        assert_eq!(values_zero_check(&S::PatchedOff { slaves: 2 }).unwrap(), Some("slave-count-mismatch: 2 0".into()));
-        assert_eq!(values_zero_check(&S::PatchedOn).unwrap(), Some("master-not-zero".into()));
-        assert!(refused_with(values_zero_check(&S::MarkerUnexplained), "marker-unexplained"));
-        // for N > 0 an original master never yields a count: the pack bus step names missing slaves
-        assert_eq!(dip_end_check(&S::No0x64, 0).unwrap(), None);
-    }
-
-    #[test]
-    fn a_mismatch_never_stands_without_a_reported_count() {
-        use StoredMasterState as S;
-        let m = Some("slave-count-mismatch: 0 1");
-        // the master still reports 0/0 for N = 1: the mismatch holds
-        assert!(!mismatch_stale(m, Some(&S::PatchedOff { slaves: 0 }), 1));
-        // flashed back to the original firmware (RTN 04) or unreadable: no count, the mismatch goes
-        assert!(mismatch_stale(m, Some(&S::No0x64), 1));
-        assert!(mismatch_stale(m, Some(&S::Unknown), 1));
-        assert!(mismatch_stale(m, None, 1));
-        // another count, or N corrected
-        assert!(mismatch_stale(m, Some(&S::PatchedOff { slaves: 1 }), 1));
-        assert!(mismatch_stale(m, Some(&S::PatchedOff { slaves: 0 }), 0));
-        // other failings stay
-        assert!(!mismatch_stale(Some("pack-communication-incomplete"), Some(&S::No0x64), 1));
-        assert!(!mismatch_stale(None, Some(&S::No0x64), 1));
-        // every builder of the mismatch takes a count from a 0x64 status
-        for fresh in [S::No0x64, S::Unknown, S::PatchedOn] {
-            assert!(!dip_end_check(&fresh, 1).unwrap().is_some_and(|f| f.starts_with("slave-count-mismatch")));
-            assert!(!values_zero_check(&fresh).unwrap().is_some_and(|f| f.starts_with("slave-count-mismatch")));
-            assert!(!matches!(stop_plan(&fresh, 1), StopPlan::Mismatch { .. }));
-        }
-    }
-
-    #[test]
-    fn dip_session_end_names_a_mismatch_and_never_passes_an_unreadable_master() {
-        use StoredMasterState as S;
-        assert_eq!(dip_end_check(&S::PatchedOff { slaves: 1 }, 1).unwrap(), None);
-        // DIP 5–8 still OFF: 0/0 for N = 1
-        assert_eq!(dip_end_check(&S::PatchedOff { slaves: 0 }, 1).unwrap(), Some("slave-count-mismatch: 0 1".into()));
-        assert_eq!(dip_end_check(&S::Unknown, 1).unwrap(), Some("master-unreadable".into()));
-        assert!(refused_with(dip_end_check(&S::MarkerUnexplained, 1), "marker-unexplained"));
-        // original firmware: the pack bus step decides
-        assert_eq!(dip_end_check(&S::No0x64, 1).unwrap(), None);
+    fn dialog_errors_and_refusals_reach_the_ui_typed() {
+        use openbms_flash::maint::dialog::DialogError as D;
+        assert!(matches!(MaintError::from(D::Unsupported), MaintError::Unsupported));
+        assert!(matches!(MaintError::from(D::Link(openbms_flash::Error::Transport("x".into()))), MaintError::Connection { .. }));
+        assert_eq!(serde_json::to_value(MaintError::Rejected { rtn: 5 }).unwrap(), serde_json::json!({ "kind": "rejected", "rtn": 5 }));
+        assert!(refused_with(Err::<(), _>(store_refusal(store_err("name-taken".into()))), "name-taken"));
+        assert!(matches!(store_refusal(store_err("disk full".into())), MaintError::Store { .. }));
     }
 }

@@ -2,7 +2,9 @@
 //! the vendor allowlist; other images only after an explicit opt-in and their own confirmation phrase.
 //! The flash runs on its own thread and reports progress as events.
 
-use crate::{reserve_port, reveal, stop_monitor, AppState};
+use crate::maint_store::endpoint_key;
+use crate::{maint, reserve_port, reveal, stop_monitor, AppState};
+use openbms_flash::maint::policy::{self, Master};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
 use openbms_proto::DeviceInfo;
 use openbms_transport::{Connection, Endpoint};
@@ -47,10 +49,15 @@ struct FirmwareDone {
     before: Option<DeviceInfo>,
     after: Option<DeviceInfo>,
     log: String,
-    /// the flash block that stays for this pack ("update-unclear", "bootloader-unclear", ...), if any
-    block: Option<String>,
-    /// master flash with a plan: the post-flash 0x64 check ("as-expected" | "unclear" | "marker-unexplained" | "unknown-image")
-    master: Option<String>,
+    /// the pack may hang in its bootloader: its record stays (`bootloader-pending`)
+    pending: bool,
+}
+
+/// What `firmware_start` checked before it began: the right-bank check ("match" | "stored" | "unchecked" |
+/// "none" without an installation).
+#[derive(Serialize, Clone)]
+pub struct FlashStarted {
+    bank: &'static str,
 }
 
 fn lang(code: &str) -> Lang {
@@ -192,7 +199,8 @@ pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String
     read_image(&path, allow_custom, self::lang(&lang)).map(|(_, info)| info)
 }
 
-/// Stops the monitor, then checks the target on the pack bus without resetting it.
+/// Stops the monitor, then checks the target on the pack bus without resetting it. A pack that answers is no
+/// longer pending in its bootloader.
 #[tauri::command]
 pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String) -> Result<DeviceInfo, String> {
     let l = self::lang(&lang);
@@ -204,15 +212,20 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     stop_monitor(&state)?;
     let mut link = open_port(&port, l)?;
     let (mut log, _) = new_log(&app, address, "inspect")?;
-    session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))
+    let info = session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))?;
+    let key = endpoint_key(false, &port);
+    let _ = maint::with_store(&state, |s| s.clear_answered(&key, &[address], crate::history::now_ms()));
+    Ok(info)
 }
 
-/// Validates everything again, runs the maintenance gate (the pack port decides the installation; master
-/// state, blocks, confirmations, master-flash plan and a fresh measurement), then flashes on its own thread
-/// and returns at once. Gate refusals reach the UI as a JSON string of `MaintError`.
+/// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
+/// of this pack bus endpoint pending in its bootloader, a patched master with its marker on is released before a
+/// non-maintenance image (C'), and with an installation the master's serial number (right bank). Quiet bus and
+/// the target's 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals
+/// reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, maint: Option<crate::maint::FlashMaint>) -> Result<(), String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -225,52 +238,38 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     }
     let port_slot = reserve_port(&state.port_busy)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
-    // a connect refused during the gate below names the flash (`flashing` is set only after it)
-    let _action = crate::maint::begin_action(&state, "", "flash");
-    // maintenance gate: the pack port decides the installation; then everything before the restart
-    let to_text = |e: crate::maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
-    let confirm = maint.unwrap_or_default();
-    let key = crate::maint_store::endpoint_key(false, &port);
-    let (owner, any_open) = crate::maint::with_store(&state, |s| Ok((s.installation_of(&key)?, s.any_open()?))).map_err(to_text)?;
-    let ui = (!confirm.installation.is_empty()).then_some(confirm.installation.as_str());
-    crate::maint::port_gate(owner.as_ref().map(|i| i.id.as_str()), ui, any_open).map_err(to_text)?;
-    // an unassigned port passed the gate only without a UI installation (a single pack): it gets its own
-    let inst = match owner {
-        Some(i) => i,
-        None => crate::maint::with_store(&state, |s| s.installation_for(&key)).map_err(to_text)?,
-    };
-    let master_plan = crate::maint::prepare_flash(
-        &mut crate::maint::AppPrep { state: &state, app: &app, inst: &inst, port: &port },
-        address,
-        crate::maint::image_kind(info.kind),
-        &confirm,
-    )
-    .map_err(to_text)?;
-    let sequential = crate::maint::same_adapter(&inst, &port);
+    let _action = maint::begin_action(&state, "flash");
+    let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let key = endpoint_key(false, &port);
+    maint::with_store(&state, |s| s.pending_on(&key)).and_then(|p| maint::pending_refusal(&p, address)).map_err(to_text)?;
+    let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
+    if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
+        // a failed read leaves it to the bus check (DIP way)
+        let master = maint::read_master(&state, i).unwrap_or(Master::Unknown);
+        if policy::release_first(&master, maint_kind(info.kind)) {
+            return Err(to_text(maint::refused("release-master-first")));
+        }
+    }
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
     let slot = FlashSlot(state.flashing.clone());
-    // written before the restart, so a crash or power loss leaves it behind
-    let pending = crate::maint::with_store(&state, |s| s.add_block(&inst.id, address, "update-interrupted", crate::history::now_ms())).map_err(to_text)?;
-    let prepared = (|| {
-        stop_monitor(&state)?;
-        let link = open_port(&port, l)?;
-        let (mut log, log_path) = new_log(&app, address, &info.release)?;
-        writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
-        Ok::<_, String>((link, log, log_path))
-    })();
-    let (mut link, mut log, log_path) = match prepared {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = crate::maint::with_store(&state, |s| s.clear_block(pending, "preflight", crate::history::now_ms()));
-            return Err(e);
-        }
+    stop_monitor(&state)?;
+    let mut link = open_port(&port, l)?;
+    let bank = match &inst {
+        Some(i) => match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
+            maint::Bank::Mismatch(serial) => return Err(to_text(maint::MaintError::OtherBank { serial })),
+            maint::Bank::Match => "match",
+            maint::Bank::Stored(_) => "stored",
+            maint::Bank::Unchecked => "unchecked",
+        },
+        None => "none",
     };
+    let (mut log, log_path) = new_log(&app, address, &info.release)?;
+    writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
+    // written before the restart, so a crash or power loss leaves it behind
+    let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, crate::history::now_ms())).map_err(to_text)?;
     let store = state.maint.clone();
-    let inst2 = inst.clone();
-    let plan2 = master_plan.clone();
-    let release = info.release.clone();
     std::thread::spawn(move || {
         let mut last = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -281,30 +280,28 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         }));
         // a panic inside the flash counts as a failure at the last reported stage
         let ok = matches!(result, Ok(Ok(_)));
-        // the master's post-check stores its outcome first: the update-interrupted block is cleared only
-        // afterwards, so a crash during the settle loop leaves the record; if the outcome could not be
-        // stored, the block stays
-        let (master, stored) = match &plan2 {
-            Some(plan) if ok && address == 0 => {
-                let (key, stored) = crate::maint::post_master_check(&store, &inst2, plan, sequential);
-                (Some(key.to_string()), stored)
-            }
-            _ => (None, true),
-        };
         // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
-        let block = crate::maint::record_after_flash(&store, &inst2, pending, address, &release, ok, stored, last, &mut link);
+        let pending = maint::settle_pending(&store, pending, address, ok, last, &mut link);
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, block, master },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, block, master },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, block, master },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
         };
         drop(slot);
         drop(port_slot);
         let _ = app.emit("firmware-done", done);
     });
-    Ok(())
+    Ok(FlashStarted { bank })
+}
+
+fn maint_kind(kind: &str) -> known::ImageKind {
+    match kind {
+        "original" => known::ImageKind::Original,
+        "maintenance" => known::ImageKind::Maintenance,
+        _ => known::ImageKind::Custom,
+    }
 }
 
 /// Show a firmware log (or the log folder) in the file manager.
