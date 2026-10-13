@@ -169,6 +169,14 @@ fn stop_monitor(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// `stop_monitor` for a maintenance step that needs the pack port: the UI is told ("monitor-stopped"), so it
+/// shows "not connected" instead of waiting for its data timeout and counting a lost connection.
+pub(crate) fn stop_monitor_and_tell(state: &AppState, app: &AppHandle) -> Result<(), String> {
+    stop_monitor(state)?;
+    let _ = app.emit("monitor-stopped", ());
+    Ok(())
+}
+
 #[tauri::command]
 fn disconnect(state: State<AppState>) -> Result<(), String> {
     stop_monitor(&state)
