@@ -165,6 +165,12 @@ export function parsePacks(text: string): number | null {
   return n >= 1 && n <= 16 ? n : null;
 }
 
+/** "1 pack" needs a fresh 0/0 from the master, which it cannot report while its marker is on (stored state
+ *  patched-on or marker-unexplained): saving 1 would be refused, so the editor does not offer it. */
+export function onePackBlocked(packs: number | null, state: MasterStateName | undefined): boolean {
+  return packs === 1 && (state === "patched-on" || state === "marker-unexplained");
+}
+
 /** The slave count N (= the master's DIP 5–8 value) of a bank with `packs` packs, master included. */
 export function slavesOf(packs: number): number {
   return packs - 1;

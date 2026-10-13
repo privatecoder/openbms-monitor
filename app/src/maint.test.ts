@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { acceptsProgress, busyMessage, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { acceptsProgress, busyMessage, onePackBlocked, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -601,5 +601,19 @@ describe("busy port on connect", () => {
         for (const gaveUp of [false, true]) expect(busyMessage(a, gaveUp, tr(lng)), `${lng} ${a}`).not.toMatch(/conn\.|undefined/);
       }
     }
+  });
+});
+
+describe("pack count editor with the marker on", () => {
+  it("1 pack cannot be saved while the master reports the marker", () => {
+    expect(onePackBlocked(1, "patched-on")).toBe(true);
+    expect(onePackBlocked(1, "marker-unexplained")).toBe(true);
+    expect(onePackBlocked(2, "patched-on")).toBe(false);
+    expect(onePackBlocked(null, "patched-on")).toBe(false);
+    for (const s of ["patched-off", "no-0x64", "unknown", undefined] as const) expect(onePackBlocked(1, s)).toBe(false);
+  });
+  it("says why in German and English", () => {
+    expect(i18n.t("maint.panel.onePackMarker", { lng: "de" })).toBe("1 Pack lässt sich erst eintragen, wenn der Marker gelöscht ist. „Beenden“ löscht ihn zuerst und meldet dann, dass die Packzahl nicht passt; danach hier 1 eintragen und erneut beenden.");
+    expect(i18n.exists("maint.panel.onePackMarker", { lng: "en" })).toBe(true);
   });
 });

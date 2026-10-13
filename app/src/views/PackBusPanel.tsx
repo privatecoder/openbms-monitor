@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, LoaderCircle, Lock, Play, TriangleAlert } from "lucide-react";
 import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
-import { activityStatus, errorKey, failingText, packsDerived, packsLine, parsePacks, slavesOf, workUnchanged, type Activity, type Flow, type FlowStep, type Monitor, type Reason } from "../maint";
+import { activityStatus, errorKey, onePackBlocked, failingText, packsDerived, packsLine, parsePacks, slavesOf, workUnchanged, type Activity, type Flow, type FlowStep, type Monitor, type Reason } from "../maint";
 import type { useMaint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -86,6 +86,9 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   const n = packs === null ? null : slavesOf(packs);
   // the N editor (step 4 or the End section) belongs to one session; a new (or closed) session starts with it closed
   const [editing, setEditing] = useState<"start" | "end" | null>(null);
+  // the last refusal of each pack count editor: stays under it until its next save, also when another action's
+  // result has replaced the panel's one activity line
+  const [editorRefusal, setEditorRefusal] = useState<{ where: "start" | "end"; text: string } | null>(null);
   const sessionId = o?.session?.id ?? null;
   useEffect(() => { setEditing(null); setNText(""); }, [sessionId]);
   const [dipConfirmed, setDipConfirmed] = useState(false);
@@ -202,6 +205,8 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
     if (!o.session) return null;
     const key = `set-slaves:${where}`;
     const current = o.session.expected_slaves + 1;
+    const blocked = onePackBlocked(packs, stored);
+    const refusal = editorRefusal?.where === where ? editorRefusal.text : null;
     return (
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-3">
@@ -209,8 +214,11 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
           {editing === where ? (
             <>
               <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
-              <ActButton variant="secondary" size="sm" spinning={spinning(key)} disabled={!idle || n === null} onClick={() => n !== null && run(key, "set-slaves", async (still) => {
-                const r = await api.maintSetSlaves(o.installation.id, n, port);
+              <ActButton variant="secondary" size="sm" spinning={spinning(key)} disabled={!idle || n === null || blocked} onClick={() => n !== null && run(key, "set-slaves", async (still) => {
+                setEditorRefusal(null);
+                let r: MaintOverview;
+                try { r = await api.maintSetSlaves(o.installation.id, n, port); }
+                catch (e) { const k = errorKey(e); if (still()) setEditorRefusal({ where, text: t(k.key, k.params) }); throw e; }
                 if (still()) setEditing(null);
                 return { overview: r, text: t("maint.result.set-slaves", { line: packsLine(n + 1, t) }) };
               })}>{t("maint.panel.save")}</ActButton>
@@ -220,7 +228,8 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
           )}
         </div>
         {editing === where && derived}
-        {status(key)}
+        {editing === where && blocked && <p className="text-discharge">{t("maint.panel.onePackMarker")}</p>}
+        {mine(key) ? status(key) : refusal && <p role="status" className="flex items-start gap-1.5 text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{refusal}</p>}
       </div>
     );
   };
