@@ -24,6 +24,8 @@ pub struct ImageInfo {
     bytes: usize,
     blocks: usize,
     sha256: String,
+    /// "original" | "maintenance" | "custom" (see `known::ImageKind`)
+    kind: &'static str,
     /// not in the vendor allowlist (accepted only with custom firmware allowed)
     custom: bool,
 }
@@ -126,9 +128,16 @@ pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(eh
         Err(_) if allow_custom => None,
         Err(e) => return Err(e),
     };
+    let (kind, known_build) = known::kind(&image);
+    let kind = match kind {
+        known::ImageKind::Original => "original",
+        known::ImageKind::Maintenance => "maintenance",
+        known::ImageKind::Custom => "custom",
+    };
     let blocks = session::dry_run(&image)?.len() - 3;
     let info = ImageInfo {
-        release: release.unwrap_or("custom").into(),
+        release: release.or(known_build.map(|r| r.name)).unwrap_or("custom").into(),
+        kind,
         custom: release.is_none(),
         device: image.header.device.clone(),
         bytes: image.code.len(),
@@ -351,6 +360,7 @@ mod tests {
         let (_, info) = image_info(&bytes, true).unwrap();
         assert!(info.custom);
         assert_eq!(info.release, "custom");
+        assert_eq!(info.kind, "custom");
         assert_eq!(info.device, "EMU1101_10D_HW16");
         assert!(confirmed_image(&info, &info.sha256, Lang::En).is_ok());
         assert!(confirmed_image(&info, &"0".repeat(64), Lang::En).is_err());

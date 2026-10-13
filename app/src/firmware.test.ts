@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { confirmationPhrase, progressFraction, steps, type FwSetup } from "./firmware";
 
-const image = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", custom: false };
+const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
 const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "" };
 
@@ -25,7 +25,7 @@ describe("firmware steps", () => {
     expect(steps({ ...base, typed: "FLASH 1" }).start).toBe(false);
   });
   it("custom image needs FLASH CUSTOM", () => {
-    const custom = { ...base, image: { ...image, release: "custom", custom: true } };
+    const custom: FwSetup = { ...base, image: { ...image, release: "custom", kind: "custom", custom: true } };
     expect(confirmationPhrase(2, true)).toBe("FLASH CUSTOM 2");
     expect(steps({ ...custom, typed: "FLASH CUSTOM 0" }).start).toBe(true);
     expect(steps({ ...custom, typed: "FLASH 0" }).start).toBe(false);
