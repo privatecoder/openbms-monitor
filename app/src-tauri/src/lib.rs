@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod firmware;
 mod history;
+mod maint_store;
 use history::{Format, Settings, SharedHistory};
 
 #[derive(Default)]
