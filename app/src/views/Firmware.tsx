@@ -23,8 +23,10 @@ function Step({ n, title, active, children }: { n: number; title: string; active
   );
 }
 
-export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack }: {
+export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRunning, onBack }: {
   connected: boolean;
+  /** counts the monitor connection being lost or closed in the sidebar (not stopped by this view for a flash) */
+  disconnects: number;
   maint: ReturnType<typeof useMaint>;
   onMonitorStopped: () => void;
   onRunning: (running: boolean) => void;
@@ -86,6 +88,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // a new measurement is needed after every state change; the inverter statement after every new session
   useEffect(() => { setMeasuredAt(null); }, [overview?.state_at, overview?.installation.id]);
   useEffect(() => { setInverter(false); }, [overview?.session?.id, overview?.installation.id]);
+  // after a lost or closed connection the operator confirms the inverter afresh and measures again
+  useEffect(() => { setInverter(false); setMeasuredAt(null); }, [disconnects]);
   // the End result stays until a new session opens or another installation is shown
   useEffect(() => { setEndNote(null); }, [overview?.installation.id]);
   useEffect(() => { if (overview?.session) setEndNote(null); }, [overview?.session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -155,7 +159,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       setRunning(true); onRunning(true); startedAt.current = Date.now();
       await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang,
         overview ? { installation: overview.installation.id, inverterConfirmed: inverter, dipOffConfirmed, isolatedConfirmed } : null);
-    } catch (e) { setRunning(false); onRunning(false); setError(String(e)); }
+    } catch (e) {
+      setRunning(false); onRunning(false);
+      // gate refusals arrive as MaintError JSON; the backend may have changed state (check, stop, session kind)
+      const k = errorKey(e); setError(t(k.key, k.params)); void maint.refresh();
+    }
   };
 
   const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); };

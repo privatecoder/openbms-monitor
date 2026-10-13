@@ -164,6 +164,8 @@ const tauriApi = {
   maintActivate: (installation: string, inverterConfirmed: boolean) => invoke<MaintOverview>("maint_activate", { installation, inverterConfirmed }),
   maintStartDip: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_start_dip", { installation, expectedSlaves }),
   maintAccountMarker: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_account_marker", { installation, expectedSlaves }),
+  /** Correct the slave count per DIP of the open session; End starts over. */
+  maintSetSlaves: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_set_slaves", { installation, expectedSlaves }),
   /** returns the time of the passed measurement (ms) */
   maintMeasure: (installation: string, port: string) => invoke<number>("maint_measure", { installation, port }),
   /** Refused "end-sequential" when control channel and pack port are one adapter: then drive maintEndStep. */
@@ -265,6 +267,7 @@ function demoApi(): typeof tauriApi {
     maintActivate: async () => { throw new Error("desktop app only"); },
     maintStartDip: async () => { throw new Error("desktop app only"); },
     maintAccountMarker: async () => { throw new Error("desktop app only"); },
+    maintSetSlaves: async () => { throw new Error("desktop app only"); },
     maintMeasure: async () => { throw new Error("desktop app only"); },
     maintEnd: async () => { throw new Error("desktop app only"); },
     maintEndStep: async () => { throw new Error("desktop app only"); },

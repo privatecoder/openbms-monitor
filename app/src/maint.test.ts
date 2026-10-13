@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, needsReplug, openWork, workUnchanged } from "./maint";
+import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, needsReplug, openWork, parseSlaves, workUnchanged } from "./maint";
 import type { MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -157,5 +157,34 @@ describe("workUnchanged", () => {
     expect(workUnchanged(start, { installation: "a", session: null })).toBe(false);
     expect(workUnchanged(start, { installation: null, session: 3 })).toBe(false);
     expect(workUnchanged({ installation: "a", session: null }, { installation: "a", session: null })).toBe(true);
+  });
+});
+
+describe("slave count per DIP", () => {
+  it("accepts only a whole number from 1 to 15; empty input is no value", () => {
+    expect(parseSlaves("")).toBeNull();
+    expect(parseSlaves("0")).toBeNull();
+    expect(parseSlaves("16")).toBeNull();
+    expect(parseSlaves("2.5")).toBeNull();
+    expect(parseSlaves("-3")).toBeNull();
+    expect(parseSlaves("x")).toBeNull();
+    expect(parseSlaves("1")).toBe(1);
+    expect(parseSlaves(" 15 ")).toBe(15);
+  });
+});
+
+describe("failing End checks", () => {
+  it("maps the known keys to texts and leaves unknown values as they are", () => {
+    expect(failingKey("pack-communication-incomplete")).toEqual({ key: "maint.failing.pack-communication-incomplete" });
+    expect(failingKey("master-not-answering")).toEqual({ key: "maint.failing.master-not-answering" });
+    expect(failingKey("system-values")).toEqual({ key: "maint.failing.system-values" });
+    expect(failingKey('stop: {"kind":"no-answer"}')).toEqual({ key: "maint.failing.stop", inner: { key: "maint.err.no-answer" } });
+    expect(failingKey("something else")).toBeNull();
+  });
+  it("composes the text, the stop error translated inside", () => {
+    const t = (key: string, params?: Record<string, unknown>) => params ? `${key}(${JSON.stringify(params)})` : key;
+    expect(failingText("system-values", t)).toBe("maint.failing.system-values");
+    expect(failingText('stop: {"kind":"refused","reason":"no-session"}', t)).toBe('maint.failing.stop({"error":"maint.err.refused.no-session"})');
+    expect(failingText("something else", t)).toBe("something else");
   });
 });

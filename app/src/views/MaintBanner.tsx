@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { TriangleAlert, Wrench } from "lucide-react";
 import type { Endpoint, MaintOverview } from "../api";
-import { bannerOf } from "../maint";
+import { bannerOf, failingText } from "../maint";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 
@@ -37,7 +37,7 @@ export function MaintBanner({ overview, unassigned, other, onAssign, onSwitch, o
       <div className="flex-1 space-y-1">
         <p className="font-medium">{t(`maint.banner.${b.kind}`, { since: since ?? "?", how: t(`maint.how.${b.how}`) })}</p>
         <p className="text-muted">{t(b.kind === "unexplained" ? "maint.banner.unexplainedHint" : "maint.banner.hint")}</p>
-        {overview?.session?.failing && <p className="text-alarm">{t("maint.banner.failing", { what: overview.session.failing })}</p>}
+        {overview?.session?.failing && <p className="text-alarm">{t("maint.banner.failing", { what: failingText(overview.session.failing, t) })}</p>}
       </div>
       {b.end && <Button variant="ghost" size="sm" onClick={onEnd}>{t("maint.end")}</Button>}
     </div>

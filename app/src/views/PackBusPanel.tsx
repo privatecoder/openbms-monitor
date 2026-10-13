@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
-import { errorKey, needsReplug, workUnchanged } from "../maint";
+import { errorKey, failingText, needsReplug, parseSlaves, workUnchanged } from "../maint";
 import type { useMaint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -24,7 +24,10 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   const o = maint.overview;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [n, setN] = useState(0);
+  // N per DIP: no default, the user types it (an empty or out-of-range value keeps the buttons locked)
+  const [nText, setNText] = useState("");
+  const n = parseSlaves(nText);
+  const [editSlaves, setEditSlaves] = useState(false);
   const [dipConfirmed, setDipConfirmed] = useState(false);
   const [setup, setSetup] = useState(false);
   // set when maintEnd was refused with end-sequential (one adapter for both buses)
@@ -46,7 +49,10 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
   const replug = needsReplug(o.installation.control, port);
   const sequential = replug || stepwise;
 
-  const endNoteOf = (r: EndResult) => r.ok ? t("maint.panel.endOk") : r.missing.length ? t("maint.panel.endMissing", { list: r.missing.join(", ") }) : t("maint.panel.endFailed", { what: r.failing });
+  const endNoteOf = (r: EndResult) => r.ok ? t("maint.panel.endOk") : r.missing.length ? t("maint.panel.endMissing", { list: r.missing.join(", ") }) : t("maint.panel.endFailed", { what: failingText(r.failing ?? "", t) });
+  const slavesInput = <label className="flex items-center gap-2">{t("maint.panel.slaves")}<input type="number" min={1} max={15} className={input} value={nText} onChange={(e) => setNText(e.target.value)} /></label>;
+  // a patched master that polls no slaves: a custom image needs DIP 5–8 OFF and an open session
+  const zeroSlaves = s === "patched-off" && (o.state?.slaves ?? 0) === 0;
   const endStep = (step: EndStep) => run(async (still) => {
     setEndNote(null);
     const r = await api.maintEndStep(o.installation.id, port, step);
@@ -80,25 +86,25 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
       {s === "patched-off" && (o.state?.slaves ?? 0) > 0 && !o.session && (
         <Button variant="primary" size="sm" disabled={busy || !inverter} onClick={() => run(() => api.maintActivate(o.installation.id, inverter))}>{t("maint.panel.activate")}</Button>
       )}
-      {(s === "no-0x64" || s === "unknown") && !o.session && (
+      {(s === "no-0x64" || s === "unknown" || zeroSlaves) && !o.session && (
         <div className="space-y-2">
-          <p>{t(s === "unknown" ? "maint.panel.unknownHint" : "maint.panel.dipHint")}</p>
+          <p>{t(s === "unknown" ? "maint.panel.unknownHint" : zeroSlaves ? "maint.panel.dipZeroHint" : "maint.panel.dipHint")}</p>
           <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
-          <label className="flex items-center gap-2">{t("maint.panel.slaves")}<input type="number" min={0} max={15} className={input} value={n} onChange={(e) => setN(Number(e.target.value))} /></label>
-          <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed} onClick={() => run(() => api.maintStartDip(o.installation.id, n))}>{t("maint.panel.startDip")}</Button>
+          {slavesInput}
+          <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n))}>{t("maint.panel.startDip")}</Button>
         </div>
       )}
       {s === "marker-unexplained" && (
         <div className="space-y-2">
           <p className="text-alarm">{t("maint.banner.unexplainedHint")}</p>
-          <label className="flex items-center gap-2">{t("maint.panel.slaves")}<input type="number" min={0} max={15} className={input} value={n} onChange={(e) => setN(Number(e.target.value))} /></label>
-          {o.session?.kind !== "dip" && <Button variant="ghost" size="sm" disabled={busy} onClick={() => run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
+          {slavesInput}
+          {o.session?.kind !== "dip" && <Button variant="ghost" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
           {/* the recovery row: DIP session first, then the original image on address 0 (firmware view below) */}
           {!o.session && (
             <div className="space-y-2 border-t border-line pt-2">
               <p>{t("maint.panel.recoveryHint")}</p>
               <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
-              <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed} onClick={() => run(() => api.maintStartDip(o.installation.id, n))}>{t("maint.panel.startRecovery")}</Button>
+              <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n))}>{t("maint.panel.startRecovery")}</Button>
             </div>
           )}
         </div>
@@ -135,6 +141,22 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
       {/* 5. end */}
       {o.session && s !== "marker-unexplained" && (
         <div className="space-y-1">
+          {/* a wrong N could never pass End's bus step: the user corrects it here (End starts over) */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span>{t("maint.panel.slavesNow", { n: o.session.expected_slaves })}</span>
+            {editSlaves ? (
+              <>
+                <input type="number" min={1} max={15} className={input} value={nText} onChange={(e) => setNText(e.target.value)} aria-label={t("maint.panel.slaves")} />
+                <Button variant="ghost" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(async (still) => {
+                  const r = await api.maintSetSlaves(o.installation.id, n);
+                  if (still()) setEditSlaves(false);
+                  return r;
+                })}>{t("maint.panel.save")}</Button>
+              </>
+            ) : (
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setNText(String(o.session?.expected_slaves ?? "")); setEditSlaves(true); }}>{t("maint.panel.changeSlaves")}</Button>
+            )}
+          </div>
           {sequential ? (
             <div className="space-y-2">
               <p className="text-muted">{t("maint.panel.endSequential")}</p>
