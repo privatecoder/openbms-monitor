@@ -30,9 +30,10 @@ export function useMaint() {
     if (!id || isDemo) return;
     const ticket = guard.begin("check", id);
     let o: MaintOverview | null = null;
-    try { o = await api.maintCheck(id); } catch { /* stored state stays */ }
-    if (guard.accepts(ticket, installationRef.current, o, overviewRef.current) && o) store(o);
-    guard.end(ticket);
+    try {
+      try { o = await api.maintCheck(id); } catch { /* stored state stays */ }
+      if (guard.accepts(ticket, installationRef.current, o, overviewRef.current) && o) store(o);
+    } finally { guard.end(ticket); }
     if (!o) await refresh(id);
   }, [guard, refresh]);
 

@@ -37,7 +37,7 @@ export function attachDecision(current: MaintOverview | null, known: Installatio
   return inUse ? { do: "offer-assign" } : { do: "create" };
 }
 
-export interface Ticket { kind: "refresh" | "check"; id: string; seq: number }
+export interface Ticket { kind: "refresh" | "check"; id: string; seq: number; /** a refresh that began while a check for its id was in flight */ overlapped: boolean }
 
 /** Ordering of overview requests. A check (fresh 0x64 read) has precedence over a refresh (stored state):
  *  a check answer counts unless a newer check for the same id began; a refresh answer is ignored while a check
@@ -50,7 +50,7 @@ export function latestGuard() {
   const inFlight = new Map<string, number>();
   return {
     begin(kind: Ticket["kind"], id: string): Ticket {
-      const t = { kind, id, seq: ++seq };
+      const t: Ticket = { kind, id, seq: ++seq, overlapped: kind === "refresh" && (inFlight.get(id) ?? 0) > 0 };
       if (kind === "check") { lastCheck.set(id, t.seq); inFlight.set(id, (inFlight.get(id) ?? 0) + 1); }
       else lastRefresh.set(id, t.seq);
       return t;
@@ -61,7 +61,7 @@ export function latestGuard() {
       if (t.id !== currentId) return false;
       if (t.kind === "check") return (lastCheck.get(t.id) ?? 0) <= t.seq;
       const checks = (inFlight.get(t.id) ?? 0) > 0 || (lastCheck.get(t.id) ?? 0) > t.seq;
-      if (checks || (lastRefresh.get(t.id) ?? 0) > t.seq) return false;
+      if (t.overlapped || checks || (lastRefresh.get(t.id) ?? 0) > t.seq) return false;
       return !(answer === null && shown?.installation.id === t.id);
     },
   };
