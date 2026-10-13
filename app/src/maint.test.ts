@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, planItems, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, canFlash, createFromAttach, defaultName, deleteAllowed, nameCheck, openWorkLines, portLock, sectorNoteKey, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { latestOnly, planSectorNote, acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, planItems, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, canFlash, createFromAttach, defaultName, deleteAllowed, nameCheck, openWorkLines, portLock, sectorNoteKey, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession, OpenWork } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -732,5 +732,25 @@ describe("single pack texts", () => {
       expect(text).not.toBe("maint.panel.endOkZero");
       expect(text).not.toMatch(/meldet 0|reports 0/);
     }
+  });
+});
+
+describe("review follow-ups", () => {
+  it("accepts only the newest open-work load", () => {
+    const g = latestOnly();
+    const first = g.begin();
+    const second = g.begin();
+    expect(g.accepts(first)).toBe(false);
+    expect(g.accepts(second)).toBe(true);
+  });
+  it("shows an open sector note before a maintenance or custom image on the master", () => {
+    const o = { ...base, sector_note: "unknown image on the master" };
+    expect(planSectorNote(o, 0, "maintenance")).toBe("unknown image on the master");
+    expect(planSectorNote(o, 0, "custom")).toBe("unknown image on the master");
+    expect(planSectorNote(o, 0, "original")).toBeNull();
+    expect(planSectorNote(o, 3, "custom")).toBeNull();
+    expect(planSectorNote(base, 0, "custom")).toBeNull();
+    for (const lng of ["de", "en"]) expect(i18n.exists("maint.plan.sectorNote", { lng })).toBe(true);
+    expect(i18n.t("maint.plan.sectorNote", { lng: "de", note: "x" })).toBe("Offener Hinweis zu 0x23000: x. Vor diesem Flash klären oder bewusst fortfahren.");
   });
 });

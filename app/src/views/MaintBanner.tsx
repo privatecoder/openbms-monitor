@@ -15,7 +15,9 @@ function when(at: number | null): string {
 
 /** One line per installation with open work (`openWorkLines`), above every view. „Anzeigen“ always; „Beenden“ only
  *  where `line.end` allows it, otherwise the line says what must be cleared first. */
-export function MaintBanner({ lines, failed, overview, unassigned, other, onAssign, onSwitch, onShow, onEnd }: {
+export function MaintBanner({ lines, failed, overview, unassigned, other, onAssign, onSwitch, onShow, onEnd, switchLocked }: {
+  /** why „Anzeigen“ cannot switch now (an action, a flash or a switch runs); null: it can */
+  switchLocked: string | null;
   lines: WorkLine[];
   /** the last load of the open work failed: the last known lines stay, with a prominent note */
   failed: boolean;
@@ -67,7 +69,8 @@ export function MaintBanner({ lines, failed, overview, unassigned, other, onAssi
                 {l.session?.failing && <p className="text-alarm">{t("maint.banner.failing", { what: failingText(l.session.failing, t) })}</p>}
               </div>
               <div className="flex shrink-0 gap-2">
-                <Button variant="secondary" size="sm" onClick={() => onShow(l.id)}>{t("maint.openWork.show")}</Button>
+                {/* the shown installation needs no switch: its „Anzeigen“ only opens the panel */}
+                <Button variant="secondary" size="sm" disabled={!l.shown && !!switchLocked} title={!l.shown && switchLocked ? switchLocked : undefined} onClick={() => onShow(l.id)}>{t("maint.openWork.show")}</Button>
                 {l.end && <Button variant="secondary" size="sm" onClick={onEnd}>{t("maint.end")}</Button>}
               </div>
             </div>
