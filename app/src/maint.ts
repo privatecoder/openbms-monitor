@@ -148,6 +148,14 @@ export function portBusy(e: unknown): { action: string | null } | null {
   return { action: typeof a === "string" ? a : null };
 }
 
+/** One round of waiting for a busy port. `token` is the wait's own generation, `current` the sidebar's now (bumped by
+ *  cancel, disconnect, new settings, unmount and a user action elsewhere): another one means stop. A running flash
+ *  (`locked`) stops it, and so does the firmware view for the automatic reconnect (that view needs the port). */
+export function busyWaitStep(w: { token: number; current: number; locked: boolean; auto: boolean; firmwareOpen: boolean; now: number; until: number }): "wait" | "stop" | "give-up" {
+  if (w.token !== w.current || w.locked || (w.auto && w.firmwareOpen)) return "stop";
+  return w.now >= w.until ? "give-up" : "wait";
+}
+
 const BUSY_ACTIONS = ["check", "activate", "start-dip", "scan", "account-marker", "set-slaves", "measure", "end", "end-step", "clear-block", "flash"];
 
 /** "Port busy: the master is being checked." and what happens next: waiting for it, or given up after the wait. */

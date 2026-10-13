@@ -130,7 +130,7 @@ const resources = {
           residual: "Die Messung sieht kein Pack, das still in seinem Bootloader hängt. Das Ergebnis lautet nur „Bus still um …“, mehr sagt es nicht.",
           endStep: { stop: "1. Marker löschen (stop)", bus: "2. Pack-Bus prüfen", values: "3. Systemwerte lesen" },
           endSequential: "Ein Adapter für beide Busse: Beenden Schritt für Schritt, dazwischen umstecken.",
-          changeSlaves: "Ändern", save: "Speichern", onePackMarker: "1 Pack lässt sich erst eintragen, wenn der Marker gelöscht ist. „Beenden“ löscht ihn zuerst und meldet dann, dass die Packzahl nicht passt; danach hier 1 eintragen und erneut beenden.",
+          changeSlaves: "Ändern", save: "Speichern", cancel: "Abbrechen", onePackMarker: "1 Pack lässt sich erst eintragen, wenn der Marker gelöscht ist. „Beenden“ löscht ihn zuerst und meldet dann, dass die Packzahl nicht passt; danach hier 1 eintragen und erneut beenden.",
           packCount_one: "{{count}} Pack", packCount_other: "{{count}} Packs", slaveCount_one: "{{count}} Slave", slaveCount_other: "{{count}} Slaves",
           packsEq: "{{packs}} = {{slaves}} + 1 Master", dipWas: "DIP 5–8 des Masters standen auf {{n}}",
         },
@@ -300,6 +300,7 @@ const resources = {
         connected: "Verbunden", offline: "Nicht verbunden", paused: "Für Wartung angehalten", found: "{{count}} Packs gefunden", none: "Keine Packs gefunden. Prüfe Bus, Baudrate und Verkabelung.",
         demo: "Vorschau mit aufgezeichneten Werten",
         busyWait: "Port belegt: {{what}}. Die Verbindung wird danach aufgebaut.",
+        cancel: "Abbrechen", busyCancelled: "Warten auf den Port abgebrochen.",
         busyGaveUp: "Port belegt: {{what}}. Nach 30 s nicht frei geworden; bitte später erneut verbinden.",
         busyAction: {
           check: "Master wird gerade geprüft", activate: "Wartungsmodus wird gerade aktiviert", "start-dip": "Wartung per DIP wird gerade begonnen",
@@ -509,7 +510,7 @@ const resources = {
           residual: "The measurement cannot see a pack that sits silently in its bootloader. The result reads only “bus quiet at …”, nothing more.",
           endStep: { stop: "1. Clear the marker (stop)", bus: "2. Check the pack bus", values: "3. Read system values" },
           endSequential: "One adapter for both buses: end step by step, moving the cable in between.",
-          changeSlaves: "Change", save: "Save", onePackMarker: "1 pack can only be entered once the marker is cleared. “End” clears it first and then reports that the pack count does not match; then enter 1 here and end again.",
+          changeSlaves: "Change", save: "Save", cancel: "Cancel", onePackMarker: "1 pack can only be entered once the marker is cleared. “End” clears it first and then reports that the pack count does not match; then enter 1 here and end again.",
           packCount_one: "{{count}} pack", packCount_other: "{{count}} packs", slaveCount_one: "{{count}} slave", slaveCount_other: "{{count}} slaves",
           packsEq: "{{packs}} = {{slaves}} + 1 master", dipWas: "the master's DIP 5–8 were set to {{n}}",
         },
@@ -679,6 +680,7 @@ const resources = {
         connected: "Connected", offline: "Not connected", paused: "Paused for maintenance", found: "{{count}} packs found", none: "No packs found. Check bus, baud rate and wiring.",
         demo: "Preview with recorded values",
         busyWait: "Port busy: {{what}}. The connection follows once it is done.",
+        cancel: "Cancel", busyCancelled: "Waiting for the port cancelled.",
         busyGaveUp: "Port busy: {{what}}. Still not free after 30 s; please connect again later.",
         busyAction: {
           check: "the master is being checked", activate: "maintenance mode is being activated", "start-dip": "maintenance by DIP is being started",

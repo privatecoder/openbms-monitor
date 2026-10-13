@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { acceptsProgress, busyMessage, onePackBlocked, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -615,5 +615,28 @@ describe("pack count editor with the marker on", () => {
   it("says why in German and English", () => {
     expect(i18n.t("maint.panel.onePackMarker", { lng: "de" })).toBe("1 Pack lässt sich erst eintragen, wenn der Marker gelöscht ist. „Beenden“ löscht ihn zuerst und meldet dann, dass die Packzahl nicht passt; danach hier 1 eintragen und erneut beenden.");
     expect(i18n.exists("maint.panel.onePackMarker", { lng: "en" })).toBe(true);
+    for (const lng of ["de", "en"]) expect(i18n.exists("maint.panel.cancel", { lng })).toBe(true);
+  });
+});
+
+describe("waiting for a busy port", () => {
+  const w = { token: 3, current: 3, locked: false, auto: false, firmwareOpen: false, now: 1000, until: 31000 };
+  it("keeps waiting while nothing changed and the time is not up", () => {
+    expect(busyWaitStep(w)).toBe("wait");
+    // the firmware view stops only the automatic reconnect, not a connect the user asked for
+    expect(busyWaitStep({ ...w, firmwareOpen: true })).toBe("wait");
+  });
+  it("stops on cancel, disconnect, new settings or a user action (token changed), and while a flash locks the sidebar", () => {
+    expect(busyWaitStep({ ...w, current: 4 })).toBe("stop");
+    expect(busyWaitStep({ ...w, locked: true })).toBe("stop");
+    expect(busyWaitStep({ ...w, auto: true, firmwareOpen: true })).toBe("stop");
+  });
+  it("gives up after the wait; a stop wins over giving up", () => {
+    expect(busyWaitStep({ ...w, now: 31000 })).toBe("give-up");
+    expect(busyWaitStep({ ...w, now: 31000, current: 4 })).toBe("stop");
+  });
+  it("has the cancel texts", () => {
+    for (const lng of ["de", "en"]) for (const k of ["conn.cancel", "conn.busyCancelled"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+    expect(i18n.t("conn.cancel", { lng: "de" })).toBe("Abbrechen");
   });
 });

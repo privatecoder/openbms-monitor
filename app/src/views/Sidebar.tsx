@@ -6,8 +6,11 @@ import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
-import { busyMessage, portBusy } from "../maint";
+import { busyMessage, busyWaitStep, portBusy } from "../maint";
 import { RecordingEntry } from "./Recording";
+
+/** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
+class Cancelled extends Error {}
 
 // a busy port: try again every BUSY_POLL_MS, give up after BUSY_WAIT_MS
 const BUSY_POLL_MS = 500;
@@ -15,7 +18,7 @@ const BUSY_WAIT_MS = 30_000;
 
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
 
-export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
+export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
   connected: boolean;
   /** the app stopped the monitor itself for a maintenance step (not lost, not closed by the user) */
   paused: boolean;
@@ -29,6 +32,8 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
   view: string;
   setView: (v: string) => void;
   locked: boolean;
+  /** counts actions the user started in the firmware view or the pack bus panel: a wait for a busy port stops */
+  userActions: number;
   maintenance: boolean;
   setMaintenance: (v: boolean) => void;
   onEndpoint: (endpoint: Endpoint) => void;
@@ -63,18 +68,37 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
   useEffect(() => { api.listPorts().then(setPorts).catch(() => setPorts([])); }, [kind]);
   useEffect(() => { document.documentElement.classList.toggle("dark", dark); try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
 
-  // a maintenance action or a pack check holds the port: say which, and connect once it has finished
-  const connectWhenFree = async (ep: Endpoint) => {
+  // a maintenance action or a pack check holds the port: say which, and connect once it has finished. The wait
+  // belongs to one generation (`waitToken`); cancel, disconnect, new settings, unmount and a user action elsewhere
+  // start a new one, which ends it. `locked` and the open view are read through refs on every round.
+  const waitToken = useRef(0);
+  const lockedRef = useRef(locked); lockedRef.current = locked;
+  const viewRef = useRef(view); viewRef.current = view;
+  const [waiting, setWaiting] = useState(false);
+  const stopWaiting = () => { waitToken.current += 1; };
+  useEffect(stopWaiting, [target, kind, bus, packCount, userActions]);
+  useEffect(() => stopWaiting, []);
+  const connectWhenFree = async (ep: Endpoint, auto: boolean) => {
+    const token = ++waitToken.current;
     const until = Date.now() + BUSY_WAIT_MS;
-    for (;;) {
-      try { await api.connect(ep); return; } catch (e) {
-        const b = portBusy(e);
-        if (!b) throw e;
-        if (Date.now() >= until) throw new Error(busyMessage(b.action, true, t));
-        setMsg(busyMessage(b.action, false, t));
-        await new Promise((r) => setTimeout(r, BUSY_POLL_MS));
+    let action: string | null = null;
+    try {
+      for (let first = true; ; first = false) {
+        // before every new attempt: stopped meanwhile, or the time is up
+        if (!first) {
+          const step = busyWaitStep({ token, current: waitToken.current, locked: lockedRef.current, auto, firmwareOpen: viewRef.current === "firmware", now: Date.now(), until });
+          if (step === "stop") throw new Cancelled();
+          if (step === "give-up") throw new Error(busyMessage(action, true, t));
+        }
+        try { await api.connect(ep); return; } catch (e) {
+          const b = portBusy(e);
+          if (!b) throw e;
+          action = b.action;
+          setMsg(busyMessage(action, false, t)); setWaiting(true);
+          await new Promise((r) => setTimeout(r, BUSY_POLL_MS));
+        }
       }
-    }
+    } finally { setWaiting(false); }
   };
 
   const connect = async (retry = false) => {
@@ -84,7 +108,7 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       localStorage.setItem("conn.packs", String(packCount));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
-      await connectWhenFree(ep);
+      await connectWhenFree(ep, retry);
       void onEndpoint(ep);
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
@@ -116,6 +140,8 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
       // on the CAN socket bus the system values are polled even if no pack answered
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
     } catch (e) {
+      // a cancelled wait never opened the port: nothing to close, no error
+      if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
       if (retry) await api.disconnect().catch(() => {});
       const err = e instanceof Error ? e.message : String(e);
       setMsg(retry ? t("conn.retryFailed", { err }) : err);
@@ -125,7 +151,7 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
   // Browser preview: connect straight away so the recorded system is visible.
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const disconnect = async () => { await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
+  const disconnect = async () => { stopWaiting(); await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
@@ -225,6 +251,7 @@ export function Sidebar({ connected, paused, lastUpdate, onConnected, onDevices,
           <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>
             {busy ? (packCount > 0 ? t("conn.starting") : t("conn.scanning")) : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
+          {waiting && <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>}
           {(connected || lost) && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}

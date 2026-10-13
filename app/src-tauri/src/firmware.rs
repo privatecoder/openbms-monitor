@@ -225,6 +225,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     }
     let port_slot = reserve_port(&state.port_busy)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
+    // a connect refused during the gate below names the flash (`flashing` is set only after it)
+    let _action = crate::maint::begin_action(&state, "", "flash");
     // maintenance gate: the pack port decides the installation; then everything before the restart
     let to_text = |e: crate::maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
     let confirm = maint.unwrap_or_default();

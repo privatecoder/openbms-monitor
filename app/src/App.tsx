@@ -34,6 +34,9 @@ export default function App() {
   const [flashing, setFlashing] = useState(false);
   // "End" in the banner: the firmware view scrolls to the panel's End section (also when it is already open)
   const [focusEnd, setFocusEnd] = useState(0);
+  // counts actions the user starts in the firmware view or the pack bus panel: the sidebar's wait for a busy port stops
+  const [userActions, setUserActions] = useState(0);
+  const userAction = () => setUserActions((n) => n + 1);
   // a screenshot link straight into a maintenance view (demoView) shows that view
   const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1" || MAINT_VIEWS.includes(demoView ?? ""));
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
@@ -54,6 +57,7 @@ export default function App() {
     <HelpProvider>
       <div className="flex h-full bg-bg text-ink">
         <Sidebar
+          userActions={userActions}
           connected={connected}
           paused={monitor === "paused"}
           site={site}
@@ -73,7 +77,7 @@ export default function App() {
           <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
             onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); setFocusEnd(Date.now()); }} />
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} monitor={monitor} disconnects={disconnects} focusEnd={focusEnd} onFocusDone={() => setFocusEnd(0)} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
+            <Firmware connected={connected} monitor={monitor} disconnects={disconnects} focusEnd={focusEnd} onFocusDone={() => setFocusEnd(0)} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction}
               onMonitorStopped={monitorStopped} />
           ) : view === "cells" ? (
             <Cells />
