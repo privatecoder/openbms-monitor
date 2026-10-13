@@ -100,7 +100,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
           <p>{t(s === "unknown" ? "maint.panel.unknownHint" : zeroSlaves ? "maint.panel.dipZeroHint" : "maint.panel.dipHint")}</p>
           <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
           {packsInput}
-          <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n))}>{t("maint.panel.startDip")}</Button>
+          <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t("maint.panel.startDip")}</Button>
         </div>
       )}
       {s === "marker-unexplained" && (
@@ -113,7 +113,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
             <div className="space-y-2 border-t border-line pt-2">
               <p>{t("maint.panel.recoveryHint")}</p>
               <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
-              <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n))}>{t("maint.panel.startRecovery")}</Button>
+              <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t("maint.panel.startRecovery")}</Button>
             </div>
           )}
         </div>
@@ -157,7 +157,7 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
               <>
                 {packsField}
                 <Button variant="ghost" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(async (still) => {
-                  const r = await api.maintSetSlaves(o.installation.id, n);
+                  const r = await api.maintSetSlaves(o.installation.id, n, port);
                   if (still()) setEditSlaves(false);
                   return r;
                 })}>{t("maint.panel.save")}</Button>

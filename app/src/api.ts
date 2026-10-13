@@ -164,10 +164,11 @@ const tauriApi = {
   /** reads 0x64 over the control channel and stores the classified state */
   maintCheck: (installation: string) => invoke<MaintOverview>("maint_check", { installation }),
   maintActivate: (installation: string, inverterConfirmed: boolean) => invoke<MaintOverview>("maint_activate", { installation, inverterConfirmed }),
-  maintStartDip: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_start_dip", { installation, expectedSlaves }),
+  /** `port`: the pack port; used for N = 0 (single-pack proof: no slave answers on the pack bus) */
+  maintStartDip: (installation: string, expectedSlaves: number, port: string) => invoke<MaintOverview>("maint_start_dip", { installation, expectedSlaves, port }),
   maintAccountMarker: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_account_marker", { installation, expectedSlaves }),
   /** Correct the slave count per DIP of the open session; End starts over. */
-  maintSetSlaves: (installation: string, expectedSlaves: number) => invoke<MaintOverview>("maint_set_slaves", { installation, expectedSlaves }),
+  maintSetSlaves: (installation: string, expectedSlaves: number, port: string) => invoke<MaintOverview>("maint_set_slaves", { installation, expectedSlaves, port }),
   /** returns the time of the passed measurement (ms) */
   maintMeasure: (installation: string, port: string) => invoke<number>("maint_measure", { installation, port }),
   /** Refused "end-sequential" when control channel and pack port are one adapter: then drive maintEndStep. */

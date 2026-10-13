@@ -277,26 +277,48 @@ pub fn reports_zero(state: Option<&StoredMasterState>) -> bool {
     state == Some(&StoredMasterState::PatchedOff { slaves: 0 })
 }
 
-/// For `N` = 0: read 0x64 now (the caller holds `port_busy`) and return the state stored from it. Without a
-/// control channel nothing can be verified: `slaves-range`.
-fn fresh_for_zero(state: &AppState, inst: &Installation) -> Result<StoredMasterState, MaintError> {
-    match check(state, inst) {
-        Err(MaintError::Refused { reason }) if reason == "no-control-channel" => Err(refused("slaves-range")),
-        r => r,
+/// Proof of a single pack: the master reports 0/0 (which alone a bank master with DIP 5–8 OFF also does)
+/// and no slave answers on the pack bus (`slave`: the first address 1..=15 that answered 0x51).
+pub fn single_pack(state: Option<&StoredMasterState>, slave: Option<u8>) -> bool {
+    reports_zero(state) && slave.is_none()
+}
+
+/// Per-address timeout of the slave scan for `N` = 0: 15 addresses stay below 4 s.
+const SLAVE_SCAN: Duration = Duration::from_millis(250);
+
+/// For `N` = 0 (the caller holds `port_busy`): read 0x64 now and store it; if it shows 0/0, prove on the pack
+/// bus that it is the pack bus (quiet, 0x47 from address 0) and look for a slave. Returns the fresh state and
+/// the first slave found. Without a control channel nothing can be verified: `slaves-range`.
+fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<(StoredMasterState, Option<u8>), MaintError> {
+    if port.is_empty() {
+        return Err(refused("no-port"));
     }
+    port_of(state, inst, port)?;
+    let fresh = match check(state, inst) {
+        Err(MaintError::Refused { reason }) if reason == "no-control-channel" => return Err(refused("slaves-range")),
+        r => r?,
+    };
+    if !reports_zero(Some(&fresh)) {
+        return Ok((fresh, None));
+    }
+    let mut link = open_pack_for(state, app, port)?;
+    bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
+    let slave = bus::first_slave(&mut link, &mut std::io::sink(), SLAVE_SCAN).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    Ok((fresh, slave))
 }
 
 /// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
-/// (`N` = 0 only when the master itself reports 0/0, see `slaves_allowed`).
+/// (`N` = 0 only for a proven single pack, see `single_pack`; `port`: the pack port, used only then).
 #[tauri::command]
-pub async fn maint_start_dip(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
+pub async fn maint_start_dip(app: AppHandle, state: State<'_, AppState>, installation: String, expected_slaves: u8, port: String) -> Result<Overview, MaintError> {
     if expected_slaves != 0 {
         slaves_allowed(expected_slaves, false)?;
     }
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     if expected_slaves == 0 {
-        slaves_allowed(0, reports_zero(Some(&fresh_for_zero(&state, &inst)?)))?;
+        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port)?;
+        slaves_allowed(0, single_pack(Some(&fresh), slave))?;
     }
     let now = crate::history::now_ms();
     with_store(&state, |s| s.start_session(&inst.id, SessionKind::Dip, expected_slaves, now).map(|_| ()))?;
@@ -323,29 +345,32 @@ pub async fn maint_account_marker(state: State<'_, AppState>, installation: Stri
 }
 
 /// Correcting `N` of an open session: never in the locked state (its only ways out are the recovery row
-/// and the user's statement). `state`: for `N` = 0 the one read fresh in this command.
-pub fn set_slaves_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>, n: u8) -> Result<(), MaintError> {
+/// and the user's statement). `single`: for `N` = 0, a single pack proven in this command (`single_pack`).
+pub fn set_slaves_allowed(session: Option<&MaintSession>, state: Option<&StoredMasterState>, n: u8, single: bool) -> Result<(), MaintError> {
     if session.is_none() {
         return Err(refused("no-session"));
     }
     stop_allowed(state)?;
-    slaves_allowed(n, reports_zero(state))
+    slaves_allowed(n, single)
 }
 
 /// A session with a wrong `N` could never be closed: the user corrects the slave count per DIP. End
 /// starts over, its earlier steps were checked against the old count.
 #[tauri::command]
-pub async fn maint_set_slaves(state: State<'_, AppState>, installation: String, expected_slaves: u8) -> Result<Overview, MaintError> {
+pub async fn maint_set_slaves(app: AppHandle, state: State<'_, AppState>, installation: String, expected_slaves: u8, port: String) -> Result<Overview, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     let (session, ms) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?)))?;
     let mut ms = ms.map(|(m, _)| m);
+    let mut single = false;
     if expected_slaves == 0 {
-        // the stored state never counts for N = 0: read the master now (session and lock checked first)
-        set_slaves_allowed(session.as_ref(), ms.as_ref(), 1)?;
-        ms = Some(fresh_for_zero(&state, &inst)?);
+        // nothing stored counts for N = 0: prove a single pack now (session and lock checked first)
+        set_slaves_allowed(session.as_ref(), ms.as_ref(), 1, false)?;
+        let (fresh, slave) = verify_single_pack(&state, &app, &inst, &port)?;
+        single = single_pack(Some(&fresh), slave);
+        ms = Some(fresh);
     }
-    set_slaves_allowed(session.as_ref(), ms.as_ref(), expected_slaves)?;
+    set_slaves_allowed(session.as_ref(), ms.as_ref(), expected_slaves, single)?;
     if let Some(ses) = &session {
         with_store(&state, |s| s.set_expected_slaves(ses.id, expected_slaves))?;
     }
@@ -687,7 +712,8 @@ pub struct EndResult {
 pub enum EndStep {
     /// marker session: `stop` and wait for 0/N (a DIP session sends no `stop`; the step passes without one)
     Stop,
-    /// pack bus: every slave polled and answering (`N` = 0: quiet bus and 0x47 answered by address 0)
+    /// pack bus: every slave polled and answering (`N` = 0: quiet bus, 0x47 answered by address 0, no slave
+    /// answering 0x51)
     Bus,
     /// two Modbus reads one polling round apart (`values_pause`) over the control channel, for `N` = 0 after a
     /// fresh 0x64 status 0/0; closes the session
@@ -712,10 +738,10 @@ pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgres
 }
 
 /// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop). A single pack
-/// (`N` = 0) ends only with a control channel: its Values step needs a fresh 0/0 from the master
-/// (`reports_zero`), since there is no polling round to see. That read cannot tell a single pack from a bank
-/// master whose DIP 5–8 are still OFF; the pack count the user entered decides that, shown with its DIP value.
-/// Without a control channel (or with `N` > 15) every step is refused until the user corrects `N`.
+/// (`N` = 0) ends only with a control channel: there is no polling round to see, so its Bus step also scans
+/// addresses 1..=15 for a slave (a bank master with DIP 5–8 still OFF reports 0/0 too) and its Values step
+/// needs a fresh 0/0 from the master (`reports_zero`). Without a control channel (or with `N` > 15) every step
+/// is refused until the user corrects `N`.
 pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, has_control: bool, step: EndStep) -> Result<(), MaintError> {
     slaves_allowed(slaves, has_control)?;
     let stopped = p.stopped || kind == SessionKind::Dip;
@@ -779,12 +805,18 @@ fn run_end_step(state: &AppState, app: &AppHandle, inst: &Installation, port: &s
         }
         EndStep::Stop => {}
         EndStep::Bus if n == 0 => {
-            // a single pack: nothing polls, the master answers 0x47 on a quiet bus
+            // a single pack: nothing polls, the master answers 0x47 on a quiet bus, and no slave answers
             let mut link = open_pack_for(state, app, port)?;
             match bus::measure(&mut link, &mut std::io::sink()) {
                 Ok(()) => {}
                 Err(openbms_flash::Error::MasterSilent) => return fail("master-not-answering", vec![]),
                 Err(e) => return Err(MaintError::Measure { message: e.to_string() }),
+            }
+            // a slave that answers proves a bank (its master's DIP 5–8 may still be OFF)
+            match bus::first_slave(&mut link, &mut std::io::sink(), SLAVE_SCAN) {
+                Ok(None) => {}
+                Ok(Some(a)) => return fail(&format!("slave-present: {a}"), vec![]),
+                Err(e) => return Err(MaintError::Connection { message: e.to_string() }),
             }
         }
         EndStep::Bus => {
@@ -1172,15 +1204,28 @@ mod tests {
     fn slave_count_changes_only_in_an_open_session() {
         let on = StoredMasterState::PatchedOn;
         let ses = session(SessionKind::Dip);
-        assert!(set_slaves_allowed(Some(&ses), Some(&on), 4).is_ok());
-        assert!(set_slaves_allowed(Some(&ses), None, 4).is_ok());
-        assert!(refused_with(set_slaves_allowed(None, Some(&on), 4), "no-session"));
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&on), 0), "slaves-range"));
-        // N = 0 only after the master itself reported 0/0
-        assert!(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::PatchedOff { slaves: 0 }), 0).is_ok());
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::PatchedOff { slaves: 3 }), 0), "slaves-range"));
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 4), "marker-unexplained"));
-        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 0), "marker-unexplained"));
+        assert!(set_slaves_allowed(Some(&ses), Some(&on), 4, false).is_ok());
+        assert!(set_slaves_allowed(Some(&ses), None, 4, false).is_ok());
+        assert!(refused_with(set_slaves_allowed(None, Some(&on), 4, false), "no-session"));
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&on), 0, false), "slaves-range"));
+        // N = 0 only for a single pack proven in the command
+        let zero = StoredMasterState::PatchedOff { slaves: 0 };
+        assert!(set_slaves_allowed(Some(&ses), Some(&zero), 0, true).is_ok());
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&zero), 0, false), "slaves-range"));
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 4, false), "marker-unexplained"));
+        assert!(refused_with(set_slaves_allowed(Some(&ses), Some(&StoredMasterState::MarkerUnexplained), 0, true), "marker-unexplained"));
+    }
+
+    #[test]
+    fn a_single_pack_needs_the_master_at_zero_and_no_slave_on_the_bus() {
+        use StoredMasterState as S;
+        assert!(single_pack(Some(&S::PatchedOff { slaves: 0 }), None));
+        // a bank master with DIP 5-8 OFF also reports 0/0, but its slaves answer
+        assert!(!single_pack(Some(&S::PatchedOff { slaves: 0 }), Some(7)));
+        assert!(!single_pack(Some(&S::PatchedOff { slaves: 2 }), None));
+        assert!(!single_pack(Some(&S::PatchedOn), None));
+        assert!(!single_pack(Some(&S::Unknown), None));
+        assert!(!single_pack(None, None));
     }
 
     #[test]

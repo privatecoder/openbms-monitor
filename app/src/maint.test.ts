@@ -192,12 +192,14 @@ describe("failing End checks", () => {
     expect(failingKey("master-not-answering")).toEqual({ key: "maint.failing.master-not-answering" });
     expect(failingKey("system-values")).toEqual({ key: "maint.failing.system-values" });
     expect(failingKey("master-not-zero")).toEqual({ key: "maint.failing.master-not-zero" });
+    expect(failingKey("slave-present: 7")).toEqual({ key: "maint.failing.slave-present", params: { addr: 7 } });
     expect(failingKey('stop: {"kind":"no-answer"}')).toEqual({ key: "maint.failing.stop", inner: { key: "maint.err.no-answer" } });
     expect(failingKey("something else")).toBeNull();
   });
   it("composes the text, the stop error translated inside", () => {
     const t = (key: string, params?: Record<string, unknown>) => params ? `${key}(${JSON.stringify(params)})` : key;
     expect(failingText("system-values", t)).toBe("maint.failing.system-values");
+    expect(failingText("slave-present: 7", t)).toBe('maint.failing.slave-present({"addr":7})');
     expect(failingText('stop: {"kind":"refused","reason":"no-session"}', t)).toBe('maint.failing.stop({"error":"maint.err.refused.no-session"})');
     expect(failingText("something else", t)).toBe("something else");
   });
