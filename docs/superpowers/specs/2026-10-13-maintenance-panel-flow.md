@@ -14,14 +14,24 @@ First bench run of stage 1 (single board, patched master, DIP 5 ON = 1 slave):
 
 - The panel is a numbered checklist. Each step is done (✓), current (▶) or locked (🔒 with the reason, e.g. "first step 2"). Only the current step's main action is enabled; harmless repeats (check master, measure) stay available on done steps.
 - The backend stays the authority. The step logic is an additional UI rule (pure function `flowOf(...)` in `maint.ts`, unit-tested for every state below); it never replaces a backend gate.
-- Choosing a port, an address and an image is not locked by the maintenance steps: they are inputs the flow needs to know which branch applies (master flash, recovery). They are locked only while something runs (flash, pack check, measurement, End sub-step), as today. Changing any of them invalidates the measurement, the pack check and the typed confirmation.
+- Choosing an address and an image (and the ports, in the setup form) is not locked by the maintenance steps: they are inputs the flow needs to know which branch applies (master flash, recovery). They are locked only while something runs (flash, pack check, measurement, End sub-step), as today. Changing any of them invalidates the measurement, the pack check and the typed confirmation.
 
 ## Steps
 
-1. **Connections.** Control channel set up (or explicitly none); pack port chosen.
-   - Preselection: only when exactly one available serial endpoint of the installation is not the control adapter, preselect it. If none or several qualify, leave the choice empty and ask. The control adapter is preselected only if it is the installation's only serial endpoint (deliberate one-adapter setup).
-   - The chosen pack port is shown in the panel header ("pack port: …") and in the End section, so it is visible before every bus action.
-   - One-adapter mode (`needsReplug`) only when the chosen pack port equals the control endpoint.
+1. **Connections.** Read-only: "CAN socket: …" and "RS485-1/2: …", each with "not plugged in" when the serial port is not among the available ports, and a "Set up" button. The setup form is the single place to choose ports (amended 2026-10-13, see below); there is no port select in the panel or, with an installation in use, in the firmware view.
+   - Done when the RS485-1/2 port is set up and plugged in, and the CAN socket is set up (or "without control channel" is ticked). Otherwise current with "set up the RS485-1/2 port" or "RS485-1/2 port … is not plugged in".
+   - The RS485-1/2 port is the installation's stored one (`packPortOf`): the first stored serial endpoint that is not the control adapter. The control adapter counts only with the one-adapter confirmation of the setup form (kept in the UI per installation); a sidebar connection on the control adapter never passes for a one-adapter setup.
+   - The RS485-1/2 port is shown in the panel header ("RS485-1/2: …") and in the End section, so it is visible before every bus action.
+   - One-adapter mode (`needsReplug`) only when the RS485-1/2 port equals the control endpoint.
+
+### Setup form (amended 2026-10-13)
+
+Bench feedback: three port pickers (control channel, an endpoint list with "add", and a port select in step 1) were one too many; the list showed "–" while the store held both ports, and a save from that form would have dropped the pack port.
+
+- Fields: name; **CAN socket** (control the master, 9600 baud): USB port or network address `host:port`; **RS485-1/2** (measure and flash packs, 19200 baud): USB port; "network" is shown but disabled until stage 2 (flashing through a gateway is not bench-tested yet). A stored port that is not plugged in stays visible in its select.
+- The form starts from the installation as stored (re-read when it opens) and builds the saved list from the installation as stored at save time (`setupEndpoints`): the CAN key and the RS485-1/2 key first, then every other stored endpoint (e.g. a sidebar TCP endpoint); the old CAN key and the old pack key are replaced.
+- A stored RS485-1/2 port can be replaced but not left empty (`setupCheck`). The same serial adapter for both needs the checkbox "one adapter for both buses, I move the cable", shown only in that case.
+- The backend's ownership guard (`endpoint-in-use`) still applies and is shown as text.
 2. **Check master** (0x64). Required once per app run and again after a lost connection before step 3 unlocks. A stored state from an earlier run is shown as "last confirmed state" only.
    - A check that fails (no answer, no control channel, connection error) ends as `unknown` with the diagnosis — except when the stored state is `marker-unexplained`: a failed read keeps it, and only its recovery stays available (stage-1 decision 7). A failed check completes step 2 for the manual DIP way only; it never confirms a marker.
 3. **Inverter statement.** Checkbox; after a restart, a lost connection or the end of a session it is empty with the reason shown. It survives the session its own activation opened.
@@ -68,5 +78,5 @@ Three distinct texts: "monitor paused for maintenance" (the app stopped it itsel
 
 1. Fresh check per app run / after a connection loss before a new work phase: yes. Stored data only drives the banner.
 2. Measurement before End: no; End checks itself. Blocks and `marker-unexplained` keep End locked.
-3. Port preselection: only with exactly one candidate; otherwise an explicit choice.
+3. Port preselection: only with exactly one candidate; otherwise an explicit choice. (Superseded 2026-10-13: the ports come from the setup form only; no preselection.)
 4. Recovery, DIP alternative for patched-off N > 0, marker session with unknown, end progress and port visibility are covered above.
