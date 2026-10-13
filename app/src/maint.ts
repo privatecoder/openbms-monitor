@@ -201,7 +201,8 @@ export function preselectPort(ports: string[], inst: Installation | null): strin
   const available = [...serial].filter((p) => ports.includes(p));
   const candidates = available.filter((p) => p !== control);
   if (candidates.length === 1) return candidates[0];
-  if (candidates.length === 0 && control && serial.size === 1 && available.includes(control)) return control;
+  // the control adapter only as the installation's only serial endpoint and the only port plugged in
+  if (candidates.length === 0 && control && serial.size === 1 && ports.length === 1 && ports[0] === control) return control;
   return "";
 }
 
@@ -226,7 +227,8 @@ export interface FlowInput {
   fresh: "ok" | "failed" | null;
   /** the user works without a control channel (explicit choice in step 1) */
   noControl: boolean;
-  /** without a control channel: the user stated that only this one pack is on the bus */
+  /** without a control channel: the user stated that only this one pack is on the bus (counts only while
+   *  `singlePackOffered`: no session, no stored state or unknown) */
   singlePack: boolean;
   inverter: boolean;
   measuredAt: number | null;
@@ -255,6 +257,8 @@ export interface Flow {
   packsUnclear: boolean;
   /** control channel and pack port are one adapter */
   replug: boolean;
+  /** step 4 may offer the statement "only this one pack" (no control channel, no session, nothing or unknown stored) */
+  singlePackOffered: boolean;
   /** no action runs: the current step's main action may be used */
   idle: boolean;
 }
@@ -271,7 +275,7 @@ export function flowOf(i: FlowInput): Flow {
   if (!o) {
     const steps = Object.fromEntries(ids.map((id) => [id, { state: "locked", reason: r("maint.flow.reason.no-installation") }])) as Record<StepId, FlowStep>;
     steps.flash = { state: i.running ? "locked" : "current", ...(i.running ? { reason: r("maint.flow.reason.running") } : {}) };
-    return { state: null, branch: null, steps, end: { shown: false, state: "locked", next: null }, scanNeeded: false, packsUnclear: false, replug: false, idle: !i.busy && !i.running };
+    return { state: null, branch: null, steps, end: { shown: false, state: "locked", next: null }, scanNeeded: false, packsUnclear: false, replug: false, singlePackOffered: false, idle: !i.busy && !i.running };
   }
   const stored = o.state?.state ?? null;
   const hasControl = !!o.installation.control;
@@ -280,6 +284,7 @@ export function flowOf(i: FlowInput): Flow {
   // a failed check ends as unknown; it never clears an unexplained marker
   const state: MasterStateName | null = fresh === null ? null : fresh === "failed" ? (stored === "marker-unexplained" ? stored : "unknown") : (stored ?? "unknown");
   const session = o.session;
+  const singlePackOffered = manual && !session && (stored === null || stored === "unknown");
   const zero = state === "patched-off" && (o.state?.slaves ?? 0) === 0;
   let branch: Branch | null = null;
   if (state === "marker-unexplained") branch = session?.kind === "dip" ? "recovery" : "unexplained";
@@ -287,11 +292,15 @@ export function flowOf(i: FlowInput): Flow {
   else if (state === "patched-on") branch = null;
   else if (state === "patched-off" && !zero) branch = "activate";
   else if (zero) branch = i.scan === undefined || (i.scan === null && i.imageKind !== "custom") ? "single-pack" : "dip";
-  else if (state !== null) branch = manual && i.singlePack ? "single-pack" : "dip";
+  else if (state !== null) branch = singlePackOffered && i.singlePack ? "single-pack" : "dip";
   const scanNeeded = !session && zero && i.scan === undefined;
   const single = branch === "single-pack" && !scanNeeded;
   const recoveryTarget = i.address === 0 && i.imageKind === "original";
   const recoveryLock = branch === "recovery" && !recoveryTarget ? r("maint.flow.reason.recovery-only-original") : null;
+  // a marker session whose master no longer reports the marker (e.g. patched-off after End's stop step): no new
+  // measurement or flash until a check shows the marker again; End continues
+  const markerLock = session?.kind === "marker" && state !== null && state !== "patched-on" && state !== "unknown" && state !== "marker-unexplained"
+    ? r("maint.flow.reason.marker-not-on") : null;
   const blockLock = o.blocks.length ? r(`maint.err.refused.${o.blocks[0].reason}`) : null;
   const measured = i.measuredAt !== null && (o.state_at === null || i.measuredAt >= o.state_at);
 
@@ -313,7 +322,6 @@ export function flowOf(i: FlowInput): Flow {
     inverter: () => {
       if (branch === "unexplained") return { complete: false, deferred: r("maint.flow.reason.after-recovery") };
       if (scanNeeded) return { complete: false, deferred: r("maint.flow.reason.after-scan") };
-      if (single) return { complete: true, notNeeded: true };
       return { complete: i.inverter, hard: recoveryLock };
     },
     start: () => {
@@ -322,12 +330,8 @@ export function flowOf(i: FlowInput): Flow {
       if (single) return { complete: true, notNeeded: true };
       return { complete: false };
     },
-    measure: () => {
-      const hard = blockLock ?? recoveryLock;
-      if (single && !hard) return { complete: true, notNeeded: true };
-      return { complete: measured, hard };
-    },
-    flash: () => ({ complete: false, hard: blockLock ?? recoveryLock }),
+    measure: () => ({ complete: measured, hard: blockLock ?? recoveryLock ?? markerLock }),
+    flash: () => ({ complete: false, hard: blockLock ?? recoveryLock ?? markerLock }),
   };
 
   // the recovery starts its DIP session (step 4) before the inverter statement (step 3)
@@ -357,6 +361,7 @@ export function flowOf(i: FlowInput): Flow {
     state, branch, steps, end, scanNeeded,
     packsUnclear: zero && !session && typeof i.scan === "number",
     replug: needsReplug(o.installation.control, i.port),
+    singlePackOffered,
     idle: !i.busy && !i.running,
   };
 }
