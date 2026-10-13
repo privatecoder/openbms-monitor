@@ -32,6 +32,8 @@ export default function App() {
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
   const [flashing, setFlashing] = useState(false);
+  // "End" in the banner: the firmware view scrolls to the panel's End section (also when it is already open)
+  const [focusEnd, setFocusEnd] = useState(0);
   // a screenshot link straight into a maintenance view (demoView) shows that view
   const [maintenance, setMaintenance] = useState(() => localStorage.getItem("maint.enabled") === "1" || MAINT_VIEWS.includes(demoView ?? ""));
   const [pack, setPack] = useState<number | null>(demoPack !== null ? Number(demoPack) : null);
@@ -69,9 +71,9 @@ export default function App() {
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
           <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
-            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); }} />
+            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); setFocusEnd(Date.now()); }} />
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} monitor={monitor} disconnects={disconnects} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
+            <Firmware connected={connected} monitor={monitor} disconnects={disconnects} focusEnd={focusEnd} onFocusDone={() => setFocusEnd(0)} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")}
               onMonitorStopped={monitorStopped} />
           ) : view === "cells" ? (
             <Cells />

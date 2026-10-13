@@ -23,9 +23,12 @@ function Step({ n, title, active, children }: { n: number; title: string; active
   );
 }
 
-export function Firmware({ connected, monitor, disconnects, maint, onMonitorStopped, onRunning, onBack }: {
+export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDone, maint, onMonitorStopped, onRunning, onBack }: {
   connected: boolean;
   monitor: Monitor;
+  /** set by "End" in the banner: scroll to the panel's End section */
+  focusEnd: number;
+  onFocusDone: () => void;
   /** counts the monitor connection being lost or closed in the sidebar (not stopped by this view for a flash) */
   disconnects: number;
   maint: ReturnType<typeof useMaint>;
@@ -112,7 +115,7 @@ export function Firmware({ connected, monitor, disconnects, maint, onMonitorStop
     phase.current = next;
   }, [overview?.session?.id, overview?.installation.id]);
   // after a lost or closed connection the operator confirms the inverter afresh and measures again
-  useEffect(() => { setInverter(false); setMeasuredAt(null); }, [disconnects]);
+  useEffect(() => { setInverter(false); setMeasuredAt(null); setNoControl(false); setSinglePack(false); }, [disconnects]);
   // the End result stays until a new session opens or another installation is shown
   useEffect(() => { setEndNote(null); }, [overview?.installation.id]);
   useEffect(() => { if (overview?.session) setEndNote(null); }, [overview?.session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -226,7 +229,7 @@ export function Firmware({ connected, monitor, disconnects, maint, onMonitorStop
         <p className="text-muted">{t("fw.intro")}</p>
       </header>
 
-      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} portPicker={portPicker} monitor={monitor}
+      <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} portPicker={portPicker} monitor={monitor} focusEnd={focusEnd} onFocusDone={onFocusDone}
         busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
         noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
         setEndNote={(text) => setEndNote(text && overview ? { installation: overview.installation.id, text } : null)} />

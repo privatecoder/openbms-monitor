@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, Lock, Play, TriangleAlert } from "lucide-react";
 import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
@@ -28,13 +28,16 @@ function Item({ n, title, step, children }: { n: number | null; title: string; s
   );
 }
 
-export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, setEndNote, noControl, setNoControl, singlePack, setSinglePack }: {
+export function PackBusPanel({ maint, flow, port, portPicker, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, setEndNote, noControl, setNoControl, singlePack, setSinglePack }: {
   maint: ReturnType<typeof useMaint>;
   flow: Flow;
   port: string;
   /** the pack port selection (lives in the firmware view, shown in step 1) */
   portPicker: ReactNode;
   monitor: Monitor;
+  /** "End" in the banner was pressed: scroll to the End section (or the panel) and highlight it briefly */
+  focusEnd: number;
+  onFocusDone: () => void;
   busy: boolean;
   setBusy: (v: boolean) => void;
   inverter: boolean;
@@ -69,6 +72,20 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, set
   // a sub-step of End failed: the overview's end_next is the restart point
   const [endFailed, setEndFailed] = useState(false);
   useEffect(() => { setEndFailed(false); }, [sessionId]);
+  const panelRef = useRef<HTMLElement>(null);
+  const endRef = useRef<HTMLElement>(null);
+  const [highlight, setHighlight] = useState<"end" | "panel" | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(highlightTimer.current), []);
+  useEffect(() => {
+    if (!focusEnd) return;
+    const target = endRef.current ? "end" : "panel";
+    (endRef.current ?? panelRef.current)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setHighlight(target);
+    onFocusDone();
+    clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlight(null), 2000);
+  }, [focusEnd]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** `still()` tells an action, after an await, that the installation and session it began with are still in use;
    *  if not, it must not write (overview, measurement, inverter, note). */
@@ -81,7 +98,7 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, set
     finally { setBusy(false); }
   };
 
-  if (!o) return <section className="space-y-2 rounded-md border border-line p-4 text-sm text-muted">{t("maint.panel.noInstallation")}{portPicker}</section>;
+  if (!o) return <section ref={panelRef} className={cn("space-y-2 rounded-md border p-4 text-sm text-muted transition-colors", highlight ? "border-charge ring-2 ring-charge" : "border-line")}>{t("maint.panel.noInstallation")}{portPicker}</section>;
   const st = flow.steps;
   const s = flow.state;
   const stored = o.state?.state;
@@ -158,7 +175,7 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, set
           : s === "patched-off" ? t("maint.panel.dipZeroHint") : t("maint.panel.dipHint");
         return (
           <div className="space-y-2">
-            {!o.installation.control && (
+            {flow.singlePackOffered && (
               <label className="flex items-center gap-2"><input type="checkbox" checked={singlePack} disabled={!idle} onChange={(e) => setSinglePack(e.target.checked)} />{t("maint.flow.singlePackStated")}</label>
             )}
             {dipForm(hint)}
@@ -175,7 +192,7 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, set
         return (
           <div className="space-y-2">
             <p>{t(o.installation.control ? "maint.flow.singlePack" : "maint.flow.singlePackManual")}</p>
-            {!o.installation.control && <label className="flex items-center gap-2"><input type="checkbox" checked={singlePack} disabled={!idle} onChange={(e) => setSinglePack(e.target.checked)} />{t("maint.flow.singlePackStated")}</label>}
+            {flow.singlePackOffered && <label className="flex items-center gap-2"><input type="checkbox" checked={singlePack} disabled={!idle} onChange={(e) => setSinglePack(e.target.checked)} />{t("maint.flow.singlePackStated")}</label>}
           </div>
         );
       case "session":
@@ -222,7 +239,7 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, set
   })();
 
   return (
-    <section className="space-y-3 rounded-md border border-line p-4 text-sm">
+    <section ref={panelRef} className={cn("space-y-3 rounded-md border p-4 text-sm transition-colors", highlight === "panel" ? "border-charge ring-2 ring-charge" : "border-line")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title", { name: o.installation.name })}<InfoIcon id="topic.maintenance" /></h2>
         <Button variant="secondary" size="sm" onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
@@ -288,7 +305,7 @@ export function PackBusPanel({ maint, flow, port, portPicker, monitor, busy, set
 
       {/* End, its own section: while a session is open */}
       {flow.end.shown && o.session && (
-        <section className="space-y-2 rounded-md border border-line p-3">
+        <section ref={endRef} className={cn("space-y-2 rounded-md border p-3 transition-colors", highlight === "end" ? "border-charge ring-2 ring-charge" : "border-line")}>
           <h3 className="flex flex-wrap items-center gap-2 font-medium">
             {flow.end.state === "locked" ? <Lock className="h-4 w-4 text-muted" /> : <Play className="h-4 w-4 text-charge" />}{t("maint.flow.endTitle")}
           </h3>
