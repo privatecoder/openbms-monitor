@@ -37,6 +37,8 @@ enum Cmd {
     Status { #[arg(default_value_t = 0)] address: u8 },
     /// Device info (0x51) of one pack
     Info { #[arg(default_value_t = 0)] address: u8 },
+    /// Battery and BMS serial number (0xA2/0xA4; CAN socket bus: master's battery serial number only)
+    Serial { #[arg(default_value_t = 0)] address: u8 },
     /// All parameters (0x47), pack bus only
     Params { #[arg(default_value_t = 0)] address: u8 },
     /// System values of the master (Modbus 0x1000), CAN socket bus only
@@ -76,6 +78,7 @@ fn main() {
         Cmd::Telemetry { address } => c.telemetry(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Status { address } => c.status(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Info { address } => c.device_info(address).map(|v| serde_json::to_value(v).unwrap()),
+        Cmd::Serial { address } => c.serial_numbers(bus, address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Params { address } => c.parameters(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::System => c.system_values().map(|v| serde_json::to_value(v).unwrap()),
     };

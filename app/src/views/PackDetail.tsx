@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
-import { effectiveCurrent, packState } from "../api";
+import { effectiveCurrent, packState, type Bus } from "../api";
+import { serialText } from "../serial";
 import type { PackEntry } from "../store";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
@@ -10,7 +11,7 @@ import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { DatasheetPanel } from "./DatasheetPanel";
 
-export function PackDetail({ p, multi, onBack, site, packs }: { p: PackEntry; multi: boolean; onBack: () => void; site: string; packs: Record<number, PackEntry> }) {
+export function PackDetail({ p, bus, multi, onBack, site, packs }: { p: PackEntry; bus: Bus | null; multi: boolean; onBack: () => void; site: string; packs: Record<number, PackEntry> }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
@@ -31,6 +32,13 @@ export function PackDetail({ p, multi, onBack, site, packs }: { p: PackEntry; mu
             {multi && p.address === 0 && <span className="ml-3 text-2xl font-medium text-muted">{t("dash.master")}</span>}
           </h1>
           <p className="mt-1 text-muted">{[p.device?.device_name, p.device?.firmware_version && `Firmware ${p.device.firmware_version}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-4 text-sm text-muted">
+            {(["battery", "bms"] as const).map((k) => {
+              const v = serialText(p.serials?.[k], k, bus, p.address === 0, t);
+              return <span key={k}>{t(`sn.${k}`)}: <span className="text-ink" title={v.title}>{v.text}</span></span>;
+            })}
+            <InfoIcon id="topic.buses" />
+          </p>
         </div>
         <div className="flex flex-col items-end gap-1">
           <StateMark state={packState(st?.system_status)} />

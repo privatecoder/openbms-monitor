@@ -77,6 +77,7 @@ export default function App() {
           setView={(v) => { setView(v); setPack(null); }}
           onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); setMonitor("connected"); if (!isDemo) setPack(null); }}
           onDevices={live.addDevices}
+          onSerials={live.setSerials}
           onEndpoint={(ep) => maint.attach(ep)}
           onDisconnected={(lost) => { live.reset(); setConnected(false); setPack(null); setDisconnects((d) => d + 1); setMonitor(lost ? "lost" : "offline"); maint.invalidateCheck(); }}
         />
@@ -101,7 +102,7 @@ export default function App() {
           ) : view === "diag" && maintenance ? (
             <Diagnosis packs={live.packs} site={site} />
           ) : current ? (
-            <PackDetail p={current} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} site={site} packs={live.packs} />
+            <PackDetail p={current} bus={bus} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} site={site} packs={live.packs} />
           ) : (
             <Dashboard packs={live.packs} system={live.system} site={site} onOpen={setPack} />
           )}

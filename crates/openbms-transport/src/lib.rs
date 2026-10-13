@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{frame, modbus, DeviceInfo, Frame, MaintStatus, Parameters, Status, SystemValues, Telemetry};
+use openbms_proto::{frame, modbus, serial, DeviceInfo, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -249,6 +249,48 @@ impl Connection {
         Ok(SystemValues::from_registers(&regs)?)
     }
 
+    /// One serial number string over ASCII (pack bus). RTN 04 (command unknown) means this pack does not offer it.
+    fn ascii_serial(&mut self, request: Result<Vec<u8>>, address: u8) -> Result<SerialValue> {
+        match request.and_then(|r| self.ascii(&r, address)) {
+            Ok(f) => Ok(serial::parse_ascii_serial(&f.info)?),
+            Err(Error::Proto(openbms_proto::Error::Rtn(0x04))) => Ok(SerialValue::Unavailable),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Battery and BMS serial number of one pack (0xA2, 0xA4; RS485-1/2 only). A command the pack rejects or
+    /// leaves unanswered counts as unavailable; only when neither answers is the pack itself unreachable.
+    pub fn serial_numbers_pack_bus(&mut self, address: u8) -> Result<SerialNumbers> {
+        let battery = self.ascii_serial(serial::battery_request(address).map_err(Error::from), address);
+        let bms = self.ascii_serial(serial::bms_request(address).map_err(Error::from), address);
+        match (battery, bms) {
+            (Err(e @ Error::Timeout(_)), Err(Error::Timeout(_))) => Err(e),
+            (b, m) => Ok(SerialNumbers { battery: unless_timeout(b)?, bms: unless_timeout(m)? }),
+        }
+    }
+
+    /// First 22 characters of the master's battery serial number (Modbus FC04, CAN socket bus). Firmware before
+    /// 16.06.11 answers with an exception.
+    pub fn master_battery_serial(&mut self) -> Result<SerialValue> {
+        match self.modbus_read(0x04, serial::MODBUS_START, serial::MODBUS_COUNT) {
+            Ok(regs) => Ok(serial::battery_from_input_regs(&regs)?),
+            Err(Error::Proto(openbms_proto::Error::ModbusException(_))) => Ok(SerialValue::Unavailable),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Serial numbers as far as `bus` exposes them. On the CAN socket bus only the master (address 0) shows its
+    /// battery serial number; other addresses are not asked at all.
+    pub fn serial_numbers(&mut self, bus: Bus, address: u8) -> Result<SerialNumbers> {
+        match bus {
+            Bus::PackBus => self.serial_numbers_pack_bus(address),
+            Bus::CanSocketBus if address == 0 => {
+                Ok(SerialNumbers { battery: self.master_battery_serial()?, bms: SerialValue::Unavailable })
+            }
+            Bus::CanSocketBus => Ok(SerialNumbers::UNAVAILABLE),
+        }
+    }
+
     /// Find packs by asking every address 0..=15 for its device info.
     pub fn scan(&mut self, addresses: impl IntoIterator<Item = u8>) -> Vec<(u8, DeviceInfo)> {
         let saved = self.timeout;
@@ -283,6 +325,14 @@ impl Connection {
     }
 }
 
+/// A single unanswered serial number command: the pack answers otherwise, it just does not offer this one.
+fn unless_timeout(r: Result<SerialValue>) -> Result<SerialValue> {
+    match r {
+        Err(Error::Timeout(_)) => Ok(SerialValue::Unavailable),
+        other => other,
+    }
+}
+
 pub fn list_serial_ports() -> Vec<String> {
     serialport::available_ports().map(|v| v.into_iter().map(|p| p.port_name).collect()).unwrap_or_default()
 }
@@ -292,6 +342,96 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
+
+    /// Answers each request from a script (request bytes -> answer bytes); unknown requests get no answer.
+    struct Scripted {
+        script: Vec<(Vec<u8>, Vec<u8>)>,
+        out: Vec<u8>,
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.out.is_empty() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            let n = buf.len().min(self.out.len());
+            buf[..n].copy_from_slice(&self.out[..n]);
+            self.out.drain(..n);
+            Ok(n)
+        }
+    }
+
+    impl Write for Scripted {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            if let Some((_, a)) = self.script.iter().find(|(r, _)| r.as_slice() == data) {
+                self.out.extend_from_slice(a);
+            }
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Port for Scripted {
+        fn clear_input(&mut self) -> std::io::Result<()> {
+            self.out.clear();
+            Ok(())
+        }
+    }
+
+    fn scripted(script: Vec<(Vec<u8>, Vec<u8>)>) -> Connection {
+        let port = Box::new(Scripted { script, out: Vec::new() });
+        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false }
+    }
+
+    /// An answer frame: the request layout with RTN in place of CID2.
+    fn answer(address: u8, rtn: u8, info: &[u8]) -> Vec<u8> {
+        frame::encode_request(address, rtn, info).unwrap()
+    }
+
+    #[test]
+    fn serial_numbers_rtn04_and_silence_count_as_unavailable() {
+        let mut text = b"SYN-0001".to_vec();
+        text.resize(30, b' ');
+        let mut c = scripted(vec![
+            (serial::battery_request(3).unwrap(), answer(3, 0, &text)),
+            (serial::bms_request(3).unwrap(), answer(3, 0x04, &[])),
+            (serial::battery_request(4).unwrap(), answer(4, 0, &[b' '; 30])),
+        ]);
+        let s = c.serial_numbers(Bus::PackBus, 3).unwrap();
+        assert_eq!(s.battery, SerialValue::Set { value: "SYN-0001".into(), truncated: false });
+        assert_eq!(s.bms, SerialValue::Unavailable);
+        let s = c.serial_numbers(Bus::PackBus, 4).unwrap();
+        assert_eq!((s.battery, s.bms), (SerialValue::Empty, SerialValue::Unavailable));
+        // no answer to either command: the pack is not there
+        assert!(matches!(c.serial_numbers(Bus::PackBus, 5), Err(Error::Timeout(_))));
+    }
+
+    #[test]
+    fn can_socket_bus_reads_only_the_master_battery_serial() {
+        let mut regs = b"SYN-0002".to_vec();
+        regs.resize(42, b' ');
+        let mut resp = vec![0x01, 0x04, 42];
+        resp.extend(&regs);
+        let crc = modbus::crc16(&resp);
+        resp.extend(crc.to_le_bytes());
+        let mut c = scripted(vec![(modbus::read_request(0x04, 0, 21), resp)]);
+        let s = c.serial_numbers(Bus::CanSocketBus, 0).unwrap();
+        assert_eq!(s.battery, SerialValue::Set { value: "SYN-0002".into(), truncated: false });
+        assert_eq!(s.bms, SerialValue::Unavailable);
+        // slaves are not asked at all (the script has nothing for them, so a request would time out)
+        assert_eq!(c.serial_numbers(Bus::CanSocketBus, 2).unwrap(), SerialNumbers::UNAVAILABLE);
+    }
+
+    #[test]
+    fn modbus_exception_counts_as_unavailable() {
+        let mut ex = vec![0x01, 0x84, 0x02];
+        let crc = modbus::crc16(&ex);
+        ex.extend(crc.to_le_bytes());
+        let mut c = scripted(vec![(modbus::read_request(0x04, 0, 21), ex)]);
+        assert_eq!(c.master_battery_serial().unwrap(), SerialValue::Unavailable);
+    }
 
     fn two() -> Vec<SocketAddr> {
         vec!["192.0.2.1:9".parse().unwrap(), "192.0.2.2:9".parse().unwrap()]

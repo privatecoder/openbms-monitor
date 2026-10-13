@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { api, type DeviceInfo, type PackUpdate, type SystemUpdate } from "./api";
+import { api, type DeviceInfo, type PackUpdate, type SerialNumbers, type SystemUpdate } from "./api";
 
-/** updated: time of the last successful answer; interval: smoothed time between two answers (ms). */
-export interface PackEntry extends PackUpdate { device?: DeviceInfo; updated: number; interval?: number }
+/** updated: time of the last successful answer; interval: smoothed time between two answers (ms).
+ *  serials: read once per connection; missing = not read (yet) or the read failed. */
+export interface PackEntry extends PackUpdate { device?: DeviceInfo; serials?: SerialNumbers; updated: number; interval?: number }
 
 function smoothInterval(prev: PackEntry | undefined, ok: boolean): number | undefined {
   if (!ok || !prev?.updated) return prev?.interval;
@@ -48,5 +49,8 @@ export function useLiveData() {
       return next;
     });
 
-  return { packs, system, setDevices, addDevices, reset: () => { setPacks({}); setSystem(null); } };
+  const setSerials = (address: number, serials: SerialNumbers) =>
+    setPacks((prev) => (prev[address] ? { ...prev, [address]: { ...prev[address], serials } } : prev));
+
+  return { packs, system, setDevices, addDevices, setSerials, reset: () => { setPacks({}); setSystem(null); } };
 }
