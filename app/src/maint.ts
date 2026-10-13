@@ -165,7 +165,8 @@ export function busyMessage(action: string | null, gaveUp: boolean, t: (key: str
 }
 
 /** The number of packs on the bus as typed, master included: a whole number from 1 to 16, else null. The backend
- *  gets `slavesOf` it; 1 pack (0 slaves) it accepts only when the master itself reports "patched, 0 slaves". */
+ *  gets `slavesOf` it; 1 pack (0 slaves) it accepts only when a fresh 0x64 shows "patched, 0 slaves" or the original
+ *  firmware's RTN 04, and the slave scan finds no slave. */
 export function parsePacks(text: string): number | null {
   const v = text.trim();
   if (!/^\d+$/.test(v)) return null;
@@ -173,7 +174,14 @@ export function parsePacks(text: string): number | null {
   return n >= 1 && n <= 16 ? n : null;
 }
 
-/** "1 pack" needs a fresh 0/0 from the master, which it cannot report while its marker is on (stored state
+/** Plan steps the master-plan checklist lists as items: a step the user confirms by a checkbox (DIP 5–8 OFF,
+ *  build released or master isolated) is shown once, as that checkbox. */
+export const PLAN_CHECKBOXES = ["dip-off", "isolated-or-released"];
+export function planListSteps(before: string[]): string[] {
+  return before.filter((s) => !PLAN_CHECKBOXES.includes(s));
+}
+
+/** "1 pack" needs a fresh 0/0 (or RTN 04) from the master, which it cannot report while its marker is on (stored state
  *  patched-on or marker-unexplained): saving 1 would be refused, so the editor does not offer it. */
 export function onePackBlocked(packs: number | null, state: MasterStateName | undefined): boolean {
   return packs === 1 && (state === "patched-on" || state === "marker-unexplained");

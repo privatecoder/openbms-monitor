@@ -8,7 +8,7 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, gateHint, imageLabel, imageWarning, masterOk, progressFraction, resultActions, resultVersions, steps } from "../firmware";
-import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, type Activity, type Monitor } from "../maint";
+import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, planListSteps, type Activity, type Monitor } from "../maint";
 import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -316,7 +316,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
             {plan && (
               <>
                 <ul className="list-inside list-disc">
-                  {plan.before.map((st) => <li key={st}>{t(`maint.plan.${st}`)}</li>)}
+                  {planListSteps(plan.before).map((st) => <li key={st}>{t(`maint.plan.${st}`)}</li>)}
                   <li>{t(`maint.plan.after.${plan.after}`)}</li>
                 </ul>
                 {plan.before.includes("dip-off") && <label className="flex items-center gap-2"><input type="checkbox" checked={dipOffConfirmed} onChange={(e) => setDipOffConfirmed(e.target.checked)} />{t("maint.plan.dip-off")}</label>}
