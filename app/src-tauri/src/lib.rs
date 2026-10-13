@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod firmware;
 mod history;
+mod maint;
 mod maint_store;
 use history::{Format, Settings, SharedHistory};
 
@@ -22,14 +23,27 @@ struct AppState {
     flashing: Arc<AtomicBool>,
     /// Exclusive reservation while opening or using the pack bus for firmware operations.
     port_busy: Arc<AtomicBool>,
+    /// Endpoint key and bus of the main connection; a control exchange on that endpoint runs through it.
+    main: Mutex<Option<(String, Bus)>>,
+    /// Maintenance database (installations, master state, sessions); None if it could not be opened.
+    maint: Arc<Mutex<Option<maint_store::Store>>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-enum EndpointArg {
+pub(crate) enum EndpointArg {
     Serial { path: String, bus: BusArg },
     // The baud rate of a TCP gateway is configured on the gateway itself.
     Tcp { addr: String, bus: BusArg },
+}
+
+impl EndpointArg {
+    pub fn key(&self) -> String {
+        match self {
+            EndpointArg::Serial { path, .. } => maint_store::endpoint_key(false, path),
+            EndpointArg::Tcp { addr, .. } => maint_store::endpoint_key(true, addr),
+        }
+    }
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -66,7 +80,7 @@ struct SystemUpdate {
 
 type Shared = Arc<Mutex<Option<Connection>>>;
 
-fn lock(m: &Mutex<Option<Connection>>) -> Result<std::sync::MutexGuard<'_, Option<Connection>>, String> {
+pub(crate) fn lock(m: &Mutex<Option<Connection>>) -> Result<std::sync::MutexGuard<'_, Option<Connection>>, String> {
     m.lock().map_err(|e| e.to_string())
 }
 
@@ -111,6 +125,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
+    let key = endpoint.key();
     // the installation is named by its gateway address or port, like the groups in the UI
     let (ep, bus, site) = match endpoint {
         EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), path),
@@ -128,6 +143,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
         *slot = Some(conn);
     }
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
+    *state.main.lock().map_err(|e| e.to_string())? = Some((key, bus));
     if let Ok(mut h) = state.history.lock() {
         h.connected(&site, if bus == Bus::CanSocketBus { "can" } else { "pack" });
     }
@@ -140,6 +156,9 @@ fn stop_monitor(state: &AppState) -> Result<(), String> {
         p.store(false, Ordering::SeqCst);
     }
     *lock(&state.conn)? = None;
+    if let Ok(mut m) = state.main.lock() {
+        *m = None;
+    }
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }
@@ -483,6 +502,10 @@ pub fn run() {
                     eprintln!("history: {e}");
                 }
             }
+            match maint_store::Store::open(&app.path().app_data_dir()?.join("maintenance.sqlite")) {
+                Ok(s) => if let Ok(mut m) = state.maint.lock() { *m = Some(s); },
+                Err(e) => eprintln!("maintenance: {e}"),
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -494,7 +517,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installation_for, maint::maint_installation_of, maint::maint_save_installation, maint::maint_overview, maint::maint_check, maint::maint_activate, maint::maint_start_dip, maint::maint_account_marker])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

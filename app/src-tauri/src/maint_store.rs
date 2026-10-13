@@ -1,6 +1,3 @@
-// used from Task 7 on
-#![allow(dead_code)]
-
 //! Maintenance state per installation (`maintenance.sqlite` in the app data folder): installations with
 //! their endpoints and control channel, the last confirmed master state, the maintenance session and
 //! flash blocks after an unclear update. A file of its own: the history database is moved aside when its
@@ -175,13 +172,8 @@ impl Store {
 
     /// The installation an endpoint belongs to; a new one ("Installation n") if it is not assigned yet.
     pub fn installation_for(&self, endpoint: &str) -> Result<Installation, String> {
-        let id: Option<String> = self
-            .db
-            .query_row("SELECT installation FROM installation_endpoints WHERE endpoint = ?1", [endpoint], |r| r.get(0))
-            .optional()
-            .map_err(e)?;
-        if let Some(id) = id {
-            return self.installation(&id);
+        if let Some(found) = self.installation_of(endpoint)? {
+            return Ok(found);
         }
         let now = crate::history::now_ms();
         let count: i64 = self.db.query_row("SELECT COUNT(*) FROM installations", [], |r| r.get(0)).map_err(e)?;
@@ -206,6 +198,7 @@ impl Store {
     }
 
     /// Some installation has an open session or an uncleared flash block.
+    #[allow(dead_code)] // used from Task 8 on
     pub fn any_open(&self) -> Result<bool, String> {
         let n: i64 = self
             .db
@@ -332,11 +325,13 @@ impl Store {
     }
 
     /// After the master was flashed back to the original image, a marker session ends as a DIP session.
+    #[allow(dead_code)] // used from Task 8 on
     pub fn set_session_kind(&self, id: i64, kind: SessionKind) -> Result<(), String> {
         self.db.execute("UPDATE maint_sessions SET kind = ?2 WHERE id = ?1", params![id, kind.as_str()]).map_err(e)?;
         Ok(())
     }
 
+    #[allow(dead_code)] // used from Task 8 on
     pub fn note_done(&self, id: i64, what: &str) -> Result<(), String> {
         let done: String = self.db.query_row("SELECT done FROM maint_sessions WHERE id = ?1", [id], |r| r.get(0)).map_err(e)?;
         let mut list: Vec<String> = serde_json::from_str(&done).unwrap_or_default();
@@ -345,28 +340,33 @@ impl Store {
         Ok(())
     }
 
+    #[allow(dead_code)] // used from Task 8 on
     pub fn set_failing(&self, id: i64, failing: Option<&str>) -> Result<(), String> {
         self.db.execute("UPDATE maint_sessions SET failing = ?2 WHERE id = ?1", params![id, failing]).map_err(e)?;
         Ok(())
     }
 
+    #[allow(dead_code)] // used from Task 8 on
     pub fn end_session(&self, id: i64, now: i64) -> Result<(), String> {
         self.db.execute("UPDATE maint_sessions SET ended = ?2, failing = NULL WHERE id = ?1", params![id, now]).map_err(e)?;
         Ok(())
     }
 
+    #[allow(dead_code)] // used from Task 8 on
     pub fn add_block(&self, inst: &str, pack: u8, reason: &str, now: i64) -> Result<i64, String> {
         self.db.execute("INSERT INTO flash_blocks(installation, pack, reason, since) VALUES (?1, ?2, ?3, ?4)", params![inst, pack, reason, now]).map_err(e)?;
         Ok(self.db.last_insert_rowid())
     }
 
     /// Unclear master update: the application runs, 0x64 did not show `expect` after the flash.
+    #[allow(dead_code)] // used from Task 8 on
     pub fn add_master_block(&self, inst: &str, expect: &str, now: i64) -> Result<i64, String> {
         self.db.execute("INSERT INTO flash_blocks(installation, pack, reason, expect, since) VALUES (?1, 0, 'master-unclear', ?2, ?3)", params![inst, expect, now]).map_err(e)?;
         Ok(self.db.last_insert_rowid())
     }
 
     /// An `update-interrupted` block becomes the reason found when the flash returned.
+    #[allow(dead_code)] // used from Task 8 on
     pub fn set_block_reason(&self, id: i64, reason: &str) -> Result<(), String> {
         self.db.execute("UPDATE flash_blocks SET reason = ?2 WHERE id = ?1", params![id, reason]).map_err(e)?;
         Ok(())
@@ -380,11 +380,13 @@ impl Store {
 
     /// `how`: "answered" (pack answered 0x51/0x47), "isolated" (the user confirmed isolation or recovery),
     /// "flashed" (the flash and its post-check passed) or "preflight" (failed before the restart).
+    #[allow(dead_code)] // used from Task 8 on
     pub fn clear_block(&self, id: i64, how: &str, now: i64) -> Result<(), String> {
         self.db.execute("UPDATE flash_blocks SET cleared = ?2, how = ?3 WHERE id = ?1", params![id, now, how]).map_err(e)?;
         Ok(())
     }
 
+    #[allow(dead_code)] // used from Task 8 on
     pub fn note_sector(&self, inst: &str, note: &str, now: i64) -> Result<(), String> {
         self.db.execute("INSERT OR REPLACE INTO sector_notes(installation, note, at) VALUES (?1, ?2, ?3)", params![inst, note, now]).map_err(e)?;
         Ok(())
@@ -423,6 +425,16 @@ mod tests {
         a2.control = Some(ControlEndpoint::Serial { path: "/dev/y".into() });
         s.save_installation(&a2).unwrap();
         assert_eq!(s.installation_for("serial:/dev/x").unwrap(), a2);
+        assert_eq!(s.installations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn installation_for_finds_the_installation_holding_the_endpoint_as_control() {
+        let s = Store::open(&temp("ctl")).unwrap();
+        let mut a = s.installation_for("tcp:gw:4196").unwrap();
+        a.control = Some(ControlEndpoint::Serial { path: "/dev/c".into() });
+        s.save_installation(&a).unwrap();
+        assert_eq!(s.installation_for("serial:/dev/c").unwrap().id, a.id);
         assert_eq!(s.installations().unwrap().len(), 1);
     }
 
