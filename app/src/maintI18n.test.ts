@@ -11,7 +11,7 @@ const REFUSALS = [
   "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained",
 ];
 // every value the backend stores as a failing End check (besides "stop: …", which carries an error)
-const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "stop"];
+const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop"];
 
 describe("maintenance texts", () => {
   it("has a German and an English text for every refusal key", () => {
@@ -39,6 +39,12 @@ describe("maintenance texts", () => {
     expect(packsDerived(12, tr("en"))).toBe("12 packs = 11 slaves + 1 master · the master's DIP 5–8 were set to 11");
     expect(packsLine(2, tr("de"))).toBe("2 Packs = 1 Slave + 1 Master");
     expect(packsLine(1, tr("en"))).toBe("1 pack = 0 slaves + 1 master");
+  });
+  it("failing texts are short phrases: they go inside „Prüfung fehlgeschlagen (…)“", () => {
+    for (const lng of ["de", "en"]) {
+      for (const k of FAILING) expect(i18n.t(`maint.failing.${k}`, { lng, addr: 7, error: "x" }), `${lng} ${k}`).not.toMatch(/\.$/);
+    }
+    expect(i18n.t("maint.failing.slave-present", { lng: "de", addr: 7 })).toBe("An Adresse 7 antwortet ein Slave – es sind mehr als 1 Pack");
   });
   it("never says exclusive", () => {
     for (const lng of ["de", "en"]) expect(JSON.stringify(i18n.getResourceBundle(lng, "translation").maint)).not.toMatch(/exklusiv|exclusive/i);

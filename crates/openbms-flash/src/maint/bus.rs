@@ -127,6 +127,20 @@ pub fn app_answers(link: &mut impl Link, log: &mut impl Write, address: u8, with
     }
 }
 
+/// The first slave address (1..=15) that answers 0x51 within `per_address`, or None when none does. Proof of
+/// a single pack on a quiet bus: a slave answers here whenever the master does not poll. Only a timeout counts
+/// as "no answer"; any other link error is returned, so a broken port never reads as "no slave".
+pub fn first_slave(link: &mut impl Link, log: &mut impl Write, per_address: Duration) -> Result<Option<u8>> {
+    for address in 1..=15 {
+        match session::ascii_query(link, address, 0x51, log, per_address) {
+            Ok(_) => return Ok(Some(address)),
+            Err(Error::Timeout { .. }) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +161,24 @@ mod tests {
             Ok(f) if f.address == 0 && (f.rtn == 0x47 || f.rtn == 0x51) => vec![(now + ms(60), answer(0, 0, &[1, 2, 3]))],
             _ => vec![],
         }
+    }
+
+    #[test]
+    fn first_slave_finds_the_lowest_answering_address() {
+        // only the master: no slave
+        let mut link = FakeLink::new(VTime::default(), quiet_master);
+        assert_eq!(first_slave(&mut link, &mut Vec::new(), ms(20)).unwrap(), None);
+        assert_eq!(link.sent.len(), 15);
+        // a slave at address 7 answers 0x51
+        let mut link = FakeLink::new(VTime::default(), |req, now| match frame::parse(req) {
+            Ok(f) if f.address == 7 && f.rtn == 0x51 => vec![(now + ms(5), answer(7, 0, &[1]))],
+            _ => vec![],
+        });
+        assert_eq!(first_slave(&mut link, &mut Vec::new(), ms(20)).unwrap(), Some(7));
+        // a broken port is an error, never "no slave"
+        let mut link = FakeLink::new(VTime::default(), quiet_master);
+        link.broken = true;
+        assert!(first_slave(&mut link, &mut Vec::new(), ms(20)).is_err());
     }
 
     #[test]

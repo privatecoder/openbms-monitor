@@ -162,9 +162,12 @@ export function packsDerived(packs: number, t: T): string {
 const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero"];
 
 /** Text key of a failing End check (EndResult.failing, session.failing); "stop: <MaintError JSON>" carries the
- *  dialog's error. null for a value this UI does not know: it is shown as is. */
-export function failingKey(f: string): { key: string; inner?: { key: string; params?: Record<string, unknown> } } | null {
+ *  dialog's error, "slave-present: <address>" the slave found. null for a value this UI does not know: it is
+ *  shown as is. */
+export function failingKey(f: string): { key: string; params?: Record<string, unknown>; inner?: { key: string; params?: Record<string, unknown> } } | null {
   if (FAILING.includes(f)) return { key: `maint.failing.${f}` };
+  const slave = /^slave-present: (\d+)$/.exec(f);
+  if (slave) return { key: "maint.failing.slave-present", params: { addr: Number(slave[1]) } };
   if (f.startsWith("stop: ")) return { key: "maint.failing.stop", inner: errorKey(f.slice("stop: ".length)) };
   return null;
 }
@@ -172,5 +175,5 @@ export function failingKey(f: string): { key: string; inner?: { key: string; par
 export function failingText(f: string, t: T): string {
   const k = failingKey(f);
   if (!k) return f;
-  return k.inner ? t(k.key, { error: t(k.inner.key, k.inner.params) }) : t(k.key);
+  return k.inner ? t(k.key, { error: t(k.inner.key, k.inner.params) }) : t(k.key, k.params);
 }

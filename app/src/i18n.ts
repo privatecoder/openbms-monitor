@@ -130,7 +130,8 @@ const resources = {
           "pack-communication-incomplete": "Pack-Kommunikation unvollständig",
           "master-not-answering": "Master antwortet nicht am Pack-Bus",
           "system-values": "Systemwerte nicht lesbar",
-          "master-not-zero": "Der Master meldet nicht 0 Slaves.",
+          "master-not-zero": "Master meldet nicht 0 Slaves",
+          "slave-present": "An Adresse {{addr}} antwortet ein Slave – es sind mehr als 1 Pack",
           stop: "„stop“ fehlgeschlagen: {{error}}",
         },
         plan: {
@@ -419,7 +420,8 @@ const resources = {
           "pack-communication-incomplete": "pack communication incomplete",
           "master-not-answering": "master not answering on the pack bus",
           "system-values": "system values not readable",
-          "master-not-zero": "The master does not report 0 slaves.",
+          "master-not-zero": "master does not report 0 slaves",
+          "slave-present": "a slave answers at address {{addr}} – there is more than one pack",
           stop: "“stop” failed: {{error}}",
         },
         plan: {
