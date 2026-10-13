@@ -1,6 +1,6 @@
 # Pack bus panel: guided flow
 
-Status: implemented, 2026-10-13 (draft r3 reviewed; r1 review: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`).
+Status: implemented, 2026-10-13; the installation picker in the panel header and the banner for every installation are implemented per `2026-10-13-installation-picker.md` (draft r3 reviewed; r1 review: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`).
 
 ## Why
 
@@ -60,7 +60,7 @@ A single pack whose master was flashed back from the maintenance build to the or
 - `N` = 0 (in `maint_start_dip` and `maint_set_slaves`) is accepted when a fresh 0x64 read in the same command shows the patched 0/0 **or** RTN 04 (`no-0x64`, `single_pack_status`), followed in both cases by the quiet bus, 0x47 from address 0 and the slave scan (addresses 1–15, two passes, fail-closed). Neither status tells a single pack from a bank whose master has DIP 5–8 OFF; the slave scan does (slaves answer 0x51 at their address whatever the master's DIPs). A slave found is refused `slave-present`; unknown, no answer or a connection error is refused as before. Without a control channel it stays refused.
 - End with `N` = 0: the Bus step is unchanged (quiet + 0x47 + scan, or the 30-minute skip). The Values step accepts the patched master's fresh 0/0 or, for an original master, a fresh RTN 04 (`values_zero_check`); an unreadable master fails `master-unreadable`, another reported count fails `slave-count-mismatch`, a set marker `master-not-zero`, an unexplained marker is refused.
 - `slave-count-mismatch` is only built from a count the master reported in a 0x64 status. A stored mismatch is cleared when a later successful read no longer shows that count (e.g. `no-0x64` after the flash back) or when `N` is changed, so the banner never claims "the master reports n slaves" for a master that reports none. For an original master with a slave missing in the round, End's `endMissing` text applies.
-- The master-plan checklist in the firmware view lists a step once: steps the user confirms by a checkbox (`dip-off`, `isolated-or-released`) appear only as that checkbox.
+- The master-plan checklist in the firmware view lists a step once: steps the user confirms by a checkbox (`dip-off`, `isolated-or-released`) appear only as that checkbox, in their step position (e.g. DIP 5–8 OFF before stop and measuring).
 
 ## Single pack without a control channel
 

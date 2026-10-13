@@ -8,7 +8,7 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, gateHint, imageLabel, imageWarning, masterOk, progressFraction, resultActions, resultVersions, steps } from "../firmware";
-import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, planListSteps, type Activity, type Monitor } from "../maint";
+import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, planItems, portLock, type Activity, type Monitor } from "../maint";
 import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -144,8 +144,9 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
       .then((i) => setPortInstallation(i?.id ?? null)).catch(() => setPortInstallation(null));
   };
   useEffect(() => { void lookupPort(); }, [port, overview]); // eslint-disable-line react-hooks/exhaustive-deps
-  const portAssigned = !!overview && portInstallation === overview.installation.id;
-  const portElsewhere = !!overview && !!port && portInstallation !== null && !portAssigned;
+  // a foreign RS485-1/2 port locks every bus action (installation-mismatch) and offers to switch
+  const lock = portLock(port ? portInstallation : null, overview?.installation.id ?? null, maint.installations);
+  const portElsewhere = lock.owner === "other";
 
   // the master (address 0) has its own plan; refused plans keep the start locked
   const overviewId = overview?.installation.id;
@@ -161,10 +162,10 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
 
   const masterPending = !!overview && address === 0 && !!image
     && (!plan || planError !== null || (plan.before.includes("dip-off") && !dipOffConfirmed) || (plan.before.includes("isolated-or-released") && !isolatedConfirmed));
-  const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none" });
+  const gate = canFlash({ overview, inverter, measuredAt, address, imageKind: image?.kind ?? "custom", portOwner: lock.owner });
   const flow = flowOf({
     overview, fresh: maint.freshFor(overview?.installation.id), noControl, singlePack, inverter, measuredAt, port, portAvailable,
-    portOwner: portAssigned ? "this" : portElsewhere ? "other" : "none", address, imageKind: image?.kind ?? null,
+    portOwner: lock.owner, address, imageKind: image?.kind ?? null,
     scan: maint.scanOf(overview?.installation.id, port), busy: busy || panelBusy, running,
   });
   const ready = flow.steps.flash.state === "current";
@@ -232,6 +233,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
       setRunning(true); onRunning(true); startedAt.current = Date.now();
       await api.firmwareStart(port, address, path, allowCustom, image.sha256, confirmation, lang,
         overview ? { installation: overview.installation.id, inverterConfirmed: inverter, dipOffConfirmed, isolatedConfirmed } : null);
+      // the update-interrupted block is written now: the banner shows it at once
+      void maint.loadLists();
     } catch (e) {
       setRunning(false); onRunning(false);
       // gate refusals arrive as MaintError JSON; the backend may have changed state (check, stop, session kind)
@@ -263,7 +266,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
       <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} ports={ports} onPortsChanged={loadPorts} monitor={monitor} focusEnd={focusEnd || ownFocusEnd} onFocusDone={() => { setOwnFocusEnd(0); onFocusDone(); }}
         busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
         noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
-        activity={activity} setActivity={setActivity} onUserAction={onUserAction} />
+        activity={activity} setActivity={setActivity} onUserAction={onUserAction} mismatch={lock.switchTo} />
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">
@@ -282,7 +285,12 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
           </label>
         </div>
         {overview && <p className="text-sm text-muted">{t("maint.flow.fwPortHint")}</p>}
-        {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
+        {portElsewhere && (
+          <div className="flex flex-wrap items-center gap-3 text-sm text-alarm">
+            <p>{t("maint.err.refused.installation-mismatch")}</p>
+            {lock.switchTo && <Button variant="secondary" size="sm" disabled={inputsLocked || maint.switching} onClick={() => void maint.switchTo(lock.switchTo!.id)}>{t("maint.banner.switch", { other: lock.switchTo.name })}</Button>}
+          </div>
+        )}
         <p className="text-sm text-muted">{t("fw.busHint")}</p>
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}
       </Step>
@@ -315,12 +323,16 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
             {planError && <p className="text-alarm">{planError}</p>}
             {plan && (
               <>
-                <ul className="list-inside list-disc">
-                  {planListSteps(plan.before).map((st) => <li key={st}>{t(`maint.plan.${st}`)}</li>)}
+                {/* in plan order: a step confirmed by a checkbox stands in its position (e.g. DIP 5–8 OFF before stop and measuring) */}
+                <ul className="list-inside list-disc space-y-1">
+                  {planItems(plan.before).map(({ step, checkbox }) => checkbox ? (
+                    <li key={step} className="list-none">
+                      <label className="flex items-center gap-2"><input type="checkbox" checked={step === "dip-off" ? dipOffConfirmed : isolatedConfirmed}
+                        onChange={(e) => (step === "dip-off" ? setDipOffConfirmed : setIsolatedConfirmed)(e.target.checked)} />{t(`maint.plan.${step}`)}</label>
+                    </li>
+                  ) : <li key={step}>{t(`maint.plan.${step}`)}</li>)}
                   <li>{t(`maint.plan.after.${plan.after}`)}</li>
                 </ul>
-                {plan.before.includes("dip-off") && <label className="flex items-center gap-2"><input type="checkbox" checked={dipOffConfirmed} onChange={(e) => setDipOffConfirmed(e.target.checked)} />{t("maint.plan.dip-off")}</label>}
-                {plan.before.includes("isolated-or-released") && <label className="flex items-center gap-2"><input type="checkbox" checked={isolatedConfirmed} onChange={(e) => setIsolatedConfirmed(e.target.checked)} />{t("maint.plan.isolated-or-released")}</label>}
                 {plan.recovery && <p className="text-muted">{t("maint.plan.recovery")}</p>}
               </>
             )}

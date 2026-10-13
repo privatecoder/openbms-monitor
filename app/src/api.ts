@@ -102,6 +102,13 @@ export interface MaintSession { id: number; installation: string; kind: "marker"
 export interface FlashBlock { id: number; pack: number; reason: "update-interrupted" | "update-unclear" | "bootloader-unclear" | "master-unclear"; expect: string | null; since: number }
 /** `end_next`: the End step the backend allows next in this app run (after a failed step: the restart point); null without session */
 export interface MaintOverview { installation: Installation; state: MasterState | null; state_at: number | null; session: MaintSession | null; blocks: FlashBlock[]; sector_note: string | null; end_next: EndStep | null }
+/** One installation with open work, for the banner (`maint_open_work`): its session, most severe block, master state and
+ *  the time of an unresolved note on sector 0x23000. */
+export interface OpenWork {
+  id: string; name: string;
+  session: { kind: "marker" | "dip"; started: number; expected_slaves: number; failing: string | null } | null;
+  block: FlashBlock | null; state: MasterState | null; state_at: number | null; sector_note_at: number | null;
+}
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "timeout"; marker: boolean; slaves: number } | { kind: "refused"; reason: string } | { kind: "busy" }
@@ -160,10 +167,16 @@ const tauriApi = {
   /** Returns at once; progress and result arrive as events. */
   firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, maint: FlashMaint | null) =>
     invoke<void>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, maint }),
-  maintInstallationFor: (endpoint: Endpoint) => invoke<Installation>("maint_installation_for", { endpoint }),
   /** lookup only; null = the endpoint is not assigned to any installation */
   maintInstallationOf: (endpoint: Endpoint) => invoke<Installation | null>("maint_installation_of", { endpoint }),
   maintSaveInstallation: (installation: Installation) => invoke<Installation>("maint_save_installation", { installation }),
+  maintInstallations: () => invoke<Installation[]>("maint_installations"),
+  maintOpenWork: () => invoke<OpenWork[]>("maint_open_work"),
+  /** refused "name-required", "name-taken", "endpoint-in-use"; nothing is created then */
+  maintCreateInstallation: (name: string, control: ControlEndpoint | null, endpoints: string[]) => invoke<Installation>("maint_create_installation", { name, control, endpoints }),
+  /** refused "open-work" (session, block, marker or sector note) or busy while another operation holds the port */
+  maintDeleteInstallation: (installation: string) => invoke<void>("maint_delete_installation", { installation }),
+  maintResolveSectorNote: (installation: string) => invoke<MaintOverview>("maint_resolve_sector_note", { installation }),
   maintOverview: (installation: string) => invoke<MaintOverview>("maint_overview", { installation }),
   /** reads 0x64 over the control channel and stores the classified state */
   maintCheck: (installation: string) => invoke<MaintOverview>("maint_check", { installation }),
@@ -270,9 +283,13 @@ function demoApi(): typeof tauriApi {
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
-    maintInstallationFor: async () => demoInst,
     maintInstallationOf: async () => demoInst,
     maintSaveInstallation: async () => { throw new Error("desktop app only"); },
+    maintInstallations: async () => [],
+    maintOpenWork: async () => [],
+    maintCreateInstallation: async () => { throw new Error("desktop app only"); },
+    maintDeleteInstallation: async () => { throw new Error("desktop app only"); },
+    maintResolveSectorNote: async () => { throw new Error("desktop app only"); },
     maintOverview: async () => demoOverview,
     maintCheck: async () => demoOverview,
     maintActivate: async () => { throw new Error("desktop app only"); },

@@ -9,13 +9,14 @@ const REFUSALS = [
   "no-control-channel", "no-port", "no-session", "not-patched-off", "pack-not-answering", "port-not-assigned",
   "state-changed", "stop-needs-control-channel", "update-interrupted", "update-unclear", "bootloader-unclear",
   "quiet-first", "state-unknown", "slaves-range", "not-marker-unexplained", "slave-present",
+  "open-work", "name-required", "name-taken", "no-sector-note",
 ];
 // every value the backend stores as a failing End check (besides "stop: …", which carries an error)
 const FAILING = ["pack-communication-incomplete", "master-not-answering", "system-values", "master-not-zero", "slave-present", "stop", "slave-count-mismatch", "master-unreadable"];
 
 describe("maintenance texts", () => {
   it("has a German and an English text for every refusal key", () => {
-    expect(REFUSALS).toHaveLength(29);
+    expect(REFUSALS).toHaveLength(33);
     for (const lng of ["de", "en"]) {
       for (const k of REFUSALS) {
         const key = `maint.err.refused.${k}`;
@@ -74,6 +75,22 @@ describe("maintenance texts", () => {
       .toBe("Prüfung fehlgeschlagen: Der Master meldet 0 Slaves, eingetragen sind 2 Packs (1 Slave). DIP 5–8 zurückstellen oder die Packzahl ändern. Die Wartung bleibt offen.");
     expect(tr("en")("maint.panel.endFailed", { what: failingText("slave-count-mismatch: 2 1", tr("en")) }))
       .toBe("Check failed: the master reports 2 slaves, 2 packs are entered (1 slave). Set DIP 5–8 back or change the pack count. Maintenance stays open.");
+    // one pack entered (N = 0): singular verb
+    expect(failingText("slave-count-mismatch: 2 0", tr("de"))).toBe("Der Master meldet 2 Slaves, eingetragen ist 1 Pack (0 Slaves). DIP 5–8 zurückstellen oder die Packzahl ändern");
+    expect(failingText("slave-count-mismatch: 2 0", tr("en"))).toBe("the master reports 2 slaves, 1 pack is entered (0 slaves). Set DIP 5–8 back or change the pack count");
+    expect(failingText("slave-count-mismatch: 0 2", tr("de"))).toContain("eingetragen sind 3 Packs (2 Slaves)");
+    expect(failingText("slave-count-mismatch: 0 2", tr("en"))).toContain("3 packs are entered (2 slaves)");
+  });
+  it("has the picker, name dialog, banner and delete texts in German and English", () => {
+    const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
+    for (const part of ["picker", "nameDialog", "openWork", "note", "setup"]) {
+      const de = keys(i18n.getResourceBundle("de", "translation").maint[part]).sort();
+      expect(keys(i18n.getResourceBundle("en", "translation").maint[part]).sort(), part).toEqual(de);
+    }
+    for (const r of ["bootloader-unclear", "update-interrupted", "update-unclear", "master-unclear"]) expect(i18n.exists(`maint.openWork.block.${r}`, { lng: "de" })).toBe(true);
+    for (const w of ["block", "unexplained", "showFirst", "marker", "note"]) expect(i18n.exists(`maint.openWork.why.${w}`, { lng: "en" })).toBe(true);
+    expect(i18n.t("maint.setup.deleteConfirm", { lng: "de", name: "X" })).toBe("Anlage „X“ löschen? Ihre Anschlüsse werden frei.");
+    expect(i18n.t("maint.openWork.block.bootloader-unclear", { lng: "de", name: "Labor", pack: 3, since: "14:02" })).toBe("Labor: Pack 3 eventuell im Bootloader seit 14:02");
   });
   it("has progress texts for every panel action and phase, in German and English", () => {
     for (const lng of ["de", "en"]) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, isDemo, type Endpoint, type Installation, type MaintOverview } from "./api";
-import { assignEndpoint, attachDecision, controlFromAttach, errorKey, latestGuard } from "./maint";
+import { api, isDemo, type Endpoint, type Installation, type MaintOverview, type OpenWork } from "./api";
+import i18n from "./i18n";
+import { assignEndpoint, attachDecision, controlFromAttach, createFromAttach, defaultName, errorKey, latestGuard, nameCheck } from "./maint";
 
 /** The setup's one-adapter confirmation ("one adapter for both buses, I move the cable"), per installation. The
  *  backend stores only the keys; without this the control adapter is never taken as the RS485-1/2 port
@@ -23,21 +24,44 @@ export function useMaint() {
   const [fresh, setFresh] = useState<{ id: string; result: "ok" | "failed" } | null>(null);
   // single-pack slave scans of this run, per installation and pack port (memory only)
   const [scans, setScans] = useState<Record<string, number | null>>({});
+  // all installations (picker) and those with open work (banner); a failed load keeps the last list and says so
+  const [installations, setInstallations] = useState<Installation[]>([]);
+  const [work, setWork] = useState<OpenWork[]>([]);
+  const [workFailed, setWorkFailed] = useState(false);
+  // a switch, create or delete is loading: the picker and the panel actions wait
+  const [switching, setSwitching] = useState(false);
+  // a sidebar connection that belongs to no installation: the name dialog before anything is created
+  const [naming, setNaming] = useState<{ endpoint: Endpoint; suggested: string } | null>(null);
 
   // refs: callbacks fired from a click or a connect must see the current values, not those of an older render
   const installationRef = useRef(installation);
   const overviewRef = useRef(overview);
   const guard = useRef(latestGuard()).current;
+  const installationsRef = useRef<Installation[]>([]);
+  installationsRef.current = installations;
+
   const store = (o: MaintOverview | null) => { overviewRef.current = o; setOverview(o); };
 
-  /** Load the stored overview; returns what was loaded (also when a newer request made this answer stale). */
+  /** Reload the installation list and the open work of every installation (banner). */
+  const loadLists = useCallback(async () => {
+    if (isDemo) return;
+    const [list, open] = await Promise.all([api.maintInstallations().catch(() => null), api.maintOpenWork().catch(() => null)]);
+    if (list) setInstallations(list);
+    if (open) setWork(open);
+    setWorkFailed(!open);
+  }, []);
+
+  /** Load the stored overview; returns what was loaded (also when a newer request made this answer stale). The
+   *  installation list and the open work are reloaded with it (after every panel action, flash end, switch). */
   const refresh = useCallback(async (id = installationRef.current): Promise<MaintOverview | null> => {
-    if (!id || isDemo) return null;
+    if (isDemo) return null;
+    void loadLists();
+    if (!id) return null;
     const ticket = guard.begin("refresh", id);
     const o = await api.maintOverview(id).catch(() => null);
     if (guard.accepts(ticket, installationRef.current, o, overviewRef.current)) store(o);
     return o;
-  }, [guard]);
+  }, [guard, loadLists]);
 
   /** Re-read 0x64 (start-up, every new connection on the CAN socket bus, the panel's "check master"); errors
    *  leave the stored state. Any answer counts as this run's fresh check (an unreachable master is stored as
@@ -56,10 +80,10 @@ export function useMaint() {
       if (o) setFresh({ id, result: "ok" });
       else if (errorKey(error).key !== "maint.err.busy") setFresh({ id, result: "failed" });
     } finally { guard.end(ticket); }
-    if (!o) await refresh(id);
+    if (!o) await refresh(id); else void loadLists();
     if (error && rethrow) throw error;
     return o;
-  }, [guard, refresh]);
+  }, [guard, refresh, loadLists]);
 
   /** The monitor connection was lost or closed: the next work phase needs a fresh check (and a new slave search).
    *  Every new master check clears the slave searches too. */
@@ -68,13 +92,31 @@ export function useMaint() {
   const scanOf = (id: string | null | undefined, port: string) => (id && port ? scans[`${id}|${port}`] : undefined);
   const setScan = useCallback((id: string, port: string, slave: number | null) => setScans((m) => ({ ...m, [`${id}|${port}`]: slave })), []);
 
+  /** Show an installation. Another one than shown drops the in-memory phase data of this run (fresh check, slave
+   *  scans); the panel's own (inverter, measurement, End progress) goes with its remount. Open work stays in the banner. */
   const use = useCallback(async (id: string, recheck: boolean) => {
+    if (installationRef.current !== id) { setFresh(null); setScans({}); }
     localStorage.setItem("maint.installation", id);
     installationRef.current = id;
     overviewRef.current = overviewRef.current?.installation.id === id ? overviewRef.current : null;
     setInstallation(id);
-    if (recheck) await check(id); else await refresh(id);
+    setSwitching(true);
+    try { if (recheck) await check(id); else await refresh(id); } finally { setSwitching(false); }
   }, [check, refresh]);
+
+  /** A deleted installation: its selection, overview, fresh check, scans and one-adapter mark go; nothing is shown
+   *  until the user picks another one. */
+  const forget = useCallback(async (id: string) => {
+    setOneAdapter(id, false);
+    if (installationRef.current === id) {
+      localStorage.removeItem("maint.installation");
+      installationRef.current = null;
+      store(null);
+      setInstallation(null);
+      setFresh(null); setScans({}); setUnassigned(null); setOther(null);
+    }
+    await loadLists();
+  }, [loadLists]);
 
   /** A new connection (`attachDecision`): never silently replaces an installation with open work (its
    *  session and blocks would vanish from view); the banner offers to assign or to switch instead. */
@@ -99,11 +141,29 @@ export function useMaint() {
       const hasControl = known ? await promote(known) : false;
       await use(d.id, endpoint.bus === "can" && hasControl);
     }
+    // nothing is created before the user named it (the name dialog; cancel leaves the endpoint unassigned)
     if (d.do === "create") {
-      const created = await api.maintInstallationFor(endpoint).catch(() => null);
-      if (created) { await promote(created); await use(created.id, false); }
+      const list = await api.maintInstallations().catch(() => installationsRef.current);
+      setNaming({ endpoint, suggested: defaultName(list, i18n.t("maint.picker.base")) });
     }
   }, [refresh, use]);
+
+  /** The name dialog's confirm: creates the installation with this endpoint (one backend transaction) and shows it.
+   *  Returns the text key of a refusal (the dialog stays open), null on success. */
+  const confirmNaming = useCallback(async (name: string): Promise<{ key: string; params?: Record<string, unknown> } | null> => {
+    const n = naming;
+    if (!n) return null;
+    const bad = nameCheck(name, installationsRef.current);
+    if (bad) return { key: bad };
+    try {
+      const { control, endpoints } = createFromAttach(n.endpoint);
+      const created = await api.maintCreateInstallation(name.trim(), control, endpoints);
+      setNaming(null);
+      await use(created.id, false);
+      return null;
+    } catch (e) { return errorKey(e); }
+  }, [naming, use]);
+  const cancelNaming = useCallback(() => setNaming(null), []);
 
   /** Explicit switch from the banner. */
   const switchTo = useCallback(async (id: string) => {
@@ -123,8 +183,15 @@ export function useMaint() {
     await refresh(inst.id);
   }, [refresh]);
 
+  // the open work of every installation: also every 30 s (another installation's state is not reloaded otherwise)
+  useEffect(() => {
+    const timer = setInterval(() => { void loadLists(); }, 30_000);
+    return () => clearInterval(timer);
+  }, [loadLists]);
+
   // start-up: show the last confirmed state at once, then re-check if a control channel is set
   useEffect(() => {
+    void loadLists();
     (async () => {
       const o = await refresh();
       if (o?.installation.control) await check();
@@ -134,5 +201,6 @@ export function useMaint() {
   /** installation and session in use right now (refs, not render values): for actions that outlive a render */
   const current = useCallback(() => ({ installation: installationRef.current, session: overviewRef.current?.session?.id ?? null }), []);
 
-  return { installation, overview, current, setOverview: store, unassigned, other, attach, assign, switchTo, refresh, check, invalidateCheck, freshFor, scanOf, setScan };
+  return { installation, overview, current, setOverview: store, unassigned, other, attach, assign, switchTo, refresh, check, invalidateCheck, freshFor, scanOf, setScan,
+    installations, work, workFailed, loadLists, switching, forget, naming, confirmNaming, cancelNaming };
 }

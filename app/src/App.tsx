@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Cable } from "lucide-react";
 import { Sidebar } from "./views/Sidebar";
 import { MaintBanner } from "./views/MaintBanner";
+import { NameDialog } from "./views/NameDialog";
 import { Firmware } from "./views/Firmware";
 import { Dashboard } from "./views/Dashboard";
 import { PackDetail } from "./views/PackDetail";
@@ -14,7 +15,7 @@ import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { useMaint } from "./maintStore";
 import { api, isDemo, type Bus } from "./api";
-import type { Monitor } from "./maint";
+import { openWorkLines, type Monitor } from "./maint";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
@@ -53,6 +54,10 @@ export default function App() {
     return () => { un.then((f) => f()); };
   }, []);
 
+  // the banner's „Anzeigen“/„Beenden“: the firmware view with the pack bus panel
+  const openPanel = () => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); setPack(null); };
+  const endpointText = (ep: { kind: string; addr?: string; path?: string }) => ep.addr ?? ep.path ?? "";
+
   return (
     <HelpProvider>
       <div className="flex h-full bg-bg text-ink">
@@ -74,8 +79,11 @@ export default function App() {
           onDisconnected={(lost) => { live.reset(); setConnected(false); setPack(null); setDisconnects((d) => d + 1); setMonitor(lost ? "lost" : "offline"); maint.invalidateCheck(); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
-          <MaintBanner overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
-            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo} onEnd={() => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); setFocusEnd(Date.now()); }} />
+          <MaintBanner lines={openWorkLines(maint.work, maint.installation)} failed={maint.workFailed} overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
+            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo}
+            onShow={(id) => { if (id !== maint.installation && !flashing) void maint.switchTo(id); openPanel(); }}
+            onEnd={() => { openPanel(); setFocusEnd(Date.now()); }} />
+          {maint.naming && <NameDialog key={maint.naming.suggested + endpointText(maint.naming.endpoint)} endpoint={maint.naming.endpoint} suggested={maint.naming.suggested} onConfirm={maint.confirmNaming} onCancel={maint.cancelNaming} />}
           {view === "firmware" && maintenance ? (
             <Firmware connected={connected} monitor={monitor} disconnects={disconnects} focusEnd={focusEnd} onFocusDone={() => setFocusEnd(0)} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction}
               onMonitorStopped={monitorStopped} />
