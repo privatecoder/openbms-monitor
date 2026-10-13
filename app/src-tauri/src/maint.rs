@@ -60,6 +60,8 @@ pub struct Overview {
     session: Option<MaintSession>,
     blocks: Vec<FlashBlock>,
     sector_note: Option<String>,
+    /// the End step allowed next in this app run (`next_end_step`); None without an open session
+    end_next: Option<EndStep>,
 }
 
 pub fn with_store<T>(state: &AppState, f: impl FnOnce(&Store) -> Result<T, String>) -> Result<T, MaintError> {
@@ -74,7 +76,7 @@ pub fn with_store_arc<T>(store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Stor
 }
 
 pub fn overview(state: &AppState, inst: &str) -> Result<Overview, MaintError> {
-    with_store(state, |s| {
+    let mut o = with_store(state, |s| {
         let installation = s.installations()?.into_iter().find(|i| i.id == inst).ok_or("unknown installation")?;
         let ms = s.master_state(inst)?;
         Ok(Overview {
@@ -84,8 +86,14 @@ pub fn overview(state: &AppState, inst: &str) -> Result<Overview, MaintError> {
             session: s.open_session(inst)?,
             blocks: s.blocks(inst)?,
             sector_note: s.sector_note(inst)?,
+            end_next: None,
         })
-    })
+    })?;
+    if let Some(session) = &o.session {
+        let map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
+        o.end_next = Some(next_end_step(&end_progress_of(map.get(inst), session.id), session.kind));
+    }
+    Ok(o)
 }
 
 pub fn uses_main_connection(main: Option<&(String, Bus)>, control_key: &str) -> bool {
@@ -307,6 +315,23 @@ fn verify_single_pack(state: &AppState, app: &AppHandle, inst: &Installation, po
         return Err(refused("slave-present"));
     }
     Ok((fresh, slave))
+}
+
+/// Step 4 of the panel for a master that reports 0/0 without a session: 0/0 alone does not prove a single
+/// pack (a bank master with DIP 5–8 OFF reads the same). On the pack bus: quiet and 0x47 from address 0
+/// (it is the pack bus), then the slave scan (`bus::first_slave`, two passes, fail-closed). Returns the
+/// first slave that answered, None when none did. Only reads; stores nothing.
+#[tauri::command]
+pub async fn maint_scan_slaves(app: AppHandle, state: State<'_, AppState>, installation: String, port: String) -> Result<Option<u8>, MaintError> {
+    if port.is_empty() {
+        return Err(refused("no-port"));
+    }
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let inst = self::installation(&state, &installation)?;
+    port_of(&state, &inst, &port)?;
+    let mut link = open_pack_for(&state, &app, &port)?;
+    bus::measure(&mut link, &mut std::io::sink()).map_err(|e| MaintError::Measure { message: e.to_string() })?;
+    bus::first_slave(&mut link, &SystemClock::new(), &mut std::io::sink(), bus::SLAVE_WINDOW).map_err(|e| MaintError::Connection { message: e.to_string() })
 }
 
 /// The user confirmed DIP 5–8 OFF (and noted the positions): a DIP session with the slave count they entered
@@ -610,14 +635,30 @@ fn open_pack(port: &str) -> Result<Connection, MaintError> {
     Connection::open(&Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD }).map_err(|e| MaintError::Connection { message: e.to_string() })
 }
 
-/// The measurement of step 3. First, whenever the stored state is known and the control channel is a
-/// separate adapter, a fresh 0x64 status that must match it (`policy::fresh_status`); a mismatch re-checks
-/// the master and refuses. Then on the pack bus 2 s quiet and 0x47 from address 0. Stops the monitor when
-/// it holds the pack port or polls the pack bus.
+/// The fresh 0x64 status a measurement needs. An open marker session always needs 1/0, whatever was stored
+/// (a lost connection stores `unknown`, and the marker may have been cleared meanwhile). Without a UART1 read
+/// in the same command (`uart1` false: no control channel, or one adapter for both buses) only a confirmed
+/// `patched-on` is trusted; anything else is refused `state-unknown` until a check shows the marker.
+/// Without a marker session the stored state decides (`policy::fresh_status`, nothing stored = unchecked).
+pub fn measure_fresh(stored: Option<&StoredMasterState>, session: Option<SessionKind>, uart1: bool) -> Result<policy::Fresh, MaintError> {
+    if session == Some(SessionKind::Marker) {
+        if !uart1 && stored != Some(&StoredMasterState::PatchedOn) {
+            return Err(refused("state-unknown"));
+        }
+        return Ok(policy::Fresh::MarkerOn);
+    }
+    Ok(stored.map(|m| policy::fresh_status(m.into())).unwrap_or(policy::Fresh::Unchecked))
+}
+
+/// The measurement of step 3. First, whenever a fresh status is needed (`measure_fresh`) and the control
+/// channel is a separate adapter, a fresh 0x64 status that must match it; a mismatch re-checks the master
+/// and refuses. Then on the pack bus 2 s quiet and 0x47 from address 0. Stops the monitor when it holds the
+/// pack port or polls the pack bus.
 pub fn measure(state: &AppState, app: &AppHandle, inst: &Installation, port: &str) -> Result<i64, MaintError> {
-    let ms = with_store(state, |s| s.master_state(&inst.id))?;
-    let fresh = ms.as_ref().map(|(m, _)| policy::fresh_status(m.into())).unwrap_or(policy::Fresh::Unchecked);
-    if fresh != policy::Fresh::Unchecked && inst.control.is_some() && !same_adapter(inst, port) {
+    let (ms, session) = with_store(state, |s| Ok((s.master_state(&inst.id)?, s.open_session(&inst.id)?)))?;
+    let uart1 = inst.control.is_some() && !same_adapter(inst, port);
+    let fresh = measure_fresh(ms.as_ref().map(|(m, _)| m), session.map(|s| s.kind), uart1)?;
+    if fresh != policy::Fresh::Unchecked && uart1 {
         let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()).ok())?;
         if !policy::fresh_matches(fresh, probe) {
             check(state, inst)?;
@@ -709,7 +750,7 @@ pub struct EndResult {
 /// The three steps of End. In the sequential way (one adapter for both buses) the UI drives them one by
 /// one and the user moves the cable between them: `stop` and the Modbus reads need the CAN socket bus,
 /// the polling-round check needs the pack bus.
-#[derive(serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EndStep {
     /// marker session: `stop` and wait for 0/N (a DIP session sends no `stop`; the step passes without one)
@@ -752,6 +793,18 @@ pub fn end_next(p: &EndProgress, kind: SessionKind, slaves: u8, has_control: boo
         EndStep::Bus if stopped => Ok(()),
         EndStep::Values if stopped && p.bus_ok => Ok(()),
         _ => Err(refused("end-order")),
+    }
+}
+
+/// The step End allows next (`end_next` accepts it): Stop for a marker session that has not stopped yet,
+/// then Bus, then Values. After a failed step this is the restart point (`end_record` starts over).
+pub fn next_end_step(p: &EndProgress, kind: SessionKind) -> EndStep {
+    if !p.stopped && kind == SessionKind::Marker {
+        EndStep::Stop
+    } else if !p.bus_ok {
+        EndStep::Bus
+    } else {
+        EndStep::Values
     }
 }
 
@@ -1313,6 +1366,26 @@ mod tests {
     }
 
     #[test]
+    fn the_overview_names_the_next_end_step() {
+        use EndStep::*;
+        use SessionKind::{Dip, Marker};
+        let fresh = end_progress_of(None, 7);
+        assert_eq!(next_end_step(&fresh, Marker), Stop);
+        // a DIP session sends no stop: it starts with the bus check
+        assert_eq!(next_end_step(&fresh, Dip), Bus);
+        let stopped = end_record(fresh, Stop, true);
+        assert_eq!(next_end_step(&stopped, Marker), Bus);
+        let bus = end_record(stopped, Bus, true);
+        assert_eq!(next_end_step(&bus, Marker), Values);
+        // after a failed step the restart point
+        assert_eq!(next_end_step(&end_record(bus, Values, false), Marker), Stop);
+        assert_eq!(next_end_step(&end_record(end_record(fresh, Bus, true), Values, false), Dip), Bus);
+        // progress of another session does not count
+        assert_eq!(next_end_step(&end_progress_of(Some(&bus), 8), Marker), Stop);
+        assert_eq!(serde_json::to_value(Values).unwrap(), serde_json::json!("values"));
+    }
+
+    #[test]
     fn end_steps_run_in_order_and_start_over_after_a_failure() {
         use EndStep::*;
         use SessionKind::{Dip, Marker};
@@ -1390,8 +1463,9 @@ mod tests {
         }
         fn measure(&mut self) -> Result<(), MaintError> {
             self.calls.push("measure");
-            let stored: policy::MasterState = self.snap.state.as_ref().map(Into::into).unwrap_or(policy::MasterState::Unknown);
-            if policy::fresh_matches(policy::fresh_status(stored), probe_of(&self.master)) { Ok(()) } else { Err(refused("state-changed")) }
+            let uart1 = self.control && !self.sequential;
+            let fresh = measure_fresh(self.snap.state.as_ref(), self.snap.session.as_ref().map(|s| s.kind), uart1)?;
+            if !uart1 || policy::fresh_matches(fresh, probe_of(&self.master)) { Ok(()) } else { Err(refused("state-changed")) }
         }
     }
 
@@ -1446,6 +1520,43 @@ mod tests {
         // the master check re-reads the state first and refuses with the decision table
         let mut p = fake(S::PatchedOff { slaves: 11 }, Some(S::PatchedOn), Some(session(SessionKind::Marker)));
         assert!(refused_with(prepare_flash(&mut p, 0, ImageKind::Maintenance, &ALL), "quiet-first"));
+    }
+
+    #[test]
+    fn a_marker_session_with_unknown_state_needs_a_fresh_marker_before_a_slave_flash() {
+        use StoredMasterState as S;
+        // the connection was lost (stored unknown), meanwhile someone cleared the marker: bus quiet and
+        // 0x47 alone must not pass, the fresh status must be 1/0
+        let mut p = fake(S::PatchedOff { slaves: 7 }, Some(S::Unknown), Some(session(SessionKind::Marker)));
+        assert!(refused_with(prepare_flash(&mut p, 3, ImageKind::Original, &ALL), "state-changed"));
+        // the marker is still set: the slave flash passes
+        let mut p = fake(S::PatchedOn, Some(S::Unknown), Some(session(SessionKind::Marker)));
+        assert!(prepare_flash(&mut p, 3, ImageKind::Original, &ALL).is_ok());
+        assert_eq!(p.calls, ["measure"]);
+        // one adapter for both buses: no UART1 read in the same command, so stored unknown is refused
+        let mut p = fake(S::PatchedOn, Some(S::Unknown), Some(session(SessionKind::Marker)));
+        p.sequential = true;
+        assert!(refused_with(prepare_flash(&mut p, 3, ImageKind::Original, &ALL), "state-unknown"));
+        // a DIP session with unknown state keeps the manual way: only the pack bus measurement counts
+        let mut p = fake(S::Unknown, Some(S::Unknown), Some(session(SessionKind::Dip)));
+        assert!(prepare_flash(&mut p, 3, ImageKind::Original, &ALL).is_ok());
+    }
+
+    #[test]
+    fn the_fresh_status_of_a_marker_session_is_always_1_0() {
+        use policy::Fresh;
+        use StoredMasterState as S;
+        let marker = Some(SessionKind::Marker);
+        assert_eq!(measure_fresh(Some(&S::Unknown), marker, true).unwrap(), Fresh::MarkerOn);
+        assert_eq!(measure_fresh(None, marker, true).unwrap(), Fresh::MarkerOn);
+        assert_eq!(measure_fresh(Some(&S::PatchedOn), marker, true).unwrap(), Fresh::MarkerOn);
+        assert!(refused_with(measure_fresh(Some(&S::Unknown), marker, false), "state-unknown"));
+        // the sequential way keeps working on a confirmed marker
+        assert_eq!(measure_fresh(Some(&S::PatchedOn), marker, false).unwrap(), Fresh::MarkerOn);
+        // without a marker session the stored state decides, as before
+        assert_eq!(measure_fresh(Some(&S::Unknown), Some(SessionKind::Dip), true).unwrap(), Fresh::Unchecked);
+        assert_eq!(measure_fresh(Some(&S::PatchedOff { slaves: 0 }), None, true).unwrap(), Fresh::Zero);
+        assert_eq!(measure_fresh(None, None, true).unwrap(), Fresh::Unchecked);
     }
 
     #[test]
