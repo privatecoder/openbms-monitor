@@ -26,11 +26,24 @@ export function openWork(o: MaintOverview | null): boolean {
 
 export type Attach = { do: "use"; id: string } | { do: "create" } | { do: "offer-assign" } | { do: "offer-switch"; id: string; name: string };
 
-/** What a new connection does to the installation in use: switch only when nothing open would vanish. */
-export function attachDecision(current: MaintOverview | null, known: Installation | null): Attach {
-  if (known && (!current || known.id === current.installation.id || !openWork(current))) return { do: "use", id: known.id };
+/** What a new connection does to the installation in use: switch only when nothing open would vanish.
+ *  `unloadedId`: an installation is in use but its overview could not be loaded; that counts as open work. */
+export function attachDecision(current: MaintOverview | null, known: Installation | null, unloadedId: string | null = null): Attach {
+  const inUse = !!current || !!unloadedId;
+  const same = !!known && (known.id === current?.installation.id || known.id === unloadedId);
+  const mayReplace = !unloadedId && !openWork(current);
+  if (known && (!inUse || same || mayReplace)) return { do: "use", id: known.id };
   if (known) return { do: "offer-switch", id: known.id, name: known.name };
-  return current ? { do: "offer-assign" } : { do: "create" };
+  return inUse ? { do: "offer-assign" } : { do: "create" };
+}
+
+/** Latest-wins guard for overview requests: only the newest request for the installation still in use may store its answer. */
+export function latestGuard() {
+  let n = 0;
+  return {
+    begin: () => ++n,
+    accepts: (ticket: number, requestedId: string, currentId: string | null) => ticket === n && requestedId === currentId,
+  };
 }
 
 /** Same key as the backend's `endpoint_key`: the physical endpoint, independent of the bus. */
