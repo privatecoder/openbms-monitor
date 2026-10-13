@@ -196,7 +196,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
         </div>
         {portFree && (
           <p className="flex flex-wrap items-center gap-3 text-sm text-discharge">{t("maint.panel.portUnassigned")}
-            <Button variant="ghost" size="sm" onClick={async () => { await maint.assign({ kind: "serial", path: port, bus: "pack" }); await lookupPort(); }}>{t("maint.banner.assign")}</Button>
+            <Button variant="secondary" size="sm" onClick={async () => { await maint.assign({ kind: "serial", path: port, bus: "pack" }); await lookupPort(); }}>{t("maint.banner.assign")}</Button>
           </p>
         )}
         {portElsewhere && <p className="text-sm text-alarm">{t("maint.err.refused.installation-mismatch")}</p>}
@@ -206,7 +206,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
 
       <Step n={2} title={t("fw.s2")} active={s.image}>
         <div className="flex flex-wrap items-center gap-4">
-          <Button variant="ghost" disabled={!s.image} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
+          <Button variant="secondary" disabled={!s.image} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
           <label className="flex items-center gap-2 text-sm text-muted"><Switch checked={allowCustom} onChange={toggleCustom} disabled={!s.image} />{t("fw.allowCustom")}</label>
         </div>
         {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: image.custom ? t("fw.customName") : image.release, blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
@@ -214,7 +214,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
       </Step>
 
       <Step n={3} title={t("fw.s3")} active={s.inspect}>
-        <Button variant="ghost" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
+        <Button variant="secondary" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
         {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: target.firmware_version, can: target.can_protocol })}</p>}
       </Step>
 
@@ -270,7 +270,7 @@ export function Firmware({ connected, disconnects, maint, onMonitorStopped, onRu
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>
-                <Button variant="ghost" size="sm" onClick={reset}>{t("fw.again")}</Button>
+                <Button variant="secondary" size="sm" onClick={reset}>{t("fw.again")}</Button>
                 <Button variant="primary" size="sm" onClick={onBack}>{t("fw.back")}</Button>
               </div>
             </div>

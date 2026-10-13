@@ -81,44 +81,16 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
     <section className="space-y-3 rounded-md border border-line p-4 text-sm">
       <div className="flex items-center justify-between">
         <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title", { name: o.installation.name })}<InfoIcon id="topic.maintenance" /></h2>
-        <Button variant="ghost" size="sm" onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
+        <Button variant="secondary" size="sm" onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
       </div>
       {setup && <MaintSetup key={o.installation.id} overview={o} onSaved={(x) => { maint.setOverview(x); setSetup(false); }} />}
 
       {/* 1. check master */}
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="ghost" size="sm" disabled={busy || !o.installation.control} onClick={() => run(() => api.maintCheck(o.installation.id))}>{t("maint.panel.check")}</Button>
+        <Button variant="secondary" size="sm" disabled={busy || !o.installation.control} onClick={() => run(() => api.maintCheck(o.installation.id))}>{t("maint.panel.check")}</Button>
         <span>{s ? t(`maint.state.${s}`, { slaves: o.state?.slaves ?? 0 }) : t("maint.state.none")}</span>
         {replug && <span className="text-discharge">{t("maint.panel.replugControl")}</span>}
       </div>
-
-      {s === "patched-off" && (o.state?.slaves ?? 0) > 0 && !o.session && (
-        <Button variant="primary" size="sm" disabled={busy || !inverter} onClick={() => run(() => api.maintActivate(o.installation.id, inverter))}>{t("maint.panel.activate")}</Button>
-      )}
-      {(s === "no-0x64" || s === "unknown" || zeroSlaves) && !o.session && (
-        <div className="space-y-2">
-          <p>{t(s === "unknown" ? "maint.panel.unknownHint" : zeroSlaves ? "maint.panel.dipZeroHint" : "maint.panel.dipHint")}</p>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
-          {packsInput}
-          <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t("maint.panel.startDip")}</Button>
-        </div>
-      )}
-      {s === "marker-unexplained" && (
-        <div className="space-y-2">
-          <p className="text-alarm">{t("maint.banner.unexplainedHint")}</p>
-          {packsInput}
-          {/* a set marker is never a single pack: 2 to 16 packs only (the backend refuses N = 0 here) */}
-          {o.session?.kind !== "dip" && <Button variant="ghost" size="sm" disabled={busy || n === null || n === 0} onClick={() => n !== null && n > 0 && run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
-          {/* the recovery row: DIP session first, then the original image on address 0 (firmware view below) */}
-          {!o.session && (
-            <div className="space-y-2 border-t border-line pt-2">
-              <p>{t("maint.panel.recoveryHint")}</p>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
-              <Button variant="ghost" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t("maint.panel.startRecovery")}</Button>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* 2. inverter: in memory only, cleared with every new work phase */}
       {(o.session || s === "patched-on" || (s === "patched-off" && (o.state?.slaves ?? 0) > 0)) && (
@@ -128,10 +100,38 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
         </label>
       )}
 
+      {s === "patched-off" && (o.state?.slaves ?? 0) > 0 && !o.session && (
+        <Button variant="primary" size="sm" disabled={busy || !inverter} onClick={() => run(() => api.maintActivate(o.installation.id, inverter))}>{t("maint.panel.activate")}</Button>
+      )}
+      {(s === "no-0x64" || s === "unknown" || zeroSlaves) && !o.session && (
+        <div className="space-y-2">
+          <p>{t(s === "unknown" ? "maint.panel.unknownHint" : zeroSlaves ? "maint.panel.dipZeroHint" : "maint.panel.dipHint")}</p>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
+          {packsInput}
+          <Button variant="secondary" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t("maint.panel.startDip")}</Button>
+        </div>
+      )}
+      {s === "marker-unexplained" && (
+        <div className="space-y-2">
+          <p className="text-alarm">{t("maint.banner.unexplainedHint")}</p>
+          {packsInput}
+          {/* a set marker is never a single pack: 2 to 16 packs only (the backend refuses N = 0 here) */}
+          {o.session?.kind !== "dip" && <Button variant="secondary" size="sm" disabled={busy || n === null || n === 0} onClick={() => n !== null && n > 0 && run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>}
+          {/* the recovery row: DIP session first, then the original image on address 0 (firmware view below) */}
+          {!o.session && (
+            <div className="space-y-2 border-t border-line pt-2">
+              <p>{t("maint.panel.recoveryHint")}</p>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
+              <Button variant="secondary" size="sm" disabled={busy || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t("maint.panel.startRecovery")}</Button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 3. measure */}
       {(o.session || s === "patched-on") && (
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="ghost" size="sm" disabled={busy || !port} onClick={() => run(async (still) => { setMeasuredAt(null); const at = await api.maintMeasure(o.installation.id, port); if (still()) setMeasuredAt(at); })}>{t("maint.panel.measure")}</Button>
+          <Button variant="secondary" size="sm" disabled={busy || !port} onClick={() => run(async (still) => { setMeasuredAt(null); const at = await api.maintMeasure(o.installation.id, port); if (still()) setMeasuredAt(at); })}>{t("maint.panel.measure")}</Button>
           {replug && <span className="text-discharge">{t("maint.panel.replugPack")}</span>}
           {measuredAt && <span className="flex items-center gap-1 text-ok"><CircleCheck className="h-4 w-4" />{t("maint.panel.quietAt", { time: new Date(measuredAt).toLocaleTimeString() })}</span>}
         </div>
@@ -142,8 +142,8 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
         <div key={b.id} className="space-y-1 rounded-md border border-alarm p-2 text-alarm">
           <p className="flex gap-2"><TriangleAlert className="h-4 w-4 shrink-0" />{t(`maint.panel.block.${b.reason}`, { pack: b.pack })}</p>
           <div className="flex gap-2">
-            <Button variant="ghost" size="sm" disabled={busy || !port} onClick={() => run(() => api.maintClearBlock(o.installation.id, b.id, "answered", port))}>{t("maint.panel.blockCheck")}</Button>
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => run(() => api.maintClearBlock(o.installation.id, b.id, "isolated", null))}>{t("maint.panel.blockIsolated")}</Button>
+            <Button variant="secondary" size="sm" disabled={busy || !port} onClick={() => run(() => api.maintClearBlock(o.installation.id, b.id, "answered", port))}>{t("maint.panel.blockCheck")}</Button>
+            <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(() => api.maintClearBlock(o.installation.id, b.id, "isolated", null))}>{t("maint.panel.blockIsolated")}</Button>
           </div>
         </div>
       ))}
@@ -157,14 +157,14 @@ export function PackBusPanel({ maint, port, inverter, setInverter, measuredAt, s
             {editSlaves ? (
               <>
                 <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
-                <Button variant="ghost" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(async (still) => {
+                <Button variant="secondary" size="sm" disabled={busy || n === null} onClick={() => n !== null && run(async (still) => {
                   const r = await api.maintSetSlaves(o.installation.id, n, port);
                   if (still()) setEditSlaves(false);
                   return r;
                 })}>{t("maint.panel.save")}</Button>
               </>
             ) : (
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setNText(o.session ? String(o.session.expected_slaves + 1) : ""); setEditSlaves(true); }}>{t("maint.panel.changeSlaves")}</Button>
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => { setNText(o.session ? String(o.session.expected_slaves + 1) : ""); setEditSlaves(true); }}>{t("maint.panel.changeSlaves")}</Button>
             )}
           </div>
           {editSlaves && derived}

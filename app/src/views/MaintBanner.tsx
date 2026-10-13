@@ -19,11 +19,11 @@ export function MaintBanner({ overview, unassigned, other, onAssign, onSwitch, o
     <div role="status" className="mb-6 flex items-center gap-3 rounded-md border border-discharge p-3 text-sm">
       {unassigned && <>
         <p className="flex-1">{t("maint.banner.unassigned", { endpoint: unassigned.kind === "tcp" ? unassigned.addr : unassigned.path, name: overview.installation.name })}</p>
-        <Button variant="ghost" size="sm" onClick={onAssign}>{t("maint.banner.assign")}</Button>
+        <Button variant="secondary" size="sm" onClick={onAssign}>{t("maint.banner.assign")}</Button>
       </>}
       {other && <>
         <p className="flex-1">{t("maint.banner.other", { other: other.name, name: overview.installation.name })}</p>
-        <Button variant="ghost" size="sm" onClick={() => onSwitch(other.id)}>{t("maint.banner.switch", { other: other.name })}</Button>
+        <Button variant="secondary" size="sm" onClick={() => onSwitch(other.id)}>{t("maint.banner.switch", { other: other.name })}</Button>
       </>}
     </div>
   );
@@ -39,7 +39,7 @@ export function MaintBanner({ overview, unassigned, other, onAssign, onSwitch, o
         <p className="text-muted">{t(b.kind === "unexplained" ? "maint.banner.unexplainedHint" : "maint.banner.hint")}</p>
         {overview?.session?.failing && <p className="text-alarm">{t("maint.banner.failing", { what: failingText(overview.session.failing, t) })}</p>}
       </div>
-      {b.end && <Button variant="ghost" size="sm" onClick={onEnd}>{t("maint.end")}</Button>}
+      {b.end && <Button variant="secondary" size="sm" onClick={onEnd}>{t("maint.end")}</Button>}
     </div>
     </>
   );
