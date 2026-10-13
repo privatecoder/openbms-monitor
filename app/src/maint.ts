@@ -47,6 +47,19 @@ export function openWorkLines(list: OpenWork[], shown: string | null): WorkLine[
   return lines.sort((a, b) => workRank(a) - workRank(b) || (a.at ?? Infinity) - (b.at ?? Infinity) || a.name.localeCompare(b.name));
 }
 
+/** Accepts only the answer of the newest request (sequence ticket): an older reply that arrives late never
+ *  overwrites a newer list. */
+export function latestOnly() {
+  let seq = 0;
+  return { begin: () => ++seq, accepts: (ticket: number) => ticket === seq };
+}
+
+/** The open note on sector 0x23000 the master-plan checklist shows before flashing a maintenance or custom image onto
+ *  the master (display only, no gate); null otherwise. */
+export function planSectorNote(o: MaintOverview | null, address: number, kind: FirmwareImage["kind"] | null): string | null {
+  return o?.sector_note && address === 0 && (kind === "maintenance" || kind === "custom") ? o.sector_note : null;
+}
+
 /** An installation can be deleted only without open work: no session, no block, no set or unexplained marker and no
  *  open note on sector 0x23000 (it is never discarded silently). The backend checks again under the port lock. */
 export function deleteAllowed(o: MaintOverview | null): boolean {

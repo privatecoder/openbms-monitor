@@ -8,7 +8,7 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, gateHint, imageLabel, imageWarning, masterOk, progressFraction, resultActions, resultVersions, steps } from "../firmware";
-import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, planItems, portLock, type Activity, type Monitor } from "../maint";
+import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, planItems, planSectorNote, portLock, sectorNoteKey, type Activity, type Monitor } from "../maint";
 import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -26,7 +26,9 @@ function Step({ n, title, active, children }: { n: number; title: string; active
   );
 }
 
-export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDone, maint, onMonitorStopped, onRunning, onBack, onUserAction }: {
+export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDone, maint, onMonitorStopped, onRunning, onBack, onUserAction, onPanelBusy }: {
+  /** a pack bus panel action runs (the banner's „Anzeigen“ waits) */
+  onPanelBusy: (busy: boolean) => void;
   connected: boolean;
   monitor: Monitor;
   /** set by "End" in the banner: scroll to the panel's End section */
@@ -81,6 +83,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const [notice, setNotice] = useState<string | null>(null);
   // a pack bus panel action runs (check, scan, measurement, End step): port, address and image wait
   const [panelBusy, setPanelBusy] = useState(false);
+  useEffect(() => { onPanelBusy(panelBusy); }, [panelBusy]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onPanelBusy(false), []); // eslint-disable-line react-hooks/exhaustive-deps
   // step 1 without a control channel, and the single-pack statement of that way (memory only)
   const [noControl, setNoControl] = useState(false);
   const [singlePack, setSinglePack] = useState(false);
@@ -321,6 +325,12 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         {overview && address === 0 && image && (
           <div className="space-y-1 text-sm">
             {planError && <p className="text-alarm">{planError}</p>}
+            {/* the design: an open note on 0x23000 is shown again before a later patched flash (display only) */}
+            {(() => {
+              const note = planSectorNote(overview, address, image.kind);
+              const key = note ? sectorNoteKey(note) : null;
+              return note && <p role="alert" className="flex gap-2 rounded-md border border-discharge p-2 font-medium text-discharge"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("maint.plan.sectorNote", { note: key ? t(key) : note })}</p>;
+            })()}
             {plan && (
               <>
                 {/* in plan order: a step confirmed by a checkbox stands in its position (e.g. DIP 5–8 OFF before stop and measuring) */}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, isDemo, type Endpoint, type Installation, type MaintOverview, type OpenWork } from "./api";
 import i18n from "./i18n";
-import { assignEndpoint, attachDecision, controlFromAttach, createFromAttach, defaultName, errorKey, latestGuard, nameCheck } from "./maint";
+import { assignEndpoint, attachDecision, controlFromAttach, createFromAttach, defaultName, errorKey, latestGuard, latestOnly, nameCheck } from "./maint";
 
 /** The setup's one-adapter confirmation ("one adapter for both buses, I move the cable"), per installation. The
  *  backend stores only the keys; without this the control adapter is never taken as the RS485-1/2 port
@@ -37,6 +37,7 @@ export function useMaint() {
   const installationRef = useRef(installation);
   const overviewRef = useRef(overview);
   const guard = useRef(latestGuard()).current;
+  const lists = useRef(latestOnly()).current;
   const installationsRef = useRef<Installation[]>([]);
   installationsRef.current = installations;
 
@@ -45,11 +46,14 @@ export function useMaint() {
   /** Reload the installation list and the open work of every installation (banner). */
   const loadLists = useCallback(async () => {
     if (isDemo) return;
+    const ticket = lists.begin();
     const [list, open] = await Promise.all([api.maintInstallations().catch(() => null), api.maintOpenWork().catch(() => null)]);
+    // a newer load began meanwhile: its answer counts, not this older one
+    if (!lists.accepts(ticket)) return;
     if (list) setInstallations(list);
     if (open) setWork(open);
     setWorkFailed(!open);
-  }, []);
+  }, [lists]);
 
   /** Load the stored overview; returns what was loaded (also when a newer request made this answer stale). The
    *  installation list and the open work are reloaded with it (after every panel action, flash end, switch). */
@@ -95,7 +99,8 @@ export function useMaint() {
   /** Show an installation. Another one than shown drops the in-memory phase data of this run (fresh check, slave
    *  scans); the panel's own (inverter, measurement, End progress) goes with its remount. Open work stays in the banner. */
   const use = useCallback(async (id: string, recheck: boolean) => {
-    if (installationRef.current !== id) { setFresh(null); setScans({}); }
+    // a pending "assign to the shown installation" offer belonged to the one shown before
+    if (installationRef.current !== id) { setFresh(null); setScans({}); setUnassigned(null); }
     localStorage.setItem("maint.installation", id);
     installationRef.current = id;
     overviewRef.current = overviewRef.current?.installation.id === id ? overviewRef.current : null;

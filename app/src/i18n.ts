@@ -137,6 +137,7 @@ const resources = {
             note: "In der Einrichtung der Anlage als geklärt markieren, bevor sie gelöscht wird oder ein Anschluss umzieht.",
           },
           show: "Anzeigen", notLoaded: "Wartungsstatus nicht geladen. Angezeigt wird der zuletzt bekannte Stand.",
+          lockedFlash: "Kein Wechsel, solange ein Update läuft.", lockedAction: "Kein Wechsel, solange eine Aktion am Pack-Bus läuft.", lockedSwitch: "Der Wechsel lädt noch.",
         },
         state: {
           none: "Noch nicht geprüft.", "patched-off": "Gepatchter Master, Marker aus, {{slaves}} Slaves.", "patched-on": "Wartungsmodus aktiv (Marker an).",
@@ -255,6 +256,7 @@ const resources = {
         plan: {
           "dip-off": "DIP 5–8 AUS (bestätigen)", "stop-to-zero": "Marker löschen (stop) und auf 0/0 warten", measure: "Bus messen",
           "isolated-or-released": "Build für den gemeinsamen Bus freigegeben oder Master getrennt (bestätigen)",
+          sectorNote: "Offener Hinweis zu 0x23000: {{note}}. Vor diesem Flash klären oder bewusst fortfahren.",
           recovery: "Wiederherstellung ohne stop: Der Inhalt von 0x23000 bleibt ungeklärt und wird vermerkt.",
           after: { "marker-on": "Danach erwartet: Marker an (1/0).", zero: "Danach erwartet: 0/0.", "zero-or-unexplained": "Danach erwartet: 0/0.", unsupported: "Danach erwartet: RTN 04 (Original).", "no-assumption": "Danach: keine Annahme, DIP 5–8 bleiben AUS." },
         },
@@ -556,6 +558,7 @@ const resources = {
             note: "Mark it as resolved in the installation's setup before deleting it or moving a port.",
           },
           show: "Show", notLoaded: "Maintenance status not loaded. Showing the last known state.",
+          lockedFlash: "No switch while an update runs.", lockedAction: "No switch while a pack bus action runs.", lockedSwitch: "The switch is still loading.",
         },
         state: {
           none: "Not checked yet.", "patched-off": "Patched master, marker off, {{slaves}} slaves.", "patched-on": "Maintenance mode active (marker on).",
@@ -674,6 +677,7 @@ const resources = {
         plan: {
           "dip-off": "DIP 5–8 OFF (confirm)", "stop-to-zero": "Clear the marker (stop) and wait for 0/0", measure: "Measure bus",
           "isolated-or-released": "Build released for the shared bus, or master isolated (confirm)",
+          sectorNote: "Open note on 0x23000: {{note}}. Resolve it before this flash or continue deliberately.",
           recovery: "Recovery without stop: the content of 0x23000 stays unexplained and is recorded.",
           after: { "marker-on": "Expected afterwards: marker on (1/0).", zero: "Expected afterwards: 0/0.", "zero-or-unexplained": "Expected afterwards: 0/0.", unsupported: "Expected afterwards: RTN 04 (original).", "no-assumption": "Afterwards: no assumption, DIP 5–8 stay OFF." },
         },

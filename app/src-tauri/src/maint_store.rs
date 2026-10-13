@@ -53,6 +53,15 @@ pub fn valid_name<'a>(name: &str, others: impl IntoIterator<Item = &'a str>) -> 
     Ok(n.to_string())
 }
 
+/// The name of an installation created without asking (a single pack flashed without one): „Anlage n“ with the first
+/// free n from the count + 1, unique like `valid_name` (the UI's `defaultName`).
+pub fn default_name(names: &[String]) -> String {
+    (names.len() + 1..)
+        .map(|n| format!("Anlage {n}"))
+        .find(|c| valid_name(c, names.iter().map(String::as_str)).is_ok())
+        .unwrap_or_default()
+}
+
 /// Open session as the banner names it.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct OpenSession {
@@ -248,9 +257,9 @@ impl Store {
             return Ok(found);
         }
         let now = crate::history::now_ms();
-        let count: i64 = self.db.query_row("SELECT COUNT(*) FROM installations", [], |r| r.get(0)).map_err(e)?;
+        let names: Vec<String> = self.installations()?.into_iter().map(|i| i.name).collect();
         let id = new_id(now);
-        self.db.execute("INSERT INTO installations(id, name, control, created) VALUES (?1, ?2, NULL, ?3)", params![id, format!("Installation {}", count + 1), now]).map_err(e)?;
+        self.db.execute("INSERT INTO installations(id, name, control, created) VALUES (?1, ?2, NULL, ?3)", params![id, default_name(&names), now]).map_err(e)?;
         self.db.execute("INSERT INTO installation_endpoints(endpoint, installation) VALUES (?1, ?2)", params![endpoint, id]).map_err(e)?;
         self.installation(&id)
     }
@@ -927,6 +936,16 @@ mod tests {
         assert_eq!(list[1].session.as_ref().map(|x| (x.kind, x.started, x.expected_slaves)), Some((SessionKind::Marker, 5, 3)));
         assert_eq!((list[1].state.clone(), list[1].state_at), (Some(StoredMasterState::PatchedOn), Some(6)));
         assert_eq!(list[2].sector_note_at, Some(7));
+    }
+
+    #[test]
+    fn implicit_installations_get_the_first_free_anlage_n() {
+        assert_eq!(default_name(&[]), "Anlage 1");
+        assert_eq!(default_name(&["A".into(), "anlage 3".into()]), "Anlage 4");
+        let s = Store::open(&temp("defname")).unwrap();
+        s.create_installation("Anlage 2", None, vec![]).unwrap();
+        assert_eq!(s.installation_for("serial:/dev/p").unwrap().name, "Anlage 3");
+        assert_eq!(s.installation_for("serial:/dev/q").unwrap().name, "Anlage 4");
     }
 
     #[test]

@@ -33,6 +33,8 @@ export default function App() {
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
   const [flashing, setFlashing] = useState(false);
+  // a pack bus panel action runs (firmware view): the banner does not switch installations meanwhile
+  const [panelBusy, setPanelBusy] = useState(false);
   // "End" in the banner: the firmware view scrolls to the panel's End section (also when it is already open)
   const [focusEnd, setFocusEnd] = useState(0);
   // counts actions the user starts in the firmware view or the pack bus panel: the sidebar's wait for a busy port stops
@@ -81,12 +83,13 @@ export default function App() {
         <main className="flex-1 overflow-y-auto px-10 py-10">
           <MaintBanner lines={openWorkLines(maint.work, maint.installation)} failed={maint.workFailed} overview={maint.overview} unassigned={maint.unassigned} other={maint.other}
             onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onSwitch={maint.switchTo}
-            onShow={(id) => { if (id !== maint.installation && !flashing) void maint.switchTo(id); openPanel(); }}
+            switchLocked={flashing ? t("maint.openWork.lockedFlash") : panelBusy ? t("maint.openWork.lockedAction") : maint.switching ? t("maint.openWork.lockedSwitch") : null}
+            onShow={(id) => { if (id !== maint.installation) void maint.switchTo(id); openPanel(); }}
             onEnd={() => { openPanel(); setFocusEnd(Date.now()); }} />
           {maint.naming && <NameDialog key={maint.naming.suggested + endpointText(maint.naming.endpoint)} endpoint={maint.naming.endpoint} suggested={maint.naming.suggested} onConfirm={maint.confirmNaming} onCancel={maint.cancelNaming} />}
           {view === "firmware" && maintenance ? (
             <Firmware connected={connected} monitor={monitor} disconnects={disconnects} focusEnd={focusEnd} onFocusDone={() => setFocusEnd(0)} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction}
-              onMonitorStopped={monitorStopped} />
+              onMonitorStopped={monitorStopped} onPanelBusy={setPanelBusy} />
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (
