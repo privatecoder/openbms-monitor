@@ -177,3 +177,11 @@ export function failingText(f: string, t: T): string {
   if (!k) return f;
   return k.inner ? t(k.key, { error: t(k.inner.key, k.inner.params) }) : t(k.key, k.params);
 }
+
+/** The inverter statement belongs to one work phase. It survives the session that the activation it
+ *  unlocked has just opened (no session → new session, same installation); it is cleared when the
+ *  installation changes, the session ends or another session takes its place. */
+export function keepsInverter(prev: { installation: string | null; session: number | null }, next: { installation: string | null; session: number | null }): boolean {
+  if (prev.installation !== next.installation) return false;
+  return prev.session === next.session || (prev.session === null && next.session !== null);
+}
