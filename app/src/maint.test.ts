@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachDecision, bannerOf, canFlash, endpointKey, errorKey, needsReplug, openWork } from "./maint";
+import { latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, needsReplug, openWork } from "./maint";
 import type { MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -89,5 +89,23 @@ describe("helpers", () => {
   });
   it("the inverter confirmation is not part of the overview", () => {
     expect(Object.keys(base)).not.toContain("inverter");
+  });
+});
+
+describe("start-up races", () => {
+  const known = { id: "j", name: "Other", endpoints: [], control: null };
+  it("an installation in use whose overview is not loaded counts as open work", () => {
+    expect(attachDecision(null, known, "i")).toEqual({ do: "offer-switch", id: "j", name: "Other" });
+    expect(attachDecision(null, null, "i")).toEqual({ do: "offer-assign" });
+    expect(attachDecision(null, { ...known, id: "i" }, "i")).toEqual({ do: "use", id: "i" });
+    expect(attachDecision(null, known)).toEqual({ do: "use", id: "j" });
+  });
+  it("only the newest request for the current installation may store its answer", () => {
+    const g = latestGuard();
+    const a = g.begin();
+    const b = g.begin();
+    expect(g.accepts(a, "i", "i")).toBe(false);
+    expect(g.accepts(b, "i", "i")).toBe(true);
+    expect(g.accepts(b, "i", "j")).toBe(false);
   });
 });
