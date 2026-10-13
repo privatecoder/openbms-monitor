@@ -593,51 +593,155 @@ pub struct EndResult {
     failing: Option<String>,
 }
 
-/// End (step 5): refused while an update is unclear; marker → `stop` and wait for 0/N; then the pack bus
-/// check against N; then two Modbus reads ≥ 2 s apart over the control channel. The session closes only
-/// when all of it passed.
+/// The three steps of End. In the sequential way (one adapter for both buses) the UI drives them one by
+/// one and the user moves the cable between them: `stop` and the Modbus reads need the CAN socket bus,
+/// the polling-round check needs the pack bus.
+#[derive(serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EndStep {
+    /// marker session: `stop` and wait for 0/N (a DIP session sends no `stop`; the step passes without one)
+    Stop,
+    /// pack bus: every slave polled and answering (N > 0), or the master answering 0x47 (N = 0)
+    Bus,
+    /// two Modbus reads ≥ 2 s apart over the control channel; closes the session
+    Values,
+}
+
+/// Steps of End that passed in this app run, for one session. Only in memory: after a restart End starts
+/// again from its first step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndProgress {
+    pub session: i64,
+    pub stopped: bool,
+    pub bus_ok: bool,
+}
+
+/// The progress that counts for `session`: progress of another session starts over.
+pub fn end_progress_of(stored: Option<&EndProgress>, session: i64) -> EndProgress {
+    match stored {
+        Some(p) if p.session == session => *p,
+        _ => EndProgress { session, ..Default::default() },
+    }
+}
+
+/// Whether `step` may run now: Bus after Stop (marker sessions), Values after Bus (and Stop).
+pub fn end_next(p: &EndProgress, kind: SessionKind, step: EndStep) -> Result<(), MaintError> {
+    let stopped = p.stopped || kind == SessionKind::Dip;
+    match step {
+        EndStep::Stop => Ok(()),
+        EndStep::Bus if stopped => Ok(()),
+        EndStep::Values if stopped && p.bus_ok => Ok(()),
+        _ => Err(refused("end-order")),
+    }
+}
+
+/// The progress after `step` ran: a failure starts End over; a passed step counts, and a new `stop`
+/// makes an earlier bus check stale.
+pub fn end_record(p: EndProgress, step: EndStep, ok: bool) -> EndProgress {
+    if !ok {
+        return EndProgress { session: p.session, ..Default::default() };
+    }
+    match step {
+        EndStep::Stop => EndProgress { stopped: true, bus_ok: false, ..p },
+        EndStep::Bus => EndProgress { bus_ok: true, ..p },
+        EndStep::Values => p,
+    }
+}
+
+/// Run one step of End for the open session; the refusals (unclear update, locked marker, order) are
+/// checked at every step.
+fn end_step(state: &AppState, inst: &Installation, port: &str, step: EndStep) -> Result<EndResult, MaintError> {
+    let (session, ms, blocks) = with_store(state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?, s.blocks(&inst.id)?)))?;
+    let session = session.ok_or_else(|| refused("no-session"))?;
+    stop_allowed(ms.as_ref().map(|(m, _)| m))?;
+    end_allowed(&blocks)?;
+    let progress = {
+        let map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
+        end_progress_of(map.get(&inst.id), session.id)
+    };
+    end_next(&progress, session.kind, step)?;
+    let r = run_end_step(state, inst, port, &session, step);
+    let ok = matches!(r, Ok(EndResult { ok: true, .. }));
+    let mut map = state.end_progress.lock().map_err(|e| store_err(e.to_string()))?;
+    if ok && step == EndStep::Values {
+        map.remove(&inst.id);
+    } else {
+        map.insert(inst.id.clone(), end_record(progress, step, ok));
+    }
+    r
+}
+
+fn run_end_step(state: &AppState, inst: &Installation, port: &str, session: &MaintSession, step: EndStep) -> Result<EndResult, MaintError> {
+    let n = session.expected_slaves;
+    let fail = |what: &str, missing: Vec<u8>| -> Result<EndResult, MaintError> {
+        with_store(state, |s| s.set_failing(session.id, Some(what)))?;
+        Ok(EndResult { ok: false, missing, failing: Some(what.into()) })
+    };
+    match step {
+        EndStep::Stop if session.kind == SessionKind::Marker => {
+            let r = with_control(state, inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(n), Budgets::default()))?;
+            check(state, inst)?;
+            if let Err(e) = r {
+                return fail(&format!("stop: {}", serde_json::to_string(&MaintError::from(e)).unwrap_or_default()), vec![]);
+            }
+        }
+        EndStep::Stop => {}
+        EndStep::Bus => {
+            let mut link = open_pack_for(state, port)?;
+            if n > 0 {
+                let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
+                    .map_err(|e| MaintError::Connection { message: e.to_string() })?;
+                if !round.complete(n) {
+                    return fail("pack-communication-incomplete", round.missing(n));
+                }
+            } else if bus::measure(&mut link, &mut std::io::sink()).is_err() {
+                return fail("master-not-answering", vec![]);
+            }
+        }
+        EndStep::Values => {
+            for i in 0..2 {
+                if i == 1 {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                if !with_control(state, inst, |c| c.system_values().is_ok())? {
+                    return fail("system-values", vec![]);
+                }
+            }
+            with_store(state, |s| s.end_session(session.id, crate::history::now_ms()))?;
+        }
+    }
+    Ok(EndResult { ok: true, missing: vec![], failing: None })
+}
+
+/// End (step 5) in one call: refused while an update is unclear; marker → `stop` and wait for 0/N; then
+/// the pack bus check against N; then two Modbus reads ≥ 2 s apart over the control channel. The session
+/// closes only when all of it passed. In the sequential way this is impossible in one call
+/// (`end-sequential`): the UI runs `maint_end_step` with a cable change in between.
 #[tauri::command]
 pub async fn maint_end(state: State<'_, AppState>, installation: String, port: String) -> Result<EndResult, MaintError> {
     let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
     let inst = self::installation(&state, &installation)?;
     port_of(&state, &inst, &port)?;
-    let (session, ms, blocks) = with_store(&state, |s| Ok((s.open_session(&inst.id)?, s.master_state(&inst.id)?, s.blocks(&inst.id)?)))?;
-    let session = session.ok_or_else(|| refused("no-session"))?;
-    stop_allowed(ms.as_ref().map(|(m, _)| m))?;
-    end_allowed(&blocks)?;
-    let n = session.expected_slaves;
-    let fail = |what: &str, missing: Vec<u8>| -> Result<EndResult, MaintError> {
-        with_store(&state, |s| s.set_failing(session.id, Some(what)))?;
-        Ok(EndResult { ok: false, missing, failing: Some(what.into()) })
-    };
-    if session.kind == SessionKind::Marker {
-        let r = with_control(&state, &inst, |c| dialog::dialog(c, &SystemClock::new(), Action::Stop, Some(n), Budgets::default()))?;
-        check(&state, &inst)?;
-        if let Err(e) = r {
-            return fail(&format!("stop: {}", serde_json::to_string(&MaintError::from(e)).unwrap_or_default()), vec![]);
+    if same_adapter(&inst, &port) {
+        return Err(refused("end-sequential"));
+    }
+    let mut last = EndResult { ok: false, missing: vec![], failing: None };
+    for step in [EndStep::Stop, EndStep::Bus, EndStep::Values] {
+        last = end_step(&state, &inst, &port, step)?;
+        if !last.ok {
+            break;
         }
     }
-    let mut link = open_pack_for(&state, &port)?;
-    if n > 0 {
-        let round = bus::watch_round(&mut link, &SystemClock::new(), &mut std::io::sink(), n, end_timeout(n))
-            .map_err(|e| MaintError::Connection { message: e.to_string() })?;
-        if !round.complete(n) {
-            return fail("pack-communication-incomplete", round.missing(n));
-        }
-    } else if bus::measure(&mut link, &mut std::io::sink()).is_err() {
-        return fail("master-not-answering", vec![]);
-    }
-    drop(link);
-    for i in 0..2 {
-        if i == 1 {
-            std::thread::sleep(Duration::from_secs(2));
-        }
-        if !with_control(&state, &inst, |c| c.system_values().is_ok())? {
-            return fail("system-values", vec![]);
-        }
-    }
-    with_store(&state, |s| s.end_session(session.id, crate::history::now_ms()))?;
-    Ok(EndResult { ok: true, missing: vec![], failing: None })
+    Ok(last)
+}
+
+/// One step of End (see `EndStep`); refused (`end-order`) before its predecessors passed in this app run.
+#[tauri::command]
+pub async fn maint_end_step(state: State<'_, AppState>, installation: String, port: String, step: EndStep) -> Result<EndResult, MaintError> {
+    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let inst = self::installation(&state, &installation)?;
+    port_of(&state, &inst, &port)?;
+    end_step(&state, &inst, &port, step)
 }
 
 /// Clear a flash block: "answered" checks the pack on the pack bus (0x51 and 0x47), "isolated" is the
@@ -773,8 +877,11 @@ pub fn outcome_key(o: Outcome) -> &'static str {
 }
 
 /// Store what the post-flash check of the master found (design, "Flashing the master itself").
+/// A stored `marker-unexplained` is left only by an as-expected result (same rule as `next_state`).
 pub fn apply_master_outcome(s: &Store, inst: &str, plan: &policy::Plan, outcome: Outcome, now: i64) -> Result<(), String> {
-    s.set_master_state(inst, &state_after(outcome, plan.after), now)?;
+    let locked = s.master_state(inst)?.is_some_and(|(m, _)| m == StoredMasterState::MarkerUnexplained);
+    let next = if locked && outcome != Outcome::AsExpected { StoredMasterState::MarkerUnexplained } else { state_after(outcome, plan.after) };
+    s.set_master_state(inst, &next, now)?;
     match outcome {
         // back on the original image: the master is quiet only through DIP 5–8 OFF from now on
         Outcome::AsExpected if plan.after == Expect::Unsupported => {
@@ -981,6 +1088,41 @@ mod tests {
         let (s, i) = temp_store("recovery");
         apply_master_outcome(&s, &i, &plan(E::Unsupported, true), O::AsExpected, 5).unwrap();
         assert!(s.sector_note(&i).unwrap().unwrap().contains("recovered to original without stop"));
+        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::No0x64);
+        // an unclear recovery keeps the lock, and still blocks
+        let (s, i) = temp_store("recovery-unclear");
+        s.set_master_state(&i, &StoredMasterState::MarkerUnexplained, 1).unwrap();
+        apply_master_outcome(&s, &i, &plan(E::Unsupported, true), O::Unclear, 5).unwrap();
+        assert_eq!(s.master_state(&i).unwrap().unwrap().0, StoredMasterState::MarkerUnexplained);
+        assert_eq!(s.blocks(&i).unwrap()[0].reason, "master-unclear");
+    }
+
+    #[test]
+    fn end_steps_run_in_order_and_start_over_after_a_failure() {
+        use EndStep::*;
+        use SessionKind::{Dip, Marker};
+        let fresh = end_progress_of(None, 7);
+        // Values before Bus is refused, for both kinds
+        assert!(refused_with(end_next(&fresh, Dip, Values), "end-order"));
+        assert!(refused_with(end_next(&fresh, Marker, Values), "end-order"));
+        // Bus before Stop: refused for a marker session, allowed for a DIP session (no stop there)
+        assert!(refused_with(end_next(&fresh, Marker, Bus), "end-order"));
+        assert!(end_next(&fresh, Dip, Bus).is_ok());
+        assert!(end_next(&fresh, Marker, Stop).is_ok());
+        let stopped = end_record(fresh, Stop, true);
+        assert!(end_next(&stopped, Marker, Bus).is_ok());
+        assert!(refused_with(end_next(&stopped, Marker, Values), "end-order"));
+        let bus = end_record(stopped, Bus, true);
+        assert!(end_next(&bus, Marker, Values).is_ok());
+        // a failure starts over
+        let failed = end_record(bus, Values, false);
+        assert_eq!(failed, EndProgress { session: 7, stopped: false, bus_ok: false });
+        assert!(refused_with(end_next(&failed, Marker, Bus), "end-order"));
+        // a new stop makes the earlier bus check stale
+        assert!(!end_record(bus, Stop, true).bus_ok);
+        // progress of another session does not count
+        assert_eq!(end_progress_of(Some(&bus), 8), EndProgress { session: 8, stopped: false, bus_ok: false });
+        assert_eq!(end_progress_of(Some(&bus), 7), bus);
     }
 
     /// A simulated master behind `Prep`: `check` reads the real state, `stop_to_zero` clears the marker and
