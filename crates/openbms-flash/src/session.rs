@@ -117,7 +117,7 @@ fn receive(link: &mut impl Link, log_file: &mut impl Write, buf: &mut [u8]) -> R
     Ok(n)
 }
 
-fn ascii_query(
+pub(crate) fn ascii_query(
     link: &mut impl Link,
     address: u8,
     cid2: u8,
@@ -239,7 +239,7 @@ fn boot_exchange(
     }
 }
 
-fn quiet(link: &mut impl Link, log_file: &mut impl Write) -> Result<()> {
+pub(crate) fn quiet(link: &mut impl Link, log_file: &mut impl Write) -> Result<()> {
     let mut buf = [0u8; 512];
     let mut count = 0;
     // Observe roughly two seconds to catch an active master polling the pack bus.

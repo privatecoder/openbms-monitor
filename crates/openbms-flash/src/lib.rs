@@ -48,6 +48,8 @@ pub enum Error {
     NoAnswer(u8),
     #[error("the bus is not quiet ({0} bytes from other devices); stop other transmitters before updating")]
     BusBusy(usize),
+    #[error("the master (address 0) does not answer 0x47 here: not RS485-1/2, or the master is not quiet")]
+    MasterSilent,
     #[error("pack {0} answers 0x51 but not 0x47: not connected to RS485-1/2 (pack bus)")]
     NotPackBus(u8),
     #[error("the bootloader did not answer within {0:?}")]
@@ -91,6 +93,7 @@ impl Error {
             Error::Proto(e) => format!("Protokoll: {e}"),
             Error::NoAnswer(a) => format!("Pack {a} antwortet nicht (Adresse, Verkabelung, Baudrate und Busaktivität prüfen)"),
             Error::BusBusy(n) => format!("Der Bus ist nicht still ({n} Byte von anderen Geräten); andere Sender vor dem Update anhalten"),
+            Error::MasterSilent => "Der Master (Adresse 0) antwortet hier nicht auf 0x47: nicht RS485-1/2, oder der Master ist nicht still".into(),
             Error::NotPackBus(a) => format!("Pack {a} antwortet auf 0x51, aber nicht auf 0x47: nicht an RS485-1/2 (Pack-Bus) angeschlossen"),
             Error::NoBootloader(d) => format!("Der Bootloader hat nicht innerhalb von {d:?} geantwortet"),
             Error::PacketSize(n) => format!("Der Bootloader meldet Paketgröße {n}; unterstützt ist nur 256"),
