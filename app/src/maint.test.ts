@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { acceptsProgress, busyMessage, busyWaitStep, onePackBlocked, planListSteps, PLAN_CHECKBOXES, portBusy, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -638,5 +638,26 @@ describe("waiting for a busy port", () => {
   it("has the cancel texts", () => {
     for (const lng of ["de", "en"]) for (const k of ["conn.cancel", "conn.busyCancelled"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
     expect(i18n.t("conn.cancel", { lng: "de" })).toBe("Abbrechen");
+  });
+});
+
+describe("master-plan checklist", () => {
+  it("shows a confirmed step once, as its checkbox", () => {
+    const before = ["dip-off", "stop-to-zero", "measure"];
+    const lines = [...planListSteps(before), ...before.filter((s) => PLAN_CHECKBOXES.includes(s))];
+    expect(lines.filter((s) => s === "dip-off")).toHaveLength(1);
+    expect(planListSteps(before)).toEqual(["stop-to-zero", "measure"]);
+    expect(planListSteps(["isolated-or-released", "measure"])).toEqual(["measure"]);
+  });
+});
+
+describe("single pack texts", () => {
+  it("never claim a slave count the master did not report", () => {
+    for (const lng of ["de", "en"]) {
+      const t = i18n.getFixedT(lng);
+      const text = t("maint.panel.endOkZero");
+      expect(text).not.toBe("maint.panel.endOkZero");
+      expect(text).not.toMatch(/meldet 0|reports 0/);
+    }
   });
 });
