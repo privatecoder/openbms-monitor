@@ -8,9 +8,11 @@ export type Severity = "info" | "warning" | "protection" | "fault";
 export type LimitState = "normal" | "below_limit" | "above_limit" | { other: number };
 
 export interface DeviceInfo { device_name: string; firmware_version: string; can_protocol: string }
-/** truncated: only the first 22 characters were readable (CAN socket bus); unavailable: not offered or not reachable on this bus */
+/** truncated: only the first 22 characters were readable (CAN socket bus); unavailable: not offered (RTN 04) or not
+ *  reachable on this bus; no_answer: the pack stayed silent or the answer was malformed */
 export type SerialValue =
-  | { kind: "set"; value: string; truncated: boolean } | { kind: "placeholder"; value: string } | { kind: "empty" } | { kind: "unavailable" };
+  | { kind: "set"; value: string; truncated: boolean } | { kind: "placeholder"; value: string } | { kind: "empty" } | { kind: "unavailable" }
+  | { kind: "no_answer" };
 export interface SerialNumbers { battery: SerialValue; bms: SerialValue }
 export interface Telemetry {
   address: number;

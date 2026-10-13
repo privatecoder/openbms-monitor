@@ -352,7 +352,7 @@ const resources = {
       },
       sn: {
         battery: "Batterie-SN", bms: "BMS-SN", unknown: "unbekannt", first22: "(erste 22 Zeichen)", placeholder: "nicht gesetzt (Platzhalter)",
-        empty: "leer", packBusOnly: "nur über RS485-1/2 lesbar", unsupported: "von der Firmware nicht unterstützt",
+        empty: "leer", noAnswer: "keine Antwort", packBusOnly: "nur über RS485-1/2 lesbar", unsupported: "von der Firmware nicht unterstützt",
       },
       dash: {
         empty: "Wähle links Gateway oder Adapter und verbinde dich mit der Batterie.",
@@ -777,7 +777,7 @@ const resources = {
       },
       sn: {
         battery: "Battery SN", bms: "BMS SN", unknown: "unknown", first22: "(first 22 characters)", placeholder: "not set (placeholder)",
-        empty: "empty", packBusOnly: "readable on RS485-1/2 only", unsupported: "not supported by the firmware",
+        empty: "empty", noAnswer: "no answer", packBusOnly: "readable on RS485-1/2 only", unsupported: "not supported by the firmware",
       },
       dash: {
         empty: "Choose a gateway or adapter on the left and connect to the battery.",

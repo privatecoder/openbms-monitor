@@ -115,6 +115,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     }
   };
 
+  // a maintenance step that stops the monitor ends the reads as well
+  useEffect(() => {
+    const un = api.onMonitorStopped(() => { serialGen.current += 1; });
+    return () => { un.then((f) => f()); };
+  }, []);
+
   const connect = async (retry = false) => {
     serialGen.current += 1;
     setBusy(true); if (!retry) { setMsg(null); setLost(false); }
@@ -144,7 +150,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         setSince(Date.now()); setLost(false);
         setMsg(note);
         await api.startPolling(addrs, 2000);
-        api.scan(addrs).then(onDevices).catch(() => {}).finally(() => void readSerials(addrs));
+        // serial numbers only of the packs that answered the device query
+        api.scan(addrs).then((found) => { onDevices(found); void readSerials(found.map(([a]) => a)); }).catch(() => {});
         return;
       }
       const found = await api.scan();

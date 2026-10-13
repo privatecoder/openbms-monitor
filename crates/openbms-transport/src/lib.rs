@@ -249,24 +249,26 @@ impl Connection {
         Ok(SystemValues::from_registers(&regs)?)
     }
 
-    /// One serial number string over ASCII (pack bus). RTN 04 (command unknown) means this pack does not offer it.
-    fn ascii_serial(&mut self, request: Result<Vec<u8>>, address: u8) -> Result<SerialValue> {
-        match request.and_then(|r| self.ascii(&r, address)) {
-            Ok(f) => Ok(serial::parse_ascii_serial(&f.info)?),
-            Err(Error::Proto(openbms_proto::Error::Rtn(0x04))) => Ok(SerialValue::Unavailable),
+    /// One serial number string over ASCII (pack bus). RTN 04 (command unknown) means this pack does not offer
+    /// it; silence, another RTN or a malformed answer leave this value without an answer. Only a broken link
+    /// (I/O, closed gateway) is an error. The flag tells whether the pack stayed silent.
+    fn ascii_serial(&mut self, request: openbms_proto::Result<Vec<u8>>, address: u8) -> Result<(SerialValue, bool)> {
+        let answer = request.map_err(Error::from).and_then(|r| self.ascii(&r, address));
+        match answer.and_then(|f| Ok(serial::parse_ascii_serial(&f.info)?)) {
+            Ok(v) => Ok((v, false)),
+            Err(Error::Proto(openbms_proto::Error::Rtn(0x04))) => Ok((SerialValue::Unavailable, false)),
+            Err(Error::Timeout(_)) => Ok((SerialValue::NoAnswer, true)),
+            Err(Error::Proto(_)) => Ok((SerialValue::NoAnswer, false)),
             Err(e) => Err(e),
         }
     }
 
-    /// Battery and BMS serial number of one pack (0xA2, 0xA4; RS485-1/2 only). A command the pack rejects or
-    /// leaves unanswered counts as unavailable; only when neither answers is the pack itself unreachable.
+    /// Battery and BMS serial number of one pack (0xA2, 0xA4; RS485-1/2 only). If the pack leaves 0xA2
+    /// unanswered, 0xA4 is not sent: it would only wait for the timeout once more.
     pub fn serial_numbers_pack_bus(&mut self, address: u8) -> Result<SerialNumbers> {
-        let battery = self.ascii_serial(serial::battery_request(address).map_err(Error::from), address);
-        let bms = self.ascii_serial(serial::bms_request(address).map_err(Error::from), address);
-        match (battery, bms) {
-            (Err(e @ Error::Timeout(_)), Err(Error::Timeout(_))) => Err(e),
-            (b, m) => Ok(SerialNumbers { battery: unless_timeout(b)?, bms: unless_timeout(m)? }),
-        }
+        let (battery, silent) = self.ascii_serial(serial::battery_request(address), address)?;
+        let bms = if silent { SerialValue::NoAnswer } else { self.ascii_serial(serial::bms_request(address), address)?.0 };
+        Ok(SerialNumbers { battery, bms })
     }
 
     /// First 22 characters of the master's battery serial number (Modbus FC04, CAN socket bus). Firmware before
@@ -322,14 +324,6 @@ impl Connection {
             Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Ok(0),
             Err(e) => Err(e.into()),
         }
-    }
-}
-
-/// A single unanswered serial number command: the pack answers otherwise, it just does not offer this one.
-fn unless_timeout(r: Result<SerialValue>) -> Result<SerialValue> {
-    match r {
-        Err(Error::Timeout(_)) => Ok(SerialValue::Unavailable),
-        other => other,
     }
 }
 
@@ -391,21 +385,29 @@ mod tests {
     }
 
     #[test]
-    fn serial_numbers_rtn04_and_silence_count_as_unavailable() {
+    fn serial_numbers_rtn04_is_unavailable_silence_is_no_answer() {
         let mut text = b"SYN-0001".to_vec();
         text.resize(30, b' ');
         let mut c = scripted(vec![
             (serial::battery_request(3).unwrap(), answer(3, 0, &text)),
             (serial::bms_request(3).unwrap(), answer(3, 0x04, &[])),
             (serial::battery_request(4).unwrap(), answer(4, 0, &[b' '; 30])),
+            // malformed (short) battery answer: no answer for that one, 0xA4 is still asked
+            (serial::battery_request(6).unwrap(), answer(6, 0, b"SYN")),
+            (serial::bms_request(6).unwrap(), answer(6, 0, &text)),
+            // 0xA2 silent: 0xA4 must not be sent (its answer here would show up otherwise)
+            (serial::bms_request(5).unwrap(), answer(5, 0, &text)),
         ]);
         let s = c.serial_numbers(Bus::PackBus, 3).unwrap();
         assert_eq!(s.battery, SerialValue::Set { value: "SYN-0001".into(), truncated: false });
         assert_eq!(s.bms, SerialValue::Unavailable);
         let s = c.serial_numbers(Bus::PackBus, 4).unwrap();
-        assert_eq!((s.battery, s.bms), (SerialValue::Empty, SerialValue::Unavailable));
-        // no answer to either command: the pack is not there
-        assert!(matches!(c.serial_numbers(Bus::PackBus, 5), Err(Error::Timeout(_))));
+        assert_eq!((s.battery, s.bms), (SerialValue::Empty, SerialValue::NoAnswer));
+        let s = c.serial_numbers(Bus::PackBus, 5).unwrap();
+        assert_eq!((s.battery, s.bms), (SerialValue::NoAnswer, SerialValue::NoAnswer));
+        let s = c.serial_numbers(Bus::PackBus, 6).unwrap();
+        assert_eq!(s.battery, SerialValue::NoAnswer);
+        assert_eq!(s.bms, SerialValue::Set { value: "SYN-0001".into(), truncated: false });
     }
 
     #[test]
