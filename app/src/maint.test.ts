@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
+import { acceptsProgress, activityStatus, clause, keepsInverter, latestGuard, attachDecision, bannerOf, canFlash, endpointKey, errorKey, failingKey, failingText, flowOf, needsReplug, openWork, assignEndpoint, controlFromAttach, packPortOf, parsePacks, sameAdapter, setupCheck, setupEndpoints, setupFields, slavesOf, workUnchanged, type FlowInput } from "./maint";
 import type { ControlEndpoint, MaintOverview, MaintSession } from "./api";
 
 const inst = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial" as const, path: "/dev/a" } };
@@ -207,6 +207,35 @@ describe("failing End checks", () => {
     expect(failingText("slave-present: 7", t)).toBe('maint.failing.slave-present({"addr":7})');
     expect(failingText('stop: {"kind":"refused","reason":"no-session"}', t)).toBe('maint.failing.stop({"error":"maint.err.refused.no-session"})');
     expect(failingText("something else", t)).toBe("something else");
+  });
+  it("names a slave count mismatch with both numbers", () => {
+    expect(failingKey("slave-count-mismatch: 0 1")).toEqual({ key: "maint.failing.slave-count-mismatch", params: { actual: 0, expected: 1 } });
+  });
+  it("a clause drops the sentence's own period, nothing else", () => {
+    expect(clause("Der Master antwortet nicht.")).toBe("Der Master antwortet nicht");
+    expect(clause("(zuletzt 0 Slaves).")).toBe("(zuletzt 0 Slaves)");
+    expect(clause("Prüfe …")).toBe("Prüfe …");
+    expect(clause("ohne Punkt")).toBe("ohne Punkt");
+  });
+});
+
+describe("panel action progress", () => {
+  const t = (key: string, params?: Record<string, unknown>) => params ? `${key}(${JSON.stringify(params)})` : key;
+  const running = { installation: "a", key: "scan", action: "scan", running: true };
+  it("takes only events of the running action of its installation", () => {
+    expect(acceptsProgress(running, { installation: "a", action: "scan", phase: "scan", detail: null })).toBe(true);
+    expect(acceptsProgress(running, { installation: "b", action: "scan", phase: "scan", detail: null })).toBe(false);
+    expect(acceptsProgress(running, { installation: "a", action: "end", phase: "bus", detail: null })).toBe(false);
+    expect(acceptsProgress({ ...running, running: false }, { installation: "a", action: "scan", phase: "scan", detail: null })).toBe(false);
+    expect(acceptsProgress(null, { installation: "a", action: "scan", phase: "scan", detail: null })).toBe(false);
+  });
+  it("names the latest phase, else the action's generic text, then the result", () => {
+    expect(activityStatus(running, t)).toEqual({ kind: "running", text: "maint.progress.action.scan" });
+    const scan = { ...running, phase: { installation: "a", action: "scan", phase: "scan", detail: { address: 7, of: 15, pass: 1, passes: 2 } } };
+    expect(activityStatus(scan, t)).toEqual({ kind: "running", text: 'maint.progress.phase.scan({"address":7,"of":15,"pass":1,"passes":2})' });
+    expect(activityStatus({ ...running, running: false, result: { ok: true, text: "fertig" } }, t)).toEqual({ kind: "ok", text: "fertig" });
+    expect(activityStatus({ ...running, running: false, result: { ok: false, text: "kaputt" } }, t)).toEqual({ kind: "failed", text: "kaputt" });
+    expect(activityStatus({ ...running, running: false }, t)).toBeNull();
   });
 });
 

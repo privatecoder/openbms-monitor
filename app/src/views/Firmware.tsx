@@ -7,8 +7,8 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { confirmationPhrase, progressFraction, steps } from "../firmware";
-import { canFlash, errorKey, flowOf, keepsInverter, packPortOf, type Monitor } from "../maint";
+import { confirmationPhrase, imageLabel, imageWarning, progressFraction, steps } from "../firmware";
+import { acceptsProgress, canFlash, errorKey, flowOf, keepsInverter, packPortOf, type Activity, type Monitor } from "../maint";
 import { oneAdapterOf, type useMaint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -62,7 +62,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   const [planError, setPlanError] = useState<string | null>(null);
   const [dipOffConfirmed, setDipOffConfirmed] = useState(false);
   const [isolatedConfirmed, setIsolatedConfirmed] = useState(false);
-  const [endNote, setEndNote] = useState<{ installation: string; text: string } | null>(null);
+  // the running or last pack bus panel action (spinner, phase, result at its button); goes with a view change
+  const [activity, setActivity] = useState<Activity | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // a pack bus panel action runs (check, scan, measurement, End step): port, address and image wait
   const [panelBusy, setPanelBusy] = useState(false);
@@ -90,6 +91,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
         setNotice(notes.length ? notes.join(" ") : null);
       }),
       api.onFirmwareBusy(() => setCloseRefused(true)),
+      api.onMaintProgress((ev) => setActivity((a) => (a && acceptsProgress(a, ev) ? { ...a, phase: ev } : a))),
     ];
     return () => { subs.forEach((s) => s.then((f) => f())); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -112,9 +114,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
   }, [overview?.session?.id, overview?.installation.id]);
   // after a lost or closed connection the operator confirms the inverter afresh and measures again
   useEffect(() => { setInverter(false); setMeasuredAt(null); setNoControl(false); setSinglePack(false); }, [disconnects]);
-  // the End result stays until a new session opens or another installation is shown
-  useEffect(() => { setEndNote(null); }, [overview?.installation.id]);
-  useEffect(() => { if (overview?.session) setEndNote(null); }, [overview?.session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a result belongs to the installation it was reached for
+  useEffect(() => { setActivity((a) => (a && a.installation !== overview?.installation.id ? null : a)); }, [overview?.installation.id]);
 
   // which installation owns the pack port
   const lookupPort = () => {
@@ -221,8 +222,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
       <PackBusPanel key={`${overview?.installation.id ?? ""}:${overview?.session?.id ?? ""}`} maint={maint} flow={flow} port={port} ports={ports} onPortsChanged={loadPorts} monitor={monitor} focusEnd={focusEnd} onFocusDone={onFocusDone}
         busy={panelBusy} setBusy={setPanelBusy} inverter={inverter} setInverter={setInverter} measuredAt={measuredAt} setMeasuredAt={setMeasuredAt}
         noControl={noControl} setNoControl={setNoControl} singlePack={singlePack} setSinglePack={setSinglePack}
-        setEndNote={(text) => setEndNote(text && overview ? { installation: overview.installation.id, text } : null)} />
-      {endNote && endNote.installation === overview?.installation.id && <p className="text-sm">{endNote.text}</p>}
+        activity={activity} setActivity={setActivity} />
 
       <Step n={1} title={t("fw.s1")} active={!running && !done}>
         <div className="flex flex-wrap gap-3">
@@ -251,8 +251,8 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
           <Button variant="secondary" disabled={!s.image} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
           <label className="flex items-center gap-2 text-sm text-muted"><Switch checked={allowCustom} onChange={toggleCustom} disabled={!s.image} />{t("fw.allowCustom")}</label>
         </div>
-        {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: image.custom ? t("fw.customName") : image.release, blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
-        {image?.custom && <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.customWarning")}</p>}
+        {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: imageLabel(image, t, true), blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
+        {image && imageWarning(image) && <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t(imageWarning(image)!)}</p>}
       </Step>
 
       <Step n={3} title={t("fw.s3")} active={s.inspect}>
@@ -262,7 +262,7 @@ export function Firmware({ connected, monitor, disconnects, focusEnd, onFocusDon
       </Step>
 
       <Step n={4} title={t("fw.s4")} active={s.confirm}>
-        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: target.firmware_version, to: image.custom ? t("fw.customName") : image.release })}</p>}
+        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: target.firmware_version, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />

@@ -3,6 +3,21 @@ import type { DeviceInfo, FirmwareImage, FirmwareProgress } from "./api";
 /** Custom images get their own phrase, so consent to one kind never covers the other. */
 export const confirmationPhrase = (address: number, custom = false) => custom ? `FLASH CUSTOM ${address}` : `FLASH ${address}`;
 
+type T = (key: string, params?: Record<string, unknown>) => string;
+
+/** The image's name: the release of an original, the project's known maintenance build (with `known`: "(known
+ *  checksum)"), or "custom firmware". */
+export function imageLabel(image: FirmwareImage, t: T, known = false): string {
+  if (image.kind === "maintenance") return t(known ? "fw.maintKnown" : "fw.maintName", { release: image.release });
+  return image.custom ? t("fw.customName") : image.release;
+}
+
+/** The warning box under the image: the maintenance build is known, a custom image is not. */
+export function imageWarning(image: FirmwareImage): string | null {
+  if (image.kind === "maintenance") return "fw.maintWarning";
+  return image.custom ? "fw.customWarning" : null;
+}
+
 export interface FwSetup {
   running: boolean;
   /** a result is shown; continuing needs "New update" */

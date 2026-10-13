@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, Lock, Play, TriangleAlert } from "lucide-react";
+import { CircleCheck, LoaderCircle, Lock, Play, TriangleAlert } from "lucide-react";
 import { api, type EndResult, type EndStep, type MaintOverview } from "../api";
-import { errorKey, failingText, packsDerived, packsLine, parsePacks, slavesOf, workUnchanged, type Flow, type FlowStep, type Monitor, type Reason } from "../maint";
+import { activityStatus, errorKey, failingText, packsDerived, packsLine, parsePacks, slavesOf, workUnchanged, type Activity, type Flow, type FlowStep, type Monitor, type Reason } from "../maint";
 import type { useMaint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -28,7 +28,25 @@ function Item({ n, title, step, children }: { n: number | null; title: string; s
   );
 }
 
-export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, setEndNote, noControl, setNoControl, singlePack, setSinglePack }: {
+/** A button of a panel action: a spinner while its action runs (not greyed out then). */
+function ActButton({ spinning, children, className, ...props }: Parameters<typeof Button>[0] & { spinning: boolean }) {
+  return <Button {...props} className={cn(spinning && "disabled:opacity-100", className)}>{spinning && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}{children}</Button>;
+}
+
+/** The status line under a button: the running phase, then the result of its last action. */
+function StatusLine({ activity }: { activity: Activity }) {
+  const { t } = useTranslation();
+  const st = activityStatus(activity, t);
+  if (!st) return null;
+  const Icon = st.kind === "running" ? LoaderCircle : st.kind === "ok" ? CircleCheck : TriangleAlert;
+  return (
+    <p role="status" className={cn("flex items-start gap-1.5", st.kind === "running" ? "text-muted" : st.kind === "ok" ? "text-ok" : "text-alarm")}>
+      <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", st.kind === "running" && "animate-spin")} aria-hidden />{st.text}
+    </p>
+  );
+}
+
+export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor, focusEnd, onFocusDone, busy, setBusy, inverter, setInverter, measuredAt, setMeasuredAt, activity, setActivity, noControl, setNoControl, singlePack, setSinglePack }: {
   maint: ReturnType<typeof useMaint>;
   flow: Flow;
   /** the RS485-1/2 port of the installation ("" = not set up); chosen only in the setup form */
@@ -47,8 +65,10 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   setInverter: (v: boolean) => void;
   measuredAt: number | null;
   setMeasuredAt: (v: number | null) => void;
-  /** the result of End lives in the parent: it must outlast the session */
-  setEndNote: (v: string | null) => void;
+  /** the running or last panel action with its phase and result; lives in the parent, so it outlasts the
+   *  session (End closes it, the panel is keyed by session) and goes with a view change */
+  activity: Activity | null;
+  setActivity: (f: (a: Activity | null) => Activity | null) => void;
   noControl: boolean;
   setNoControl: (v: boolean) => void;
   singlePack: boolean;
@@ -59,16 +79,15 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   // the port in use right now (not the render value of an action that began earlier)
   const portRef = useRef(port);
   portRef.current = port;
-  const [error, setError] = useState<string | null>(null);
   // packs on the bus, master included: no default, the user types it (an empty or out-of-range value keeps the
   // buttons locked); the backend gets N = packs − 1
   const [nText, setNText] = useState("");
   const packs = parsePacks(nText);
   const n = packs === null ? null : slavesOf(packs);
-  const [editSlaves, setEditSlaves] = useState(false);
-  // the N editor belongs to one session; a new (or closed) session starts with it closed
+  // the N editor (step 4 or the End section) belongs to one session; a new (or closed) session starts with it closed
+  const [editing, setEditing] = useState<"start" | "end" | null>(null);
   const sessionId = o?.session?.id ?? null;
-  useEffect(() => { setEditSlaves(false); setNText(""); }, [sessionId]);
+  useEffect(() => { setEditing(null); setNText(""); }, [sessionId]);
   const [dipConfirmed, setDipConfirmed] = useState(false);
   // patched-off with N > 0: the manual DIP way instead of activating
   const [dipInstead, setDipInstead] = useState(false);
@@ -93,17 +112,34 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
     highlightTimer.current = setTimeout(() => setHighlight(null), 2000);
   }, [focusEnd]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** `still()` tells an action, after an await, that the installation and session it began with are still in use;
-   *  if not, it must not write (overview, measurement, inverter, note). */
-  const run = async (f: (still: () => boolean) => Promise<MaintOverview | void>) => {
+  /** Run a panel action: `key` names its button (spinner and status line there), `action` the backend command its
+   *  progress events name. `f` returns the new overview and the result text (null: no result line). `still()` tells
+   *  an action, after an await, that the installation and session it began with are still in use; if not, it must
+   *  not write (overview, measurement, inverter). The overview is reloaded after every action. */
+  type Done = { overview?: MaintOverview; ok?: boolean; text?: string } | null;
+  const run = async (key: string, action: string, f: (still: () => boolean) => Promise<Done>) => {
     // the RS485-1/2 port belongs to the work too: a result measured on another port must not be kept
-    const start = { installation: o?.installation.id ?? "", session: o?.session?.id ?? null, port };
+    const installation = o?.installation.id ?? "";
+    const start = { installation, session: o?.session?.id ?? null, port };
     const still = () => workUnchanged(start, { ...maint.current(), port: portRef.current });
-    setBusy(true); setError(null);
-    try { const r = await f(still); if (r && still()) maint.setOverview(r); }
-    catch (e) { if (still()) { const k = errorKey(e); setError(t(k.key, k.params)); } await maint.refresh(); }
-    finally { setBusy(false); }
+    setBusy(true);
+    setActivity(() => ({ installation, key, action, running: true }));
+    let result: Activity["result"];
+    try {
+      const r = await f(still);
+      if (r?.overview && still()) maint.setOverview(r.overview);
+      if (r) result = { ok: r.ok ?? true, text: r.text ?? t("maint.result.done") };
+    } catch (e) {
+      const k = errorKey(e); result = { ok: false, text: t(k.key, k.params) };
+    } finally {
+      await maint.refresh(installation);
+      setActivity((a) => (a && a.key === key && a.installation === installation ? { installation, key, action, running: false, result } : a));
+      setBusy(false);
+    }
   };
+  const mine = (key: string) => !!o && activity?.key === key && activity.installation === o.installation.id;
+  const spinning = (key: string) => mine(key) && !!activity?.running;
+  const status = (key: string) => (mine(key) && activity ? <StatusLine activity={activity} /> : null);
 
   if (!o) return <section ref={panelRef} className={cn("space-y-2 rounded-md border p-4 text-sm text-muted transition-colors", highlight ? "border-charge ring-2 ring-charge" : "border-line")}>{t("maint.panel.noInstallation")}</section>;
   const st = flow.steps;
@@ -125,30 +161,69 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
   const derived = packs !== null && <p className="font-medium">{packsDerived(packs, t)}</p>;
   const packsInput = <div className="space-y-1"><label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>{derived}</div>;
 
-  const check = () => run(async (still) => {
+  const check = () => run("check", "check", async (still) => {
     let r: MaintOverview | null = null;
     try { r = await maint.check(o.installation.id, true); }
     finally {
       // a failed check takes the inverter statement with it; so does an answer that leaves the state unknown
       if (still() && (!r || r.state?.state === "unknown")) setInverter(false);
     }
+    const m = r?.state?.state ?? "unknown";
+    return { text: t("maint.result.check", { state: t(`maint.state.${m}`, { slaves: r?.state?.slaves ?? 0 }) }) };
   });
-  const scan = () => run(async (still) => {
+  const scan = () => run("scan", "scan", async (still) => {
     const slave = await api.maintScanSlaves(o.installation.id, port);
     if (still()) maint.setScan(o.installation.id, port, slave);
+    return { text: slave === null ? t("maint.result.noSlave") : t("maint.result.slave", { addr: slave }) };
   });
-  const endStep = (step: EndStep) => run(async (still) => {
-    setEndNote(null);
+  const endStep = (step: EndStep) => run(`end-step:${step}`, "end-step", async (still) => {
     let r: EndResult;
     try { r = await api.maintEndStep(o.installation.id, port, step); }
     catch (e) { if (still()) setEndFailed(true); throw e; }
     if (still()) {
       setEndFailed(!r.ok);
-      if (step === "values") { setInverter(false); setMeasuredAt(null); setEndNote(endNoteOf(r)); }
-      else if (!r.ok) setEndNote(endNoteOf(r));
+      if (step === "values") { setInverter(false); setMeasuredAt(null); }
     }
-    return api.maintOverview(o.installation.id);
+    const text = step === "values" || !r.ok ? endNoteOf(r) : t("maint.result.step", { step: t(`maint.panel.endStep.${step}`) });
+    return { ok: r.ok, text };
   });
+  const end = () => run("end", "end", async (still) => {
+    let r: EndResult;
+    try { r = await api.maintEnd(o.installation.id, port); }
+    catch (e) {
+      if (errorKey(e).key === "maint.err.refused.end-sequential") { if (still()) setStepwise(true); return null; }
+      throw e;
+    }
+    if (still()) { setInverter(false); setMeasuredAt(null); }
+    return { ok: r.ok, text: endNoteOf(r) };
+  });
+  // correcting N: in step 4 (session branch) and in the End section, whenever a session is open
+  const slavesEditor = (where: "start" | "end") => {
+    if (!o.session) return null;
+    const key = `set-slaves:${where}`;
+    const current = o.session.expected_slaves + 1;
+    return (
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-3">
+          <span>{packsLine(current, t)}</span>
+          {editing === where ? (
+            <>
+              <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
+              <ActButton variant="secondary" size="sm" spinning={spinning(key)} disabled={!idle || n === null} onClick={() => n !== null && run(key, "set-slaves", async (still) => {
+                const r = await api.maintSetSlaves(o.installation.id, n, port);
+                if (still()) setEditing(null);
+                return { overview: r, text: t("maint.result.set-slaves", { line: packsLine(n + 1, t) }) };
+              })}>{t("maint.panel.save")}</ActButton>
+            </>
+          ) : (
+            <Button variant="secondary" size="sm" disabled={!idle} onClick={() => { setNText(String(current)); setEditing(where); }}>{t("maint.panel.changeSlaves")}</Button>
+          )}
+        </div>
+        {editing === where && derived}
+        {status(key)}
+      </div>
+    );
+  };
   const endSteps: { step: EndStep; hint: string }[] = [
     ...(o.session?.kind === "marker" ? [{ step: "stop" as const, hint: "maint.panel.replugControl" }] : []),
     { step: "bus", hint: "maint.panel.replugPack" },
@@ -162,7 +237,9 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
       <p>{hint}</p>
       <label className="flex items-center gap-2"><input type="checkbox" checked={dipConfirmed} onChange={(e) => setDipConfirmed(e.target.checked)} />{t("maint.panel.dipConfirm")}</label>
       {packsInput}
-      <Button variant={startKey === "maint.panel.startDip" ? "primary" : "secondary"} size="sm" disabled={!may(st.start) || !dipConfirmed || n === null} onClick={() => n !== null && run(() => api.maintStartDip(o.installation.id, n, port))}>{t(startKey)}</Button>
+      <ActButton variant={startKey === "maint.panel.startDip" ? "primary" : "secondary"} size="sm" spinning={spinning("start-dip")} disabled={!may(st.start) || !dipConfirmed || n === null}
+        onClick={() => n !== null && run("start-dip", "start-dip", async () => ({ overview: await api.maintStartDip(o.installation.id, n, port), text: t("maint.result.start-dip") }))}>{t(startKey)}</ActButton>
+      {status("start-dip")}
     </div>
   );
 
@@ -172,9 +249,11 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
         return (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-3">
-              <Button variant="primary" size="sm" disabled={!may(st.start) || !inverter} onClick={() => run(() => api.maintActivate(o.installation.id, inverter))}>{t("maint.panel.activate")}</Button>
+              <ActButton variant="primary" size="sm" spinning={spinning("activate")} disabled={!may(st.start) || !inverter}
+                onClick={() => run("activate", "activate", async () => ({ overview: await api.maintActivate(o.installation.id, inverter), text: t("maint.result.activate") }))}>{t("maint.panel.activate")}</ActButton>
               <span className="text-muted">{t("maint.flow.recommended")}</span>
             </div>
+            {status("activate")}
             <label className="flex items-center gap-2 text-muted"><input type="checkbox" checked={dipInstead} onChange={(e) => setDipInstead(e.target.checked)} disabled={!may(st.start)} />{t("maint.flow.dipInstead")}</label>
             {dipInstead && dipForm(t("maint.flow.dipInsteadHint"))}
           </div>
@@ -196,7 +275,8 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
         if (flow.scanNeeded) return (
           <div className="space-y-2">
             <p>{t("maint.flow.scanHint")}</p>
-            <Button variant="primary" size="sm" disabled={!may(st.start) || !port} onClick={scan}>{t("maint.flow.scan")}</Button>
+            <ActButton variant="primary" size="sm" spinning={spinning("scan")} disabled={!may(st.start) || !port} onClick={scan}>{t("maint.flow.scan")}</ActButton>
+            {status("scan")}
           </div>
         );
         return (
@@ -210,22 +290,7 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
           <div className="space-y-1">
             <p>{t("maint.flow.sessionOpen", { how: t(`maint.how.${o.session.kind}`) })}</p>
             {/* a wrong N could never pass End's bus step: the user corrects it here (End starts over) */}
-            <div className="flex flex-wrap items-center gap-3">
-              <span>{packsLine(o.session.expected_slaves + 1, t)}</span>
-              {editSlaves ? (
-                <>
-                  <label className="flex items-center gap-2">{t("maint.panel.packs")}{packsField}</label>
-                  <Button variant="secondary" size="sm" disabled={!idle || n === null} onClick={() => n !== null && run(async (still) => {
-                    const r = await api.maintSetSlaves(o.installation.id, n, port);
-                    if (still()) setEditSlaves(false);
-                    return r;
-                  })}>{t("maint.panel.save")}</Button>
-                </>
-              ) : (
-                <Button variant="secondary" size="sm" disabled={!idle} onClick={() => { setNText(o.session ? String(o.session.expected_slaves + 1) : ""); setEditSlaves(true); }}>{t("maint.panel.changeSlaves")}</Button>
-              )}
-            </div>
-            {editSlaves && derived}
+            {slavesEditor("start")}
           </div>
         );
       case "recovery":
@@ -239,7 +304,9 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
             {/* a set marker is never a single pack: 2 to 16 packs only (the backend refuses N = 0 here) */}
             <div className="space-y-2 border-t border-line pt-2">
               {o.session && packsInput}
-              <Button variant="secondary" size="sm" disabled={!may(st.start) || n === null || n === 0} onClick={() => n !== null && n > 0 && run(() => api.maintAccountMarker(o.installation.id, n))}>{t("maint.panel.accountMarker")}</Button>
+              <ActButton variant="secondary" size="sm" spinning={spinning("account-marker")} disabled={!may(st.start) || n === null || n === 0}
+                onClick={() => n !== null && n > 0 && run("account-marker", "account-marker", async () => ({ overview: await api.maintAccountMarker(o.installation.id, n), text: t("maint.result.account-marker") }))}>{t("maint.panel.accountMarker")}</ActButton>
+              {status("account-marker")}
             </div>
           </div>
         );
@@ -258,15 +325,21 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
       {monitor !== "connected" && <p className="text-muted">{t(`maint.flow.monitor.${monitor}`)}</p>}
 
       {/* unclear updates: listed above the steps; they lock measure, flash and End */}
-      {o.blocks.map((b) => (
-        <div key={b.id} className="space-y-1 rounded-md border border-alarm p-2 text-alarm">
-          <p className="flex gap-2"><TriangleAlert className="h-4 w-4 shrink-0" />{t(`maint.panel.block.${b.reason}`, { pack: b.pack })}</p>
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" disabled={!idle || !port} onClick={() => run(() => api.maintClearBlock(o.installation.id, b.id, "answered", port))}>{t("maint.panel.blockCheck")}</Button>
-            <Button variant="secondary" size="sm" disabled={!idle} onClick={() => run(() => api.maintClearBlock(o.installation.id, b.id, "isolated", null))}>{t("maint.panel.blockIsolated")}</Button>
+      {o.blocks.map((b) => {
+        const clear = (how: "answered" | "isolated") => run(`block:${b.id}`, "clear-block", async () => ({ overview: await api.maintClearBlock(o.installation.id, b.id, how, how === "answered" ? port : null), text: t("maint.result.clear-block") }));
+        return (
+          <div key={b.id} className="space-y-1 rounded-md border border-alarm p-2 text-alarm">
+            <p className="flex gap-2"><TriangleAlert className="h-4 w-4 shrink-0" />{t(`maint.panel.block.${b.reason}`, { pack: b.pack })}</p>
+            <div className="flex gap-2">
+              <ActButton variant="secondary" size="sm" spinning={spinning(`block:${b.id}`)} disabled={!idle || !port} onClick={() => clear("answered")}>{t("maint.panel.blockCheck")}</ActButton>
+              <Button variant="secondary" size="sm" disabled={!idle} onClick={() => clear("isolated")}>{t("maint.panel.blockIsolated")}</Button>
+            </div>
+            {status(`block:${b.id}`)}
           </div>
-        </div>
-      ))}
+        );
+      })}
+      {/* a cleared block takes its buttons along: its result stays here */}
+      {activity?.key.startsWith("block:") && !o.blocks.some((b) => activity.key === `block:${b.id}`) && status(activity.key)}
 
       <ol className="space-y-2">
         <Item n={1} title={t("maint.flow.step.connections")} step={st.connections}>
@@ -283,9 +356,10 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
 
         <Item n={2} title={t("maint.flow.step.check")} step={st.check}>
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant={st.check.state === "current" ? "primary" : "secondary"} size="sm" disabled={!repeat(st.check) || !o.installation.control} onClick={check}>{t("maint.panel.check")}</Button>
+            <ActButton variant={st.check.state === "current" ? "primary" : "secondary"} size="sm" spinning={spinning("check")} disabled={!repeat(st.check) || !o.installation.control} onClick={check}>{t("maint.panel.check")}</ActButton>
             {flow.replug && <span className="text-discharge">{t("maint.panel.replugControl")}</span>}
           </div>
+          {status("check")}
           <p>{s ? t(`maint.state.${s}`, { slaves: o.state?.slaves ?? 0 }) : stored ? t("maint.flow.lastConfirmed", { state: t(`maint.state.${stored}`, { slaves: o.state?.slaves ?? 0 }) }) : t("maint.state.none")}</p>
         </Item>
 
@@ -303,10 +377,13 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
 
         <Item n={5} title={t("maint.flow.step.measure")} step={st.measure}>
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant={st.measure.state === "current" ? "primary" : "secondary"} size="sm" disabled={!repeat(st.measure) || !port} onClick={() => run(async (still) => { setMeasuredAt(null); const at = await api.maintMeasure(o.installation.id, port); if (still()) setMeasuredAt(at); })}>{t("maint.panel.measure")}</Button>
+            <ActButton variant={st.measure.state === "current" ? "primary" : "secondary"} size="sm" spinning={spinning("measure")} disabled={!repeat(st.measure) || !port}
+              onClick={() => run("measure", "measure", async (still) => { setMeasuredAt(null); const at = await api.maintMeasure(o.installation.id, port); if (still()) setMeasuredAt(at); return null; })}>{t("maint.panel.measure")}</ActButton>
             {flow.replug && <span className="text-discharge">{t("maint.panel.replugPack")}</span>}
-            {measuredAt && <span className="flex items-center gap-1 text-ok"><CircleCheck className="h-4 w-4" />{t("maint.panel.quietAt", { time: new Date(measuredAt).toLocaleTimeString() })}</span>}
+            {/* the success of a measurement is this line; it goes with the next state change */}
+            {measuredAt && !spinning("measure") && <span className="flex items-center gap-1 text-ok"><CircleCheck className="h-4 w-4" />{t("maint.panel.quietAt", { time: new Date(measuredAt).toLocaleTimeString() })}</span>}
           </div>
+          {status("measure")}
         </Item>
 
         <Item n={6} title={t("maint.flow.step.flash")} step={st.flash}>
@@ -321,7 +398,7 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
             {flow.end.state === "locked" ? <Lock className="h-4 w-4 text-muted" /> : <Play className="h-4 w-4 text-charge" />}{t("maint.flow.endTitle")}
           </h3>
           <p className="font-medium">{port ? t("maint.flow.packPort", { port }) : t("maint.flow.noPackPort")}</p>
-          <p>{packsLine(o.session.expected_slaves + 1, t)}</p>
+          {slavesEditor("end")}
           {flow.end.reason && <p className="text-muted">{reasonText(flow.end.reason)}</p>}
           {sequential ? (
             <div className="space-y-2">
@@ -336,32 +413,32 @@ export function PackBusPanel({ maint, flow, port, ports, onPortsChanged, monitor
                       {state === "current" && (
                         <div className="flex flex-wrap items-center gap-3">
                           <span className="text-discharge">{t(hint)}</span>
-                          <Button variant="primary" size="sm" disabled={!idle || !port} onClick={() => endStep(step)}>{t("maint.flow.runStep")}</Button>
+                          <ActButton variant="primary" size="sm" spinning={spinning(`end-step:${step}`)} disabled={!idle || !port} onClick={() => endStep(step)}>{t("maint.flow.runStep")}</ActButton>
                         </div>
                       )}
+                      {status(`end-step:${step}`)}
                     </Item>
                   );
                 })}
               </ol>
             </div>
           ) : (
-            <Button variant="primary" size="sm" disabled={!idle || flow.end.state === "locked"} onClick={() => run(async (still) => {
-              setEndNote(null);
-              let r: EndResult;
-              try { r = await api.maintEnd(o.installation.id, port); }
-              catch (e) {
-                if (errorKey(e).key === "maint.err.refused.end-sequential") { if (still()) { setStepwise(true); setError(null); } return; }
-                throw e;
-              }
-              if (still()) { setInverter(false); setMeasuredAt(null); setEndNote(endNoteOf(r)); }
-              return api.maintOverview(o.installation.id);
-            })}>{t("maint.end")}</Button>
+            <div className="space-y-1">
+              <ActButton variant="primary" size="sm" spinning={spinning("end")} disabled={!idle || flow.end.state === "locked"} onClick={end}>{t("maint.end")}</ActButton>
+              {status("end")}
+            </div>
           )}
           {o.session.kind === "dip" && <p className="text-muted">{t("maint.panel.dipBack")}</p>}
         </section>
       )}
+      {/* End closed the session (or it was closed meanwhile): the section is gone, its result stays */}
+      {!(flow.end.shown && o.session) && activity && (activity.key === "end" || activity.key.startsWith("end-step:")) && mine(activity.key) && (
+        <section className="space-y-2 rounded-md border border-line p-3">
+          <h3 className="font-medium">{t("maint.flow.endTitle")}</h3>
+          {status(activity.key)}
+        </section>
+      )}
       <p className="text-muted">{t("maint.panel.residual")}</p>
-      {error && <p className="text-alarm">{error}</p>}
     </section>
   );
 }
