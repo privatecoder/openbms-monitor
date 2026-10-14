@@ -11,26 +11,84 @@ pub type Step = fn(&Connection) -> rusqlite::Result<()>;
 /// `backup`: the file to copy before each step (None: a database created just now, nothing to keep). Returns the
 /// number of steps run.
 pub fn run(db: &Connection, backup: Option<&Path>, done: usize, steps: &[Step], mark: fn(&Connection, usize) -> rusqlite::Result<()>) -> Result<usize, String> {
+    if done >= steps.len() {
+        return Ok(0);
+    }
+    if let Some(path) = backup {
+        enough_space(path)?;
+    }
     for (i, step) in steps.iter().enumerate().skip(done) {
         let n = i + 1;
         let err = |e: rusqlite::Error| format!("migration {n}: {e}");
         if let Some(path) = backup {
-            let to = backup_path(path, n);
-            // a consistent copy, including what is still in the write-ahead log
-            db.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map_err(|e| format!("backup {}: {e}", to.display()))?;
+            copy(db, path, n)?;
         }
         let tx = db.unchecked_transaction().map_err(err)?;
         step(&tx).and_then(|_| mark(&tx, n)).map_err(err)?;
         tx.commit().map_err(err)?;
     }
-    Ok(steps.len().saturating_sub(done))
+    // the rewritten tables out of the log, so the file alone is the whole database again
+    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| format!("checkpoint: {e}"))?;
+    Ok(steps.len() - done)
 }
 
-/// `<file>.bak-<n>`; a copy left by an earlier, failed attempt of the same step is kept and the new one gets the time.
 pub fn backup_path(path: &Path, n: usize) -> PathBuf {
     let name = path.file_name().map_or("db".into(), |n| n.to_string_lossy().into_owned());
-    let p = path.with_file_name(format!("{name}.bak-{n}"));
-    if p.exists() { path.with_file_name(format!("{name}.bak-{n}-{}", crate::history::now_ms())) } else { p }
+    path.with_file_name(format!("{name}.bak-{n}"))
+}
+
+/// A consistent copy (including what is still in the write-ahead log), written under a temporary name so that only
+/// a complete copy carries the backup name. A complete copy of an earlier attempt is kept: that step never
+/// committed, so the file is still as it was then.
+fn copy(db: &Connection, path: &Path, n: usize) -> Result<(), String> {
+    let to = backup_path(path, n);
+    if to.exists() {
+        return Ok(());
+    }
+    let tmp = PathBuf::from(format!("{}.tmp", to.display()));
+    let _ = std::fs::remove_file(&tmp);
+    let r = db
+        .execute("VACUUM INTO ?1", [tmp.to_string_lossy()])
+        .map_err(|e| format!("backup {}: {e}", to.display()))
+        .and_then(|_| std::fs::rename(&tmp, &to).map_err(|e| format!("backup {}: {e}", to.display())));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+/// The copy and the rewritten tables need about twice the file (with its log) on the disk.
+fn enough_space(path: &Path) -> Result<(), String> {
+    let size: u64 = ["", "-wal"].iter().map(|ext| std::fs::metadata(format!("{}{ext}", path.display())).map_or(0, |m| m.len())).sum();
+    match free_space(path.parent().unwrap_or(Path::new("."))) {
+        Some(free) if free < 2 * size => Err(format!(
+            "{}: updating the database needs about {} MB of free disk space, {} MB are free",
+            path.display(),
+            (2 * size).div_ceil(1_000_000),
+            free / 1_000_000
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Bytes available to this user on the disk of `dir`; None where it cannot be asked (the copy then fails with
+/// the disk's own error and leaves no partial file).
+#[cfg(unix)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: a valid C string and a zeroed struct the call fills
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)] // the field types differ between platforms
+    Some(st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+#[cfg(not(unix))]
+fn free_space(_dir: &Path) -> Option<u64> {
+    None
 }
 
 /// The backup copies next to `path`, for tests.
@@ -44,4 +102,42 @@ pub fn backups(path: &Path) -> Vec<String> {
         .collect();
     v.sort();
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("openbms-migrate-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("data.sqlite")
+    }
+
+    fn mark(db: &Connection, n: usize) -> rusqlite::Result<()> {
+        db.pragma_update(None, "user_version", n as i64)
+    }
+
+    fn count(db: &Connection) -> i64 {
+        db.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_failed_step_keeps_its_copy_and_the_next_attempt_reuses_it() {
+        let path = temp("fail");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);").unwrap();
+        let bad: &[Step] = &[|db| db.execute_batch("INSERT INTO t VALUES (2); SELECT nonsense FROM nowhere;")];
+        assert!(run(&db, Some(&path), 0, bad, mark).is_err());
+        assert_eq!(count(&db), 1, "rolled back");
+        assert_eq!(backups(&path), vec!["data.sqlite.bak-1".to_string()], "a complete copy, no temporary file");
+        // a second attempt neither overwrites nor multiplies the copy
+        let good: &[Step] = &[|db| db.execute_batch("INSERT INTO t VALUES (4);")];
+        assert_eq!(run(&db, Some(&path), 0, good, mark).unwrap(), 1);
+        assert_eq!((count(&db), backups(&path).len()), (2, 1));
+        assert_eq!(count(&Connection::open(backup_path(&path, 1)).unwrap()), 1);
+        assert_eq!(run(&db, Some(&path), 1, good, mark).unwrap(), 0);
+        assert!(free_space(path.parent().unwrap()).is_none_or(|f| f > 0));
+    }
 }

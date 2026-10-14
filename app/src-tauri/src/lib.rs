@@ -564,11 +564,20 @@ pub fn run() {
             let path = app.path().app_data_dir()?.join("history.sqlite");
             let state = app.state::<AppState>();
             let _ = state.app.set(app.handle().clone());
+            // migrating a big file takes a while: off the setup thread, so the window opens meanwhile; the
+            // recorder starts once the file is ready, the status says so until then
             if let Ok(mut h) = state.history.lock() {
-                if let Err(e) = h.open(&path) {
-                    eprintln!("history: {e}");
-                }
+                h.set_preparing(true);
             }
+            let history = state.history.clone();
+            std::thread::spawn(move || {
+                let db = history::History::prepare(&path);
+                let Ok(mut h) = history.lock() else { return };
+                if let Err(e) = db.and_then(|db| h.attach(db, &path)) {
+                    eprintln!("history: {e}");
+                    h.failed(e);
+                }
+            });
             match maint_store::Store::open(&app.path().app_data_dir()?.join("maintenance.sqlite")) {
                 Ok(s) => if let Ok(mut m) = state.maint.lock() { *m = Some(s); },
                 Err(e) => eprintln!("maintenance: {e}"),
