@@ -21,7 +21,7 @@ function ActButton({ spinning, children, className, ...props }: Parameters<typeo
 /** The pack bus panel (design: simple flash flow): one screen with a live status line, „Bus ruhig machen“ while the
  *  bus is not quiet, the packs that answer with one „Flashen“ each, and „Fertig“. No steps to tick: the backend
  *  re-checks a quiet bus and the target right before each flash. */
-export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imagePicker, image, running, flashTick, onFlash, onUserAction }: {
+export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction }: {
   maint: Maint;
   /** the RS485-1/2 port: the installation's, or chosen here without one ("" = none) */
   port: string;
@@ -36,6 +36,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   flashTick: number;
   /** start a flash of `address` (confirmed here); throws a refusal */
   onFlash: (address: number, from: string | null) => Promise<void>;
+  /** the master read of the live status (for the full version of address 0 elsewhere) */
+  onMaster: (m: MasterView | null) => void;
   onUserAction: () => void;
 }) {
   const { t } = useTranslation();
@@ -100,6 +102,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   useEffect(() => { if (flashTick) { setFlashed(true); wantScan.current = true; } }, [flashTick]);
 
   const master: MasterView | null = live?.master ?? null;
+  useEffect(() => { onMaster(master); }, [master]); // eslint-disable-line react-hooks/exhaustive-deps
   const quiet = live?.bus === "quiet";
   const busy = !!action || scanning;
   const pendingHere = maint.alerts.pending.filter((p) => port && p.endpoint === endpointKey({ kind: "serial", path: port, bus: "pack" }));
