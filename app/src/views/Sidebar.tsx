@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
+import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo, type Endpoint, type SerialNumbers } from "../api";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -67,7 +67,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const now = useNow();
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
 
-  useEffect(() => { api.listPorts().then(setPorts).catch(() => setPorts([])); }, [kind]);
+  const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
+  useEffect(loadPorts, [kind]);
   useEffect(() => { document.documentElement.classList.toggle("dark", dark); try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
 
   // a maintenance action or a pack check holds the port: say which, and connect once it has finished. The wait
@@ -254,10 +255,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         {kind === "tcp" ? (
           <input className={input} value={target} onChange={(e) => setTarget(e.target.value)} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
         ) : (
-          <select className={input} value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
-            <option value="">{t("conn.port")}</option>
-            {ports.map((p) => <option key={p}>{p}</option>)}
-          </select>
+          <div className="flex items-center gap-1">
+            <select className={input} value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
+              <option value="">{t("conn.port")}</option>
+              {ports.map((p) => <option key={p}>{p}</option>)}
+            </select>
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+          </div>
         )}
         <label className="block">
           <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
