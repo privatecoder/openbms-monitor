@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, FolderOpen, TriangleAlert } from "lucide-react";
+import { CircleCheck, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type MasterView } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
@@ -48,6 +48,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // what the last run flashed: the pack, the image and the version known before (for the result's version line)
   const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string } | null>(null);
   const [flashTick, setFlashTick] = useState(0);
+  const [tab, setTab] = useState<"bus" | "manual">("bus");
   const [closeRefused, setCloseRefused] = useState(false);
   const startedAt = useRef(0);
   const now = useNow(500);
@@ -57,7 +58,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   useEffect(() => {
     const subs = [
       api.onFirmwareProgress(setProgress),
-      api.onFirmwareDone((d) => { setDone(d); setRunning(false); onRunning(false); setFlashTick((n) => n + 1); void maint.loadLists(); }),
+      api.onFirmwareDone((d) => { setDone(d); setRunning(false); onRunning(false); setFlashTick((n) => n + 1); setMaster(null); void maint.loadLists(); }),
       api.onFirmwareBusy(() => setCloseRefused(true)),
     ];
     return () => { subs.forEach((s) => s.then((f) => f())); };
@@ -67,6 +68,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // with an installation the RS485-1/2 port is the one of its setup
   const port = inst ? packPortOf(inst) ?? "" : ownPort;
   useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [port, address, image?.sha256]);
+  // the master read belongs to the port it came from
+  useEffect(() => { setMaster(null); }, [port]);
   const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed, busy });
   const inputsLocked = running || busy;
   const phrase = confirmationPhrase(address, image?.custom);
@@ -159,9 +162,17 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}
       </header>
 
-      <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
+      {/* two ways to flash, one image: the pack bus panel (live status, packs) or one pack by hand */}
+      <div className="flex rounded-md bg-sunken p-0.5 text-sm" role="group">
+        {(["bus", "manual"] as const).map((k) => (
+          <button key={k} aria-pressed={tab === k} disabled={running} onClick={() => setTab(k)}
+            className={cn("flex-1 rounded px-2 py-1 disabled:opacity-50", tab === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>{t(`fw.tab.${k}`)}</button>
+        ))}
+      </div>
+
+      {tab === "bus" && <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => startFlash(a, confirmationPhrase(a, image?.custom), from)} onMaster={setMaster} />
+        onFlash={(a, from) => startFlash(a, confirmationPhrase(a, image?.custom), from)} onMaster={setMaster} />}
 
       {(running || done) && (
         <section className="space-y-3 border-t border-line pt-5">
@@ -199,12 +210,21 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         </section>
       )}
 
-      {/* the single-pack way of earlier versions: address, check, typed confirmation; the same checks in the backend */}
-      <details className="space-y-3 border-t border-line pt-5">
-        <summary className="cursor-pointer font-display text-lg font-semibold">{t("fw.manual")}</summary>
+      {/* one pack by hand: address, check, typed confirmation; the same checks in the backend. No live status here:
+          the master's full version is the panel's last read */}
+      {tab === "manual" && <section className="space-y-3 rounded-md border border-line p-4">
         <p className="text-sm text-muted">{t("fw.manualHint")}</p>
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          <span>{port ? t("maint.panel.port", { port }) : t("maint.panel.noPort")}</span>
+          {/* the RS485-1/2 port: from the installation (picked in the pack bus tab), or chosen here */}
+          {inst ? <span>{port ? t("maint.panel.port", { port }) : t("maint.panel.noPort")}</span> : (
+            <label className="flex items-center gap-2 text-muted">{t("maint.setup.rs485")}
+              <select className={input} value={port} disabled={inputsLocked} onChange={(e) => setOwnPort(e.target.value)}>
+                <option value="">{t("fw.choosePort")}</option>
+                {ports.map((p) => <option key={p}>{p}</option>)}
+              </select>
+              <Button variant="ghost" size="icon" disabled={running} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+            </label>
+          )}
           <label className="flex items-center gap-2 text-muted">{t("fw.address")}
             <select className={input} value={address} disabled={inputsLocked} onChange={(e) => setAddress(Number(e.target.value))}>
               {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
@@ -226,7 +246,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
             {error.serial && inst && <Button variant="secondary" size="sm" onClick={() => api.maintAdoptMasterSerial(inst.id, error.serial!).then(() => { setError(null); void maint.loadLists(); }).catch((e) => { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: null }); })}>{t("maint.bank.adopt")}</Button>}
           </div>
         )}
-      </details>
+      </section>}
     </div>
   );
 }

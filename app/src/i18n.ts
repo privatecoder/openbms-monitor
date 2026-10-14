@@ -159,7 +159,8 @@ const resources = {
         failAfter: "Das Pack ist vermutlich im Update-Modus. Nicht einfach neu starten: Log sichern und Hilfe lesen.",
         log: "Log", showLog: "Im Ordner zeigen", back: "Zurück zum Monitor", again: "Neues Update", reports: "Pack meldet {{v}}",
         runTitle: "Update Pack {{address}}", pendingAfter: "Pack {{pack}} hängt eventuell im Bootloader (Hinweis oben).",
-        manual: "Einzelnes Pack (manuell)", manualHint: "Adresse wählen, Pack prüfen und mit der Bestätigungsphrase flashen. Es gelten dieselben Prüfungen wie oben.",
+        tab: { bus: "Pack-Bus", manual: "Einzelnes Pack" },
+        manualHint: "Adresse wählen, Pack prüfen und mit der Bestätigungsphrase flashen. Es gelten dieselben Prüfungen wie im Tab „Pack-Bus“.",
       },
       par: {
         title: "Parameter", intro: "Einstellungen der Packs lesen und vergleichen: aus den Packs über RS485-1/2 oder aus BatteryMonitor-Exporten. Die App ändert nichts am BMS.",
@@ -454,7 +455,8 @@ const resources = {
         failAfter: "The pack is probably in update mode. Do not just restart it: keep the log and read the help.",
         log: "Log", showLog: "Show in folder", back: "Back to monitor", again: "New update", reports: "pack reports {{v}}",
         runTitle: "Update pack {{address}}", pendingAfter: "Pack {{pack}} may hang in its bootloader (note above).",
-        manual: "Single pack (manual)", manualHint: "Choose the address, check the pack and flash with the confirmation phrase. The same checks as above apply.",
+        tab: { bus: "Pack bus", manual: "Single pack" },
+        manualHint: "Choose the address, check the pack and flash with the confirmation phrase. The same checks as in the “Pack bus” tab apply.",
       },
       par: {
         title: "Parameters", intro: "Read and compare the packs' settings: from the packs via RS485-1/2 or from BatteryMonitor exports. The app changes nothing in the BMS.",
