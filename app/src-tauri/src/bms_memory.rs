@@ -1,11 +1,12 @@
-//! The BMS clock and the pack's internal history (RS485-1/2 only, like the parameters).
+//! The BMS clock, the pack's internal history, calibration and the CAN inverter protocol (RS485-1/2 only, like the
+//! parameters).
 //!
 //! A history read runs on its own thread and takes the connection lock per frame, through `with_conn` like every
 //! other exchange; meanwhile `memory_busy` pauses polling, so the bus serves the read alone. Between two frames a
 //! disconnect, a reconnect or a flash can still take the connection; the read then stops with that error.
 
 use crate::{with_conn, AppState, PortSlot};
-use openbms_proto::{BmsTime, HistoryRecord};
+use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Refusal, Status, Telemetry};
 use openbms_transport::Bus;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +15,7 @@ use tauri::{AppHandle, Emitter, State};
 /// Guard against a device that never sets the last flag: the ring holds at most 500 records.
 pub const MAX_RECORDS: usize = 520;
 
-const PACK_BUS_ONLY: &str = "the BMS clock and history can only be read on RS485-1/2";
+const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 
 fn pack_bus_only(state: &AppState) -> Result<(), String> {
     if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
@@ -99,6 +100,51 @@ pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, time: BmsTim
     })
 }
 
+/// A write the BMS answered with RTN 06/04, as JSON for the UI (`refusal` in calibration.ts):
+/// `{"kind":"refused"}` or `{"kind":"invalid"}`. Every other error stays plain text.
+fn refusal_error(r: Refusal) -> String {
+    serde_json::json!({ "kind": r }).to_string()
+}
+
+/// Run a write; a refusal by the BMS comes back as `Err(Refusal)` instead of a plain error.
+fn refusable<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Result<T, Refusal>> {
+    match r {
+        Ok(v) => Ok(Ok(v)),
+        Err(openbms_transport::Error::Proto(e)) => Refusal::from_error(&e).map(Err).ok_or_else(|| e.into()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Telemetry and status of one pack, for the live values of the calibration (one frame per lock).
+#[derive(Serialize)]
+pub struct PackLive {
+    pub telemetry: Telemetry,
+    pub status: Status,
+}
+
+#[tauri::command]
+pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLive, String> {
+    pack_bus_only(&state)?;
+    let telemetry = with_conn(&state.conn, &state.flashing, |c| c.telemetry(address))?;
+    let status = with_conn(&state.conn, &state.flashing, |c| c.status(address))?;
+    Ok(PackLive { telemetry, status })
+}
+
+/// One calibration step (0xA0). The UI reads the live values again afterwards.
+#[tauri::command]
+pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, calibration: Calibration) -> Result<(), String> {
+    pack_bus_only(&state)?;
+    with_conn(&state.conn, &state.flashing, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
+}
+
+/// Set the CAN inverter protocol (0xA6, 1..=6) and read the device info (0x51) back for its new name.
+#[tauri::command]
+pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, protocol: u8) -> Result<DeviceInfo, String> {
+    pack_bus_only(&state)?;
+    with_conn(&state.conn, &state.flashing, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
+    with_conn(&state.conn, &state.flashing, |c| c.device_info(address))
+}
+
 /// Read the whole history of one pack; progress arrives as "bms-history-progress" events. One read at a time.
 #[tauri::command]
 pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8) -> Result<HistoryRead, String> {
@@ -146,6 +192,18 @@ mod tests {
         info.extend(2026u16.to_be_bytes());
         info.resize(memory::HISTORY_LEN, 0);
         memory::parse_history(&info).unwrap().unwrap()
+    }
+
+    #[test]
+    fn refusals_become_json_other_errors_stay() {
+        use openbms_transport::Error as E;
+        let refused = refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap();
+        assert_eq!(refused.map_err(refusal_error), Err(r#"{"kind":"refused"}"#.to_string()));
+        let invalid = refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x04)))).unwrap();
+        assert_eq!(invalid.map_err(refusal_error), Err(r#"{"kind":"invalid"}"#.to_string()));
+        assert!(refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x02)))).is_err());
+        assert!(refusable::<()>(Err(E::Closed)).is_err());
+        assert_eq!(refusable(Ok(5)).unwrap(), Ok(5));
     }
 
     #[test]
