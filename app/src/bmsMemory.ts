@@ -102,18 +102,17 @@ export const currentRun = () => run;
 export const lastRead = () => last;
 export const noteProgress = (n: number) => { if (run) run.n = n; };
 
-/** Start a read, or return the one already running. `read` is the backend call; `waitDone` resolves with the
- *  backend's result event, for a read the backend still runs although this UI lost track of it ("already running").
- *  Only this read's own end clears `run` and the sidebar's read mark. */
-export function startHistoryRead(address: number, read: (address: number) => Promise<BmsHistoryRead>, waitDone: () => Promise<BmsHistoryRead>): HistoryRun {
+/** Start a read, or return the one already running. `read` is the backend call. Only this read's own end clears
+ *  `run` and the sidebar's read mark. A backend read this UI lost track of (after a reload) ends as an error
+ *  result ("already running"): read again once it is over. */
+export function startHistoryRead(address: number, read: (address: number) => Promise<BmsHistoryRead>): HistoryRun {
   if (run) return run;
   setHistoryReading(true);
   last = null;
   const r = { address, n: 0 } as HistoryRun;
   run = r;
   r.promise = read(address)
-    .catch((e): BmsHistoryRead | Promise<BmsHistoryRead> =>
-      String(e).includes("already running") ? waitDone() : { address, records: [], end: "error", error: String(e) })
+    .catch((e): BmsHistoryRead => ({ address, records: [], end: "error", error: String(e) }))
     .then((res) => { last = res; return res; })
     .finally(() => { if (run === r) run = null; setHistoryReading(false); });
   return r;

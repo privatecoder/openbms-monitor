@@ -200,7 +200,6 @@ const tauriApi = {
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
   onBmsHistoryProgress: (f: (p: { address: number; n: number }) => void) => listen<{ address: number; n: number }>("bms-history-progress", (e) => f(e.payload)),
   /** the end of every history read, also of one this UI lost track of */
-  onBmsHistoryDone: (f: (r: BmsHistoryRead) => void) => listen<BmsHistoryRead>("bms-history-done", (e) => f(e.payload)),
   /** writes the CSV to a path from the save dialog */
   saveBmsHistory: (path: string, content: string) => invoke<void>("save_bms_history", { path, content }),
   firmwareCheckImage: (path: string, allowCustom: boolean, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, allowCustom, lang }),
@@ -342,7 +341,6 @@ function demoApi(): typeof tauriApi {
     },
     bmsHistoryCancel: async () => { demoCancel = true; },
     onBmsHistoryProgress: (f) => sub(histL, f),
-    onBmsHistoryDone: async () => () => {},
     saveBmsHistory: async () => {},
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },

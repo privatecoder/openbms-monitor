@@ -15,11 +15,6 @@ const no = (a: number) => String(a).padStart(2, "0");
 // the chosen pack, kept while the app runs (the running read and the last result live in bmsMemory)
 let keptAddress: number | null = null;
 
-/** Resolves with the backend's result event of the read it is still running. */
-const waitDone = () => new Promise<BmsHistoryRead>((resolve) => {
-  const un = api.onBmsHistoryDone((r) => { un.then((f) => f()); resolve(r); });
-});
-
 /** The pack's internal history (0x4B), read on demand over RS485-1/2: table newest first, CSV export. */
 export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus: Bus | null; packs: number[] }) {
   const { t, i18n } = useTranslation();
@@ -51,7 +46,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const start = () => {
     if (address === null || currentRun()) return;
     setSaved(null); setResult(null);
-    attach(startHistoryRead(address, api.bmsHistory, waitDone));
+    attach(startHistoryRead(address, api.bmsHistory));
   };
 
   const save = async () => {
