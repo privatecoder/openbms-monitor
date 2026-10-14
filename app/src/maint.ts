@@ -34,43 +34,32 @@ export function endpointKey(ep: Endpoint): string {
   return ep.kind === "tcp" ? `tcp:${ep.addr.trim().toLowerCase()}` : `serial:${ep.path.trim()}`;
 }
 
-const controlOf = (ep: Endpoint): ControlEndpoint => (ep.kind === "tcp" ? { kind: "tcp", addr: ep.addr } : { kind: "serial", path: ep.path });
 const controlKey = (c: ControlEndpoint | null) => (c ? (c.kind === "tcp" ? endpointKey({ kind: "tcp", addr: c.addr, bus: "can" }) : endpointKey({ kind: "serial", path: c.path, bus: "can" })) : null);
 
-/** A sidebar connection that belongs to no installation becomes a new one (after the name dialog): on the CAN socket
- *  bus as its CAN socket, on the pack bus as its endpoint. */
-export function createFromAttach(ep: Endpoint): { control: ControlEndpoint | null; endpoints: string[] } {
-  return ep.bus === "can" ? { control: controlOf(ep), endpoints: [] } : { control: null, endpoints: [endpointKey(ep)] };
+export type Preselect = { do: "keep" } | { do: "use"; id: string } | { do: "pick" };
+
+/** What a gateway address (TCP) does to the installation chosen before connecting. `known`: the non-archived
+ *  installations it is linked to. Exactly one: that one. Several: the current one if it is among them, else the user
+ *  picks. None: no change. A serial port never changes the choice (a USB adapter moves between banks). */
+export function preselect(current: string | null, known: Pick<Installation, "id">[]): Preselect {
+  if (known.length === 1) return known[0].id === current ? { do: "keep" } : { do: "use", id: known[0].id };
+  if (known.length > 1) return known.some((k) => k.id === current) ? { do: "keep" } : { do: "pick" };
+  return { do: "keep" };
 }
 
-export type Attach = { do: "keep" } | { do: "use"; id: string } | { do: "create" } | { do: "offer-assign" };
-
-/** What a new sidebar connection does to the installation shown (installations are an address book, an endpoint
- *  may belong to several): keep it when it lists the endpoint, else show the first one that does; an unknown
- *  endpoint is offered for the shown one, or named as a new one when none is shown. */
-export function attachDecision(currentId: string | null, known: Pick<Installation, "id">[]): Attach {
-  if (currentId && known.some((k) => k.id === currentId)) return { do: "keep" };
-  if (known.length) return { do: "use", id: known[0].id };
-  return currentId ? { do: "offer-assign" } : { do: "create" };
+/** The installations offered in the sidebar: the active ones, and an archived one only while it is the chosen one. */
+export function pickable(list: Installation[], current: string | null): Installation[] {
+  return list.filter((i) => !i.archived || i.id === current);
 }
 
-/** A connection on the CAN socket bus (sidebar) for an installation without a CAN socket: the adapter becomes its
- *  CAN socket, never a listed endpoint (which could pass for the RS485-1/2 port). null: nothing to change. */
-export function controlFromAttach(inst: Installation, ep: Endpoint): Installation | null {
-  if (ep.bus !== "can" || inst.control) return null;
-  const key = endpointKey(ep);
-  return { ...inst, control: controlOf(ep), endpoints: inst.endpoints.filter((k) => k !== key) };
-}
-
-/** Assign a connection explicitly (banner): on the CAN socket bus it sets (or keeps) the CAN socket; a pack-bus
- *  endpoint is listed. */
-export function assignEndpoint(inst: Installation, ep: Endpoint): Installation {
-  const key = endpointKey(ep);
-  if (ep.bus === "can") {
-    if (controlKey(inst.control) === key) return inst;
-    return { ...inst, control: controlOf(ep), endpoints: inst.endpoints.filter((k) => k !== key) };
-  }
-  return inst.endpoints.includes(key) ? inst : { ...inst, endpoints: [...inst.endpoints, key] };
+/** A legacy installation („übernommen“) whose endpoint text names an endpoint linked to exactly one other
+ *  installation: that one is offered for „Mit Anlage X zusammenführen“. */
+export function mergeSuggestion(inst: Installation, list: Installation[]): Installation | null {
+  if (!inst.legacy) return null;
+  const text = inst.legacy.trim();
+  const keys = [endpointKey({ kind: "tcp", addr: text, bus: "can" }), endpointKey({ kind: "serial", path: text, bus: "pack" })];
+  const owners = list.filter((o) => o.id !== inst.id && !o.legacy && (o.endpoints.some((k) => keys.includes(k)) || (o.control && keys.includes(controlKey(o.control)!))));
+  return owners.length === 1 ? owners[0] : null;
 }
 
 /** The installation's RS485-1/2 port (flash packs): the first stored serial endpoint that is not its CAN socket.

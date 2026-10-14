@@ -16,6 +16,11 @@ export type SerialValue =
   | { kind: "set"; value: string; truncated: boolean } | { kind: "placeholder"; value: string } | { kind: "empty" } | { kind: "unavailable" }
   | { kind: "no_answer" };
 export interface SerialNumbers { battery: SerialValue; bms: SerialValue }
+/** What a serial number read says about the board at its place: new (first identified there), same, other (another
+ *  real String 2 than the newest board's: a new board row), unclear (String 2 not readable: nothing claimed). */
+export type BoardSeen = { kind: "new" } | { kind: "same" } | { kind: "other"; previous: string } | { kind: "unclear" };
+/** A serial number read; `board` is null with „Nur ansehen“ (nothing stored). */
+export type SerialRead = SerialNumbers & { board?: BoardSeen | null };
 export interface Telemetry {
   address: number;
   cell_voltages: number[];
@@ -147,8 +152,26 @@ export interface FirmwareDone { ok: boolean; error: string | null; stage: Firmwa
 export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none" }
 
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
-/** An address book entry: endpoints may belong to several installations; `master_serial` is set by the backend. */
-export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean }
+/** An installation: endpoints may belong to several installations; `master_serial`, `archived`, `legacy` (the endpoint
+ *  text it was moved in from, „übernommen“) and `last_connect` are set by the backend. */
+export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean; legacy?: string | null; last_connect?: number | null }
+/** Settings an installation owns (JSON each, null: none). */
+export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown }
+export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis";
+export interface Board { id: number; bms_serial: string; battery_serial: string | null; first_seen: number; last_seen: number; aliases: string[] }
+/** board: "current" (the newest board at the place), "previous" (another board, swapped since), "unclear". */
+export interface StoredSnapshot { id: number; address: number; bms_serial: string | null; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear" }
+export interface LogEntry { id: number; address: number | null; at: number; kind: string; release: string | null; result: string | null; file: string }
+export interface PlaceView { address: number; boards: Board[]; cell_type: string | null; snapshot: StoredSnapshot | null; flash: LogEntry | null }
+export interface InstallationOverview {
+  places: PlaceView[];
+  counts: { boards: number; places: number; snapshots: number; logs: number; layout: boolean; diagnosis: boolean };
+  recorded: number; recorded_from: number | null; recorded_to: number | null; log_dir: string | null;
+}
+/** The newest stored parameter block of a place, parsed (null: not readable). */
+export interface SnapshotParams { address: number; at: number; kind: StoredSnapshot["kind"]; board: StoredSnapshot["board"]; bms_serial: string | null; parameters: Parameters | null }
+/** The old settings of one site key, raw text as found in the browser storage. */
+export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: string; diag?: string }
 /** The master as read over the CAN socket bus (0x64/03, after RTN 05 0x64/02). */
 export interface MasterView {
   kind: "maint" | "unknown-build" | "legacy" | "no-0x64" | "unknown";
@@ -169,11 +192,13 @@ export interface Pending { id: number; endpoint: string; pack: number; release: 
 export interface Alerts { markers: { installation: string; name: string; at: number }[]; pending: Pending[] }
 
 
-const inTauri = "__TAURI_INTERNALS__" in window;
+// tests run without a window: the preview API then
+const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const tauriApi = {
   listPorts: () => invoke<string[]>("list_ports"),
-  connect: (endpoint: Endpoint) => invoke<void>("connect", { endpoint }),
+  /** `installation` null: „Nur ansehen“ (nothing stored, no writes). `linked`: the endpoint was linked to it just now. */
+  connect: (endpoint: Endpoint, installation: string | null) => invoke<{ linked: boolean }>("connect", { endpoint, installation }),
   disconnect: () => invoke<void>("disconnect"),
   /** without addresses: search 0..15; with addresses: only read their device info */
   scan: (addresses?: number[]) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null }),
@@ -184,7 +209,7 @@ const tauriApi = {
   maintStatus: () => invoke<MaintStatus>("maint_status"),
   stopPolling: () => invoke<void>("stop_polling"),
   /** battery and BMS serial number, as far as the connected bus shows them */
-  serialNumbers: (address: number) => invoke<SerialNumbers>("serial_numbers", { address }),
+  serialNumbers: (address: number) => invoke<SerialRead>("serial_numbers", { address }),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
   /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
@@ -234,17 +259,32 @@ const tauriApi = {
   saveBmsHistory: (path: string, content: string) => invoke<void>("save_bms_history", { path, content }),
   firmwareCheckImage: (path: string, allowCustom: boolean, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, allowCustom, lang }),
   /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
-  firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
-  /** Returns at once; progress and result arrive as events. */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null) =>
-    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation }),
+  firmwareInspect: (port: string, address: number, lang: string, installation: string | null) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang, installation }),
+  /** Returns at once; progress and result arrive as events. A flash belongs to an installation; `checks`: its master
+   *  and bank checks apply (its own RS485-1/2 port). */
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string, checks: boolean) =>
+    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, checks }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
   /** lookup only: every installation that lists the endpoint or has it as CAN socket */
   maintInstallationsOf: (endpoint: Endpoint, activeOnly = false) => invoke<Installation[]>("maint_installations_of", { endpoint, activeOnly }),
   maintSaveInstallation: (installation: Installation) => invoke<Installation>("maint_save_installation", { installation }),
   /** refused "name-required", "name-taken"; nothing is created then */
   maintCreateInstallation: (name: string, control: ControlEndpoint | null, endpoints: string[]) => invoke<Installation>("maint_create_installation", { name, control, endpoints }),
-  maintDeleteInstallation: (installation: string) => invoke<void>("maint_delete_installation", { installation }),
+  /** the one-time move of the old data; returns the site keys done (their browser storage may go). Refused
+   *  "history-preparing" while the recording's file is being prepared. */
+  installationsMigrate: (local: Record<string, LegacyLocal>) => invoke<string[]>("installations_migrate", { local }),
+  installationSettings: (installation: string) => invoke<InstallationSettings>("installation_settings", { installation }),
+  setInstallationSetting: (installation: string, key: SettingKey, value: unknown) => invoke<void>("set_installation_setting", { installation, key, value }),
+  installationOverview: (installation: string) => invoke<InstallationOverview>("installation_overview", { installation }),
+  /** merges `source` into `target`: adds, never overwrites; the log of the move keeps what was not taken */
+  installationMerge: (source: string, target: string) => invoke<unknown>("installation_merge", { source, target }),
+  installationArchive: (installation: string, archived: boolean) => invoke<Installation>("installation_archive", { installation, archived }),
+  installationRename: (installation: string, name: string) => invoke<Installation>("installation_rename", { installation, name }),
+  /** refused "installation-busy" (open work) or "installation-connected"; deletes its recording too, log files stay */
+  installationDelete: (installation: string) => invoke<void>("installation_delete", { installation }),
+  installationSnapshots: (installation: string) => invoke<SnapshotParams[]>("installation_snapshots", { installation }),
+  /** firmware logs of no installation (full paths), newest first */
+  logsUnassigned: () => invoke<string[]>("logs_unassigned"),
   /** the master's new serial number becomes the stored one */
   maintAdoptMasterSerial: (installation: string, serial: string) => invoke<Installation>("maint_adopt_master_serial", { installation, serial }),
   maintAlerts: () => invoke<Alerts>("maint_alerts"),
@@ -266,7 +306,7 @@ export const api = inTauri ? tauriApi : demoApi();
 export const isDemo = !inTauri;
 
 /** Preview only: ?balance=<pack> shows cells 3 and 7 of that pack as balancing. */
-const balanceDemo = new URLSearchParams(location.search).get("balance");
+const balanceDemo = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("balance");
 
 /** Browser preview without Tauri: replays a recorded capture of a 12-pack system. */
 function demoApi(): typeof tauriApi {
@@ -283,7 +323,7 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => {},
+    connect: async () => ({ linked: false }),
     disconnect: async () => { clearInterval(timer); },
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
       .map((s) => [s.address, demoProtocol.has(s.address) ? { ...s.device, can_protocol: demoProtocol.get(s.address)! } : s.device] as [number, DeviceInfo]),
@@ -307,6 +347,7 @@ function demoApi(): typeof tauriApi {
       return {
         battery: address === 2 ? { kind: "placeholder", value: "EMU110110S-XXXX-20000101-00000" } : { kind: "set", value: `DEMO-BAT-${n}`, truncated: false },
         bms: { kind: "set", value: `SEPLOS-0000000${n}`, truncated: false },
+        board: null,
       };
     },
     onPack: (f) => sub(packL, f),
@@ -406,7 +447,17 @@ function demoApi(): typeof tauriApi {
     maintInstallationsOf: async () => [],
     maintSaveInstallation: async () => { throw new Error("desktop app only"); },
     maintCreateInstallation: async () => { throw new Error("desktop app only"); },
-    maintDeleteInstallation: async () => { throw new Error("desktop app only"); },
+    // preview: no installations, nothing stored
+    installationsMigrate: async () => [],
+    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null }),
+    setInstallationSetting: async () => {},
+    installationOverview: async () => { throw new Error("desktop app only"); },
+    installationMerge: async () => { throw new Error("desktop app only"); },
+    installationArchive: async () => { throw new Error("desktop app only"); },
+    installationRename: async () => { throw new Error("desktop app only"); },
+    installationDelete: async () => { throw new Error("desktop app only"); },
+    installationSnapshots: async () => [],
+    logsUnassigned: async () => [],
     maintAdoptMasterSerial: async () => { throw new Error("desktop app only"); },
     maintAlerts: async () => ({ markers: [], pending: [] }),
     maintClearPending: async () => { throw new Error("desktop app only"); },

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TriangleAlert, Wrench } from "lucide-react";
-import { api, type Alerts, type Endpoint } from "../api";
+import { api, type Alerts } from "../api";
 import { errorKey } from "../maint";
 import { Button } from "../components/ui/button";
 
@@ -17,15 +17,11 @@ const endpointText = (key: string) => key.replace(/^(serial|tcp):/, "");
 /** Above every view: a master whose marker is on (until a read shows it off) and packs that may hang in their
  *  bootloader (until they answer again or the user confirms). Hidden during a flash: its own record is written
  *  before the restart. */
-export function MaintBanner({ alerts, failed, flashing, unassigned, shownName, onAssign, onShow, onChanged }: {
+export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
   alerts: Alerts;
   /** the last load failed: the last known lines stay, with a note */
   failed: boolean;
   flashing: boolean;
-  unassigned: Endpoint | null;
-  /** the installation shown (for the assign offer) */
-  shownName: string | null;
-  onAssign: () => void;
   /** open the firmware view with this installation */
   onShow: (installation: string) => void;
   /** a release or confirmation changed the alerts */
@@ -42,15 +38,9 @@ export function MaintBanner({ alerts, failed, flashing, unassigned, shownName, o
   };
   const err = (at: string) => error?.at === at && <p className="text-alarm">{error.text}</p>;
   const pending = flashing ? [] : alerts.pending;
-  if (!alerts.markers.length && !pending.length && !failed && !(unassigned && shownName)) return null;
+  if (!alerts.markers.length && !pending.length && !failed) return null;
   return (
     <div className="mb-6 space-y-2">
-      {unassigned && shownName && (
-        <div role="status" className="flex items-center gap-3 rounded-md border border-discharge p-3 text-sm">
-          <p className="flex-1">{t("maint.banner.unassigned", { endpoint: unassigned.kind === "tcp" ? unassigned.addr : unassigned.path, name: shownName })}</p>
-          <Button variant="secondary" size="sm" onClick={onAssign}>{t("maint.banner.assign")}</Button>
-        </div>
-      )}
       {failed && <p role="alert" className="flex items-center gap-2 rounded-md border border-alarm p-3 text-sm font-medium text-alarm"><TriangleAlert className="h-4 w-4 shrink-0" />{t("maint.banner.notLoaded")}</p>}
       {pending.map((p) => (
         <div key={p.id} role="alert" className="flex items-start gap-3 rounded-md border border-alarm p-3 text-sm text-alarm">

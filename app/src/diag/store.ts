@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PackEntry } from "../store";
+import { useSettings } from "../installData";
 import type { Pair } from "../pairs";
 import { innerMilliohm, outerMilliohm, smooth, zeroOffset, type Offset, type Reading, type RefPoint } from "./calc";
 
@@ -8,15 +9,14 @@ export interface Refs { bus?: number; perPair: Record<number, number | undefined
 export interface Snapshot { at: number; point: RefPoint; refs: Refs; rows: Record<number, { current: number; outer?: number; inner?: number }> }
 interface Saved { offsets: Record<number, Offset>; zeroAt?: number; zeroRefs?: Refs; snapshots: Snapshot[] }
 
-const keyFor = (site: string) => `diag:${site}`;
-const load = (site: string): Saved => {
-  try {
-    const s = { offsets: {}, snapshots: [], ...JSON.parse(localStorage.getItem(keyFor(site)) ?? "{}") } as Saved;
-    // older saves had a plain number as outer offset and bus snapshots without a reference point
-    for (const o of Object.values(s.offsets)) if (typeof o.outer === "number") o.outer = { bus: o.outer as unknown as number };
-    s.snapshots = s.snapshots.filter((x) => x.point && x.refs);
-    return s;
-  } catch { return { offsets: {}, snapshots: [] }; }
+/** Stored diagnosis data, made fit for this version. */
+export const parseDiag = (v: unknown): Saved => {
+  if (!v || typeof v !== "object") return { offsets: {}, snapshots: [] };
+  const s = { offsets: {}, snapshots: [], ...structuredClone(v) } as Saved;
+  // older saves had a plain number as outer offset and bus snapshots without a reference point
+  for (const o of Object.values(s.offsets)) if (typeof o.outer === "number") o.outer = { bus: o.outer as unknown as number };
+  s.snapshots = Array.isArray(s.snapshots) ? s.snapshots.filter((x) => x.point && x.refs) : [];
+  return s;
 };
 const reading = (p: PackEntry): Reading | undefined =>
   p.telemetry ? { current: p.telemetry.current, pack_voltage: p.telemetry.pack_voltage, port_voltage: p.telemetry.port_voltage } : undefined;
@@ -29,16 +29,17 @@ export function refFor(addr: number, point: RefPoint, refs: Refs, pairs: Pair[])
 }
 
 /** Zero offsets, measurement history and the live (smoothed) inner resistance per pack. */
-export function useDiag(site: string, packs: Record<number, PackEntry>, pairs: Pair[]) {
-  const [saved, setSaved] = useState<Saved>(() => load(site));
+export function useDiag(scope: string | null, packs: Record<number, PackEntry>, pairs: Pair[]) {
+  const { settings, save } = useSettings(scope);
+  const raw = settings.diagnosis;
+  const [saved, setSaved] = useState<Saved>(() => parseDiag(raw));
   const [inner, setInner] = useState<Record<number, number>>({});
   const seen = useRef<Record<number, number>>({});
-  useEffect(() => { setSaved(load(site)); setInner({}); seen.current = {}; }, [site]);
+  // another installation, or its stored data arrived
+  useEffect(() => { setSaved(parseDiag(raw)); }, [raw]);
+  useEffect(() => { setInner({}); seen.current = {}; }, [scope]);
 
-  const persist = (s: Saved) => {
-    setSaved(s);
-    try { localStorage.setItem(keyFor(site), JSON.stringify(s)); } catch { /* storage unavailable */ }
-  };
+  const persist = (s: Saved) => { setSaved(s); save("diagnosis", s); };
 
   // smooth each new reading into the live inner resistance
   useEffect(() => {

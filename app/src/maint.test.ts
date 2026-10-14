@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { packIsCanAdapter, assignEndpoint, attachDecision, busLine, busyMessage, busyWaitStep, controlFromAttach, createFromAttach, defaultName, endpointKey, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
+import { packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
 import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
@@ -15,22 +15,33 @@ describe("installations: an address book", () => {
     expect(nameCheck("Bank", [inst], "i")).toBeNull();
     expect(defaultName([{ id: "x", name: "Anlage 2" }], "Anlage")).toBe("Anlage 3");
   });
-  it("a new connection: keep the shown one when it lists the endpoint, else the first that does, else offer or create", () => {
+  it("a gateway preselects its one active installation; several: keep the current one or let the user pick", () => {
     const a = { id: "a" }, b = { id: "b" };
-    expect(attachDecision("b", [a, b])).toEqual({ do: "keep" });
-    expect(attachDecision("c", [a, b])).toEqual({ do: "use", id: "a" });
-    expect(attachDecision(null, [b])).toEqual({ do: "use", id: "b" });
-    expect(attachDecision("c", [])).toEqual({ do: "offer-assign" });
-    expect(attachDecision(null, [])).toEqual({ do: "create" });
+    expect(preselect("b", [a])).toEqual({ do: "use", id: "a" });
+    expect(preselect(null, [a])).toEqual({ do: "use", id: "a" });
+    expect(preselect("a", [a])).toEqual({ do: "keep" });
+    expect(preselect("b", [a, b])).toEqual({ do: "keep" });
+    expect(preselect("c", [a, b])).toEqual({ do: "pick" });
+    expect(preselect(null, [a, b])).toEqual({ do: "pick" });
+    // not linked: the choice stays (also „Nur ansehen“)
+    expect(preselect("c", [])).toEqual({ do: "keep" });
+    expect(preselect(null, [])).toEqual({ do: "keep" });
   });
-  it("a connection becomes the CAN socket on the CAN socket bus, an endpoint on the pack bus", () => {
-    expect(createFromAttach({ kind: "tcp", addr: "gw:4196", bus: "can" })).toEqual({ control: { kind: "tcp", addr: "gw:4196" }, endpoints: [] });
-    expect(createFromAttach({ kind: "serial", path: "/dev/p", bus: "pack" })).toEqual({ control: null, endpoints: ["serial:/dev/p"] });
-    const none = { ...inst, control: null, endpoints: ["tcp:gw:4196"] };
-    expect(controlFromAttach(none, { kind: "tcp", addr: "GW:4196", bus: "can" })).toEqual({ ...none, control: { kind: "tcp", addr: "GW:4196" }, endpoints: [] });
-    expect(controlFromAttach(inst, { kind: "tcp", addr: "gw:4196", bus: "can" })).toBeNull();
-    expect(assignEndpoint(inst, { kind: "serial", path: "/dev/p", bus: "pack" }).endpoints).toEqual(["serial:/dev/p"]);
-    expect(assignEndpoint(inst, { kind: "serial", path: "/dev/a", bus: "can" })).toBe(inst);
+  it("the sidebar offers the active installations and an archived one only while it is chosen", () => {
+    const list = [inst, { ...inst, id: "old", archived: true }];
+    expect(pickable(list, "i").map((i) => i.id)).toEqual(["i"]);
+    expect(pickable(list, "old").map((i) => i.id)).toEqual(["i", "old"]);
+  });
+  it("a moved-in installation is offered for merging only into the one installation that lists its endpoint", () => {
+    const legacy: Installation = { id: "l", name: "GW:4196", endpoints: [], control: null, legacy: "GW:4196" };
+    const bank: Installation = { id: "b", name: "Bank", endpoints: [], control: { kind: "tcp", addr: "gw:4196" } };
+    const lab: Installation = { id: "lab", name: "Lab", endpoints: ["tcp:gw:4196"], control: null };
+    expect(mergeSuggestion(legacy, [legacy, bank])?.id).toBe("b");
+    expect(mergeSuggestion(legacy, [legacy, bank, lab])).toBeNull();
+    expect(mergeSuggestion(legacy, [legacy])).toBeNull();
+    expect(mergeSuggestion(bank, [legacy, bank])).toBeNull();
+    const usb: Installation = { id: "u", name: "/dev/p", endpoints: [], control: null, legacy: "/dev/p" };
+    expect(mergeSuggestion(usb, [usb, { ...lab, endpoints: ["serial:/dev/p"] }])?.id).toBe("lab");
   });
   it("the RS485-1/2 port is the first serial endpoint that is not the CAN socket; the CAN adapter itself is named, not used", () => {
     expect(packPortOf(null)).toBeNull();

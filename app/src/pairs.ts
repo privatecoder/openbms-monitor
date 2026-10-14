@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSettings } from "./installData";
 
 /**
  * Two packs wired in parallel with diagonal connection: the main + cable at `plus`, the main −
@@ -7,17 +7,9 @@ import { useEffect, useState } from "react";
  */
 export interface Pair { plus: number; minus: number }
 
-const keyFor = (site: string) => `pairs:${site}`;
-
-function read(site: string): Pair[] {
-  // Browser preview: ?pairs=1 pre-fills neighbouring pairs.
-  const demo = new URLSearchParams(location.search).get("pairs");
-  try {
-    const stored = JSON.parse(localStorage.getItem(keyFor(site)) ?? "[]") as Pair[];
-    if (stored.length || !demo) return stored;
-  } catch { if (!demo) return []; }
-  return neighbourPairs(Array.from({ length: 12 }, (_, i) => i));
-}
+/** Stored pairs as far as they are well-formed. */
+export const parsePairs = (v: unknown): Pair[] =>
+  Array.isArray(v) ? v.filter((p): p is Pair => !!p && typeof p.plus === "number" && typeof p.minus === "number") : [];
 
 /** Pairs of neighbouring packs: 00/01, 02/03, … (an odd last pack stays single). */
 export const neighbourPairs = (packs: number[]): Pair[] => {
@@ -37,14 +29,12 @@ export function validPairs(pairs: Pair[], present: number[]): Pair[] {
 }
 
 /** Pack pairs (diagonal wiring), stored per installation like the groups. */
-export function usePairs(site: string) {
-  const [pairs, setPairs] = useState<Pair[]>(() => read(site));
-  useEffect(() => setPairs(read(site)), [site]);
-  const save = (p: Pair[]) => {
-    setPairs(p);
-    try { localStorage.setItem(keyFor(site), JSON.stringify(p)); } catch { /* preview without storage */ }
-  };
-  return { pairs, save };
+export function usePairs(scope: string | null) {
+  const { settings, save } = useSettings(scope);
+  let pairs = parsePairs(settings.pairs);
+  // Browser preview: ?pairs=1 pre-fills neighbouring pairs.
+  if (!pairs.length && new URLSearchParams(location.search).get("pairs")) pairs = neighbourPairs(Array.from({ length: 12 }, (_, i) => i));
+  return { pairs, save: (p: Pair[]) => save("pairs", p) };
 }
 
 /**
