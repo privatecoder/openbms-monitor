@@ -54,7 +54,7 @@ const resources = {
         setup: {
           name: "Name der Anlage", can: "CAN-Buchse (Master lesen und anhalten, 9600 Baud)",
           controlHint: "Liest den Master (Befehl 0x64) und hält einen Master mit Wartungs-Build an. Ohne CAN-Buchse geht es über DIP 5–8.",
-          rs485: "RS485-1/2 (Packs flashen, 19200 Baud)", rs485Hint: "Ein Anschluss darf zu mehreren Anlagen gehören.", rs485Kind: "Art des RS485-1/2-Anschlusses", tcpLater: "Netzwerk (noch nicht freigegeben)",
+          rs485: "RS485-1/2 (Packs flashen, 19200 Baud)", rs485Hint: "Ein Anschluss darf zu mehreren Anlagen gehören.", rs485Kind: "Art des RS485-1/2-Anschlusses",
           serial: "BMS-Seriennummer des Masters: {{serial}}",
           notPlugged: "{{port}} (nicht eingesteckt)",
           save: "Speichern", createTitle: "Neue Anlage", create: "Anlage anlegen", cancel: "Abbrechen",
@@ -81,6 +81,7 @@ const resources = {
         quiet: {
           title: "Bus ruhig machen", dip: "Am Master DIP 5–8 auf OFF stellen (alte Stellung notieren).",
           hint: "Die Statuszeile wird von selbst grün, sobald der Bus ruhig ist.",
+          halted: "Der Master ist angehalten (Marker an), seine letzte Abfrage läuft aus. Bleibt der Bus belegt, fragt ein anderes Gerät oder Programm ab.",
           dipForImage: "Das gewählte Image ist kein Wartungs-Build: Vor dem Flashen des Masters müsste er wieder freigegeben werden. Mit DIP 5–8 auf OFF bleibt der Bus für alle Packs ruhig.",
           haltSlaves: "Nur Slaves flashen: Master anhalten",
         },
@@ -350,7 +351,7 @@ const resources = {
         setup: {
           name: "Name of the installation", can: "CAN socket (read and halt the master, 9600 baud)",
           controlHint: "Reads the master (command 0x64) and halts a master with a maintenance build. Without a CAN socket, DIP 5–8 do it.",
-          rs485: "RS485-1/2 (flash packs, 19200 baud)", rs485Hint: "A port may belong to several installations.", rs485Kind: "Kind of the RS485-1/2 endpoint", tcpLater: "Network (not released yet)",
+          rs485: "RS485-1/2 (flash packs, 19200 baud)", rs485Hint: "A port may belong to several installations.", rs485Kind: "Kind of the RS485-1/2 endpoint",
           serial: "BMS serial number of the master: {{serial}}",
           notPlugged: "{{port}} (not plugged in)",
           save: "Save", createTitle: "New installation", create: "Create installation", cancel: "Cancel",
@@ -377,6 +378,7 @@ const resources = {
         quiet: {
           title: "Make the bus quiet", dip: "Set DIP 5–8 of the master OFF (note the old positions).",
           hint: "The status line turns green by itself once the bus is quiet.",
+          halted: "The master is halted (marker on); its last poll is running out. If the bus stays busy, another device or program is polling.",
           dipForImage: "The chosen image is not a maintenance build: before the master's flash it would have to be released again. With DIP 5–8 OFF the bus stays quiet for every pack.",
           haltSlaves: "Flash slaves only: halt master",
         },
