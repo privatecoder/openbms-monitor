@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { KEYS, UNITS, type Parameters } from "./params";
+import { CAN_PROTOCOLS, type Calibration } from "./calibration";
 
 export type Bus = "pack" | "can";
 export type Endpoint = { kind: "serial"; path: string; bus: Bus } | { kind: "tcp"; addr: string; bus: Bus };
@@ -92,6 +93,8 @@ export interface BmsHistoryRecord {
 export interface BmsHistoryRead { address: number; records: BmsHistoryRecord[]; end: "last" | "empty" | "cancelled" | "cap" | "error"; error: string | null }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
+/** Telemetry and status of one pack, read on demand (calibration). */
+export interface PackLive { telemetry: Telemetry; status: Status }
 export interface MaintStatus { marker: boolean; effective_slaves: number }
 /** Recording into the history database. Off by default; changes apply at once. */
 export interface HistorySettings {
@@ -195,6 +198,12 @@ const tauriApi = {
   bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
   /** sets the clock to `time` and returns the clock read back */
   setBmsClock: (address: number, time: BmsTime) => invoke<BmsTime>("set_bms_clock", { address, time }),
+  /** RS485-1/2 only: telemetry and status of one pack, for the calibration's live values */
+  packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
+  /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
+  bmsCalibrate: (address: number, calibration: Calibration) => invoke<void>("bms_calibrate", { address, calibration }),
+  /** RS485-1/2 only, 1…6; returns the device info read back */
+  setCanProtocol: (address: number, protocol: number) => invoke<DeviceInfo>("set_can_protocol", { address, protocol }),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -255,7 +264,8 @@ function demoApi(): typeof tauriApi {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
     connect: async () => {},
     disconnect: async () => { clearInterval(timer); },
-    scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address)).map((s) => [s.address, s.device] as [number, DeviceInfo]),
+    scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
+      .map((s) => [s.address, demoProtocol.has(s.address) ? { ...s.device, can_protocol: demoProtocol.get(s.address)! } : s.device] as [number, DeviceInfo]),
     systemOnce: async () => { const c = await load(); sysL.forEach((f) => f({ values: c.system, error: null })); },
     maintStatus: async () => { throw new Error("original firmware"); },
     startPolling: async (addresses, intervalMs) => {
@@ -326,6 +336,25 @@ function demoApi(): typeof tauriApi {
       return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes(), second: d.getSeconds() };
     },
     setBmsClock: async (_address, time) => time,
+    // preview: live values from the capture; calibrations are taken unless the current is off by 3 A or more
+    packLive: async (address) => {
+      await new Promise((r) => setTimeout(r, 120));
+      const p = (await load()).packs.find((x) => x.address === address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      return { telemetry: p.telemetry, status: p.status };
+    },
+    bmsCalibrate: async (address, calibration) => {
+      await new Promise((r) => setTimeout(r, 300));
+      const p = (await load()).packs.find((x) => x.address === address);
+      if (calibration.kind === "current" && p && Math.abs(calibration.centi_amps / 100 - p.telemetry.current) >= 3.01) throw JSON.stringify({ kind: "refused" });
+    },
+    setCanProtocol: async (address, protocol) => {
+      await new Promise((r) => setTimeout(r, 200));
+      demoProtocol.set(address, CAN_PROTOCOLS.find((x) => x.n === protocol)?.text ?? "");
+      const d = (await load()).scan.find((s) => s.address === address)?.device;
+      if (!d) throw new Error("timeout after 1500 ms");
+      return { ...d, can_protocol: demoProtocol.get(address)! };
+    },
     bmsHistory: async (address) => {
       demoCancel = false;
       const records: BmsHistoryRecord[] = [];
@@ -362,6 +391,8 @@ function demoApi(): typeof tauriApi {
     revealFirmwareLogs: async () => {},
   };
 }
+/** Preview: CAN protocols set in this session. */
+const demoProtocol = new Map<number, string>();
 const HOUR_MS = 3_600_000;
 /** Preview: one synthetic history record; charging by day, discharging at night, one warning in the evening. */
 function demoRecord(ms: number, i: number): BmsHistoryRecord {
