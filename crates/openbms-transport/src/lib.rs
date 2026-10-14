@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{calibration, frame, memory, modbus, serial, BmsTime, Calibration, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{calibration, frame, memory, modbus, params, serial, BmsTime, Calibration, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -222,6 +222,26 @@ impl Connection {
     pub fn parameters(&mut self, address: u8) -> Result<Parameters> {
         let f = self.ascii(&Parameters::request(address)?, address)?;
         Ok(Parameters::parse(&f.info)?)
+    }
+
+    /// Write a parameter block (0xA1; RS485-1/2 only), built with `Values::apply` on a fresh read. RTN 06: the
+    /// firmware's plausibility check failed (the switches are live but not stored); RTN 04: wrong markers.
+    pub fn write_parameters(&mut self, address: u8, block: &[u8]) -> Result<()> {
+        self.ascii(&params::write_request(address, block)?, address)?;
+        Ok(())
+    }
+
+    /// Write a serial number string (0xA3/0xA5; RS485-1/2 only), stored at once.
+    pub fn set_serial(&mut self, address: u8, which: serial::Which, text: &str) -> Result<()> {
+        self.ascii(&serial::write_request(address, which, text)?, address)?;
+        Ok(())
+    }
+
+    /// One serial number string (0xA2/0xA4), e.g. to read a write back. Unlike `serial_numbers` every failure is
+    /// an error here.
+    pub fn serial(&mut self, address: u8, which: serial::Which) -> Result<SerialValue> {
+        let f = self.ascii(&which.read_request(address)?, address)?;
+        Ok(serial::parse_ascii_serial(&f.info)?)
     }
 
     /// The BMS clock (0x4D; RS485-1/2 only).
@@ -511,6 +531,33 @@ mod tests {
         c.set_can_protocol(1, 3).unwrap();
         // 7 is refused before anything is sent
         assert!(matches!(c.set_can_protocol(1, 7), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+    }
+
+    #[test]
+    fn parameter_and_serial_writes() {
+        let mut block = vec![0x00, 0x3C];
+        block.resize(122, 0x01);
+        block.push(0x1B);
+        block.resize(150, 0x02);
+        block.push(0x08);
+        block.resize(params::BLOCK_LEN, b' ');
+        let mut other = block.clone();
+        other[5] = 0x09;
+        let mut text = b"SYN-0009".to_vec();
+        text.resize(30, b' ');
+        let mut c = scripted(vec![
+            (params::write_request(2, &block).unwrap(), answer(2, 0, &[])),
+            (params::write_request(2, &other).unwrap(), answer(2, 0x06, &[])),
+            (serial::write_request(2, serial::Which::Bms, "SYN-0009").unwrap(), answer(2, 0, &[])),
+            (serial::bms_request(2).unwrap(), answer(2, 0, &text)),
+        ]);
+        c.write_parameters(2, &block).unwrap();
+        assert!(matches!(c.write_parameters(2, &other), Err(Error::Proto(openbms_proto::Error::Rtn(0x06)))));
+        // a block without the markers is not sent
+        assert!(matches!(c.write_parameters(2, &block[..100]), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+        c.set_serial(2, serial::Which::Bms, "SYN-0009").unwrap();
+        assert_eq!(c.serial(2, serial::Which::Bms).unwrap(), SerialValue::Set { value: "SYN-0009".into(), truncated: false });
+        assert!(matches!(c.set_serial(2, serial::Which::Bms, "ä"), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
     }
 
     fn two() -> Vec<SocketAddr> {
