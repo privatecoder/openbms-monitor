@@ -45,6 +45,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; serial: string | null } | null>(null);
+  // the answer of „Pack prüfen“ goes next to that button, the flash's refusals next to its own
+  const [inspectError, setInspectError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<FirmwareProgress | null>(null);
   const [done, setDone] = useState<FirmwareDone | null>(null);
@@ -79,7 +81,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const phrase = confirmationPhrase(address, image?.custom);
 
   const chooseImage = async () => {
-    setError(null); setImageError(null); setPending(null);
+    setError(null); setInspectError(null); setImageError(null); setPending(null);
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ multiple: false, filters: [{ name: "EMU1101 firmware", extensions: ["ehex"] }] });
     if (typeof picked !== "string") return;
@@ -123,11 +125,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   const inspect = async () => {
-    onUserAction(); setBusy(true); setError(null); setTarget(null); setCheckedFor(null);
+    onUserAction(); setBusy(true); setError(null); setInspectError(null); setTarget(null); setCheckedFor(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
     try { setTarget(await api.firmwareInspect(mPort, address, lang)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
-    catch (e) { setError({ text: String(e), serial: null }); }
+    catch (e) { setInspectError(String(e)); }
     finally { setBusy(false); }
   };
 
@@ -144,7 +146,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
   };
 
-  const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); setError(null); setFlashed(null); };
+  const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); setError(null); setInspectError(null); setFlashed(null); };
   const versions = done && flashed ? resultVersions(done, flashed.checked, flashed.image, t) : null;
 
   if (isDemo) return <div className="max-w-2xl space-y-3"><h1 className="font-display text-2xl font-semibold">{t("fw.title")}</h1><p className="text-muted">{t("fw.demo")}</p></div>;
@@ -242,6 +244,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         </div>
         {imagePicker}
         <Button variant="secondary" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
+        {inspectError && <p className="flex gap-2 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{inspectError}</p>}
         {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion, can: target.can_protocol })}</p>}
         {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: targetVersion, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
