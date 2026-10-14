@@ -48,8 +48,10 @@ export function usePackChoice(packs: number[]) {
 }
 
 /** The clock line of the parameters view: BMS time, PC time, difference, and setting it to the PC's local time. */
-export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy }: {
+export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy, canWrite = true }: {
   connected: boolean; bus: Bus | null; packs: number[]; address: number | null; setAddress: (a: number) => void;
+  /** false with „Nur ansehen“: the clock is read, not set */
+  canWrite?: boolean;
   /** another write (CAN protocol, calibration) runs: pack picker and clock buttons wait */
   locked?: boolean; onBusy?: (busy: boolean) => void;
 }) {
@@ -117,7 +119,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
           </>
         )}
       </div>
-      {usable && address !== null && (
+      {usable && canWrite && address !== null && (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={!!busy || locked} onClick={setOne} className="tabular-nums">{label}</Button>
           {packs.length > 1 && <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={setAll}>{t("clock.setAll")}</Button>}
