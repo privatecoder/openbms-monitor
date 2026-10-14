@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { packIsCanAdapter, assignEndpoint, attachDecision, busLine, busyMessage, busyWaitStep, controlFromAttach, createFromAttach, defaultName, endpointKey, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
+import { packIsCanAdapter, assignEndpoint, attachDecision, busLine, busyMessage, busyWaitStep, controlFromAttach, createFromAttach, defaultName, endpointKey, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
 import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
@@ -109,6 +109,14 @@ describe("live status", () => {
 });
 
 describe("flash per pack", () => {
+  it("shows the master's full maintenance build, else the 0x51 version", () => {
+    expect(packVersion(0, "16.06", master({}))).toBe("16.06.13 MAINT 1.1");
+    expect(packVersion(1, "16.06", master({}))).toBe("16.06");
+    expect(packVersion(0, "16.06", master({ kind: "legacy", version: null }))).toBe("16.06");
+    expect(packVersion(0, "16.06", master({ kind: "unknown-build" }))).toBe("16.06");
+    expect(packVersion(0, "16.06", null)).toBe("16.06");
+  });
+
   const ok = { image: image("original"), quiet: true, busy: false, running: false, address: 3, master: null, pending: [], port: "/dev/p" };
   it("needs an image and a quiet bus; nothing while a flash or another action runs", () => {
     expect(flashBlocked(ok)).toBeNull();
