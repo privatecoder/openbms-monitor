@@ -7,7 +7,7 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { confirmationPhrase, imageLabel, imageWarning, progressFraction, resultVersions, steps } from "../firmware";
+import { confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
 import { errorKey, otherBank, packPortOf, packVersion, releaseFirst } from "../maint";
 import type { Maint } from "../maintStore";
 import { PackKindSelect } from "./MaintSetup";
@@ -158,7 +158,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <label className="flex items-center gap-2 text-sm text-muted"><Switch checked={allowCustom} onChange={toggleCustom} disabled={inputsLocked} />{t("fw.allowCustom")}</label>
       </div>
       {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: imageLabel(image, t, true), blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
-      {image && imageWarning(image) && <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t(imageWarning(image)!)}</p>}
+      {image && imageWarning(image) && (imageWarningIsAlarm(image)
+        ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t(imageWarning(image)!)}</p>
+        : <p className="text-sm text-muted">{t(imageWarning(image)!)}</p>)}
       {pending && <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
     </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confirmationPhrase, imageLabel, imageWarning, progressFraction, resultVersions, steps, type FwSetup } from "./firmware";
+import { confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps, type FwSetup } from "./firmware";
 import i18n from "./i18n";
 
 const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
@@ -74,6 +74,8 @@ describe("image naming", () => {
   });
   it("warns per kind: the known maintenance build is not an unknown checksum", () => {
     expect(imageWarning(maint)).toBe("fw.maintWarning");
+    expect(imageWarningIsAlarm(maint)).toBe(false);
+    expect(imageWarningIsAlarm(custom)).toBe(true);
     expect(imageWarning(custom)).toBe("fw.customWarning");
     expect(imageWarning(image!)).toBeNull();
     expect(i18n.t("fw.maintWarning", { lng: "de" })).not.toMatch(/keiner bekannten/);
