@@ -1,12 +1,15 @@
-//! The BMS clock, the pack's internal history, calibration and the CAN inverter protocol (RS485-1/2 only, like the
-//! parameters).
+//! The BMS clock, the pack's internal history, calibration, the CAN inverter protocol, writing parameters and serial
+//! numbers (RS485-1/2 only, like reading the parameters).
 //!
 //! A history read runs on its own thread and takes the connection lock per frame, through `with_conn` like every
 //! other exchange; meanwhile `memory_busy` pauses polling, so the bus serves the read alone. Between two frames a
 //! disconnect, a reconnect or a flash can still take the connection; the read then stops with that error.
 
+use crate::history::{now_ms, SnapshotKind};
+use crate::maint_store::Installation;
 use crate::{with_conn, AppState, PortSlot};
-use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Refusal, Status, Telemetry};
+use openbms_proto::serial::Which;
+use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Parameters, Refusal, SerialValue, Status, Telemetry, Values};
 use openbms_transport::Bus;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,6 +165,127 @@ pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, protocol:
     Ok(CanProtocolSet::from_read(with_conn(&state.conn, &state.flashing, |c| c.device_info(address))))
 }
 
+/// Keep a parameter block in the history database. A failure there must not fail the exchange with the pack.
+pub fn snapshot(state: &AppState, address: u8, kind: SnapshotKind, block: &[u8]) {
+    if let Ok(mut h) = state.history.lock() {
+        if let Err(e) = h.snapshot(now_ms(), address, kind, block) {
+            eprintln!("parameter snapshot: {e}");
+        }
+    }
+}
+
+/// A 0x47 read through the connection, kept as a snapshot.
+fn read_parameters(state: &AppState, address: u8) -> Result<Parameters, String> {
+    let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
+    snapshot(state, address, SnapshotKind::Read, &p.block);
+    Ok(p)
+}
+
+/// Outcome of a parameter write.
+#[derive(Serialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ParamWrite {
+    /// The pack changed a value the user did not touch since the edit's read: nothing was written; `fresh` is the
+    /// pack now.
+    Stale { fresh: Parameters },
+    /// Written; the block read back, or why that read failed.
+    Written { read_back: Option<Parameters>, read_error: Option<String> },
+    /// The BMS did not take the block (RTN 06 plausibility, RTN 04 markers). `stored` is the read right before the
+    /// write: after RTN 06 the switches sent are live, these are the stored ones.
+    Refused { refusal: Refusal, stored: Parameters },
+}
+
+/// Write one pack's parameters (0xA1): read 0x47 again, put the user's changes (`edited` against `base`, the read
+/// the edit started from) on top of it, send, read back. `restore` sends `edited` as it is on top of the fresh read
+/// (the stored block after a refusal); the rebase would take the live switches for a change of the pack.
+#[tauri::command]
+pub async fn write_parameters(state: State<'_, AppState>, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
+    pack_bus_only(&state)?;
+    let fresh = read_parameters(&state, address)?;
+    let values = if restore { edited } else {
+        match Values::rebase(&base, &edited, &fresh.values()) {
+            Some(v) => v,
+            None => return Ok(ParamWrite::Stale { fresh }),
+        }
+    };
+    let block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
+    if let Err(refusal) = with_conn(&state.conn, &state.flashing, |c| refusable(c.write_parameters(address, &block)))? {
+        snapshot(&state, address, SnapshotKind::Refused, &block);
+        return Ok(ParamWrite::Refused { refusal, stored: fresh });
+    }
+    snapshot(&state, address, SnapshotKind::Written, &block);
+    Ok(match read_parameters(&state, address) {
+        Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None },
+        Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e) },
+    })
+}
+
+/// The last write of a pack at this installation and the parameters it replaced, for „Vorherigen Stand“.
+#[derive(Serialize, Debug)]
+pub struct ParamHistory {
+    pub last_written: Option<i64>,
+    pub previous: Option<Parameters>,
+}
+
+#[tauri::command]
+pub fn param_history(state: State<AppState>, address: u8) -> Result<ParamHistory, String> {
+    let w = state.history.lock().map_err(|e| e.to_string())?.last_write(address)?;
+    Ok(ParamHistory { last_written: w.at, previous: w.previous.and_then(|b| Parameters::parse(&b).ok()) })
+}
+
+/// Installations whose stored master serial is the master's old BMS serial number: after a successful write of a
+/// new one they follow it, so the bank check before flashing still matches. Only set values count on both sides.
+pub fn follow_master_serial<'a>(installations: &'a [Installation], old: &SerialValue, new: &SerialValue) -> Vec<&'a Installation> {
+    let (SerialValue::Set { value: old, .. }, SerialValue::Set { value: new, .. }) = (old, new) else { return vec![] };
+    if old == new {
+        return vec![];
+    }
+    installations.iter().filter(|i| i.master_serial.as_deref() == Some(old.as_str())).collect()
+}
+
+/// A serial number write the BMS accepted: the value read back (or why that read failed) and the installations
+/// whose stored master serial followed it.
+#[derive(Serialize, Debug)]
+pub struct SerialSet {
+    pub value: Option<SerialValue>,
+    pub read_error: Option<String>,
+    pub master_updated: Vec<String>,
+}
+
+/// Write a serial number (0xA3 battery, 0xA5 BMS) and read it back. String 2 of the master (address 0): an
+/// installation of this endpoint that stored the old value gets the new one. Device and database are not updated
+/// atomically; a crash in between shows as a bank mismatch, which „Seriennummer übernehmen“ resolves.
+#[tauri::command]
+pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, text: String) -> Result<SerialSet, String> {
+    pack_bus_only(&state)?;
+    let master = which == Which::Bms && address == 0;
+    let old = if master { with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)).ok() } else { None };
+    with_conn(&state.conn, &state.flashing, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
+    let read = with_conn(&state.conn, &state.flashing, |c| c.serial(address, which));
+    let mut master_updated = vec![];
+    if let (Some(old), Ok(new)) = (&old, &read) {
+        let key = state.main.lock().map_err(|e| e.to_string())?.as_ref().map(|m| m.0.clone());
+        if let (Some(key), SerialValue::Set { value, .. }) = (key, new) {
+            let r = crate::maint::with_store(&state, |s| {
+                let all = s.installations_of(&key)?;
+                let follow = follow_master_serial(&all, old, new);
+                for i in &follow {
+                    s.set_master_serial(&i.id, value, now_ms())?;
+                }
+                Ok(follow.iter().map(|i| i.name.clone()).collect::<Vec<_>>())
+            });
+            match r {
+                Ok(names) => master_updated = names,
+                Err(e) => eprintln!("master serial: {e:?}"),
+            }
+        }
+    }
+    Ok(match read {
+        Ok(v) => SerialSet { value: Some(v), read_error: None, master_updated },
+        Err(e) => SerialSet { value: None, read_error: Some(e), master_updated },
+    })
+}
+
 /// Read the whole history of one pack; progress arrives as "bms-history-progress" events. One read at a time.
 #[tauri::command]
 pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8) -> Result<HistoryRead, String> {
@@ -231,6 +355,19 @@ mod tests {
         let d = DeviceInfo { device_name: "SYN".into(), firmware_version: "16.06".into(), can_protocol: "CAN:Victron".into() };
         let s = CanProtocolSet::from_read(Ok(d.clone()));
         assert_eq!((s.device, s.read_error), (Some(d), None));
+    }
+
+    #[test]
+    fn the_stored_master_serial_follows_only_from_the_old_value() {
+        let inst = |id: &str, serial: Option<&str>| Installation { id: id.into(), name: id.into(), endpoints: vec![], control: None, master_serial: serial.map(Into::into) };
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        let all = [inst("a", Some("SN-OLD")), inst("b", Some("SN-OTHER")), inst("c", None)];
+        let ids = |v: Vec<&Installation>| v.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(follow_master_serial(&all, &set("SN-OLD"), &set("SN-NEW"))), ["a"]);
+        assert!(follow_master_serial(&all, &set("SN-OLD"), &set("SN-OLD")).is_empty());
+        assert!(follow_master_serial(&all, &SerialValue::Empty, &set("SN-NEW")).is_empty());
+        assert!(follow_master_serial(&all, &set("SN-OLD"), &SerialValue::Empty).is_empty());
+        assert!(follow_master_serial(&all, &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, &set("SN-NEW")).is_empty());
     }
 
     #[test]

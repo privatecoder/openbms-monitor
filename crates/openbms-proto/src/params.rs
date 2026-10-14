@@ -181,12 +181,12 @@ impl Values {
             raws.push(if touched { edited.raws[i] } else { fresh.raws[i] });
         }
         let mut switches = [0u8; 8];
-        for g in 0..8 {
+        for (g, out) in switches.iter_mut().enumerate() {
             let touched = edited.switches[g] ^ base.switches[g];
             if (fresh.switches[g] ^ base.switches[g]) & !touched != 0 {
                 return None;
             }
-            switches[g] = (edited.switches[g] & touched) | (fresh.switches[g] & !touched);
+            *out = (edited.switches[g] & touched) | (fresh.switches[g] & !touched);
         }
         Some(Values { raws, switches })
     }
