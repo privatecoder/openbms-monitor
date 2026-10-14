@@ -10,6 +10,7 @@ import { cn } from "../lib/utils";
 import { confirmationPhrase, imageLabel, imageWarning, progressFraction, resultVersions, steps } from "../firmware";
 import { errorKey, otherBank, packPortOf, packVersion } from "../maint";
 import type { Maint } from "../maintStore";
+import { PackKindSelect } from "./MaintSetup";
 import { PackBusPanel } from "./PackBusPanel";
 
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
@@ -28,6 +29,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [ports, setPorts] = useState<string[]>([]);
   // the port chosen in the panel without an installation
   const [ownPort, setOwnPort] = useState("");
+  // the single pack tab's own port, independent of the installation (starts with the panel's)
+  const [manualPort, setManualPort] = useState<string | null>(null);
   const [address, setAddress] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
@@ -67,10 +70,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const inst = maint.current;
   // with an installation the RS485-1/2 port is the one of its setup
   const port = inst ? packPortOf(inst) ?? "" : ownPort;
-  useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [port, address, image?.sha256]);
+  const mPort = manualPort ?? port;
+  useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [mPort, address, image?.sha256]);
   // the master read belongs to the port it came from
   useEffect(() => { setMaster(null); }, [port]);
-  const s = steps({ running, done: done !== null, port, address, image, target, checkedFor, typed, busy });
+  const s = steps({ running, done: done !== null, port: mPort, address, image, target, checkedFor, typed, busy });
   const inputsLocked = running || busy;
   const phrase = confirmationPhrase(address, image?.custom);
 
@@ -100,7 +104,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   /** Start a flash (panel or manual): refusals are thrown back as the backend sent them. */
-  const startFlash = async (a: number, confirmation: string, from: string | null) => {
+  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, installation: string | null) => {
     if (!path || !image) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
@@ -108,7 +112,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(port, a, path, allowCustom, image.sha256, confirmation, lang, inst?.id ?? null);
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, installation);
       setFlashed({ address: a, image, checked: from, bank: r.bank });
       // the pending record is written now
       void maint.loadLists();
@@ -122,17 +126,19 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     onUserAction(); setBusy(true); setError(null); setTarget(null); setCheckedFor(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
-    try { setTarget(await api.firmwareInspect(port, address, lang)); setCheckedFor({ port, address }); void maint.loadLists(); }
+    try { setTarget(await api.firmwareInspect(mPort, address, lang)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
     catch (e) { setError({ text: String(e), serial: null }); }
     finally { setBusy(false); }
   };
 
-  const targetVersion = target ? packVersion(address, target.firmware_version, master) : null;
+  // the master read and the installation's checks count only on the installation's own port
+  const samePort = mPort === port;
+  const targetVersion = target ? packVersion(address, target.firmware_version, samePort ? master : null) : null;
   const manualStart = async () => {
     const confirmation = typed;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setTyped(""); setTarget(null); setCheckedFor(null);
-    try { await startFlash(address, confirmation, targetVersion); }
+    try { await startFlash(mPort, address, confirmation, targetVersion, samePort ? inst?.id ?? null : null); }
     catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
   };
 
@@ -172,7 +178,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => startFlash(a, confirmationPhrase(a, image?.custom), from)} onMaster={setMaster} />}
+        onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null)} onMaster={setMaster} />}
 
       {(running || done) && (
         <section className="space-y-3 border-t border-line pt-5">
@@ -215,16 +221,16 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       {tab === "manual" && <section className="space-y-3 rounded-md border border-line p-4">
         <p className="text-sm text-muted">{t("fw.manualHint")}</p>
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          {/* the RS485-1/2 port: from the installation (picked in the pack bus tab), or chosen here */}
-          {inst ? <span>{port ? t("maint.panel.port", { port }) : t("maint.panel.noPort")}</span> : (
-            <label className="flex items-center gap-2 text-muted">{t("maint.setup.rs485")}
-              <select className={input} value={port} disabled={inputsLocked} onChange={(e) => setOwnPort(e.target.value)}>
-                <option value="">{t("fw.choosePort")}</option>
-                {ports.map((p) => <option key={p}>{p}</option>)}
-              </select>
-              <Button variant="ghost" size="icon" disabled={running} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
-            </label>
-          )}
+          {/* the RS485-1/2 port of this tab: always free to choose; the installation's checks apply on its own port */}
+          <label className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
+            <PackKindSelect disabled={inputsLocked} />
+            <select className={input} value={mPort} disabled={inputsLocked} onChange={(e) => setManualPort(e.target.value)}>
+              <option value="">{t("fw.choosePort")}</option>
+              {mPort && !ports.includes(mPort) && <option value={mPort}>{t("maint.setup.notPlugged", { port: mPort })}</option>}
+              {ports.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <Button variant="ghost" size="icon" disabled={running} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+          </label>
           <label className="flex items-center gap-2 text-muted">{t("fw.address")}
             <select className={input} value={address} disabled={inputsLocked} onChange={(e) => setAddress(Number(e.target.value))}>
               {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
