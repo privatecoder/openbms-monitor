@@ -177,7 +177,7 @@ const resources = {
         choose: "Protokoll wählen …", set: "Setzen", setting: "Setze …",
         done: "Gesetzt. Das Pack meldet jetzt {{name}}.", mismatch: "Gesendet, aber das Pack meldet {{text}}.",
         refused: "Das BMS hat den Wert nicht angenommen.", error: "Nicht gesetzt: {{err}}", unread: "Gesetzt; Rücklesen fehlgeschlagen ({{err}}).",
-        hint: "Nur die CAN-Buchse des Masters spricht mit dem Wechselrichter; dort muss dasselbe Protokoll eingestellt sein. Die Auswahl gilt sofort und bleibt nach einem Neustart erhalten; ein eigenes Speichern gibt es nicht.",
+        hint: "Nur die CAN-Buchse des Masters spricht mit dem Wechselrichter; dort muss dasselbe Protokoll eingestellt sein. Die Auswahl gilt sofort und bleibt nach einem Neustart erhalten.",
       },
       cal: {
         title: "Kalibrieren (Experten)", closed: "Strom-Nullpunkt, Strom und Spannung des gewählten Packs abgleichen",
@@ -545,7 +545,7 @@ const resources = {
         choose: "Choose protocol …", set: "Set", setting: "Setting …",
         done: "Set. The pack now reports {{name}}.", mismatch: "Sent, but the pack reports {{text}}.",
         refused: "The BMS did not accept the value.", error: "Not set: {{err}}", unread: "Set; reading it back failed ({{err}}).",
-        hint: "Only the master's CAN socket talks to the inverter; the inverter must be set to the same protocol. The choice takes effect at once and survives a restart; there is no separate save step.",
+        hint: "Only the master's CAN socket talks to the inverter; the inverter must be set to the same protocol. The choice takes effect at once and survives a restart.",
       },
       cal: {
         title: "Calibrate (experts)", closed: "Adjust current zero point, current and voltage of the chosen pack",
