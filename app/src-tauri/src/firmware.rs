@@ -219,18 +219,14 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     Ok(info)
 }
 
-/// After a release inside the flash: longer than two polling cycles of the master.
-const RELEASED_LISTEN: std::time::Duration = std::time::Duration::from_millis(2500);
-
 /// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
 /// of this pack bus endpoint pending in its bootloader, a patched master with its marker on is released before a
 /// non-maintenance image (C'), and with an installation the master's serial number (right bank). Quiet bus and
 /// the target's 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals
-/// reach the UI as a JSON string of `MaintError`. With `release_master` (C', the user's „Master freigeben und
-/// flashen“) a master whose marker is on is released first; the bus must then stay quiet (DIP 5–8 OFF).
+/// reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, release_master: bool) -> Result<FlashStarted, String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -248,16 +244,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let key = endpoint_key(false, &port);
     maint::with_store(&state, |s| s.pending_on(&key)).and_then(|p| maint::pending_refusal(&p, address)).map_err(to_text)?;
     let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
-    let mut released = false;
     if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
         let master = maint::read_master(&state, i).unwrap_or(Master::Unknown);
         let kind = maint_kind(info.kind);
         if policy::release_first(&master, kind) {
-            if !release_master {
-                return Err(to_text(maint::refused("release-master-first")));
-            }
-            maint::release_for_flash(&state, i).map_err(to_text)?;
-            released = true;
+            return Err(to_text(maint::refused("release-master-first")));
         }
         // no fresh read: the marker last seen on still counts
         if master == Master::Unknown && kind != known::ImageKind::Maintenance && maint::with_store(&state, |s| s.marker_last_on(&i.id)).map_err(to_text)? {
@@ -270,11 +261,6 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let slot = FlashSlot(state.flashing.clone());
     stop_monitor(&state)?;
     let mut link = open_port(&port, l)?;
-    // released just now: with DIP 5–8 still ON the master polls again within its next 1-s cycle
-    if released && !bus::listen(&mut link, &SystemClock::new(), RELEASED_LISTEN).map_err(|e| e.text(l))?.quiet() {
-        maint::event(&state, "release for flash: bus not quiet");
-        return Err(to_text(maint::refused("released-not-quiet")));
-    }
     let bank = match &inst {
         // a bus with traffic gets no 0xA4: the preflight refuses it anyway
         Some(_) if !bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?.quiet() => "unchecked",

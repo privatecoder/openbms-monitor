@@ -217,6 +217,7 @@ export function flashBlocked(f: { image: FirmwareImage | null; quiet: boolean; b
   if (!f.quiet) return { key: "maint.packs.why.quiet" };
   const p = pendingBlock(f.pending, f.port, f.address);
   if (p) return { key: "maint.err.bootloader-pending", params: { pack: p.pack } };
+  if (releaseFirst(f.master, f.address, f.image.kind)) return { key: "maint.packs.why.releaseFirst" };
   return null;
 }
 

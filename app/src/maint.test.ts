@@ -139,8 +139,7 @@ describe("flash per pack", () => {
     expect(releaseFirst(on, 3, "original")).toBe(false);
     expect(releaseFirst(master({}), 0, "original")).toBe(false);
     expect(releaseFirst(null, 0, "original")).toBe(false);
-    // the master's flash releases it first („Master freigeben und flashen“)
-    expect(flashBlocked({ ...ok, address: 0, master: on })).toBeNull();
+    expect(flashBlocked({ ...ok, address: 0, master: on })?.key).toBe("maint.packs.why.releaseFirst");
     expect(flashBlocked({ ...ok, address: 0, master: on, image: image("maintenance") })).toBeNull();
   });
   it("„Fertig“ after a flash or while the marker is on", () => {
