@@ -1,10 +1,10 @@
 # OpenBMS Monitor
 
-Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor is read only unless maintenance functions are switched on (firmware view). The separate `openbms-flash` CLI can write firmware only after its own validation and explicit confirmation. Pre-release (0.1), public repo. Protocol knowledge comes from [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs); the README describes features and the two buses.
+Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor is read only unless maintenance functions are switched on (firmware view; clock, CAN protocol and calibration in the Parameters view). The separate `openbms-flash` CLI can write firmware only after its own validation and explicit confirmation. Pre-release (0.1), public repo. Protocol knowledge comes from [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs); the README describes features and the two buses.
 
 ## Layout
 
-- `crates/openbms-proto`: frames, checksums, Seplos ASCII commands (telemetry 0x42, status 0x44, params 0x47, intra-pack 0x5A, serial numbers 0xA2/0xA4), Modbus RTU (master system values, battery serial number), parameter decoding.
+- `crates/openbms-proto`: frames, checksums, Seplos ASCII commands (telemetry 0x42, status 0x44, params 0x47, intra-pack 0x5A, serial numbers 0xA2/0xA4, clock and history 0x4B/0x4D/0x4E, calibration 0xA0, CAN protocol 0xA6), Modbus RTU (master system values, battery serial number), parameter decoding.
 - `crates/openbms-transport`: serial and TCP transport (5 s connect timeout, write timeout).
 - `crates/openbms-cli`: read-only command-line poller for debugging.
 - `crates/openbms-flash`: standalone EMU1101 updater (probe, `.ehex` validation and dry-run, confirmed flash); the app's firmware view uses it as a library (`app/src-tauri/src/firmware.rs`).
