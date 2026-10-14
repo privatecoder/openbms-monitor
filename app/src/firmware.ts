@@ -18,7 +18,7 @@ export function imageWarning(image: FirmwareImage): string | null {
   return image.custom ? "fw.customWarning" : null;
 }
 
-/** A known maintenance build is only a note; an image with an unknown checksum is the real warning. */
+/** Red for an image with an unknown checksum; a known maintenance build is shown in orange. */
 export function imageWarningIsAlarm(image: FirmwareImage): boolean {
   return image.kind !== "maintenance" && image.custom;
 }
