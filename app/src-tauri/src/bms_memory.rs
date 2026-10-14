@@ -27,6 +27,15 @@ fn pack_bus_only(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Parameter and serial number writes wait while the history database is being prepared: the snapshot of the state
+/// before a write would be lost. Reads go on without a snapshot.
+fn history_ready(state: &AppState) -> Result<(), String> {
+    if state.history.lock().map_err(|e| e.to_string())?.preparing() {
+        return Err("the recording is being updated; writing is possible once that is done".into());
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum End {
@@ -201,6 +210,7 @@ pub enum ParamWrite {
 #[tauri::command]
 pub async fn write_parameters(state: State<'_, AppState>, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
     pack_bus_only(&state)?;
+    history_ready(&state)?;
     let fresh = read_parameters(&state, address)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
@@ -264,6 +274,7 @@ pub struct SerialSet {
 #[tauri::command]
 pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, text: String) -> Result<SerialSet, String> {
     pack_bus_only(&state)?;
+    history_ready(&state)?;
     let master = which == Which::Bms && address == 0;
     // String 2 before the write: whether the board keeps its identity under the new serial depends on it
     let old = if which == Which::Bms { with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)).ok() } else { None };

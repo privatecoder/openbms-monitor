@@ -10,6 +10,7 @@ import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, export
 import { blockers, changes, fromRaw, notTaken, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX } from "../paramWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { SerialLine } from "../components/SerialWrite";
+import { useHistoryPreparing } from "../history/preparing";
 import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
 import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
@@ -64,6 +65,8 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   // one pack for the clock, the CAN protocol and the calibration
   const [chosen, setChosen] = usePackChoice(packs);
   const writable = connected && (bus === "pack" || isDemo);
+  // writes keep the state before as a snapshot: not while the recording's database is being updated
+  const preparing = useHistoryPreparing();
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
@@ -222,7 +225,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   }) : [];
   const takeOverSources = cols.filter((c) => c.id !== editId && c.values && c.switches && !c.error && (c.suspectFrom === undefined || c.suspectFrom === null))
     .map((c) => ({ id: c.id, label: c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label }));
-  const editable = (c: Source) => writable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
+  const editable = (c: Source) => writable && !preparing && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
   return (
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
@@ -251,7 +254,8 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
         </p>
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
-        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
+        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial") || preparing} onBusy={busyFor("serial")} />
+        {writable && preparing && <p className="text-sm text-muted">{t("rec.preparing")}</p>}
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
@@ -332,14 +336,14 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
           )}
           {edit && editCol >= 0 && (
             <EditBar e={edit} pack={packNo(edit.address)} changes={editChanges} blockers={editBlockers} sheet={editSheet} full={full}
-              note={note?.address === edit.address ? note.note : null} refused={refusedOf(edit.address)} busy={writing.params} locked={lockedBut("params")} sources={takeOverSources}
+              note={note?.address === edit.address ? note.note : null} refused={refusedOf(edit.address)} busy={writing.params} locked={lockedBut("params") || preparing} sources={takeOverSources}
               onChange={(f) => setEdit((e) => e && f(e))} onTakeOver={takeOverFrom} onWrite={() => write(edit.address)} onRestore={(stored) => write(edit.address, stored)}
               onDiscard={() => { setEdit(null); setNote(null); }} />
           )}
           {cols.flatMap((c) => {
             const r = c.kind === "pack" && c.address !== undefined && c.address !== edit?.address ? refusedOf(c.address) : null;
             return r ? [<RefusedPanel key={c.id} refused={r} fullAh={full && "ah" in full && full.address === c.address ? full.ah : null} pack={c.label}
-              busy={writing.params} locked={lockedBut("params")} onRestore={(stored) => write(c.address!, stored)} />] : [];
+              busy={writing.params} locked={lockedBut("params") || preparing} onRestore={(stored) => write(c.address!, stored)} />] : [];
           })}
           {!edit && note && (
             <p className={cn("text-sm", note.note.error ? "text-alarm" : "text-ok")}>{t("par.pack", { n: packNo(note.address) })}: {note.note.text}</p>
