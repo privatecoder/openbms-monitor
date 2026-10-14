@@ -1,7 +1,7 @@
 ---
 title: Parameter
-short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest sie nur. Ändern lassen sich hier nur BMS-Uhr, CAN-Protokoll und Kalibrierung. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
-related: topic.buses, topic.switches, topic.calibration
+short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest und vergleicht sie und schreibt sie pro Pack auf Knopfdruck; dazu Seriennummern, BMS-Uhr, CAN-Protokoll und Kalibrierung. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
+related: topic.buses, topic.switches, topic.paramWrite, topic.calibration
 ---
 - **Aus den Packs lesen:** nur über RS485-1/2 (19200 Baud). Die CAN-Buchse kennt den Befehl nicht. Der **Master** (DIP 0 mit Slaves) antwortet auf RS485-1/2 nicht; seine Werte bekommst du über einen BatteryMonitor-Export oder wenn er kurz allein am Bus hängt.
 - **Export öffnen:** XML-Dateien aus BatteryMonitor (Parameter exportieren). Die Werte zählen nach Position, nicht nach Namen. Passen die Namen nicht zur bekannten Reihenfolge, warnt die App: Ein solcher Export stammt aus einer anderen BatteryMonitor-Version und darf nicht zurückgespielt werden.

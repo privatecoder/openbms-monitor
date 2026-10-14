@@ -15,3 +15,12 @@ export function serialText(v: SerialValue | undefined, which: "battery" | "bms",
       return { text: bus === "can" && !(master && which === "battery") ? t("sn.packBusOnly") : t("sn.unsupported") };
   }
 }
+
+/** What 0xA3/0xA5 take: printable ASCII (0x20–0x7E), 1 to 30 characters after trimming; the app pads with spaces. */
+export const serialInputOk = (s: string) => /^[\x20-\x7e]{1,30}$/.test(s.trim());
+
+/** A serial number write the BMS accepted: the read-back shows the sent text, something else, or could not be read. */
+export type SerialSetResult = "done" | "mismatch" | "unread";
+export const serialSetResult = (sent: string, read: SerialValue | null): SerialSetResult =>
+  read === null || read.kind === "no_answer" || read.kind === "unavailable" ? "unread"
+  : "value" in read && read.value === sent.trim() ? "done" : "mismatch";

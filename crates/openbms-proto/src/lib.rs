@@ -24,7 +24,7 @@ pub use intra_pack::IntraPackRecord;
 pub use memory::{BmsTime, HistoryRecord};
 pub use maint::{MaintInfo, MaintStatus, MarkerWord};
 pub use modbus::SystemValues;
-pub use params::Parameters;
+pub use params::{Parameters, Values};
 pub use serial::{SerialNumbers, SerialValue};
 pub use status::Status;
 pub use telemetry::Telemetry;
