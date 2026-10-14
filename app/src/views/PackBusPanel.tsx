@@ -50,6 +50,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   const [actionError, setActionError] = useState<{ text: string; serial: string | null } | null>(null);
   const [confirm, setConfirm] = useState<number | null>(null);
   const [flashed, setFlashed] = useState(false);
+  // after a flash the master polls again (DIP back or released): the maintenance is over
+  const [back, setBack] = useState(false);
   const [setup, setSetup] = useState<"edit" | "new" | null>(null);
 
   // the live loop reads the newest values through refs
@@ -98,8 +100,9 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // another port or installation: nothing of the old one counts
-  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setConfirm(null); setActionError(null); wantScan.current = true; }, [port, inst?.id]);
-  useEffect(() => { if (flashTick) { setFlashed(true); wantScan.current = true; } }, [flashTick]);
+  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setConfirm(null); setActionError(null); setBack(false); wantScan.current = true; }, [port, inst?.id]);
+  useEffect(() => { if (flashTick) { setFlashed(true); setBack(false); wantScan.current = true; } }, [flashTick]);
+  useEffect(() => { if (flashed && !running && live?.bus === "polling") { setFlashed(false); setBack(true); } }, [flashed, running, live?.bus]);
 
   const master: MasterView | null = live?.master ?? null;
   useEffect(() => { onMaster(master); }, [master]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -108,7 +111,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   const pendingHere = maint.alerts.pending.filter((p) => port && p.endpoint === endpointKey({ kind: "serial", path: port, bus: "pack" }));
 
   const run = async (key: string, f: () => Promise<void>) => {
-    onUserAction(); setAction(key); setActionError(null);
+    onUserAction(); setAction(key); setActionError(null); setBack(false);
     try { await f(); } catch (e) { const k = errorKey(e); setActionError({ text: t(k.key, k.params), serial: otherBank(e) }); }
     finally { setAction(null); void maint.loadLists(); }
   };
@@ -175,6 +178,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
       <div role="status" className="space-y-1 rounded-md bg-sunken p-3">
         <p className={cn("font-medium", toneClass[line.tone])}>{line.text}</p>
         {mLine && <p className={toneClass[mLine.tone]} title={master?.build_id ? t("maint.live.buildId", { id: master.build_id }) : undefined}>{t("maint.live.master", { text: mLine.text })}</p>}
+        {back && <p className="text-ok">{t("maint.done.back")}</p>}
         {live?.master_error && <p className="text-muted">{t(errorKey(live.master_error).key, errorKey(live.master_error).params)}</p>}
         {inst && !inst.control && <p className="text-muted">{t("maint.live.noControl")}</p>}
       </div>
