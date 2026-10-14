@@ -108,7 +108,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
     if (bad) { setError(t(bad)); return; }
     void act(() => api.installationRename(inst.id, renaming!.trim())).then(() => setRenaming(null));
   };
-  const merge = (to: Installation) => act(() => api.installationMerge(inst.id, to.id).then(() => { if (chosen) maint.switchTo(to.id); }), t("inst.merged", { name: to.name }));
+  const merge = (to: Installation) => act(() => api.installationMerge(inst.id, to.id).then(() => (chosen ? maint.switchTo(to.id) : undefined)), t("inst.merged", { name: to.name }));
 
   return (
     <Panel className={cn("space-y-3 p-4", chosen && "border-charge/60")}>
@@ -138,7 +138,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {!chosen && !connected && <Button size="sm" variant="secondary" onClick={() => maint.switchTo(inst.id)}>{t("inst.choose")}</Button>}
+          {!chosen && !connected && <Button size="sm" variant="secondary" onClick={() => void maint.switchTo(inst.id)}>{t("inst.choose")}</Button>}
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRenaming(inst.name)} title={t("inst.rename")} aria-label={t("inst.rename")}><Pencil className="h-4 w-4" /></Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => api.installationArchive(inst.id, !inst.archived))} title={t(inst.archived ? "inst.unarchive" : "inst.archive")} aria-label={t(inst.archived ? "inst.unarchive" : "inst.archive")}>
             {inst.archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}

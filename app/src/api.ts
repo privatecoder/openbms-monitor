@@ -193,6 +193,11 @@ export interface Alerts { markers: { installation: string; name: string; at: num
 
 
 // tests run without a window: the preview API then
+/** The installation chosen in the UI (null: „Nur ansehen“), sent with every write to a pack: the backend refuses a
+ *  write when the connection belongs to another one. Set by the installation store. */
+let chosen: string | null = null;
+export const setChosenInstallation = (id: string | null) => { chosen = id; };
+
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const tauriApi = {
@@ -237,19 +242,19 @@ const tauriApi = {
   /** RS485-1/2 only, like the parameters */
   bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
   /** sets the clock to `time` and returns the clock read back */
-  setBmsClock: (address: number, time: BmsTime) => invoke<BmsTime>("set_bms_clock", { address, time }),
+  setBmsClock: (address: number, time: BmsTime) => invoke<BmsTime>("set_bms_clock", { address, time, installation: chosen }),
   /** RS485-1/2 only: telemetry and status of one pack, for the calibration's live values */
   packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
   /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
-  bmsCalibrate: (address: number, calibration: Calibration) => invoke<void>("bms_calibrate", { address, calibration }),
+  bmsCalibrate: (address: number, calibration: Calibration) => invoke<void>("bms_calibrate", { address, calibration, installation: chosen }),
   /** RS485-1/2 only, 1…6; once accepted, the device info read back or why that read failed */
-  setCanProtocol: (address: number, protocol: number) => invoke<CanProtocolSet>("set_can_protocol", { address, protocol }),
+  setCanProtocol: (address: number, protocol: number) => invoke<CanProtocolSet>("set_can_protocol", { address, protocol, installation: chosen }),
   /** RS485-1/2 only: reads 0x47 again, writes `edited` (changes against `base`) on top of it and reads back;
    *  `restore` sends `edited` as it is (the stored block after a refusal) */
-  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean) => invoke<ParamWrite>("write_parameters", { address, base, edited, restore }),
+  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean) => invoke<ParamWrite>("write_parameters", { address, base, edited, restore, installation: chosen }),
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
   /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
-  setSerial: (address: number, which: "battery" | "bms", text: string) => invoke<SerialSet>("set_serial", { address, which, text }),
+  setSerial: (address: number, which: "battery" | "bms", text: string) => invoke<SerialSet>("set_serial", { address, which, text, installation: chosen }),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -274,7 +279,9 @@ const tauriApi = {
    *  "history-preparing" while the recording's file is being prepared. */
   installationsMigrate: (local: Record<string, LegacyLocal>) => invoke<string[]>("installations_migrate", { local }),
   installationSettings: (installation: string) => invoke<InstallationSettings>("installation_settings", { installation }),
-  setInstallationSetting: (installation: string, key: SettingKey, value: unknown) => invoke<void>("set_installation_setting", { installation, key, value }),
+  setInstallationSetting: (installation: string, key: Exclude<SettingKey, "cell_types">, value: unknown) => invoke<void>("set_installation_setting", { installation, key, value }),
+  /** the cell types of the changed places (null removes one); the others stay */
+  setInstallationCellTypes: (installation: string, changes: Record<number, unknown>) => invoke<void>("set_installation_cell_types", { installation, changes }),
   installationOverview: (installation: string) => invoke<InstallationOverview>("installation_overview", { installation }),
   /** merges `source` into `target`: adds, never overwrites; the log of the move keeps what was not taken */
   installationMerge: (source: string, target: string) => invoke<unknown>("installation_merge", { source, target }),
@@ -451,6 +458,7 @@ function demoApi(): typeof tauriApi {
     installationsMigrate: async () => [],
     installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null }),
     setInstallationSetting: async () => {},
+    setInstallationCellTypes: async () => {},
     installationOverview: async () => { throw new Error("desktop app only"); },
     installationMerge: async () => { throw new Error("desktop app only"); },
     installationArchive: async () => { throw new Error("desktop app only"); },

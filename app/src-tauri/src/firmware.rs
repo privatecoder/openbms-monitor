@@ -235,8 +235,8 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
 /// of this pack bus endpoint pending in its bootloader, and with `checks` (the installation's own RS485-1/2 port) a
 /// patched master with its marker on is released before a non-maintenance image (C') and the master's serial number
 /// matches (right bank). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an
-/// installation (its log is named and indexed with it). Flashes on its own thread and returns at once. Refusals
-/// reach the UI as a JSON string of `MaintError`.
+/// installation; its log is named and indexed with it on the installation's own port (`checks`), else „ohne Anlage“.
+/// Flashes on its own thread and returns at once. Refusals reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
 pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: String, checks: bool) -> Result<FlashStarted, String> {
@@ -286,7 +286,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         },
         None => "none",
     };
-    let (mut log, log_path, log_id) = new_log(&app, &state, Some(&installation), address, "flash", Some(&info.release))?;
+    let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind
     let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, crate::history::now_ms())).map_err(to_text)?;

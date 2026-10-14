@@ -121,7 +121,7 @@ impl SnapshotKind {
 pub type OldSnapshot = (u8, i64, String, Vec<u8>);
 
 /// What `merge_site` did: rows moved per table and the ones a row of the target at the same pack and time kept out.
-#[derive(Serialize, Default, Debug, PartialEq, Eq, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq, Clone)]
 pub struct SiteMerge {
     pub pack: u64,
     pub pack_dropped: u64,
@@ -558,11 +558,28 @@ impl History {
             tx.execute("DELETE FROM site_packs WHERE site = ?1", [old]).map_err(e2s)?;
             tx.execute("UPDATE param_snapshots SET site = ?2 WHERE site = ?1", params![old, new]).map_err(e2s)?;
         }
+        // the counts with the move itself, so a repeat after an interruption still reports what moved
+        if m != SiteMerge::default() {
+            let prev = merge_record(&tx, old, new).map_err(e2s)?.unwrap_or_default();
+            let sum = SiteMerge { pack: prev.pack + m.pack, pack_dropped: prev.pack_dropped + m.pack_dropped, system: prev.system + m.system, system_dropped: prev.system_dropped + m.system_dropped };
+            tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)", params![merge_key(old, new), serde_json::to_string(&sum).unwrap_or_default()]).map_err(e2s)?;
+        }
         tx.commit().map_err(e2s)?;
         if let Some(link) = self.link.as_mut().filter(|l| l.0 == old) {
             link.0 = new.to_string();
         }
         Ok(m)
+    }
+
+    /// What every merge of `old` into `new` moved so far (kept with the moves).
+    pub fn merged(&self, old: &str, new: &str) -> Result<SiteMerge, String> {
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        Ok(merge_record(db, old, new).map_err(e2s)?.unwrap_or_default())
+    }
+
+    /// Whether the file is open (not being prepared, not failed).
+    pub fn ready(&self) -> bool {
+        self.db.is_some() && !self.preparing
     }
 
     /// Every site key in the file (sessions, pack lists, value rows, parameter blocks of earlier versions).
@@ -576,12 +593,19 @@ impl History {
     }
 
     /// The parameter blocks earlier versions kept here for a site: (pack, time, kind, block), oldest first.
-    pub fn old_snapshots(&self, site: &str) -> Result<Vec<OldSnapshot>, String> {
+    /// Unreadable blocks are skipped and counted (second value).
+    pub fn old_snapshots(&self, site: &str) -> Result<(Vec<OldSnapshot>, usize), String> {
         let db = self.db.as_ref().ok_or("history database not open")?;
         let mut st = db.prepare("SELECT pack, t, kind, block FROM param_snapshots WHERE site = ?1 ORDER BY t, id").map_err(e2s)?;
-        let rows = st.query_map([site], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?))).map_err(e2s)?;
-        rows.map(|r| r.map_err(e2s).and_then(|(p, t, k, b)| Ok((p, t, k, unhex(&b).ok_or("bad parameter block")?))))
-            .collect()
+        let rows = st
+            .query_map([site], |r| Ok((r.get::<_, u8>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))
+            .map_err(e2s)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(e2s)?;
+        let total = rows.len();
+        let good: Vec<OldSnapshot> = rows.into_iter().filter_map(|(p, t, k, b)| Some((p, t, k, unhex(&b)?))).collect();
+        let skipped = total - good.len();
+        Ok((good, skipped))
     }
 
     /// After their move to the installation: the parameter blocks of a site are no longer kept here.
@@ -908,6 +932,15 @@ pub struct SiteSpan {
     pub to: Option<i64>,
     pub packs: Vec<u8>,
     pub has_system: bool,
+}
+
+fn merge_key(old: &str, new: &str) -> String {
+    format!("merge:{old}\u{1f}{new}")
+}
+
+fn merge_record(db: &Connection, old: &str, new: &str) -> rusqlite::Result<Option<SiteMerge>> {
+    let v: Option<String> = db.query_row("SELECT value FROM meta WHERE key = ?1", [merge_key(old, new)], |r| r.get(0)).optional()?;
+    Ok(v.and_then(|v| serde_json::from_str(&v).ok()))
 }
 
 /// Rows of one site (packs and master) and their time span.
@@ -1463,13 +1496,14 @@ mod tests {
         old_snapshot(&path, "gw-a:4196", 3, 20, "written", "04");
         old_snapshot(&path, "gw-a:4196", 3, 10, "read", "01AB");
         old_snapshot(&path, "gw-b:4196", 4, 12, "read", "09");
-        assert_eq!(h.old_snapshots("gw-a:4196").unwrap(), vec![(3, 10, "read".into(), vec![0x01, 0xAB]), (3, 20, "written".into(), vec![0x04])]);
+        assert_eq!(h.old_snapshots("gw-a:4196").unwrap(), (vec![(3, 10, "read".into(), vec![0x01, 0xAB]), (3, 20, "written".into(), vec![0x04])], 0));
         assert_eq!(h.site_keys().unwrap(), vec!["gw-a:4196".to_string(), "gw-b:4196".to_string()]);
         h.drop_old_snapshots("gw-a:4196").unwrap();
-        assert!(h.old_snapshots("gw-a:4196").unwrap().is_empty());
-        assert_eq!(h.old_snapshots("gw-b:4196").unwrap().len(), 1);
+        assert!(h.old_snapshots("gw-a:4196").unwrap().0.is_empty());
+        assert_eq!(h.old_snapshots("gw-b:4196").unwrap().0.len(), 1);
         old_snapshot(&path, "gw-c", 1, 1, "read", "0");
-        assert!(h.old_snapshots("gw-c").is_err(), "a damaged block is no block");
+        old_snapshot(&path, "gw-c", 1, 2, "read", "01");
+        assert_eq!(h.old_snapshots("gw-c").unwrap(), (vec![(1, 2, "read".into(), vec![1])], 1), "a damaged block is skipped and counted");
         assert_eq!(unhex("0aFF"), Some(vec![0x0A, 0xFF]));
     }
 
@@ -1507,6 +1541,8 @@ mod tests {
         // into an unused key: renamed, nothing dropped; again: nothing left to move
         assert_eq!(h.merge_site("inst-x", "inst-y").unwrap(), SiteMerge { pack: 5, pack_dropped: 0, system: 1, system_dropped: 0 });
         assert_eq!(h.merge_site("inst-x", "inst-y").unwrap(), SiteMerge::default());
+        // a repeat moves nothing, the record keeps what the first one moved
+        assert_eq!(h.merged("gw-old", "inst-x").unwrap(), SiteMerge { pack: 3, pack_dropped: 1, system: 1, system_dropped: 1 });
         assert_eq!(h.site_keys().unwrap(), vec!["inst-y".to_string()]);
     }
 
@@ -1757,7 +1793,7 @@ mod tests {
         h.connected("gw-b", "pack");
         h.rename_site("gw-b", "inst-2").unwrap();
         h.pack(2000, 1, &pack_update(1, 2.0, &[3.3], &[]));
-        assert_eq!(h.old_snapshots("inst-1").unwrap().len(), 1);
+        assert_eq!(h.old_snapshots("inst-1").unwrap().0.len(), 1);
         let names: Vec<String> = sites(&reader(&path).unwrap()).unwrap().into_iter().map(|s| s.site).collect();
         assert_eq!(names, vec!["inst-2".to_string(), "inst-1".to_string()]);
         assert_eq!(pack_rows(&path).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["inst-1", "inst-2", "inst-2"]);

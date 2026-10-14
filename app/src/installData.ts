@@ -12,12 +12,16 @@ const keyOf = (scope: string | null) => scope ?? "";
 const stored = (scope: string | null): scope is string => !!scope && !isDemo;
 const changed = () => subs.forEach((f) => f());
 
+// a failed load is not cached (nothing may be saved over settings the app could not read): asked again shortly
 function load(scope: string | null) {
   const k = keyOf(scope);
   if (cache.has(k) || loading.has(k)) return;
   if (!stored(scope)) { cache.set(k, EMPTY); return; }
   loading.add(k);
-  api.installationSettings(scope).then((s) => cache.set(k, s), () => cache.set(k, EMPTY)).finally(() => { loading.delete(k); changed(); });
+  api.installationSettings(scope).then((s) => cache.set(k, s), (e) => {
+    console.error("installation settings:", e);
+    setTimeout(() => load(scope), 5000);
+  }).finally(() => { loading.delete(k); changed(); });
 }
 
 /** After a merge or the move of the old data: read again from the backend. */
@@ -28,12 +32,26 @@ export function useSettings(scope: string | null) {
   useEffect(() => { const f = () => tick((n) => n + 1); subs.add(f); return () => { subs.delete(f); }; }, []);
   useEffect(() => { load(scope); }, [scope]);
   const k = keyOf(scope);
-  const save = (key: SettingKey, value: unknown) => {
-    cache.set(k, { ...(cache.get(k) ?? EMPTY), [key]: value });
+  const loaded = cache.has(k);
+  /** A setting edited as a whole (groups, pairs, diagnosis). Not before the stored ones are loaded. */
+  const save = (key: Exclude<SettingKey, "cell_types">, value: unknown) => {
+    const cur = cache.get(k);
+    if (!cur) return;
+    cache.set(k, { ...cur, [key]: value });
     changed();
     if (stored(scope)) api.setInstallationSetting(scope, key, value).catch((e) => console.error(`setting ${key}:`, e));
   };
-  return { settings: cache.get(k) ?? EMPTY, loaded: cache.has(k), save };
+  /** The cell types of some places (null removes one); the other places keep theirs. Not before loaded. */
+  const saveCellTypes = (changes: Record<number, unknown>) => {
+    const cur = cache.get(k);
+    if (!cur) return;
+    const next = { ...cur.cell_types };
+    for (const [a, v] of Object.entries(changes)) if (v === null) delete next[a]; else next[a] = v;
+    cache.set(k, { ...cur, cell_types: next });
+    changed();
+    if (stored(scope)) api.setInstallationCellTypes(scope, changes).catch((e) => console.error("cell types:", e));
+  };
+  return { settings: cache.get(k) ?? EMPTY, loaded, save, saveCellTypes };
 }
 
 // --- the old browser storage, moved once into the backend -------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, isDemo, type Alerts, type Installation } from "./api";
+import { api, isDemo, setChosenInstallation, type Alerts, type Installation } from "./api";
 import { migrateLegacy } from "./installData";
 import { errorKey, latestOnly, nameCheck } from "./maint";
 
@@ -20,10 +20,17 @@ export function useMaint() {
   const installationsRef = useRef<Installation[]>([]);
   installationsRef.current = installations;
   const lists = useRef(latestOnly()).current;
+  setChosenInstallation(installation);
+  /** Set by the sidebar: ends a connection (or a lost one waiting to reconnect), since the choice and the connection
+   *  always belong together. Every change of the choice goes through it. */
+  const beforeSwitch = useRef<(() => Promise<void>) | null>(null);
 
-  const switchTo = useCallback((id: string | null) => {
+  const switchTo = useCallback(async (id: string | null) => {
+    if (id === installationRef.current) return;
+    await beforeSwitch.current?.();
     if (id) localStorage.setItem("maint.installation", id); else localStorage.removeItem("maint.installation");
     installationRef.current = id;
+    setChosenInstallation(id);
     setInstallation(id);
   }, []);
 
@@ -36,7 +43,7 @@ export function useMaint() {
     if (!lists.accepts(ticket)) return;
     if (list) {
       setInstallations(list); setLoaded(true);
-      if (installationRef.current && !list.some((i) => i.id === installationRef.current)) switchTo(null);
+      if (installationRef.current && !list.some((i) => i.id === installationRef.current)) void switchTo(null);
     }
     if (a) setAlerts(a);
     setAlertsFailed(!a);
@@ -50,7 +57,7 @@ export function useMaint() {
     try {
       const created = await api.maintCreateInstallation(name.trim(), null, []);
       setNaming(false);
-      switchTo(created.id);
+      await switchTo(created.id);
       await loadLists();
       return null;
     } catch (e) { return errorKey(e); }
@@ -64,7 +71,7 @@ export function useMaint() {
   }, [loadLists]);
 
   const current = installations.find((i) => i.id === installation) ?? null;
-  return { installation, current, installations, loaded, alerts, alertsFailed, loadLists, switchTo, naming, setNaming, create };
+  return { installation, current, installations, loaded, alerts, alertsFailed, loadLists, switchTo, beforeSwitch, naming, setNaming, create };
 }
 
 export type Maint = ReturnType<typeof useMaint>;

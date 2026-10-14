@@ -194,6 +194,15 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const disconnect = async () => { stopWaiting(); serialGen.current += 1; await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
+  // another installation chosen anywhere (installations view, banner, new installation): this connection ends first
+  const live = useRef(false);
+  live.current = connected || lost;
+  const disconnectRef = useRef(disconnect);
+  disconnectRef.current = disconnect;
+  useEffect(() => {
+    maint.beforeSwitch.current = async () => { if (live.current) await disconnectRef.current().catch(() => {}); };
+    return () => { maint.beforeSwitch.current = null; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
@@ -229,13 +238,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // them, else a hint to pick. A serial port never changes the choice. Only a new address asks again, so an explicit
   // choice afterwards (also „Nur ansehen“) stays.
   const [pickHint, setPickHint] = useState(false);
+  const asked = useRef<string | null>(null);
   useEffect(() => {
     if (isDemo || kind !== "tcp" || connected || lost || busy || !target.trim()) { setPickHint(false); return; }
+    if (!maint.loaded || asked.current === target.trim().toLowerCase()) return;
     const timer = setTimeout(() => {
+      asked.current = target.trim().toLowerCase();
       api.maintInstallationsOf({ kind: "tcp", addr: target, bus }, true).then((known) => {
         const d = preselect(maint.installation, known);
         setPickHint(d.do === "pick");
-        if (d.do === "use") maint.switchTo(d.id);
+        if (d.do === "use") void maint.switchTo(d.id);
       }).catch(() => {});
     }, 400);
     return () => clearTimeout(timer);
@@ -243,7 +255,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
 
   // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port).
   useEffect(() => {
-    if (lost && !busy && !connected && !locked && view !== "firmware" && now - lastTry >= RECONNECT_MS) connect(true);
+    // never for another installation than the connection's
+    if (lost && !busy && !connected && !locked && view !== "firmware" && maint.installation === connInst.current && now - lastTry >= RECONNECT_MS) connect(true);
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -282,7 +295,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <div className="space-y-1">
             <span className="flex items-center gap-1.5 text-sm text-muted">{t("conn.installation")}<InfoIcon id="topic.installations" /></span>
             <select className={input} value={maint.installation ?? ""} disabled={connected || lost || busy || locked} aria-label={t("conn.installation")}
-              onChange={(e) => { const v = e.target.value; if (v === NEW) maint.setNaming(true); else maint.switchTo(v || null); }}>
+              onChange={(e) => { const v = e.target.value; if (v === NEW) maint.setNaming(true); else void maint.switchTo(v || null); }}>
               {maint.installation && !maint.installations.some((i) => i.id === maint.installation) && <option value={maint.installation}>…</option>}
               {pickable(maint.installations, maint.installation).map((i) => <option key={i.id} value={i.id}>{i.name}{i.archived ? ` (${t("inst.archived")})` : ""}</option>)}
               <option value={NEW}>{t("maint.picker.new")}</option>

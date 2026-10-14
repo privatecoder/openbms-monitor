@@ -95,6 +95,12 @@ pub fn valid_name<'a>(name: &str, others: impl IntoIterator<Item = &'a str>) -> 
 
 static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Whether a site key is an installation id (`new_id`), also of one deleted since: never an old endpoint text.
+pub fn looks_like_id(key: &str) -> bool {
+    let parts: Vec<&str> = key.split('-').collect();
+    parts.len() == 4 && parts[0] == "inst" && parts[1..].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 fn new_id(now: i64) -> String {
     let n = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("inst-{now:x}-{:x}-{n:x}", std::process::id())
@@ -390,14 +396,7 @@ impl Store {
     /// read showed the marker on, or a pack on one of its endpoints may hang in its bootloader.
     pub fn delete_installation(&self, id: &str) -> Result<(), String> {
         self.atomic(|s| {
-            let inst = s.installation(id)?;
-            let mut pending = false;
-            for ep in &inst.endpoints {
-                pending |= !s.pending_on(ep)?.is_empty();
-            }
-            if pending || s.marker_last_on(id)? {
-                return Err("installation-busy".into());
-            }
+            s.may_delete(id)?;
             for sql in [
                 "DELETE FROM installation_links WHERE installation = ?1",
                 "DELETE FROM master_serial WHERE installation = ?1",
@@ -416,6 +415,19 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Refused ("installation-busy") while the installation has open work (see `delete_installation`).
+    pub fn may_delete(&self, id: &str) -> Result<(), String> {
+        let inst = self.installation(id)?;
+        let mut pending = false;
+        for ep in &inst.endpoints {
+            pending |= !self.pending_on(ep)?.is_empty();
+        }
+        if pending || self.marker_last_on(id)? {
+            return Err("installation-busy".into());
+        }
+        Ok(())
     }
 
     pub fn set_master_serial(&self, inst: &str, serial: &str, now: i64) -> Result<(), String> {
@@ -761,12 +773,11 @@ impl Store {
         Ok(())
     }
 
-    /// Every cell type of the installation at once: the given ones, the others removed.
-    pub fn set_cell_types(&self, inst: &str, types: &BTreeMap<u8, String>) -> Result<(), String> {
+    /// The cell types of some places at once (None removes one); the other places keep theirs.
+    pub fn change_cell_types(&self, inst: &str, changes: &BTreeMap<u8, Option<String>>) -> Result<(), String> {
         self.atomic(|s| {
-            s.db.execute("DELETE FROM place WHERE installation = ?1", [inst]).map_err(e)?;
-            for (a, c) in types {
-                s.set_cell_type(inst, *a, Some(c))?;
+            for (a, c) in changes {
+                s.set_cell_type(inst, *a, c.as_deref())?;
             }
             Ok(())
         })
@@ -848,7 +859,7 @@ impl Store {
     }
 
     /// The settings of an old site key into its installation (adds, never overwrites), with the log of the move.
-    pub fn finish_legacy(&self, source: &str, inst: &str, settings: &Settings, history: serde_json::Value, snapshots: usize, now: i64) -> Result<(), String> {
+    pub fn finish_legacy(&self, source: &str, inst: &str, settings: &Settings, history: serde_json::Value, snapshots: serde_json::Value, now: i64) -> Result<(), String> {
         self.atomic(|s| {
             let kept = s.add_settings(inst, settings)?;
             let detail = serde_json::json!({ "history": history, "snapshots": snapshots, "settings": settings, "not_taken": kept });
@@ -1211,6 +1222,12 @@ mod tests {
         s.set_cell_type(&a.id, 2, Some("{}")).unwrap();
         s.set_cell_type(&a.id, 2, None).unwrap();
         assert_eq!(s.cell_types(&a.id).unwrap(), vec![(1, "{\"id\":\"x\"}".to_string())]);
+        // a change of some places leaves the others
+        s.change_cell_types(&a.id, &BTreeMap::from([(3, Some("{}".to_string())), (1, None)])).unwrap();
+        s.change_cell_types(&a.id, &BTreeMap::from([(4, Some("{}".to_string()))])).unwrap();
+        assert_eq!(s.cell_types(&a.id).unwrap().iter().map(|x| x.0).collect::<Vec<_>>(), vec![3, 4]);
+        s.change_cell_types(&a.id, &BTreeMap::from([(3, None), (4, None)])).unwrap();
+        s.set_cell_type(&a.id, 1, Some("{\"id\":\"x\"}")).unwrap();
         assert_eq!(s.layout(&a.id).unwrap(), (None, None));
         s.set_groups(&a.id, Some("[]")).unwrap();
         s.set_pairs(&a.id, Some("[1]")).unwrap();
