@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod bms_memory;
 mod firmware;
 mod history;
 mod maint;
@@ -31,6 +32,10 @@ struct AppState {
     maint_action: Mutex<Option<&'static str>>,
     /// For events from code that has no `AppHandle` (progress, a dead main connection); set once at start-up.
     app: std::sync::OnceLock<AppHandle>,
+    /// Set while a BMS history read runs; polling pauses meanwhile.
+    memory_busy: Arc<AtomicBool>,
+    /// Asks the running history read to stop after the current frame.
+    memory_cancel: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -283,8 +288,14 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     let conn = state.conn.clone();
     let flashing = state.flashing.clone();
     let rec = state.history.clone();
+    let paused = state.memory_busy.clone();
     std::thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
+            // a BMS history read has the bus to itself
+            if paused.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
             let started = std::time::Instant::now();
             if bus == Bus::CanSocketBus {
                 let r = with_conn(&conn, &flashing, |c| c.system_values());
@@ -295,7 +306,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 let _ = app.emit("system", update);
             }
             for &address in &addresses {
-                if !running.load(Ordering::SeqCst) {
+                if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) {
                     break;
                 }
                 let telemetry = with_conn(&conn, &flashing, |c| c.telemetry(address));
@@ -569,7 +580,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
