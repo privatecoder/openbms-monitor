@@ -40,13 +40,20 @@ export function DiffText({ diff, className }: { diff: number; className?: string
   );
 }
 
+/** The pack chosen in the clock line; the CAN protocol and the calibration below it act on the same pack. */
+export function usePackChoice(packs: number[]) {
+  const [address, setAddress] = useState<number | null>(packs[0] ?? null);
+  useEffect(() => { if (address === null || !packs.includes(address)) setAddress(packs[0] ?? null); }, [packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  return [address, setAddress] as const;
+}
+
 /** The clock line of the parameters view: BMS time, PC time, difference, and setting it to the PC's local time. */
-export function ClockLine({ connected, bus, packs }: { connected: boolean; bus: Bus | null; packs: number[] }) {
+export function ClockLine({ connected, bus, packs, address, setAddress }: {
+  connected: boolean; bus: Bus | null; packs: number[]; address: number | null; setAddress: (a: number) => void;
+}) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const now = useNow();
-  const [address, setAddress] = useState<number | null>(packs[0] ?? null);
-  useEffect(() => { if (address === null || !packs.includes(address)) setAddress(packs[0] ?? null); }, [packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const usable = connected && (bus === "pack" || isDemo);
   const { read, setRead } = useBmsClock(address, usable);
   const [busy, setBusy] = useState<string | null>(null);
