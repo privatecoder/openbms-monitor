@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{frame, modbus, serial, DeviceInfo, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{frame, memory, modbus, serial, BmsTime, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -224,6 +224,25 @@ impl Connection {
         Ok(Parameters::parse(&f.info)?)
     }
 
+    /// The BMS clock (0x4D; RS485-1/2 only).
+    pub fn clock(&mut self, address: u8) -> Result<BmsTime> {
+        let f = self.ascii(&memory::clock_request(address)?, address)?;
+        Ok(memory::parse_clock(&f.info)?)
+    }
+
+    /// Set the BMS clock (0x4E; RS485-1/2 only). Implausible calendar fields are refused before sending.
+    pub fn set_clock(&mut self, address: u8, time: BmsTime) -> Result<()> {
+        self.ascii(&memory::set_clock_request(address, time)?, address)?;
+        Ok(())
+    }
+
+    /// One record of the internal history (0x4B; RS485-1/2 only): the oldest with `next = false`, else the one
+    /// after the last read. `None`: no records; the flag marks the last record.
+    pub fn history_record(&mut self, address: u8, next: bool) -> Result<Option<(HistoryRecord, bool)>> {
+        let f = self.ascii(&memory::history_request(address, next)?, address)?;
+        Ok(memory::parse_history(&f.info)?)
+    }
+
     /// Modbus FC03/04 read (master only, CAN socket bus).
     pub fn modbus_read(&mut self, function: u8, start: u16, count: u16) -> Result<Vec<u16>> {
         self.port.clear_input()?;
@@ -438,6 +457,28 @@ mod tests {
         ex.extend(crc.to_le_bytes());
         let mut c = scripted(vec![(modbus::read_request(0x04, 0, 21), ex)]);
         assert_eq!(c.master_battery_serial().unwrap(), SerialValue::Unavailable);
+    }
+
+    #[test]
+    fn clock_and_history_records() {
+        let t = BmsTime { year: 2026, month: 1, day: 2, hour: 3, minute: 4, second: 5 };
+        let mut rec = vec![0x01, 0x01];
+        rec.extend(2026u16.to_be_bytes());
+        rec.resize(memory::HISTORY_LEN, 0);
+        let mut c = scripted(vec![
+            (memory::clock_request(1).unwrap(), answer(1, 0, &t.to_bytes())),
+            (memory::set_clock_request(1, t).unwrap(), answer(1, 0, &[])),
+            (memory::history_request(1, false).unwrap(), answer(1, 0, &[])),
+            (memory::history_request(2, false).unwrap(), answer(2, 0, &rec)),
+            (memory::history_request(3, false).unwrap(), answer(3, 0x08, &[])),
+        ]);
+        assert_eq!(c.clock(1).unwrap(), t);
+        c.set_clock(1, t).unwrap();
+        assert!(c.history_record(1, false).unwrap().is_none());
+        let (r, last) = c.history_record(2, false).unwrap().unwrap();
+        assert!(last);
+        assert_eq!(r.time.year, 2026);
+        assert!(matches!(c.history_record(3, false), Err(Error::Proto(openbms_proto::Error::Rtn(0x08)))));
     }
 
     fn two() -> Vec<SocketAddr> {

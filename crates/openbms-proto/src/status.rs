@@ -110,6 +110,15 @@ pub struct ActiveAlarm {
     pub severity: Severity,
 }
 
+/// The known bits of alarm events 1..8 that are set, in table order.
+pub fn active_alarms(events: &[u8; 8]) -> Vec<ActiveAlarm> {
+    ALARM_BITS
+        .iter()
+        .filter(|(e, b, _, _)| events[usize::from(*e) - 1] & (1 << b) != 0)
+        .map(|(e, b, key, severity)| ActiveAlarm { id: format!("alarm.ev{e}.b{b}"), key, severity: *severity })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Status {
     pub address: u8,
@@ -165,11 +174,7 @@ impl Status {
         let ev7 = r.u8()?;
         let ev8 = r.u8()?;
         let events = [ev[0], ev[1], ev[2], ev[3], ev[4], ev[5], ev7, ev8];
-        let alarms = ALARM_BITS
-            .iter()
-            .filter(|(e, b, _, _)| events[usize::from(*e) - 1] & (1 << b) != 0)
-            .map(|(e, b, key, severity)| ActiveAlarm { id: format!("alarm.ev{e}.b{b}"), key, severity: *severity })
-            .collect();
+        let alarms = active_alarms(&events);
         Ok(Self {
             address,
             cell_limits,
