@@ -106,7 +106,7 @@ pub enum SnapshotKind {
 }
 
 impl SnapshotKind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             SnapshotKind::Read => "read",
             SnapshotKind::Written => "written",

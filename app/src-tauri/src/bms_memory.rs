@@ -274,7 +274,7 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, t
         let key = state.main.lock().map_err(|e| e.to_string())?.as_ref().map(|m| m.0.clone());
         if let (Some(key), SerialValue::Set { value, .. }) = (key, new) {
             let r = crate::maint::with_store(&state, |s| {
-                let all = s.installations_of(&key)?;
+                let all = s.installations_of(&key, false)?;
                 let follow = follow_master_serial(&all, old, new);
                 for i in &follow {
                     s.set_master_serial(&i.id, value, now_ms())?;
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn the_stored_master_serial_follows_only_from_the_old_value() {
-        let inst = |id: &str, serial: Option<&str>| Installation { id: id.into(), name: id.into(), endpoints: vec![], control: None, master_serial: serial.map(Into::into) };
+        let inst = |id: &str, serial: Option<&str>| Installation { id: id.into(), name: id.into(), endpoints: vec![], control: None, master_serial: serial.map(Into::into), archived: false };
         let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
         let all = [inst("a", Some("SN-OLD")), inst("b", Some("SN-OTHER")), inst("c", None)];
         let ids = |v: Vec<&Installation>| v.iter().map(|i| i.id.clone()).collect::<Vec<_>>();

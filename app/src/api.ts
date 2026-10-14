@@ -148,7 +148,7 @@ export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none" 
 
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
 /** An address book entry: endpoints may belong to several installations; `master_serial` is set by the backend. */
-export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null }
+export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean }
 /** The master as read over the CAN socket bus (0x64/03, after RTN 05 0x64/02). */
 export interface MasterView {
   kind: "maint" | "unknown-build" | "legacy" | "no-0x64" | "unknown";
@@ -240,7 +240,7 @@ const tauriApi = {
     invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
   /** lookup only: every installation that lists the endpoint or has it as CAN socket */
-  maintInstallationsOf: (endpoint: Endpoint) => invoke<Installation[]>("maint_installations_of", { endpoint }),
+  maintInstallationsOf: (endpoint: Endpoint, activeOnly = false) => invoke<Installation[]>("maint_installations_of", { endpoint, activeOnly }),
   maintSaveInstallation: (installation: Installation) => invoke<Installation>("maint_save_installation", { installation }),
   /** refused "name-required", "name-taken"; nothing is created then */
   maintCreateInstallation: (name: string, control: ControlEndpoint | null, endpoints: string[]) => invoke<Installation>("maint_create_installation", { name, control, endpoints }),

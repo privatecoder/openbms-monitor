@@ -426,11 +426,12 @@ pub async fn maint_installations(state: State<'_, AppState>) -> Result<Vec<Insta
     with_store(&state, |s| s.installations())
 }
 
-/// The installations that list this endpoint or have it as CAN socket (lookup only).
+/// The installations that list this endpoint or have it as CAN socket (lookup only). `active_only`: without archived
+/// installations (for preselection).
 #[tauri::command]
-pub async fn maint_installations_of(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<Vec<Installation>, MaintError> {
+pub async fn maint_installations_of(state: State<'_, AppState>, endpoint: EndpointArg, active_only: Option<bool>) -> Result<Vec<Installation>, MaintError> {
     let key = endpoint.key();
-    with_store(&state, |s| s.installations_of(&key))
+    with_store(&state, |s| s.installations_of(&key, active_only.unwrap_or(false)))
 }
 
 #[tauri::command]
