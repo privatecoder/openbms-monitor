@@ -1,10 +1,19 @@
 //! Maintenance database (`maintenance.sqlite` in the app data folder): installations as an address book (name,
 //! CAN socket endpoint, pack bus endpoints, the master's BMS serial number), the last master read per
 //! installation, and packs that may hang in their bootloader after an interrupted flash, per pack bus endpoint.
-//! A file of its own: the history database is moved aside when its schema changes, and a pending bootloader
-//! record must never vanish that way. Tables are only ever added; tables of earlier versions stay in old files
-//! and are no longer read.
+//! A file of its own, so a pending bootloader record never depends on the recording.
+//!
+//! Prepared for installations that own their data (not used yet): boards per place (installation, pack address)
+//! identified by String 2, a place's cell type, groups and pairs, diagnosis settings, parameter snapshots, a log
+//! index, the state of installation imports, and archived installations.
+//!
+//! SCHEMA is the base layout with the one-time copies of earlier versions below (by table presence); everything
+//! after it are migrations counted in `user_version`, each after a copy `maintenance.sqlite.bak-<n>` (`migrate.rs`).
+//! Tables of earlier versions stay in old files and are no longer read.
 
+use crate::history::SnapshotKind;
+use openbms_proto::serial::classify;
+use openbms_proto::SerialValue;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -18,6 +27,42 @@ CREATE TABLE IF NOT EXISTS master_read(installation TEXT PRIMARY KEY, data TEXT 
 CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint TEXT NOT NULL, pack INTEGER NOT NULL,
   release TEXT NOT NULL, since INTEGER NOT NULL, cleared INTEGER, how TEXT);
 ";
+
+/// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data];
+
+/// 1: the tables of installations that own their data.
+fn installation_data(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "ALTER TABLE installations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+         -- one row per board (BMS) seen at a place; another real String 2 there adds a row
+         CREATE TABLE boards(id INTEGER PRIMARY KEY, installation TEXT NOT NULL, address INTEGER NOT NULL, bms_serial TEXT NOT NULL,
+           battery_serial TEXT, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL);
+         CREATE INDEX boards_place ON boards(installation, address, id);
+         -- earlier String 2 values of a board the app itself rewrote (0xA5)
+         CREATE TABLE serial_alias(id INTEGER PRIMARY KEY, board INTEGER NOT NULL, serial TEXT NOT NULL, at INTEGER NOT NULL);
+         CREATE INDEX serial_alias_board ON serial_alias(board);
+         -- JSON settings: per place (cells stay when a board is swapped) and per installation
+         CREATE TABLE place(installation TEXT NOT NULL, address INTEGER NOT NULL, cell_type TEXT NOT NULL, PRIMARY KEY(installation, address)) WITHOUT ROWID;
+         CREATE TABLE layout(installation TEXT PRIMARY KEY, groups TEXT, pairs TEXT);
+         CREATE TABLE diagnosis(installation TEXT PRIMARY KEY, data TEXT NOT NULL);
+         -- bms_serial: the board's String 2 at the time, NULL if unclear
+         CREATE TABLE param_snapshots(id INTEGER PRIMARY KEY, installation TEXT NOT NULL, address INTEGER NOT NULL, bms_serial TEXT,
+           at INTEGER NOT NULL, kind TEXT NOT NULL, block BLOB NOT NULL);
+         CREATE INDEX param_snapshots_place ON param_snapshots(installation, address, id);
+         -- files per installation (firmware logs); installation NULL: a file from before, never assigned by guessing
+         CREATE TABLE logs(id INTEGER PRIMARY KEY, installation TEXT, address INTEGER, at INTEGER NOT NULL, kind TEXT NOT NULL,
+           result TEXT, file TEXT NOT NULL UNIQUE);
+         CREATE INDEX logs_installation ON logs(installation, at);
+         -- an installation import by its export id: completed only when both databases and all files are done
+         CREATE TABLE import_status(export_id TEXT PRIMARY KEY, installation TEXT NOT NULL, started INTEGER NOT NULL,
+           completed INTEGER, state TEXT);",
+    )
+}
+
+fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
+    db.pragma_update(None, "user_version", n as i64)
+}
 
 /// A display name: required (not blank) and not used by another installation (case-insensitive), so the picker
 /// never shows two equal entries. Returns the trimmed name or a refusal key.
@@ -85,6 +130,43 @@ pub struct Installation {
     /// the master's BMS serial number (0xA4 at address 0), stored at the first flash; set only by the store
     #[serde(default)]
     pub master_serial: Option<String>,
+    /// kept with all its data, never preselected; set only by the store
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// A board (BMS) at a place, identified by its String 2 (BMS serial number).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    pub id: i64,
+    pub bms_serial: String,
+    pub battery_serial: Option<String>,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    /// earlier String 2 values the app itself wrote over, oldest first
+    pub aliases: Vec<String>,
+}
+
+/// What a serial number read says about the board at a place.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BoardSeen {
+    /// the first board identified at this place
+    New,
+    /// the newest board at this place (also under a String 2 the app wrote over)
+    Same,
+    /// another real String 2 than the newest board's: a new board row, the previous serial for the notice
+    Other { previous: String },
+    /// String 2 empty, the placeholder or not read: nothing is claimed
+    Unclear,
+}
+
+/// Only a real String 2 identifies a board: not empty, not the placeholder, read completely.
+fn real(v: &SerialValue) -> Option<&str> {
+    match v {
+        SerialValue::Set { value, truncated: false } => Some(value),
+        _ => None,
+    }
 }
 
 /// A pack that may sit in its bootloader after an interrupted flash: no other address on this pack bus endpoint
@@ -142,13 +224,14 @@ impl Store {
         }
         let db = Connection::open(path).map_err(|err| format!("{}: {err}", path.display()))?;
         db.busy_timeout(std::time::Duration::from_secs(5)).map_err(e)?;
-        Self::init(db)
+        Self::init(db, path)
     }
 
-    fn init(db: Connection) -> Result<Self, String> {
+    fn init(db: Connection, path: &Path) -> Result<Self, String> {
         let has = |name: &str| -> Result<bool, String> {
             Ok(db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |r| r.get::<_, i64>(0)).map_err(e)? > 0)
         };
+        let fresh = !has("installations")?;
         let (had_links, had_pending, had_read) = (has("installation_links")?, has("bootloader_pending")?, has("master_read")?);
         let (old_blocks, old_state) = (has("flash_blocks")?, has("master_state")?);
         // the new tables and the copies of earlier versions' open state: all of it or nothing
@@ -187,6 +270,9 @@ impl Store {
             .map_err(e)?;
         }
         tx.commit().map_err(e)?;
+        let done: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(e)?;
+        // a file created just now has nothing to keep
+        crate::migrate::run(&db, (!fresh).then_some(path), done.max(0) as usize, MIGRATIONS, mark_version)?;
         Ok(Self { db })
     }
 
@@ -199,9 +285,9 @@ impl Store {
     }
 
     pub fn installation(&self, id: &str) -> Result<Installation, String> {
-        let (name, control): (String, Option<String>) = self
+        let (name, control, archived): (String, Option<String>, bool) = self
             .db
-            .query_row("SELECT name, control FROM installations WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT name, control, archived FROM installations WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()
             .map_err(e)?
             .ok_or("unknown-installation")?;
@@ -209,7 +295,7 @@ impl Store {
         let endpoints = stmt.query_map([id], |r| r.get(0)).map_err(e)?.collect::<rusqlite::Result<Vec<String>>>().map_err(e)?;
         let control = control.map(|c| serde_json::from_str(&c)).transpose().map_err(|err| err.to_string())?;
         let master_serial = self.db.query_row("SELECT serial FROM master_serial WHERE installation = ?1", [id], |r| r.get(0)).optional().map_err(e)?;
-        Ok(Installation { id: id.into(), name, endpoints, control, master_serial })
+        Ok(Installation { id: id.into(), name, endpoints, control, master_serial, archived })
     }
 
     pub fn installations(&self) -> Result<Vec<Installation>, String> {
@@ -218,9 +304,23 @@ impl Store {
         ids.iter().map(|id| self.installation(id)).collect()
     }
 
-    /// Every installation that lists the endpoint, or has it as its CAN socket.
-    pub fn installations_of(&self, endpoint: &str) -> Result<Vec<Installation>, String> {
-        Ok(self.installations()?.into_iter().filter(|i| i.endpoints.iter().any(|k| k == endpoint) || i.control.as_ref().is_some_and(|c| c.key() == endpoint)).collect())
+    /// Every installation that lists the endpoint, or has it as its CAN socket. `active_only`: without archived ones
+    /// (they are never preselected).
+    pub fn installations_of(&self, endpoint: &str, active_only: bool) -> Result<Vec<Installation>, String> {
+        Ok(self
+            .installations()?
+            .into_iter()
+            .filter(|i| !(active_only && i.archived))
+            .filter(|i| i.endpoints.iter().any(|k| k == endpoint) || i.control.as_ref().is_some_and(|c| c.key() == endpoint))
+            .collect())
+    }
+
+    /// Archive (or bring back) an installation; everything it owns stays.
+    #[allow(dead_code)] // for the installations view
+    pub fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
+        self.installation(id)?;
+        self.db.execute("UPDATE installations SET archived = ?2 WHERE id = ?1", params![id, archived]).map_err(e)?;
+        Ok(())
     }
 
     /// Name, CAN socket and endpoints. Endpoints are shared freely between installations.
@@ -256,13 +356,14 @@ impl Store {
             let now = crate::history::now_ms();
             let id = new_id(now);
             s.db.execute("INSERT INTO installations(id, name, control, created) VALUES (?1, ?2, NULL, ?3)", params![id, name, now]).map_err(e)?;
-            s.save_rows(&Installation { id: id.clone(), name, endpoints, control, master_serial: None })?;
+            s.save_rows(&Installation { id: id.clone(), name, endpoints, control, master_serial: None, archived: false })?;
             s.installation(&id)
         })
     }
 
-    /// Delete an installation with its endpoints, stored serial number and master read. Pending bootloader records
-    /// belong to the endpoint, not to the installation: they stay.
+    /// Delete an installation with its endpoints, stored serial number, master read, boards, settings and snapshots.
+    /// Pending bootloader records belong to the endpoint, not to the installation: they stay. So do log files and
+    /// their index rows.
     pub fn delete_installation(&self, id: &str) -> Result<(), String> {
         self.atomic(|s| {
             s.installation(id)?;
@@ -270,6 +371,12 @@ impl Store {
                 "DELETE FROM installation_links WHERE installation = ?1",
                 "DELETE FROM master_serial WHERE installation = ?1",
                 "DELETE FROM master_read WHERE installation = ?1",
+                "DELETE FROM serial_alias WHERE board IN (SELECT id FROM boards WHERE installation = ?1)",
+                "DELETE FROM boards WHERE installation = ?1",
+                "DELETE FROM place WHERE installation = ?1",
+                "DELETE FROM layout WHERE installation = ?1",
+                "DELETE FROM diagnosis WHERE installation = ?1",
+                "DELETE FROM param_snapshots WHERE installation = ?1",
                 "DELETE FROM installations WHERE id = ?1",
             ] {
                 s.db.execute(sql, [id]).map_err(e)?;
@@ -353,6 +460,148 @@ impl Store {
     }
 }
 
+/// What an installation owns per place. Not used yet: the connection does not carry its installation so far.
+#[allow(dead_code)]
+impl Store {
+    /// The boards seen at a place, newest first.
+    pub fn boards(&self, inst: &str, address: u8) -> Result<Vec<Board>, String> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT id, bms_serial, battery_serial, first_seen, last_seen FROM boards WHERE installation = ?1 AND address = ?2 ORDER BY id DESC")
+            .map_err(e)?;
+        let rows = stmt
+            .query_map(params![inst, address], |r| {
+                Ok(Board { id: r.get(0)?, bms_serial: r.get(1)?, battery_serial: r.get(2)?, first_seen: r.get(3)?, last_seen: r.get(4)?, aliases: vec![] })
+            })
+            .map_err(e)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(e)?;
+        let mut alias = self.db.prepare("SELECT serial FROM serial_alias WHERE board = ?1 ORDER BY id").map_err(e)?;
+        rows.into_iter()
+            .map(|b| Ok(Board { aliases: alias.query_map([b.id], |r| r.get(0)).map_err(e)?.collect::<rusqlite::Result<_>>().map_err(e)?, ..b }))
+            .collect()
+    }
+
+    /// The newest board at a place: the one the place's data belongs to until another String 2 is read there.
+    pub fn current_board(&self, inst: &str, address: u8) -> Result<Option<Board>, String> {
+        Ok(self.boards(inst, address)?.into_iter().next())
+    }
+
+    /// A successful serial number read at a place (String 2 and String 1 as read).
+    pub fn board_seen(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, now: i64) -> Result<BoardSeen, String> {
+        self.installation(inst)?;
+        self.atomic(|s| s.seen_rows(inst, address, bms, battery, now))
+    }
+
+    fn seen_rows(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, now: i64) -> Result<BoardSeen, String> {
+        let Some(serial) = real(bms) else { return Ok(BoardSeen::Unclear) };
+        // String 1 is changeable and only informational: kept as last read; not read leaves it as it was
+        let battery = match battery {
+            SerialValue::Set { value, .. } => Some(Some(value.as_str())),
+            SerialValue::Empty | SerialValue::Placeholder { .. } => Some(None),
+            SerialValue::Unavailable | SerialValue::NoAnswer => None,
+        };
+        match self.current_board(inst, address)? {
+            Some(b) if b.bms_serial == serial || b.aliases.iter().any(|a| a == serial) => {
+                // a String 2 the app wrote over came back (e.g. rewritten by another tool): still this board
+                if b.bms_serial != serial {
+                    self.rename_board(&b, serial, now)?;
+                }
+                self.db.execute("UPDATE boards SET last_seen = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
+                if let Some(bat) = battery {
+                    self.db.execute("UPDATE boards SET battery_serial = ?2 WHERE id = ?1", params![b.id, bat]).map_err(e)?;
+                }
+                Ok(BoardSeen::Same)
+            }
+            previous => {
+                self.db
+                    .execute(
+                        "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                        params![inst, address, serial, battery.flatten(), now],
+                    )
+                    .map_err(e)?;
+                Ok(previous.map_or(BoardSeen::New, |b| BoardSeen::Other { previous: b.bms_serial }))
+            }
+        }
+    }
+
+    fn rename_board(&self, b: &Board, serial: &str, now: i64) -> Result<(), String> {
+        self.db.execute("INSERT INTO serial_alias(board, serial, at) VALUES (?1, ?2, ?3)", params![b.id, b.bms_serial, now]).map_err(e)?;
+        self.db.execute("UPDATE boards SET bms_serial = ?2, last_seen = ?3 WHERE id = ?1", params![b.id, serial, now]).map_err(e)?;
+        Ok(())
+    }
+
+    /// The app's own String 2 write (0xA5) the BMS accepted: not a board swap. `before`: String 2 as read right
+    /// before the write, if it was read; a real one that differs from the newest board is recorded as a board first.
+    /// The board then keeps its row under the written serial, the old one as an alias. Writing a value that is not a
+    /// real serial (empty, the placeholder) changes nothing: that board can no longer be told apart.
+    pub fn board_written(&self, inst: &str, address: u8, before: &SerialValue, written: &str, now: i64) -> Result<(), String> {
+        self.installation(inst)?;
+        let SerialValue::Set { value, .. } = classify(written) else { return Ok(()) };
+        self.atomic(|s| {
+            s.seen_rows(inst, address, before, &SerialValue::NoAnswer, now)?;
+            match s.current_board(inst, address)? {
+                Some(b) if b.bms_serial == value => {
+                    s.db.execute("UPDATE boards SET last_seen = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
+                    Ok(())
+                }
+                Some(b) => s.rename_board(&b, &value, now),
+                None => s.seen_rows(inst, address, &SerialValue::Set { value: value.clone(), truncated: false }, &SerialValue::NoAnswer, now).map(|_| ()),
+            }
+        })
+    }
+
+    /// Keep a parameter block of a place with the String 2 of its newest board (None: no board identified yet).
+    pub fn add_param_snapshot(&self, inst: &str, address: u8, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
+        let serial = self.current_board(inst, address)?.map(|b| b.bms_serial);
+        self.db
+            .execute(
+                "INSERT INTO param_snapshots(installation, address, bms_serial, at, kind, block) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![inst, address, serial, now, kind.as_str(), block],
+            )
+            .map_err(e)?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// The cell type of a place (JSON), None removes it.
+    pub fn set_cell_type(&self, inst: &str, address: u8, cell_type: Option<&str>) -> Result<(), String> {
+        match cell_type {
+            Some(c) => self.db.execute("INSERT OR REPLACE INTO place(installation, address, cell_type) VALUES (?1, ?2, ?3)", params![inst, address, c]),
+            None => self.db.execute("DELETE FROM place WHERE installation = ?1 AND address = ?2", params![inst, address]),
+        }
+        .map_err(e)?;
+        Ok(())
+    }
+
+    /// Address → cell type (JSON) of every place that has one.
+    pub fn cell_types(&self, inst: &str) -> Result<Vec<(u8, String)>, String> {
+        let mut stmt = self.db.prepare("SELECT address, cell_type FROM place WHERE installation = ?1 ORDER BY address").map_err(e)?;
+        let rows = stmt.query_map([inst], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?.collect::<rusqlite::Result<Vec<_>>>();
+        rows.map_err(e)
+    }
+
+    /// Groups and pairs (JSON each).
+    pub fn set_layout(&self, inst: &str, groups: Option<&str>, pairs: Option<&str>) -> Result<(), String> {
+        self.db.execute("INSERT OR REPLACE INTO layout(installation, groups, pairs) VALUES (?1, ?2, ?3)", params![inst, groups, pairs]).map_err(e)?;
+        Ok(())
+    }
+
+    pub fn layout(&self, inst: &str) -> Result<(Option<String>, Option<String>), String> {
+        let r = self.db.query_row("SELECT groups, pairs FROM layout WHERE installation = ?1", [inst], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(e)?;
+        Ok(r.unwrap_or((None, None)))
+    }
+
+    /// Diagnosis settings (JSON).
+    pub fn set_diagnosis(&self, inst: &str, data: &str) -> Result<(), String> {
+        self.db.execute("INSERT OR REPLACE INTO diagnosis(installation, data) VALUES (?1, ?2)", params![inst, data]).map_err(e)?;
+        Ok(())
+    }
+
+    pub fn diagnosis(&self, inst: &str) -> Result<Option<String>, String> {
+        self.db.query_row("SELECT data FROM diagnosis WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +629,7 @@ mod tests {
         let a = s.create_installation("A", Some(ControlEndpoint::Tcp { addr: "GW:4196".into() }), vec!["serial:/dev/p".into()]).unwrap();
         let b = s.create_installation("B", Some(ControlEndpoint::Tcp { addr: "gw:4196".into() }), vec!["serial:/dev/p".into(), "SERIAL:/dev/p".into()]).unwrap();
         assert_eq!(b.endpoints, vec!["serial:/dev/p".to_string()]);
-        let ids = |k: &str| s.installations_of(k).unwrap().into_iter().map(|i| i.id).collect::<Vec<_>>();
+        let ids = |k: &str| s.installations_of(k, false).unwrap().into_iter().map(|i| i.id).collect::<Vec<_>>();
         assert_eq!(ids("serial:/dev/p"), vec![a.id.clone(), b.id.clone()]);
         assert_eq!(ids("tcp:gw:4196"), vec![a.id.clone(), b.id.clone()]);
         // removing it from one leaves the other
@@ -447,6 +696,168 @@ mod tests {
         assert!(s.all_pending().unwrap().is_empty());
         let how: String = s.db.query_row("SELECT how FROM bootloader_pending WHERE id = ?1", [p3], |r| r.get(0)).unwrap();
         assert_eq!(how, "answered");
+    }
+
+    fn version(s: &Store) -> i64 {
+        s.db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_file_of_the_base_layout_is_migrated_once_with_a_copy() {
+        let path = temp("migrate");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(SCHEMA).unwrap();
+            db.execute_batch(
+                "INSERT INTO installations VALUES ('a', 'A', NULL, 1);
+                 INSERT INTO installation_links VALUES ('a', 'serial:/dev/p');
+                 INSERT INTO master_serial VALUES ('a', 'SN-1', 2);
+                 INSERT INTO bootloader_pending(endpoint, pack, release, since) VALUES ('serial:/dev/p', 3, '16.06.13', 3);",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(version(&s), MIGRATIONS.len() as i64);
+        let a = s.installation("a").unwrap();
+        assert_eq!((a.endpoints.clone(), a.master_serial.as_deref(), a.archived), (vec!["serial:/dev/p".to_string()], Some("SN-1"), false));
+        assert_eq!(s.all_pending().unwrap().iter().map(|p| p.pack).collect::<Vec<_>>(), vec![3]);
+        // the copy holds the file as it was
+        assert_eq!(crate::migrate::backups(&path), vec!["maintenance.sqlite.bak-1".to_string()]);
+        let bak = Connection::open(path.with_file_name("maintenance.sqlite.bak-1")).unwrap();
+        assert!(bak.prepare("SELECT archived FROM installations").is_err());
+        assert_eq!(bak.query_row("SELECT COUNT(*) FROM bootloader_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(crate::migrate::backups(&path).len(), 1, "nothing left to migrate");
+        assert_eq!(s.all_pending().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_new_file_has_every_table_and_no_copy() {
+        let path = temp("fresh");
+        let s = Store::open(&path).unwrap();
+        assert_eq!(version(&s), MIGRATIONS.len() as i64);
+        assert!(crate::migrate::backups(&path).is_empty());
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.set_cell_type(&a.id, 1, Some("{\"id\":\"x\"}")).unwrap();
+        s.set_cell_type(&a.id, 2, Some("{}")).unwrap();
+        s.set_cell_type(&a.id, 2, None).unwrap();
+        assert_eq!(s.cell_types(&a.id).unwrap(), vec![(1, "{\"id\":\"x\"}".to_string())]);
+        assert_eq!(s.layout(&a.id).unwrap(), (None, None));
+        s.set_layout(&a.id, Some("[]"), None).unwrap();
+        assert_eq!(s.layout(&a.id).unwrap(), (Some("[]".into()), None));
+        s.set_diagnosis(&a.id, "{}").unwrap();
+        assert_eq!(s.diagnosis(&a.id).unwrap().as_deref(), Some("{}"));
+        drop(s);
+        Store::open(&path).unwrap();
+        assert!(crate::migrate::backups(&path).is_empty());
+    }
+
+    #[test]
+    fn archived_installations_can_be_left_out_of_the_endpoint_lookup() {
+        let s = Store::open(&temp("archived")).unwrap();
+        let a = s.create_installation("A", Some(ControlEndpoint::Tcp { addr: "gw:4196".into() }), vec![]).unwrap();
+        let b = s.create_installation("B", Some(ControlEndpoint::Tcp { addr: "gw:4196".into() }), vec![]).unwrap();
+        s.set_archived(&a.id, true).unwrap();
+        let ids = |active: bool| s.installations_of("tcp:gw:4196", active).unwrap().into_iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!(ids(true), vec![b.id.clone()]);
+        assert_eq!(ids(false), vec![a.id.clone(), b.id.clone()]);
+        // saving the address book keeps the flag
+        s.save_installation(&Installation { archived: false, ..s.installation(&a.id).unwrap() }).unwrap();
+        assert!(s.installation(&a.id).unwrap().archived);
+        s.set_archived(&a.id, false).unwrap();
+        assert_eq!(ids(true).len(), 2);
+        assert!(s.set_archived("nope", true).is_err());
+    }
+
+    fn set(v: &str) -> SerialValue {
+        SerialValue::Set { value: v.into(), truncated: false }
+    }
+
+    fn serials(s: &Store, inst: &str, address: u8) -> Vec<(String, Vec<String>)> {
+        s.boards(inst, address).unwrap().into_iter().map(|b| (b.bms_serial, b.aliases)).collect()
+    }
+
+    #[test]
+    fn only_a_real_string_2_identifies_a_board() {
+        let s = Store::open(&temp("boards")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let none = SerialValue::NoAnswer;
+        for unclear in [SerialValue::Empty, SerialValue::Placeholder { value: "EMU110110S-XXXX-20000101-00001".into() }, SerialValue::NoAnswer, SerialValue::Unavailable,
+            SerialValue::Set { value: "SYN-CUT".into(), truncated: true }]
+        {
+            assert_eq!(s.board_seen(&a.id, 7, &unclear, &set("BAT-1"), 1).unwrap(), BoardSeen::Unclear);
+        }
+        assert!(s.boards(&a.id, 7).unwrap().is_empty());
+        assert_eq!(s.board_seen(&a.id, 7, &set("SYN-A"), &set("BAT-1"), 10).unwrap(), BoardSeen::New);
+        assert_eq!(s.board_seen(&a.id, 7, &set("SYN-A"), &none, 20).unwrap(), BoardSeen::Same);
+        let b = s.current_board(&a.id, 7).unwrap().unwrap();
+        assert_eq!((b.first_seen, b.last_seen, b.battery_serial.as_deref()), (10, 20, Some("BAT-1")), "String 1 not read: kept");
+        s.board_seen(&a.id, 7, &set("SYN-A"), &SerialValue::Empty, 25).unwrap();
+        assert_eq!(s.current_board(&a.id, 7).unwrap().unwrap().battery_serial, None, "read as empty");
+        // an unreadable String 2 claims nothing, not even last_seen
+        s.board_seen(&a.id, 7, &SerialValue::Empty, &set("BAT-2"), 30).unwrap();
+        assert_eq!(s.current_board(&a.id, 7).unwrap().unwrap().last_seen, 25);
+        // another real serial at the place: a new board row
+        assert_eq!(s.board_seen(&a.id, 7, &set("SYN-B"), &none, 40).unwrap(), BoardSeen::Other { previous: "SYN-A".into() });
+        assert_eq!(serials(&s, &a.id, 7), vec![("SYN-B".into(), vec![]), ("SYN-A".into(), vec![])]);
+        // places are apart: the same serial at another address is a board there
+        assert_eq!(s.board_seen(&a.id, 8, &set("SYN-B"), &none, 41).unwrap(), BoardSeen::New);
+        assert!(s.board_seen("nope", 7, &set("SYN-B"), &none, 42).is_err());
+    }
+
+    #[test]
+    fn the_apps_own_string_2_write_renames_the_board() {
+        let s = Store::open(&temp("rename")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let none = SerialValue::NoAnswer;
+        s.board_seen(&a.id, 2, &set("SYN-A"), &none, 10).unwrap();
+        s.board_written(&a.id, 2, &none, "SYN-A2", 20).unwrap();
+        assert_eq!(serials(&s, &a.id, 2), vec![("SYN-A2".into(), vec!["SYN-A".into()])], "no board swap");
+        let b = s.current_board(&a.id, 2).unwrap().unwrap();
+        assert_eq!((b.first_seen, b.last_seen), (10, 20));
+        assert_eq!(s.board_seen(&a.id, 2, &set("SYN-A2"), &none, 30).unwrap(), BoardSeen::Same);
+        // the old serial written back by another tool: still this board
+        assert_eq!(s.board_seen(&a.id, 2, &set("SYN-A"), &none, 40).unwrap(), BoardSeen::Same);
+        assert_eq!(serials(&s, &a.id, 2), vec![("SYN-A".into(), vec!["SYN-A".into(), "SYN-A2".into()])]);
+        // empty or the placeholder written: the board can no longer be told apart, nothing changes
+        s.board_written(&a.id, 2, &none, "  ", 50).unwrap();
+        s.board_written(&a.id, 2, &none, "EMU110110S-XXXX-20000101-00001", 50).unwrap();
+        assert_eq!(s.current_board(&a.id, 2).unwrap().unwrap().bms_serial, "SYN-A");
+        // read before the write shows another board: that one is recorded and renamed, the old one stays
+        s.board_written(&a.id, 2, &set("SYN-B"), "SYN-B2", 60).unwrap();
+        assert_eq!(serials(&s, &a.id, 2)[0], ("SYN-B2".into(), vec!["SYN-B".into()]));
+        assert_eq!(s.boards(&a.id, 2).unwrap().len(), 2);
+        // a place without a board: the written serial identifies it from now on
+        s.board_written(&a.id, 5, &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, "SYN-C", 70).unwrap();
+        assert_eq!(serials(&s, &a.id, 5), vec![("SYN-C".into(), vec![])]);
+    }
+
+    #[test]
+    fn snapshots_carry_the_board_and_go_with_the_installation() {
+        let s = Store::open(&temp("snap")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.add_param_snapshot(&a.id, 1, SnapshotKind::Read, &[1, 2], 5).unwrap();
+        s.board_seen(&a.id, 1, &set("SYN-A"), &SerialValue::NoAnswer, 6).unwrap();
+        s.add_param_snapshot(&a.id, 1, SnapshotKind::Written, &[3], 7).unwrap();
+        let rows: Vec<(Option<String>, String, Vec<u8>)> = s
+            .db
+            .prepare("SELECT bms_serial, kind, block FROM param_snapshots ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![(None, "read".into(), vec![1, 2]), (Some("SYN-A".into()), "written".into(), vec![3])]);
+        s.board_written(&a.id, 1, &SerialValue::NoAnswer, "SYN-A2", 8).unwrap();
+        s.set_cell_type(&a.id, 1, Some("{}")).unwrap();
+        let b = s.create_installation("B", None, vec![]).unwrap();
+        s.board_seen(&b.id, 1, &set("SYN-X"), &SerialValue::NoAnswer, 9).unwrap();
+        s.delete_installation(&a.id).unwrap();
+        for table in ["boards", "serial_alias", "param_snapshots", "place"] {
+            let n: i64 = s.db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+            assert_eq!(n, i64::from(table == "boards"), "{table}");
+        }
     }
 
     #[test]
