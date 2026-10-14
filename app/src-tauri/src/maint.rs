@@ -5,7 +5,7 @@
 //! so no endpoint is opened twice.
 
 use crate::maint_store::{endpoint_key, ControlEndpoint, Installation, MarkerOn, Pending, Store};
-use crate::{lock, reserve_port, AppState, EndpointArg};
+use crate::{lock, reserve_port, reserve_port_wait, AppState, EndpointArg};
 use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError};
 use openbms_flash::maint::policy::Master;
 use openbms_flash::maint::{bus, SystemClock};
@@ -522,7 +522,7 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _op = reserve_port_wait(&state.port_busy).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &port)?;
@@ -553,7 +553,7 @@ fn marker_action(state: &AppState, installation: &str, action: Action) -> Result
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _op = reserve_port_wait(&state.port_busy).ok_or(MaintError::Busy)?;
     let _a = begin_action(state, if action == Action::Start { "halt" } else { "release" });
     let inst = self::installation(state, installation)?;
     let m = read_master(state, &inst)?;

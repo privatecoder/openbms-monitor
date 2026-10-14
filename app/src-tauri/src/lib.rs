@@ -117,6 +117,23 @@ fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
         .map(|_| PortSlot(flag.clone()))
 }
 
+/// For a user action: waits until a running background exchange (the panel's 2-s live status) frees the port.
+fn reserve_port_wait(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
+    let until = std::time::Instant::now() + PORT_WAIT;
+    loop {
+        if let Some(slot) = reserve_port(flag) {
+            return Some(slot);
+        }
+        if std::time::Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Longer than one live status (listen plus master read).
+const PORT_WAIT: Duration = Duration::from_secs(5);
+
 /// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
 fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
     if flashing.load(Ordering::SeqCst) {
