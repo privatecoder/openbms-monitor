@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
-import type { BmsHistoryRecord } from "./api";
-import { clockDiff, csvName, durationText, fmtBmsTime, fromBmsTime, historyCsv, readMark, setHistoryReading, summary, toBmsTime, utcOffset, zoneLabel } from "./bmsMemory";
+import { describe, expect, it, vi } from "vitest";
+import type { BmsHistoryRead, BmsHistoryRecord } from "./api";
+import { clockDiff, csvName, currentRun, lastRead, noteProgress, startHistoryRead, durationText, fmtBmsTime, fromBmsTime, historyCsv, readMark, setHistoryReading, summary, toBmsTime, utcOffset, zoneLabel } from "./bmsMemory";
 
 const T = { year: 2026, month: 3, day: 9, hour: 7, minute: 5, second: 30 };
 
@@ -77,5 +77,33 @@ describe("history records", () => {
     expect(Math.abs(readMark() - Date.now())).toBeLessThan(50);
     setHistoryReading(false);
     expect(readMark()).toBeGreaterThan(0);
+  });
+});
+
+describe("history read runner", () => {
+  const done = (address: number, n = 1): BmsHistoryRead => ({ address, records: Array.from({ length: n }, () => rec()), end: "last", error: null });
+
+  it("a second start re-attaches to the running read; only its end clears the run and the read mark", async () => {
+    let finish!: (r: BmsHistoryRead) => void;
+    const read = vi.fn(() => new Promise<BmsHistoryRead>((res) => { finish = res; }));
+    const a = startHistoryRead(2, read, () => Promise.reject(new Error("unused")));
+    noteProgress(5);
+    const b = startHistoryRead(3, read, () => Promise.reject(new Error("unused")));
+    expect(b).toBe(a);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(currentRun()).toMatchObject({ address: 2, n: 5 });
+    expect(Math.abs(readMark() - Date.now())).toBeLessThan(50);
+    finish(done(2, 3));
+    expect((await a.promise).records).toHaveLength(3);
+    expect(currentRun()).toBeNull();
+    expect(lastRead()?.records).toHaveLength(3);
+  });
+
+  it("an error becomes the result; 'already running' waits for the backend's own end instead", async () => {
+    const failed = startHistoryRead(1, () => Promise.reject("timeout"), () => Promise.reject(new Error("unused")));
+    expect(await failed.promise).toMatchObject({ end: "error", error: "timeout", records: [] });
+    const other = startHistoryRead(1, () => Promise.reject("a history read is already running"), async () => done(4, 2));
+    expect(await other.promise).toMatchObject({ address: 4, end: "last" });
+    expect(currentRun()).toBeNull();
   });
 });

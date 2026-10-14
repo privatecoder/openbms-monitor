@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, History as HistoryIcon, X } from "lucide-react";
 import { api, isDemo, type BmsHistoryRead, type Bus } from "../api";
-import { CLOCK_FAR_S, csvName, fmtBmsTime, historyCsv, setHistoryReading, summary } from "../bmsMemory";
+import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, noteProgress, startHistoryRead, summary, type HistoryRun } from "../bmsMemory";
 import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
@@ -12,37 +12,46 @@ import { cn, fmt } from "../lib/utils";
 
 const no = (a: number) => String(a).padStart(2, "0");
 
-// kept while the app runs, so switching views does not drop what was read
-let kept: BmsHistoryRead | null = null;
+// the chosen pack, kept while the app runs (the running read and the last result live in bmsMemory)
 let keptAddress: number | null = null;
+
+/** Resolves with the backend's result event of the read it is still running. */
+const waitDone = () => new Promise<BmsHistoryRead>((resolve) => {
+  const un = api.onBmsHistoryDone((r) => { un.then((f) => f()); resolve(r); });
+});
 
 /** The pack's internal history (0x4B), read on demand over RS485-1/2: table newest first, CSV export. */
 export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus: Bus | null; packs: number[] }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
-  const [address, setAddressState] = useState<number | null>(keptAddress ?? packs[0] ?? null);
+  const [address, setAddressState] = useState<number | null>(currentRun()?.address ?? keptAddress ?? packs[0] ?? null);
   const setAddress = (a: number | null) => { keptAddress = a; setAddressState(a); };
   useEffect(() => { if (address === null || !packs.includes(address)) setAddress(packs[0] ?? null); }, [packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [result, setResultState] = useState<BmsHistoryRead | null>(kept);
-  const setResult = (r: BmsHistoryRead | null) => { kept = r; setResultState(r); };
-  const [progress, setProgress] = useState<number | null>(null);
+  const [result, setResult] = useState<BmsHistoryRead | null>(lastRead);
+  const [progress, setProgress] = useState<number | null>(() => currentRun()?.n ?? null);
   const [saved, setSaved] = useState<{ name: string } | { error: string } | null>(null);
   const usable = connected && (bus === "pack" || isDemo);
   const { read: clock } = useBmsClock(address, usable);
   const diff = readDiff(clock);
 
+  // follow a read until it ends; on mount also one started before this view was left
+  const alive = useRef(true);
+  const attach = (r: HistoryRun) => {
+    setProgress(r.n);
+    void r.promise.then((res) => { if (alive.current) { setResult(res); setProgress(null); } });
+  };
   useEffect(() => {
-    const un = api.onBmsHistoryProgress((p) => setProgress(p.n));
-    return () => { un.then((f) => f()); };
-  }, []);
+    alive.current = true;
+    const r = currentRun();
+    if (r) attach(r);
+    const un = api.onBmsHistoryProgress((p) => { noteProgress(p.n); if (currentRun()) setProgress(p.n); });
+    return () => { alive.current = false; un.then((f) => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const start = async () => {
-    if (address === null) return;
-    setSaved(null); setResult(null); setProgress(0);
-    setHistoryReading(true);
-    try { setResult(await api.bmsHistory(address)); }
-    catch (e) { setResult({ address, records: [], end: "error", error: String(e) }); }
-    finally { setHistoryReading(false); setProgress(null); }
+  const start = () => {
+    if (address === null || currentRun()) return;
+    setSaved(null); setResult(null);
+    attach(startHistoryRead(address, api.bmsHistory, waitDone));
   };
 
   const save = async () => {
@@ -66,7 +75,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
     } catch (e) { setSaved({ error: String(e) }); }
   };
 
-  const reading = progress !== null;
+  const reading = progress !== null || currentRun() !== null;
   const count = result?.records.length ?? 0;
   const endText = !result ? null
     : result.end === "empty" ? (count ? t("bmsh.end.emptyAfter", { count }) : t("bmsh.end.empty"))
