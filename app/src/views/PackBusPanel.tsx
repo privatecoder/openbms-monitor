@@ -8,7 +8,7 @@ import { imageLabel } from "../firmware";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { MaintSetup } from "./MaintSetup";
+import { MaintSetup, PackKindSelect } from "./MaintSetup";
 
 const select = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 const toneClass: Record<Tone, string> = { ok: "text-ok", warn: "text-discharge", muted: "text-muted", alarm: "text-alarm" };
@@ -160,6 +160,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
           : <p>{port ? t("maint.panel.port", { port: ports.includes(port) ? port : `${port} (${t("maint.panel.notPlugged")})` }) : t("maint.panel.noPort")}</p>
       ) : (
         <label className="flex flex-wrap items-center gap-2">{t("maint.setup.rs485")}
+          <PackKindSelect disabled={running || busy} />
           <select className={select} value={port} disabled={running || busy} onChange={(e) => setPort(e.target.value)}>
             <option value="">{t("fw.choosePort")}</option>
             {ports.map((p) => <option key={p}>{p}</option>)}

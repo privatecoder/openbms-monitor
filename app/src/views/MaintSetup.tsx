@@ -21,6 +21,18 @@ function PortSelect({ value, ports, onChange, label, disabled }: { value: string
   );
 }
 
+/** The kind of the RS485-1/2 endpoint: USB only for now; flashing over a network gateway needs its bench test first
+ *  (design: maintenance mode, "Transport for remote use"). */
+export function PackKindSelect({ disabled }: { disabled: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <select className={input} value="serial" disabled={disabled} onChange={() => {}} aria-label={t("maint.setup.rs485Kind")}>
+      <option value="serial">{t("conn.serial")}</option>
+      <option value="tcp" disabled>{t("maint.setup.tcpLater")}</option>
+    </select>
+  );
+}
+
 /** An installation of the address book: its name, the CAN socket (reads and halts the master) and RS485-1/2 (packs
  *  are flashed there); delete. Without `installation` the empty form of „Neue Anlage …“, which creates it on save.
  *  The master's serial number is stored by the app at the first flash. */
@@ -84,7 +96,10 @@ export function MaintSetup({ installation, installations, onSaved, onDeleted, on
 
       <div className="space-y-1">
         <p className="font-medium">{t("maint.setup.rs485")}</p>
-        <PortSelect value={f.pack} ports={ports} onChange={(v) => edit({ pack: v })} label={t("maint.setup.rs485")} disabled={disabled} />
+        <div className="flex flex-wrap items-center gap-3">
+          <PackKindSelect disabled={disabled} />
+          <PortSelect value={f.pack} ports={ports} onChange={(v) => edit({ pack: v })} label={t("maint.setup.rs485")} disabled={disabled} />
+        </div>
         <p className="text-muted">{t("maint.setup.rs485Hint")}</p>
       </div>
       {installation?.master_serial && <p className="text-muted">{t("maint.setup.serial", { serial: installation.master_serial })}</p>}

@@ -54,7 +54,7 @@ const resources = {
         setup: {
           name: "Name der Anlage", can: "CAN-Buchse (Master lesen und anhalten, 9600 Baud)",
           controlHint: "Liest den Master (Befehl 0x64) und hält einen Master mit Wartungs-Build an. Ohne CAN-Buchse geht es über DIP 5–8.",
-          rs485: "RS485-1/2 (Packs flashen, 19200 Baud)", rs485Hint: "Ein Anschluss darf zu mehreren Anlagen gehören.",
+          rs485: "RS485-1/2 (Packs flashen, 19200 Baud)", rs485Hint: "Ein Anschluss darf zu mehreren Anlagen gehören.", rs485Kind: "Art des RS485-1/2-Anschlusses", tcpLater: "Netzwerk (noch nicht freigegeben)",
           serial: "BMS-Seriennummer des Masters: {{serial}}",
           notPlugged: "{{port}} (nicht eingesteckt)",
           save: "Speichern", createTitle: "Neue Anlage", create: "Anlage anlegen", cancel: "Abbrechen",
@@ -350,7 +350,7 @@ const resources = {
         setup: {
           name: "Name of the installation", can: "CAN socket (read and halt the master, 9600 baud)",
           controlHint: "Reads the master (command 0x64) and halts a master with a maintenance build. Without a CAN socket, DIP 5–8 do it.",
-          rs485: "RS485-1/2 (flash packs, 19200 baud)", rs485Hint: "A port may belong to several installations.",
+          rs485: "RS485-1/2 (flash packs, 19200 baud)", rs485Hint: "A port may belong to several installations.", rs485Kind: "Kind of the RS485-1/2 endpoint", tcpLater: "Network (not released yet)",
           serial: "BMS serial number of the master: {{serial}}",
           notPlugged: "{{port}} (not plugged in)",
           save: "Save", createTitle: "New installation", create: "Create installation", cancel: "Cancel",
