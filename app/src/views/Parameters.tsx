@@ -1,12 +1,15 @@
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Download, FileUp, FolderOpen, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
+import { Download, FileUp, FolderOpen, History, PenLine, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
 import { api, isDemo, type Bus } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
-import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, parseExport, toExport, type Source } from "../params";
+import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, parseExport, toExport, type Parameters, type Source } from "../params";
+import { blockers, changes, fromRaw, notTaken, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX } from "../paramWrite";
+import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
+import { SerialLine } from "../components/SerialWrite";
 import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
 import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
@@ -17,8 +20,14 @@ import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
 
-// kept while the app runs, so switching views does not drop what was read
+// kept while the app runs, so switching views does not drop what was read; `keptLink` is the site and connection it
+// was read on: after a change the pack columns stay for comparison but can no longer be edited
 let kept: Source[] = [];
+let keptLink = "";
+// refusals whose switches are still live, per site and address (see Refused); they outlive a view switch
+const keptRefused = new Map<string, Refused>();
+/** Pack columns of another site or connection: values stay, nothing to edit or undo from. */
+const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
 // the datasheet chosen for the check; null = follow the packs' cell type
 let keptRef: Assignment | "none" | null = null;
 
@@ -42,7 +51,11 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const common = commonAssignment(assigned);
   const ref = refChoice === "none" ? undefined : refChoice ?? common;
   const refCell = ref ? db.entries.find((e) => e.cell.id === ref.cell)?.cell : undefined;
-  const [sources, setSourcesState] = useState<Source[]>(kept);
+  const link = `${site}|${connected}`;
+  const [sources, setSourcesState] = useState<Source[]>(() => {
+    if (keptLink !== link) { kept = unlink(kept); keptLink = link; }
+    return kept;
+  });
   const setSources = (f: (s: Source[]) => Source[]) => setSourcesState((s) => (kept = f(s)));
   const [reading, setReading] = useState<{ address: number; n: number; of: number } | null>(null);
   const [onlyDiff, setOnlyDiff] = useState(false);
@@ -52,11 +65,37 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const [chosen, setChosen] = usePackChoice(packs);
   const writable = connected && (bus === "pack" || isDemo);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
-  const [writing, setWriting] = useState({ clock: false, can: false, cal: false });
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
   const lockedBut = (k: keyof typeof writing) => Object.entries(writing).some(([o, b]) => o !== k && b);
 
-  const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading;
+  // one pack column is edited at a time; its write runs under the same lock as the other writes
+  const [edit, setEdit] = useState<Edit | null>(null);
+  const [full, setFull] = useState<Full>(null);
+  const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
+  const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading && !edit && !writing.params;
+  // another installation or a new connection: what was read no longer belongs to the packs on the bus
+  useEffect(() => {
+    if (keptLink === link) return;
+    keptLink = link;
+    setSources(unlink); setEdit(null); setNote(null);
+  }, [link]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [, rerender] = useState(0);
+  const refusedOf = (a: number) => keptRefused.get(`${site}|${a}`) ?? null;
+  const setRefused = (a: number, r: Refused | null) => {
+    if (r) keptRefused.set(`${site}|${a}`, r); else keptRefused.delete(`${site}|${a}`);
+    rerender((n) => n + 1);
+  };
+  /** A read of a pack with a pending refusal: once it shows the stored block again (restart), the pack is free. */
+  const seen = (a: number, p: Parameters) => { const r = refusedOf(a); if (r && sameBlock(p, r.stored)) setRefused(a, null); };
+
+  const replace = (next: Source) => setSources((s) => s.map((x) => (x.id === next.id ? { ...next, lastWritten: x.lastWritten, previous: x.previous } : x)));
+  // last write and the parameters it replaced, kept per installation and pack in the history database
+  const loadHistory = (address: number) => api.paramHistory(address).then(
+    (h) => setSources((s) => s.map((x) => (x.id === `pack-${address}` ? { ...x, lastWritten: h.last_written, previous: h.previous } : x))),
+    () => {},
+  );
 
   const read = async () => {
     setSaved(null);
@@ -66,7 +105,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
     for (const [n, address] of packs.entries()) {
       setReading({ address, n: n + 1, of: packs.length });
       let next: Source;
-      try { next = fromPack(await api.parameters(address)); }
+      try { const p = await api.parameters(address); next = fromPack(p, address); seen(address, p); void loadHistory(address); }
       catch (e) { next = { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) }; }
       setSources((s) => s.map((x) => (x.id === next.id ? next : x)));
     }
@@ -87,8 +126,77 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
     catch (e) { setSaved({ error: String(e) }); }
   };
 
+  const startEdit = (c: Source, from?: Parameters | null) => {
+    if (!c.read || c.address === undefined) return;
+    const a = c.address;
+    const base = rawsOf(c.read), baseSwitches = [...c.read.function_switches];
+    // „Vorherigen Stand“: that block, with P65 as now (it changes only when unlocked)
+    const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
+    setEdit({ address: a, base, baseSwitches, raws, switches: from ? [...from.function_switches] : [...baseSwitches], text: {}, seriesUnlocked: false });
+    setNote(null);
+    setSources((s) => s.map((x) => (x.id === c.id ? { ...x, notTaken: undefined } : x)));
+    // the learned full capacity (0x42): every successful write sets it to P58 when they are 10 Ah apart
+    setFull(null);
+    api.packLive(a).then((l) => setFull({ address: a, ah: l.telemetry.full_capacity_ah }), (e) => setFull({ address: a, error: String(e) }));
+  };
+
+  const takeOverFrom = (id: string) => {
+    const src = sources.find((x) => x.id === id);
+    if (!src?.values || !src.switches) return;
+    setEdit((e) => e && { ...e, raws: takeOver(e.raws, src.values!, !e.seriesUnlocked), switches: [...src.switches!], text: {} });
+  };
+
+  /** Write the edit of pack `a`, or with `restore` the stored block after a refusal (its switches are live but not
+   *  stored then); a restore needs no open edit. */
+  const write = async (a: number, restore?: Parameters) => {
+    const e0 = edit?.address === a ? edit : null;
+    if (!restore && (!e0 || refusedOf(a))) return;
+    const pack = packNo(a);
+    const sent = restore ? rawsOf(restore) : e0!.raws, sentSwitches = restore ? restore.function_switches : e0!.switches;
+    const base = restore ? toWire(sent, sentSwitches) : toWire(e0!.base, e0!.baseSwitches);
+    busyFor("params")(true); setNote(null);
+    const say = (n: Note) => setNote({ address: a, note: n });
+    const mine = (f: (e: Edit) => Edit) => setEdit((e) => (e && e.address === a ? f(e) : e));
+    try {
+      const r = await api.writeParameters(a, base, toWire(sent, sentSwitches), !!restore);
+      if (r.kind === "stale") {
+        // nothing written: the column shows the pack now, the user's changes stay on top of it
+        const fresh = rawsOf(r.fresh), fs = r.fresh.function_switches;
+        mine((e) => ({
+          ...e, base: fresh, baseSwitches: [...fs],
+          raws: e.raws.map((x, i) => (x !== e.base[i] ? x : fresh[i])),
+          switches: e.switches.map((x, g) => { const touched = x ^ e.baseSwitches[g]; return (x & touched) | (fs[g] & ~touched & 0xff); }),
+        }));
+        replace(fromPack(r.fresh, a));
+        seen(a, r.fresh);
+        say({ text: t("pw.stale", { pack }), error: true });
+      } else if (r.kind === "refused") {
+        // only the first refusal knows the stored block: later reads show the live switches
+        if (r.refusal === "refused" && !refusedOf(a) && switchDiff(sentSwitches, r.stored.function_switches).length)
+          setRefused(a, { stored: r.stored, live: [...sentSwitches] });
+        say({ text: t(r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
+      } else {
+        void loadHistory(a);
+        if (restore) setRefused(a, null);
+        if (r.read_back) {
+          const missed = notTaken(sent, sentSwitches, rawsOf(r.read_back), r.read_back.function_switches);
+          replace({ ...fromPack(r.read_back, a), notTaken: missed });
+          const n = missed.params.size + missed.switches.size;
+          say(n ? { text: t("pw.notTakenCount", { count: n }), error: true } : { text: t(restore ? "pw.restored" : "pw.done"), error: false });
+          // after restoring, the edit stays open on the stored state, so the values can be corrected
+          if (restore) mine((e) => ({ ...e, base: rawsOf(r.read_back!), baseSwitches: [...r.read_back!.function_switches] }));
+        } else say({ text: t("pw.unread", { err: r.read_error ?? "" }), error: true });
+        if (!restore) setEdit(null);
+      }
+    } catch (e) { say({ text: t("pw.error", { err: String(e) }), error: true }); }
+    finally { busyFor("params")(false); }
+  };
+
   const nf = (i: number) => new Intl.NumberFormat(i18n.language, { minimumFractionDigits: decimals(i), maximumFractionDigits: decimals(i) });
-  const cols = [...sources.filter((c) => c.kind === "file"), ...sources.filter((c) => c.kind === "pack")];
+  const editId = edit ? `pack-${edit.address}` : null;
+  // the edited column shows the values as edited, so differences and the datasheet check follow the input
+  const cols = [...sources.filter((c) => c.kind === "file"), ...sources.filter((c) => c.kind === "pack")]
+    .map((c) => (edit && c.id === editId ? { ...c, values: edit.raws.map((r, i) => fromRaw(i, r)), switches: edit.switches } : c));
   const paramKeys = (i: number) => cols.map((c) => (c.values ? fmtParam(i, c.values[i]) : undefined));
   const switchKeys = (g: number) => cols.map((c) => (c.switches ? String(c.switches[g]) : undefined));
   const diffParams = KEYS.map((_, i) => deviating(paramKeys(i)));
@@ -105,6 +213,16 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const findings = cols.map((c) => (refCell && ref && c.values ? paramFindings(refCell, ref.parallel, c.values) : new Map<number, ParamLevel>()));
   const outside = KEYS.map((_, i) => i).filter((i) => findings.some((f) => f.has(i)));
   const lang = i18n.language;
+  const editCol = cols.findIndex((c) => c.id === editId);
+  const editChanges = edit ? changes(edit.base, edit.raws, edit.baseSwitches, edit.switches) : [];
+  const editBlockers = edit ? blockers(edit.base, edit.raws, badInput(edit), edit.seriesUnlocked) : [];
+  const editSheet = edit && editCol >= 0 ? editChanges.flatMap((c) => {
+    const level = c.kind === "param" ? findings[editCol].get(c.index) : undefined, l = c.kind === "param" ? limits.get(c.index) : undefined;
+    return c.kind === "param" && level && l ? [{ index: c.index, level, limit: limitText(t, l, c.index, lang) }] : [];
+  }) : [];
+  const takeOverSources = cols.filter((c) => c.id !== editId && c.values && c.switches && !c.error && (c.suspectFrom === undefined || c.suspectFrom === null))
+    .map((c) => ({ id: c.id, label: c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label }));
+  const editable = (c: Source) => writable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
   return (
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
@@ -119,7 +237,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
           <Button variant="primary" disabled={!canRead} onClick={read}><Download className="h-4 w-4" />{t("par.read")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".xml,application/xml,text/xml" multiple className="hidden" onChange={(e) => open(e.target.files)} />
-          {cols.length > 0 && <Button variant="ghost" disabled={!!reading} onClick={() => { setSources(() => []); setSaved(null); }}>{t("par.clear")}</Button>}
+          {cols.length > 0 && <Button variant="ghost" disabled={!!reading || !!edit || writing.params} onClick={() => { setSources(() => []); setSaved(null); }}>{t("par.clear")}</Button>}
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm">
             <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={onlyDiff} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={withValues < 2} />
             <span className={cn(withValues < 2 && "text-muted")}>{t("par.onlyDiff")}</span>
@@ -133,6 +251,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
         </p>
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
+        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
@@ -211,6 +330,20 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
               {nDiff + nDiffSwitches ? t("par.diffCount", { p: nDiff, s: nDiffSwitches }) : t("par.allEqual", { n: withValues })}
             </p>
           )}
+          {edit && editCol >= 0 && (
+            <EditBar e={edit} pack={packNo(edit.address)} changes={editChanges} blockers={editBlockers} sheet={editSheet} full={full}
+              note={note?.address === edit.address ? note.note : null} refused={refusedOf(edit.address)} busy={writing.params} locked={lockedBut("params")} sources={takeOverSources}
+              onChange={(f) => setEdit((e) => e && f(e))} onTakeOver={takeOverFrom} onWrite={() => write(edit.address)} onRestore={(stored) => write(edit.address, stored)}
+              onDiscard={() => { setEdit(null); setNote(null); }} />
+          )}
+          {cols.flatMap((c) => {
+            const r = c.kind === "pack" && c.address !== undefined && c.address !== edit?.address ? refusedOf(c.address) : null;
+            return r ? [<RefusedPanel key={c.id} refused={r} fullAh={full && "ah" in full && full.address === c.address ? full.ah : null} pack={c.label}
+              busy={writing.params} locked={lockedBut("params")} onRestore={(stored) => write(c.address!, stored)} />] : [];
+          })}
+          {!edit && note && (
+            <p className={cn("text-sm", note.note.error ? "text-alarm" : "text-ok")}>{t("par.pack", { n: packNo(note.address) })}: {note.note.text}</p>
+          )}
           <Panel className="overflow-x-auto">
             <table className="w-full border-separate border-spacing-0 text-sm tabular-nums">
               <thead>
@@ -222,7 +355,10 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
                       <div className="max-w-36 truncate text-xs text-muted" title={cellName(refCell)}>{refCell.model} {config(series || undefined, ref!.parallel)}</div>
                     </th>
                   )}
-                  {cols.map((c) => <ColumnHead key={c.id} c={c} busy={!!reading} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))} />)}
+                  {cols.map((c) => (
+                    <ColumnHead key={c.id} c={c} busy={!!reading || writing.params} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                      onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -240,8 +376,11 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
                               {limits.has(i) ? limitText(t, limits.get(i)!, i, lang, true) : ""}
                             </td>
                           )}
-                          {cols.map((c, ci) => (
-                            <ValueCell key={c.id} c={c} off={diffParams[i].has(ci)} level={findings[ci].get(i)}
+                          {cols.map((c, ci) => c.id === editId && edit ? (
+                            <EditCell key={c.id} e={edit} i={i} level={findings[ci].get(i)} disabled={writing.params || (i === SERIES_INDEX && !edit.seriesUnlocked)}
+                              onChange={(f) => setEdit((e) => e && f(e))} />
+                          ) : (
+                            <ValueCell key={c.id} c={c} off={diffParams[i].has(ci)} level={findings[ci].get(i)} missed={c.notTaken?.params.has(i)}
                               title={findings[ci].has(i) && limits.has(i) ? `${t("par.datasheet")}: ${limitText(t, limits.get(i)!, i, lang)}` : undefined}>
                               {c.values ? nf(i).format(c.values[i]) : null}
                             </ValueCell>
@@ -260,7 +399,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
                         <td className="sticky left-0 z-10 border-b border-line bg-surface px-4 py-1.5 text-muted">{t("par.byte", { g })}</td>
                         {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                         {cols.map((c, ci) => (
-                          <ValueCell key={c.id} c={c} off={diffSwitches[g].has(ci)}>{c.switches ? c.switches[g].toString(16).toUpperCase().padStart(2, "0") : null}</ValueCell>
+                          <ValueCell key={c.id} c={c} off={diffSwitches[g].has(ci)} missed={c.notTaken?.switches.has(g)}>{c.switches ? c.switches[g].toString(16).toUpperCase().padStart(2, "0") : null}</ValueCell>
                         ))}
                       </tr>
                       {SWITCH_BITS[g]
@@ -271,8 +410,10 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
                             <tr key={b}>
                               <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
-                              {cols.map((c, ci) => (
-                                <ValueCell key={c.id} c={c} off={off.has(ci)}>{c.switches ? <OnOff on={((c.switches[g] >> b) & 1) === 1} /> : null}</ValueCell>
+                              {cols.map((c, ci) => c.id === editId && edit ? (
+                                <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={writing.params} onChange={(f) => setEdit((e) => e && f(e))} />
+                              ) : (
+                                <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)}>{c.switches ? <OnOff on={((c.switches[g] >> b) & 1) === 1} /> : null}</ValueCell>
                               ))}
                             </tr>
                           );
@@ -288,8 +429,12 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   );
 }
 
-function ColumnHead({ c, busy, onSave, onRemove }: { c: Source; busy: boolean; onSave: () => void; onRemove: () => void }) {
-  const { t } = useTranslation();
+function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
+  c: Source; busy: boolean; onSave: () => void; onRemove: () => void;
+  /** set when this pack column can be edited now; „Vorherigen Stand“ only after a write of this pack */
+  onEdit?: () => void; onPrevious?: () => void;
+}) {
+  const { t, i18n } = useTranslation();
   const pending = c.kind === "pack" && !c.values && !c.error;
   return (
     <th className="min-w-24 border-b border-l border-line bg-surface px-3 py-2 text-right align-bottom font-normal">
@@ -298,6 +443,16 @@ function ColumnHead({ c, busy, onSave, onRemove }: { c: Source; busy: boolean; o
         <span className={cn("truncate font-medium text-ink", c.kind === "file" && "max-w-40")} title={c.label}>
           {c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label}
         </span>
+        {onEdit && (
+          <button onClick={onEdit} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink" title={t("pw.edit")} aria-label={t("pw.edit")}>
+            <PenLine className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {onPrevious && (
+          <button onClick={onPrevious} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink" title={t("pw.previous")} aria-label={t("pw.previous")}>
+            <History className="h-3.5 w-3.5" />
+          </button>
+        )}
         {c.kind === "pack" && c.read && (
           <button onClick={onSave} disabled={busy} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.save")} aria-label={t("par.save")}>
             <Download className="h-3.5 w-3.5" />
@@ -312,6 +467,11 @@ function ColumnHead({ c, busy, onSave, onRemove }: { c: Source; busy: boolean; o
       <div className={cn("text-xs", c.error ? "text-alarm" : "text-muted")} title={c.error}>
         {c.error ? (c.kind === "pack" ? t("par.noAnswer") : t("par.unreadable")) : pending ? t("par.pending") : c.kind === "file" ? (c.device || t("par.file")) : c.device}
       </div>
+      {c.lastWritten && (
+        <div className="text-xs whitespace-nowrap text-muted">
+          {t("pw.lastWritten", { at: new Date(c.lastWritten).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })}
+        </div>
+      )}
     </th>
   );
 }
@@ -338,10 +498,11 @@ function NameCell({ id, sub, original }: { id: string; sub: string; original?: s
   );
 }
 
-function ValueCell({ c, off, level, title, children }: { c: Source; off: boolean; level?: ParamLevel; title?: string; children: React.ReactNode }) {
+function ValueCell({ c, off, level, missed, title, children }: { c: Source; off: boolean; level?: ParamLevel; missed?: boolean; title?: string; children: React.ReactNode }) {
+  const { t } = useTranslation();
   return (
-    <td title={title} className={cn("border-b border-l border-line px-3 py-1.5 text-right whitespace-nowrap group-hover:bg-sunken/40",
-      level === "over" ? "bg-alarm/12 font-semibold text-alarm" : level === "note" ? "font-semibold text-charge underline decoration-dotted underline-offset-4"
+    <td title={missed ? t("pw.notTaken") : title} className={cn("border-b border-l border-line px-3 py-1.5 text-right whitespace-nowrap group-hover:bg-sunken/40",
+      missed ? "bg-alarm/20 font-semibold text-alarm" : level === "over" ? "bg-alarm/12 font-semibold text-alarm" : level === "note" ? "font-semibold text-charge underline decoration-dotted underline-offset-4"
       : off ? "bg-discharge/12 font-semibold text-discharge" : children === null ? "text-muted/50" : "")}>
       {children ?? (c.error ? "–" : "…")}
     </td>

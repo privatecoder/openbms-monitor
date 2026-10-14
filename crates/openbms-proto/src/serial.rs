@@ -4,14 +4,21 @@
 //! exist only on RS485-1/2. On the CAN socket bus the master exposes the first 22 characters of the battery
 //! serial number in Modbus input registers 0x0000.. (FC04, count exactly 21; firmware before 16.06.11 answers
 //! with an exception).
+//!
+//! 0xA3 / 0xA5 write the strings (stored at once). Up to 06.05 the firmware reads exactly 30 bytes, from 06.11 the
+//! LENGTH and pads with spaces; sending 30 bytes padded with spaces works on both.
 
 use crate::error::{Error, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// CID2 that reads the battery serial number.
 pub const CID2_BATTERY: u8 = 0xA2;
 /// CID2 that reads the BMS (board) serial number.
 pub const CID2_BMS: u8 = 0xA4;
+/// CID2 that writes the battery serial number.
+pub const CID2_WRITE_BATTERY: u8 = 0xA3;
+/// CID2 that writes the BMS serial number.
+pub const CID2_WRITE_BMS: u8 = 0xA5;
 /// Length of each stored string.
 pub const LEN: usize = 30;
 /// Untouched images carry this placeholder (followed by a date and a counter).
@@ -54,6 +61,42 @@ pub fn battery_request(address: u8) -> Result<Vec<u8>> {
 
 pub fn bms_request(address: u8) -> Result<Vec<u8>> {
     crate::frame::encode_request(address, CID2_BMS, &[])
+}
+
+/// Which of the two strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Which {
+    /// String 1, battery serial number (0xA2 / 0xA3).
+    Battery,
+    /// String 2, BMS serial number (0xA4 / 0xA5).
+    Bms,
+}
+
+impl Which {
+    pub fn read_request(self, address: u8) -> Result<Vec<u8>> {
+        match self {
+            Which::Battery => battery_request(address),
+            Which::Bms => bms_request(address),
+        }
+    }
+}
+
+/// Write one string: printable ASCII (0x20..=0x7E), at most 30 characters, padded with spaces to 30 bytes.
+pub fn write_request(address: u8, which: Which, text: &str) -> Result<Vec<u8>> {
+    if text.len() > LEN {
+        return Err(Error::Layout("serial number longer than 30 characters"));
+    }
+    if !text.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
+        return Err(Error::Layout("serial number with characters outside printable ASCII"));
+    }
+    let mut info = text.as_bytes().to_vec();
+    info.resize(LEN, b' ');
+    let cid2 = match which {
+        Which::Battery => CID2_WRITE_BATTERY,
+        Which::Bms => CID2_WRITE_BMS,
+    };
+    crate::frame::encode_request(address, cid2, &info)
 }
 
 /// Padding of the stored strings: spaces, NUL on older images, 0xFF in erased flash.
@@ -206,6 +249,27 @@ mod tests {
         assert_eq!(classify("  \0"), SerialValue::Empty);
         assert_eq!(classify("EMU110110S-XXXX"), SerialValue::Placeholder { value: "EMU110110S-XXXX".into() });
         assert_eq!(classify("EMU110110S-1234 "), SerialValue::Set { value: "EMU110110S-1234".into(), truncated: false });
+    }
+
+    #[test]
+    fn write_pads_with_spaces_to_30_bytes() {
+        let f = frame::parse(&write_request(2, Which::Battery, "SYN-0001").unwrap()).unwrap();
+        assert_eq!((f.address, f.rtn), (2, CID2_WRITE_BATTERY));
+        assert_eq!(f.info, padded("SYN-0001", b' '));
+        let f = frame::parse(&write_request(0, Which::Bms, &"9".repeat(30)).unwrap()).unwrap();
+        assert_eq!((f.rtn, f.info.len()), (CID2_WRITE_BMS, LEN));
+        // empty clears the string
+        assert_eq!(frame::parse(&write_request(1, Which::Bms, "").unwrap()).unwrap().info, vec![b' '; LEN]);
+        assert_eq!(Which::Bms.read_request(4).unwrap(), bms_request(4).unwrap());
+    }
+
+    #[test]
+    fn write_refuses_long_or_unprintable_text() {
+        assert!(write_request(1, Which::Battery, &"A".repeat(31)).is_err());
+        for bad in ["SYN\t1", "SYN\u{7f}", "SYN-ä", "\0"] {
+            assert!(write_request(1, Which::Bms, bad).is_err(), "{bad:?}");
+        }
+        assert!(write_request(1, Which::Bms, " !~").is_ok());
     }
 
     #[test]
