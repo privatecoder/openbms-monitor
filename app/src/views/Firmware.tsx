@@ -189,42 +189,6 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         running={running} flashTick={flashTick} onUserAction={onUserAction}
         onFlash={(a, from, release) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null, release)} onMaster={setMaster} />}
 
-      {(running || done) && (
-        <section className="space-y-3 border-t border-line pt-5">
-          <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
-          {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
-          {running && (
-            <>
-              <p>{progress ? t(`fw.stage.${progress.stage}`, { n: (progress.block ?? 0) + 1, total: progress.total ?? 0 }) : t("fw.stage.preflight")}</p>
-              <div className="h-2 overflow-hidden rounded bg-sunken"><div className="h-full bg-charge transition-all" style={{ width: `${progressFraction(progress) * 100}%` }} /></div>
-              <p className="text-sm text-muted">{t("fw.elapsed", { s: Math.round((now - startedAt.current) / 1000) })}</p>
-              {closeRefused && <p className="text-sm text-discharge">{t("fw.busy")}</p>}
-            </>
-          )}
-          {done && (
-            <div className="space-y-2">
-              {done.ok ? (
-                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />{t("fw.okTitle")}: {t("fw.okText", versions ?? { from: "?", to: "?" })}</p>
-              ) : (
-                <>
-                  <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.failTitle")}</p>
-                  <p className="text-sm">{done.error}</p>
-                  {done.stage && <p className="text-sm text-muted">{t("fw.failStage", { stage: t(`fw.stage.${done.stage}`, { n: (progress?.block ?? 0) + 1, total: progress?.total ?? 0 }) })}</p>}
-                  <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
-                </>
-              )}
-              {done.pending && flashed && <p className="text-sm text-alarm">{t("fw.pendingAfter", { pack: flashed.address })}</p>}
-              <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
-              <div className="flex gap-2">
-                <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>
-                <Button variant="secondary" size="sm" onClick={reset}>{t("fw.again")}</Button>
-                <Button variant="primary" size="sm" onClick={onBack}>{t("fw.back")}</Button>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
       {/* one pack by hand: address, check, typed confirmation; the same checks in the backend. No live status here:
           the master's full version is the panel's last read */}
       {tab === "manual" && <section className="space-y-3 rounded-md border border-line p-4">
@@ -270,6 +234,43 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           </div>
         )}
       </section>}
+
+      {/* progress and result below the tab that started the flash */}
+      {(running || done) && (
+        <section className="space-y-3 border-t border-line pt-5">
+          <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
+          {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
+          {running && (
+            <>
+              <p>{progress ? t(`fw.stage.${progress.stage}`, { n: (progress.block ?? 0) + 1, total: progress.total ?? 0 }) : t("fw.stage.preflight")}</p>
+              <div className="h-2 overflow-hidden rounded bg-sunken"><div className="h-full bg-charge transition-all" style={{ width: `${progressFraction(progress) * 100}%` }} /></div>
+              <p className="text-sm text-muted">{t("fw.elapsed", { s: Math.round((now - startedAt.current) / 1000) })}</p>
+              {closeRefused && <p className="text-sm text-discharge">{t("fw.busy")}</p>}
+            </>
+          )}
+          {done && (
+            <div className="space-y-2">
+              {done.ok ? (
+                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />{t("fw.okTitle")}: {t("fw.okText", versions ?? { from: "?", to: "?" })}</p>
+              ) : (
+                <>
+                  <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.failTitle")}</p>
+                  <p className="text-sm">{done.error}</p>
+                  {done.stage && <p className="text-sm text-muted">{t("fw.failStage", { stage: t(`fw.stage.${done.stage}`, { n: (progress?.block ?? 0) + 1, total: progress?.total ?? 0 }) })}</p>}
+                  <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
+                </>
+              )}
+              {done.pending && flashed && <p className="text-sm text-alarm">{t("fw.pendingAfter", { pack: flashed.address })}</p>}
+              <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>
+                <Button variant="secondary" size="sm" onClick={reset}>{t("fw.again")}</Button>
+                <Button variant="primary" size="sm" onClick={onBack}>{t("fw.back")}</Button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }
