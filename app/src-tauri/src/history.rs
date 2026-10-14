@@ -6,8 +6,8 @@
 //! `keep_full_days + keep_minutes_days` are deleted (0 = kept forever). Alarms are stored as events with
 //! start and end. Old JSON Lines recordings can be imported; any span can be exported as JSON Lines or CSV.
 //!
-//! Parameter snapshots (every 0x47 read and 0xA1 write per installation and pack) live in their own table, created
-//! with `IF NOT EXISTS` and kept when the recording is cleared.
+//! Parameter snapshots of earlier versions live in their own table (`param_snapshots`, hex per site); they are moved
+//! to the installation's store in `maintenance.sqlite` once and then deleted here.
 //!
 //! Values are keyed per site (`sites`, the text of `sessions.site`): rows of two installations never share a key, and
 //! compaction never merges them. Changes to an existing file are migrations (`migrate.rs`, counted in `meta.migration`)
@@ -117,15 +117,23 @@ impl SnapshotKind {
     }
 }
 
+/// A parameter block of an earlier version: pack, time, kind, block.
+pub type OldSnapshot = (u8, i64, String, Vec<u8>);
+
+/// What `merge_site` did: rows moved per table and the ones a row of the target at the same pack and time kept out.
+#[derive(Serialize, Default, Debug, PartialEq, Eq, Clone)]
+pub struct SiteMerge {
+    pub pack: u64,
+    pub pack_dropped: u64,
+    pub system: u64,
+    pub system_dropped: u64,
+}
+
 /// The last write of a pack and the block it replaced (the read right before it).
 #[derive(Debug, Default, PartialEq)]
 pub struct LastWrite {
     pub at: Option<i64>,
     pub previous: Option<Vec<u8>>,
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02X}")).collect()
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
@@ -464,8 +472,8 @@ impl History {
     }
 
     /// Give a site's recording, pack list and parameter snapshots another key (e.g. an installation id) in one
-    /// transaction. The new key must be unused: merging two sites is a decision of its own.
-    #[allow(dead_code)] // for moving endpoint sites to installations
+    /// transaction. The new key must be unused: merging two sites is `merge_site`.
+    #[cfg(test)]
     pub fn rename_site(&mut self, old: &str, new: &str) -> Result<(), String> {
         self.end_session(now_ms());
         let db = self.db.as_ref().ok_or("history database not open")?;
@@ -491,47 +499,102 @@ impl History {
         Ok(())
     }
 
-    /// Store a parameter block of `address` for the connected installation (also while not recording).
-    pub fn snapshot(&mut self, t: i64, address: u8, kind: SnapshotKind, block: &[u8]) -> Result<(), String> {
-        let site = self.link.as_ref().map(|l| l.0.clone()).ok_or("not connected")?;
+    /// Merge the recording of site `old` into `new` (an installation id) in one transaction. An unused `new` simply
+    /// takes the key; else rows are re-keyed and a row of `new` at the same pack and time wins (INSERT OR IGNORE):
+    /// the losers are counted, never dropped without a count.
+    pub fn merge_site(&mut self, old: &str, new: &str) -> Result<SiteMerge, String> {
+        if old == new {
+            return Ok(SiteMerge::default());
+        }
+        self.end_session(now_ms());
         let db = self.db.as_ref().ok_or("history database not open")?;
-        db.execute(
-            "INSERT INTO param_snapshots(site, pack, t, kind, block) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![site, address, t, kind.as_str(), hex(block)],
-        )
-        .map_err(e2s)?;
+        let tx = db.unchecked_transaction().map_err(e2s)?;
+        let old_id: Option<i64> = tx.query_row("SELECT id FROM sites WHERE site = ?1", [old], |r| r.get(0)).optional().map_err(e2s)?;
+        let count = |table: &str, id: i64| -> Result<u64, String> {
+            tx.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE site = ?1"), [id], |r| r.get::<_, i64>(0)).map(|n| n as u64).map_err(e2s)
+        };
+        let mut m = SiteMerge::default();
+        if let Some(o) = old_id {
+            m.pack = count("pack", o)?;
+            m.system = count("system", o)?;
+        }
+        let used: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sites WHERE site = ?1) OR EXISTS(SELECT 1 FROM sessions WHERE site = ?1)
+                   OR EXISTS(SELECT 1 FROM site_packs WHERE site = ?1) OR EXISTS(SELECT 1 FROM param_snapshots WHERE site = ?1)",
+                [new],
+                |r| r.get(0),
+            )
+            .map_err(e2s)?;
+        if !used {
+            for table in ["sites", "sessions", "site_packs", "param_snapshots"] {
+                tx.execute(&format!("UPDATE {table} SET site = ?2 WHERE site = ?1"), params![old, new]).map_err(e2s)?;
+            }
+        } else {
+            let new_id = site_id(&tx, new).map_err(e2s)?;
+            if let Some(o) = old_id {
+                let pack = tx
+                    .execute(
+                        "INSERT OR IGNORE INTO pack(site, pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min, temp_max, temp_min,
+                           ambient, mosfet, cells, temps) SELECT ?2, pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min, temp_max,
+                           temp_min, ambient, mosfet, cells, temps FROM pack WHERE site = ?1",
+                        [o, new_id],
+                    )
+                    .map_err(e2s)? as u64;
+                let system = tx
+                    .execute(
+                        "INSERT OR IGNORE INTO system(site, t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min)
+                         SELECT ?2, t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE site = ?1",
+                        [o, new_id],
+                    )
+                    .map_err(e2s)? as u64;
+                (m.pack_dropped, m.system_dropped) = (m.pack - pack, m.system - system);
+                for sql in ["DELETE FROM pack WHERE site = ?1", "DELETE FROM system WHERE site = ?1", "DELETE FROM sites WHERE id = ?1"] {
+                    tx.execute(sql, [o]).map_err(e2s)?;
+                }
+            }
+            tx.execute("UPDATE sessions SET site = ?2 WHERE site = ?1", params![old, new]).map_err(e2s)?;
+            tx.execute("INSERT OR IGNORE INTO site_packs(site, pack) SELECT ?2, pack FROM site_packs WHERE site = ?1", params![old, new]).map_err(e2s)?;
+            tx.execute("DELETE FROM site_packs WHERE site = ?1", [old]).map_err(e2s)?;
+            tx.execute("UPDATE param_snapshots SET site = ?2 WHERE site = ?1", params![old, new]).map_err(e2s)?;
+        }
+        tx.commit().map_err(e2s)?;
+        if let Some(link) = self.link.as_mut().filter(|l| l.0 == old) {
+            link.0 = new.to_string();
+        }
+        Ok(m)
+    }
+
+    /// Every site key in the file (sessions, pack lists, value rows, parameter blocks of earlier versions).
+    pub fn site_keys(&self) -> Result<Vec<String>, String> {
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        let mut st = db
+            .prepare("SELECT site FROM sessions UNION SELECT site FROM site_packs UNION SELECT site FROM sites UNION SELECT site FROM param_snapshots ORDER BY 1")
+            .map_err(e2s)?;
+        let rows = st.query_map([], |r| r.get(0)).map_err(e2s)?.collect::<rusqlite::Result<Vec<String>>>();
+        rows.map_err(e2s)
+    }
+
+    /// The parameter blocks earlier versions kept here for a site: (pack, time, kind, block), oldest first.
+    pub fn old_snapshots(&self, site: &str) -> Result<Vec<OldSnapshot>, String> {
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        let mut st = db.prepare("SELECT pack, t, kind, block FROM param_snapshots WHERE site = ?1 ORDER BY t, id").map_err(e2s)?;
+        let rows = st.query_map([site], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?))).map_err(e2s)?;
+        rows.map(|r| r.map_err(e2s).and_then(|(p, t, k, b)| Ok((p, t, k, unhex(&b).ok_or("bad parameter block")?))))
+            .collect()
+    }
+
+    /// After their move to the installation: the parameter blocks of a site are no longer kept here.
+    pub fn drop_old_snapshots(&self, site: &str) -> Result<(), String> {
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        db.execute("DELETE FROM param_snapshots WHERE site = ?1", [site]).map_err(e2s)?;
         Ok(())
     }
 
-    /// The last write of `address` at the connected installation and the block read right before it.
-    pub fn last_write(&self, address: u8) -> Result<LastWrite, String> {
-        let Some(site) = self.link.as_ref().map(|l| l.0.clone()) else { return Ok(LastWrite::default()) };
-        let db = self.db.as_ref().ok_or("history database not open")?;
-        let last: Option<(i64, i64)> = db
-            .query_row(
-                "SELECT id, t FROM param_snapshots WHERE site = ?1 AND pack = ?2 AND kind = 'written' ORDER BY id DESC LIMIT 1",
-                params![site, address],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(e2s)?;
-        let Some((id, at)) = last else { return Ok(LastWrite::default()) };
-        // the newest read before the write that no refused write follows: after RTN 06 a read shows the refused
-        // block's switches live in RAM, not the stored state
-        let mut stmt = db
-            .prepare("SELECT kind, block FROM param_snapshots WHERE site = ?1 AND pack = ?2 AND id < ?3 ORDER BY id DESC")
-            .map_err(e2s)?;
-        let mut rows = stmt.query(params![site, address, id]).map_err(e2s)?;
-        let mut previous: Option<String> = None;
-        while let Some(r) = rows.next().map_err(e2s)? {
-            match r.get::<_, String>(0).map_err(e2s)?.as_str() {
-                "read" if previous.is_none() => previous = Some(r.get(1).map_err(e2s)?),
-                "refused" => previous = None,
-                "written" => break,
-                _ => {}
-            }
-        }
-        Ok(LastWrite { at: Some(at), previous: previous.as_deref().and_then(unhex) })
+    /// The installation (site) the recorder writes to now, if connected.
+    #[cfg(test)]
+    pub fn site(&self) -> Option<&str> {
+        self.link.as_ref().map(|l| l.0.as_str())
     }
 
     /// Import a JSON Lines recording (the format of earlier versions and of the export) as its own session.
@@ -845,6 +908,19 @@ pub struct SiteSpan {
     pub to: Option<i64>,
     pub packs: Vec<u8>,
     pub has_system: bool,
+}
+
+/// Rows of one site (packs and master) and their time span.
+pub fn site_summary(db: &Connection, site: &str) -> Result<(i64, Option<i64>, Option<i64>), String> {
+    let rows: i64 = db
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM pack WHERE site = (SELECT id FROM sites WHERE site = ?1)) + (SELECT COUNT(*) FROM system WHERE site = (SELECT id FROM sites WHERE site = ?1))",
+            [site],
+            |r| r.get(0),
+        )
+        .map_err(e2s)?;
+    let (from, to) = db.query_row("SELECT MIN(first), MAX(last) FROM sessions WHERE site = ?1", [site], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e2s)?;
+    Ok((rows, from, to))
 }
 
 /// Installations in the database with their time span and packs, most recent first.
@@ -1376,42 +1452,62 @@ mod tests {
         (path, h)
     }
 
+    /// A parameter block of an earlier version, as it kept them (hex per site).
+    fn old_snapshot(path: &Path, site: &str, pack: u8, t: i64, kind: &str, block: &str) {
+        Connection::open(path).unwrap().execute("INSERT INTO param_snapshots(site, pack, t, kind, block) VALUES(?1, ?2, ?3, ?4, ?5)", params![site, pack, t, kind, block]).unwrap();
+    }
+
     #[test]
-    fn parameter_snapshots_per_site_and_pack_survive_clear() {
-        let (path, mut h) = temp_db("snapshots");
-        assert!(h.snapshot(1, 3, SnapshotKind::Read, &[1]).is_err(), "needs a connection");
-        h.connected("gw-a:4196", "pack");
-        assert_eq!(h.last_write(3).unwrap(), LastWrite::default());
-        h.snapshot(10, 3, SnapshotKind::Read, &[0x01, 0xAB]).unwrap();
-        h.snapshot(11, 3, SnapshotKind::Read, &[0x02, 0xAB]).unwrap();
-        h.snapshot(12, 4, SnapshotKind::Read, &[0x09]).unwrap();
-        h.snapshot(13, 3, SnapshotKind::Refused, &[0x03]).unwrap();
-        h.snapshot(14, 3, SnapshotKind::Written, &[0x04]).unwrap();
-        h.snapshot(15, 3, SnapshotKind::Read, &[0x04]).unwrap();
-        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(14), previous: Some(vec![0x02, 0xAB]) }, "the read before the refused write");
-        // a later write after a plain read: that read
-        h.snapshot(16, 3, SnapshotKind::Written, &[0x05]).unwrap();
-        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(16), previous: Some(vec![0x04]) });
-        // refused, read (switches live), written: the read before the refusal, not the one after it
-        h.snapshot(17, 3, SnapshotKind::Read, &[0x06]).unwrap();
-        h.snapshot(18, 3, SnapshotKind::Refused, &[0x07]).unwrap();
-        h.snapshot(19, 3, SnapshotKind::Read, &[0x08]).unwrap();
-        h.snapshot(20, 3, SnapshotKind::Written, &[0x09]).unwrap();
-        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(20), previous: Some(vec![0x06]) });
-        assert_eq!(h.last_write(4).unwrap(), LastWrite::default(), "read only");
-        // another installation does not see them
-        h.connected("gw-b:4196", "pack");
-        assert_eq!(h.last_write(3).unwrap(), LastWrite::default());
-        h.clear(None).unwrap();
-        h.connected("gw-a:4196", "pack");
-        assert_eq!(h.last_write(3).unwrap().at, Some(20));
-        // reopening an existing database keeps the table
-        let mut h2 = History::default();
-        h2.open(&path).unwrap();
-        h2.connected("gw-a:4196", "pack");
-        assert_eq!(h2.last_write(3).unwrap().at, Some(20));
+    fn old_parameter_blocks_are_handed_over_once() {
+        let (path, h) = temp_db("snapshots");
+        old_snapshot(&path, "gw-a:4196", 3, 20, "written", "04");
+        old_snapshot(&path, "gw-a:4196", 3, 10, "read", "01AB");
+        old_snapshot(&path, "gw-b:4196", 4, 12, "read", "09");
+        assert_eq!(h.old_snapshots("gw-a:4196").unwrap(), vec![(3, 10, "read".into(), vec![0x01, 0xAB]), (3, 20, "written".into(), vec![0x04])]);
+        assert_eq!(h.site_keys().unwrap(), vec!["gw-a:4196".to_string(), "gw-b:4196".to_string()]);
+        h.drop_old_snapshots("gw-a:4196").unwrap();
+        assert!(h.old_snapshots("gw-a:4196").unwrap().is_empty());
+        assert_eq!(h.old_snapshots("gw-b:4196").unwrap().len(), 1);
+        old_snapshot(&path, "gw-c", 1, 1, "read", "0");
+        assert!(h.old_snapshots("gw-c").is_err(), "a damaged block is no block");
         assert_eq!(unhex("0aFF"), Some(vec![0x0A, 0xFF]));
-        assert_eq!(unhex("0"), None);
+    }
+
+    #[test]
+    fn merging_a_site_keeps_the_targets_rows_and_counts_the_others() {
+        let (path, mut h) = temp_db("merge");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("gw-old", "can");
+        for t in [1000, 2000, 3000] {
+            h.pack(t, 1, &pack_update(1, 1.0, &[3.3], &[]));
+        }
+        h.system(1000, &system_update(1.0));
+        h.connected("inst-x", "can");
+        h.pack(2000, 1, &pack_update(1, 9.0, &[3.3], &[]));
+        h.pack(2000, 2, &pack_update(2, 9.0, &[3.3], &[]));
+        h.system(1000, &system_update(9.0));
+        // recording goes on under the old key while it is merged: its next rows follow the new key
+        h.connected("gw-old", "can");
+        let m = h.merge_site("gw-old", "inst-x").unwrap();
+        assert_eq!(m, SiteMerge { pack: 3, pack_dropped: 1, system: 1, system_dropped: 1 });
+        assert_eq!(h.site(), Some("inst-x"));
+        h.pack(4000, 1, &pack_update(1, 5.0, &[3.3], &[]));
+        let rows: Vec<(String, u8, i64)> = reader(&path)
+            .unwrap()
+            .prepare("SELECT s.site, p.pack, p.current FROM pack p JOIN sites s ON s.id = p.site ORDER BY p.t, p.pack")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // pack 1 at 2000: the target's row (9 A) wins
+        assert_eq!(rows, vec![("inst-x".into(), 1, 1000), ("inst-x".into(), 1, 9000), ("inst-x".into(), 2, 9000), ("inst-x".into(), 1, 1000), ("inst-x".into(), 1, 5000)]);
+        let s = sites(&reader(&path).unwrap()).unwrap();
+        assert_eq!(s.iter().map(|x| (x.site.as_str(), x.packs.clone())).collect::<Vec<_>>(), vec![("inst-x", vec![1, 2])]);
+        // into an unused key: renamed, nothing dropped; again: nothing left to move
+        assert_eq!(h.merge_site("inst-x", "inst-y").unwrap(), SiteMerge { pack: 5, pack_dropped: 0, system: 1, system_dropped: 0 });
+        assert_eq!(h.merge_site("inst-x", "inst-y").unwrap(), SiteMerge::default());
+        assert_eq!(h.site_keys().unwrap(), vec!["inst-y".to_string()]);
     }
 
     #[test]
@@ -1653,15 +1749,15 @@ mod tests {
         for site in ["gw-a", "gw-b"] {
             h.connected(site, "pack");
             h.pack(1000, 1, &pack_update(1, 2.0, &[3.3], &[]));
-            h.snapshot(1000, 1, SnapshotKind::Written, &[1]).unwrap();
+            old_snapshot(&path, site, 1, 1000, "written", "01");
         }
         assert_eq!(h.rename_site("gw-a", "gw-b"), Err("site-taken".to_string()));
         h.rename_site("gw-a", "inst-1").unwrap();
-        // the connection's site follows: its next rows and snapshots go to the new key
+        // the connection's site follows: its next rows go to the new key
         h.connected("gw-b", "pack");
         h.rename_site("gw-b", "inst-2").unwrap();
         h.pack(2000, 1, &pack_update(1, 2.0, &[3.3], &[]));
-        assert_eq!(h.last_write(1).unwrap().at, Some(1000));
+        assert_eq!(h.old_snapshots("inst-1").unwrap().len(), 1);
         let names: Vec<String> = sites(&reader(&path).unwrap()).unwrap().into_iter().map(|s| s.site).collect();
         assert_eq!(names, vec!["inst-2".to_string(), "inst-1".to_string()]);
         assert_eq!(pack_rows(&path).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["inst-1", "inst-2", "inst-2"]);

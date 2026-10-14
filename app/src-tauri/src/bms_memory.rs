@@ -7,7 +7,7 @@
 
 use crate::history::{now_ms, SnapshotKind};
 use crate::maint_store::Installation;
-use crate::{with_conn, AppState, PortSlot};
+use crate::{for_link, link_now, with_conn, AppState, Link, PortSlot};
 use openbms_proto::serial::Which;
 use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Parameters, Refusal, SerialValue, Status, Telemetry, Values};
 use openbms_transport::Bus;
@@ -27,13 +27,14 @@ fn pack_bus_only(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-/// Parameter and serial number writes wait while the history database is being prepared: the snapshot of the state
-/// before a write would be lost. Reads go on without a snapshot.
-fn history_ready(state: &AppState) -> Result<(), String> {
-    if state.history.lock().map_err(|e| e.to_string())?.preparing() {
-        return Err("the recording is being updated; writing is possible once that is done".into());
+/// Writes to a pack belong to the connection's installation: none with „Nur ansehen“ (nothing would record the state
+/// before, and the pack may belong to a foreign bank).
+fn bound(state: &AppState) -> Result<Link, String> {
+    let l = link_now(state);
+    if l.installation.is_none() {
+        return Err("view only: writing to a pack needs a connection with an installation".into());
     }
-    Ok(())
+    Ok(l)
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +107,7 @@ pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTim
 #[tauri::command]
 pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, time: BmsTime) -> Result<BmsTime, String> {
     pack_bus_only(&state)?;
+    bound(&state)?;
     with_conn(&state.conn, &state.flashing, |c| {
         c.set_clock(address, time)?;
         c.clock(address)
@@ -146,6 +148,7 @@ pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLi
 #[tauri::command]
 pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, calibration: Calibration) -> Result<(), String> {
     pack_bus_only(&state)?;
+    bound(&state)?;
     with_conn(&state.conn, &state.flashing, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
 }
 
@@ -170,23 +173,21 @@ impl CanProtocolSet {
 #[tauri::command]
 pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, protocol: u8) -> Result<CanProtocolSet, String> {
     pack_bus_only(&state)?;
+    bound(&state)?;
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
     Ok(CanProtocolSet::from_read(with_conn(&state.conn, &state.flashing, |c| c.device_info(address))))
 }
 
-/// Keep a parameter block in the history database. A failure there must not fail the exchange with the pack.
-pub fn snapshot(state: &AppState, address: u8, kind: SnapshotKind, block: &[u8]) {
-    if let Ok(mut h) = state.history.lock() {
-        if let Err(e) = h.snapshot(now_ms(), address, kind, block) {
-            eprintln!("parameter snapshot: {e}");
-        }
-    }
+/// Keep a parameter block for the place in the connection's installation (`before`: the link when the exchange
+/// began). Nothing with „Nur ansehen“; a failure must not fail the exchange with the pack.
+pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8]) {
+    for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot(inst, address, kind, block, now_ms()));
 }
 
 /// A 0x47 read through the connection, kept as a snapshot.
-fn read_parameters(state: &AppState, address: u8) -> Result<Parameters, String> {
+fn read_parameters(state: &AppState, link: &Link, address: u8) -> Result<Parameters, String> {
     let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
-    snapshot(state, address, SnapshotKind::Read, &p.block);
+    snapshot(state, link, address, SnapshotKind::Read, &p.block);
     Ok(p)
 }
 
@@ -210,8 +211,8 @@ pub enum ParamWrite {
 #[tauri::command]
 pub async fn write_parameters(state: State<'_, AppState>, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
     pack_bus_only(&state)?;
-    history_ready(&state)?;
-    let fresh = read_parameters(&state, address)?;
+    let link = bound(&state)?;
+    let fresh = read_parameters(&state, &link, address)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
         return Err(format!("the pack at address {address} answered with address {}", fresh.address));
@@ -224,11 +225,11 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, base: Val
     };
     let block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
     if let Err(refusal) = with_conn(&state.conn, &state.flashing, |c| refusable(c.write_parameters(address, &block)))? {
-        snapshot(&state, address, SnapshotKind::Refused, &block);
+        snapshot(&state, &link, address, SnapshotKind::Refused, &block);
         return Ok(ParamWrite::Refused { refusal, stored: fresh });
     }
-    snapshot(&state, address, SnapshotKind::Written, &block);
-    Ok(match read_parameters(&state, address) {
+    snapshot(&state, &link, address, SnapshotKind::Written, &block);
+    Ok(match read_parameters(&state, &link, address) {
         Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None },
         Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e) },
     })
@@ -243,7 +244,9 @@ pub struct ParamHistory {
 
 #[tauri::command]
 pub fn param_history(state: State<AppState>, address: u8) -> Result<ParamHistory, String> {
-    let w = state.history.lock().map_err(|e| e.to_string())?.last_write(address)?;
+    let l = link_now(&state);
+    let Some(inst) = l.installation else { return Ok(ParamHistory { last_written: None, previous: None }) };
+    let w = crate::maint::with_store(&state, |s| s.last_write(&inst, address)).map_err(|e| format!("{e:?}"))?;
     Ok(ParamHistory { last_written: w.at, previous: w.previous.and_then(|b| Parameters::parse(&b).ok()) })
 }
 
@@ -274,12 +277,17 @@ pub struct SerialSet {
 #[tauri::command]
 pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, text: String) -> Result<SerialSet, String> {
     pack_bus_only(&state)?;
-    history_ready(&state)?;
+    let link = bound(&state)?;
     let master = which == Which::Bms && address == 0;
     // String 2 before the write: whether the board keeps its identity under the new serial depends on it
     let old = if which == Which::Bms { with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)).ok() } else { None };
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
     let read = with_conn(&state.conn, &state.flashing, |c| c.serial(address, which));
+    // the app's own String 2 write: the board keeps its identity under the new serial
+    if let (Which::Bms, Ok(new)) = (which, &read) {
+        let before = old.clone().unwrap_or(SerialValue::NoAnswer);
+        for_link(&state, &link, "board", |s, inst| s.board_written(inst, address, &before, new, now_ms()));
+    }
     let mut master_updated = vec![];
     let mut master_unchecked = master && (old.is_none() || read.is_err());
     if let (true, Some(old), Ok(new)) = (master, &old, &read) {
@@ -381,7 +389,7 @@ mod tests {
 
     #[test]
     fn the_stored_master_serial_follows_only_from_the_old_value() {
-        let inst = |id: &str, serial: Option<&str>| Installation { id: id.into(), name: id.into(), endpoints: vec![], control: None, master_serial: serial.map(Into::into), archived: false };
+        let inst = |id: &str, serial: Option<&str>| Installation { id: id.into(), name: id.into(), endpoints: vec![], control: None, master_serial: serial.map(Into::into), archived: false, legacy: None, last_connect: None };
         let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
         let all = [inst("a", Some("SN-OLD")), inst("b", Some("SN-OTHER")), inst("c", None)];
         let ids = |v: Vec<&Installation>| v.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
