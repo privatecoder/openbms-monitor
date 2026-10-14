@@ -14,7 +14,7 @@ type Note = { text: string; error: boolean } | null;
 type WriteProps = { address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void };
 
 /** The address as of the last render, so a reply that arrives after a pack switch can be dropped. */
-function useCurrent<T>(v: T) {
+export function useCurrent<T>(v: T) {
   const r = useRef(v);
   r.current = v;
   return r;

@@ -100,8 +100,13 @@ export interface Source {
   error?: string;
   /** first parameter index from which an export does not fit the known order */
   suspectFrom?: number | null;
-  /** the parameters as read, for saving */
+  /** the parameters as read, for saving and as the base of an edit */
   read?: Parameters;
+  /** last write of this pack at this installation (ms) and the parameters it replaced */
+  lastWritten?: number | null;
+  previous?: Parameters | null;
+  /** after a write: values and switch bytes the read-back does not show as sent */
+  notTaken?: { params: Set<number>; switches: Set<number> };
 }
 
 export const fromPack = (p: Parameters): Source => ({
