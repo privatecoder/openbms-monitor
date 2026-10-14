@@ -366,6 +366,7 @@ const resources = {
         invalid: "Vom BMS nicht angenommen (RTN 04: Block-Kennung). Nichts geändert.", error: "Nicht geschrieben: {{err}}",
       },
       snw: {
+        preRead: "Seriennummer vorher nicht lesbar; nichts geschrieben. Die App muss die alte BMS-Seriennummer kennen, um die Platine weiter zuzuordnen.",
         title: "Seriennummern", battery: "Batterie (String 1)", bms: "BMS (String 2)", reading: "Lese …", readError: "Nicht lesbar: {{err}}", reload: "Vom Pack neu lesen",
         placeholder: "neue Seriennummer", write: "Schreiben", writing: "Schreibe …", invalid: "1–30 Zeichen, nur druckbares ASCII (keine Umlaute)",
         done: "Geschrieben und zurückgelesen.", mismatch: "Gesendet, aber das Pack meldet {{text}}.", unread: "Geschrieben; Rücklesen fehlgeschlagen ({{err}}).",
@@ -811,6 +812,7 @@ const resources = {
         invalid: "Not accepted by the BMS (RTN 04: block markers). Nothing changed.", error: "Not written: {{err}}",
       },
       snw: {
+        preRead: "Serial number not readable before the write; nothing written. The app needs the old BMS serial number to keep the board assigned.",
         title: "Serial numbers", battery: "Battery (string 1)", bms: "BMS (string 2)", reading: "Reading …", readError: "Not readable: {{err}}", reload: "Read again from the pack",
         placeholder: "new serial number", write: "Write", writing: "Writing …", invalid: "1–30 characters, printable ASCII only (no accents)",
         done: "Written and read back.", mismatch: "Sent, but the pack reports {{text}}.", unread: "Written; reading back failed ({{err}}).",

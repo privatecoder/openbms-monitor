@@ -15,14 +15,11 @@ export function parseAssignments(raw: Record<string, unknown>): Assignments {
 
 /** Cell types of the packs, stored per place of the installation (`scope`) like the groups. */
 export function useAssignments(scope: string | null) {
-  const { settings, save: store } = useSettings(scope);
+  const { settings, saveCellTypes } = useSettings(scope);
   const assigned = parseAssignments(settings.cell_types);
-  const save = (next: Assignments) => store("cell_types", next);
-  /** Assign `a` to the packs, or remove their assignment with null. */
+  /** Assign `a` to the packs, or remove their assignment with null; only these places change. */
   const assign = (packs: number[], a: Assignment | null) => {
-    const next = { ...assigned };
-    for (const p of packs) if (a) next[p] = a; else delete next[p];
-    save(next);
+    saveCellTypes(Object.fromEntries(packs.map((p) => [p, a])));
   };
   return { assigned, assign };
 }

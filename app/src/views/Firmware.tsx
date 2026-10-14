@@ -126,7 +126,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     onUserAction(); setBusy(true); setError(null); setInspectError(null); setTarget(null); setCheckedFor(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
-    try { setTarget(await api.firmwareInspect(mPort, address, lang, inst?.id ?? null)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
+    try { setTarget(await api.firmwareInspect(mPort, address, lang, mPort === port ? inst?.id ?? null : null)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
     catch (e) { setInspectError(String(e)); }
     finally { setBusy(false); }
   };

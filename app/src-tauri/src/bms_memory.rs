@@ -18,6 +18,9 @@ use tauri::{AppHandle, Emitter, State};
 /// Guard against a device that never sets the last flag: the ring holds at most 500 records.
 pub const MAX_RECORDS: usize = 520;
 
+/// The refusal of a String 2 write whose read before failed (the UI names it).
+pub const PRE_READ: &str = "pre-read: String 2 could not be read before the write; nothing was written";
+
 const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 
 fn pack_bus_only(state: &AppState) -> Result<(), String> {
@@ -29,10 +32,15 @@ fn pack_bus_only(state: &AppState) -> Result<(), String> {
 
 /// Writes to a pack belong to the connection's installation: none with „Nur ansehen“ (nothing would record the state
 /// before, and the pack may belong to a foreign bank).
-fn bound(state: &AppState) -> Result<Link, String> {
+/// `installation`: the one the UI writes for; it must be the connection's, so a choice changed meanwhile never writes
+/// to a pack of another bank.
+fn bound(state: &AppState, installation: Option<&str>) -> Result<Link, String> {
     let l = link_now(state);
     if l.installation.is_none() {
         return Err("view only: writing to a pack needs a connection with an installation".into());
+    }
+    if l.installation.as_deref() != installation {
+        return Err("the connection belongs to another installation than the one chosen; connect again".into());
     }
     Ok(l)
 }
@@ -105,9 +113,9 @@ pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTim
 
 /// Set the clock to `time` (the PC's local time, chosen by the UI) and read it back.
 #[tauri::command]
-pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, time: BmsTime) -> Result<BmsTime, String> {
+pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<BmsTime, String> {
     pack_bus_only(&state)?;
-    bound(&state)?;
+    bound(&state, installation.as_deref())?;
     with_conn(&state.conn, &state.flashing, |c| {
         c.set_clock(address, time)?;
         c.clock(address)
@@ -146,9 +154,9 @@ pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLi
 
 /// One calibration step (0xA0). The UI reads the live values again afterwards.
 #[tauri::command]
-pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, calibration: Calibration) -> Result<(), String> {
+pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<(), String> {
     pack_bus_only(&state)?;
-    bound(&state)?;
+    bound(&state, installation.as_deref())?;
     with_conn(&state.conn, &state.flashing, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
 }
 
@@ -171,9 +179,9 @@ impl CanProtocolSet {
 /// Set the CAN inverter protocol (0xA6, 1..=6) and read the device info (0x51) back for its new name. Once the BMS
 /// has accepted, a failed read-back is still a success (the protocol is set), with `read_error`.
 #[tauri::command]
-pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, protocol: u8) -> Result<CanProtocolSet, String> {
+pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<CanProtocolSet, String> {
     pack_bus_only(&state)?;
-    bound(&state)?;
+    bound(&state, installation.as_deref())?;
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
     Ok(CanProtocolSet::from_read(with_conn(&state.conn, &state.flashing, |c| c.device_info(address))))
 }
@@ -209,9 +217,9 @@ pub enum ParamWrite {
 /// the edit started from) on top of it, send, read back. `restore` sends `edited` as it is on top of the fresh read
 /// (the stored block after a refusal); the rebase would take the live switches for a change of the pack.
 #[tauri::command]
-pub async fn write_parameters(state: State<'_, AppState>, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
+pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
     pack_bus_only(&state)?;
-    let link = bound(&state)?;
+    let link = bound(&state, installation.as_deref())?;
     let fresh = read_parameters(&state, &link, address)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
@@ -275,12 +283,20 @@ pub struct SerialSet {
 /// installation of this endpoint that stored the old value gets the new one. Device and database are not updated
 /// atomically; a crash in between shows as a bank mismatch, which „Seriennummer übernehmen“ resolves.
 #[tauri::command]
-pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, text: String) -> Result<SerialSet, String> {
+pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<SerialSet, String> {
     pack_bus_only(&state)?;
-    let link = bound(&state)?;
+    let link = bound(&state, installation.as_deref())?;
     let master = which == Which::Bms && address == 0;
-    // String 2 before the write: whether the board keeps its identity under the new serial depends on it
-    let old = if which == Which::Bms { with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)).ok() } else { None };
+    // String 2 before the write: whether the board keeps its identity under the new serial depends on it. Unread, the
+    // app's own write could not be told from a board swap: no write then.
+    let old = if which == Which::Bms {
+        match with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)) {
+            Ok(SerialValue::NoAnswer | SerialValue::Unavailable) | Err(_) => return Err(PRE_READ.into()),
+            Ok(v) => Some(v),
+        }
+    } else {
+        None
+    };
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
     let read = with_conn(&state.conn, &state.flashing, |c| c.serial(address, which));
     // the app's own String 2 write: the board keeps its identity under the new serial

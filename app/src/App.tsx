@@ -60,10 +60,7 @@ export default function App() {
   // the banner's „Anzeigen“: the firmware view with the pack bus panel of that installation. Another installation than
   // the connected one ends the connection first: the choice and the connection always belong together.
   const show = async (id: string) => {
-    if (id !== maint.installation) {
-      if (connected) { await api.disconnect().catch(() => {}); live.reset(); setConnected(false); setMonitor("offline"); }
-      maint.switchTo(id);
-    }
+    await maint.switchTo(id);
     enableMaintenance(); setView("firmware"); setPack(null);
   };
   const packList = Object.keys(live.packs).map(Number).sort((a, b) => a - b);
@@ -102,7 +99,7 @@ export default function App() {
             <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
           ) : view === "installations" ? (
             <Installations maint={maint} connected={connected}
-              onParameters={(id) => { showStoredParameters(); if (id !== maint.installation) maint.switchTo(id); enableMaintenance(); setView("params"); }} />
+              onParameters={(id) => { showStoredParameters(); void maint.switchTo(id).then(() => { enableMaintenance(); setView("params"); }); }} />
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (

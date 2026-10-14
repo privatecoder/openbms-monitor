@@ -5,7 +5,7 @@
 
 use crate::history::{self, SiteMerge};
 use crate::maint::{self, with_store, MaintError};
-use crate::maint_store::{Installation, Overview, Settings, Store};
+use crate::maint_store::{looks_like_id, Installation, Overview, Settings, Store};
 use crate::AppState;
 use openbms_proto::Parameters;
 use serde::{Deserialize, Serialize};
@@ -61,16 +61,20 @@ fn move_source(store: &Store, h: &std::sync::Mutex<history::History>, source: &s
     let now = history::now_ms();
     let Some(inst) = store.legacy_installation(source, now)? else { return Ok(true) };
     let mut merged = SiteMerge::default();
-    let mut snapshots = 0;
+    let (mut snapshots, mut skipped) = (0, 0);
     if in_history {
         let mut h = h.lock().map_err(|e| e.to_string())?;
-        merged = h.merge_site(source, &inst)?;
-        snapshots = store.import_snapshots(&inst, &h.old_snapshots(&inst)?)?;
+        h.merge_site(source, &inst)?;
+        // what moved, also when an earlier run moved it and stopped before its log row
+        merged = h.merged(source, &inst)?;
+        let (rows, bad) = h.old_snapshots(&inst)?;
+        snapshots = store.import_snapshots(&inst, &rows)?;
+        skipped = bad;
         h.drop_old_snapshots(&inst)?;
     }
     let (settings, unreadable) = local_settings(local);
     let history = serde_json::json!({ "merge": merged, "unreadable": unreadable });
-    store.finish_legacy(source, &inst, &settings, history, snapshots, now)?;
+    store.finish_legacy(source, &inst, &settings, history, serde_json::json!({ "moved": snapshots, "unreadable_skipped": skipped }), now)?;
     Ok(true)
 }
 
@@ -88,8 +92,10 @@ pub async fn installations_migrate(state: State<'_, AppState>, local: BTreeMap<S
         (if open { h.site_keys().map_err(text)? } else { vec![] }, open)
     };
     let ids: Vec<String> = with_store(&state, |s| Ok(s.installations()?.into_iter().map(|i| i.id).collect()))?;
+    // an installation id (also of one deleted since) is never an old endpoint text
+    let local: BTreeMap<String, LocalSettings> = local.into_iter().filter(|(k, _)| !looks_like_id(k)).collect();
     let mut done = vec![];
-    let mut sources: Vec<&String> = keys.iter().filter(|k| !ids.contains(k)).chain(local.keys()).collect();
+    let mut sources: Vec<&String> = keys.iter().filter(|k| !ids.contains(k) && !looks_like_id(k)).chain(local.keys()).collect();
     sources.sort();
     sources.dedup();
     for source in sources {
@@ -104,15 +110,18 @@ pub async fn installations_migrate(state: State<'_, AppState>, local: BTreeMap<S
     }
     // blocks of an installation whose move stopped between the recording and the store
     for id in keys.iter().filter(|k| ids.contains(k)) {
-        let _ = with_store(&state, |s| {
+        let r = with_store(&state, |s| {
             let h = state.history.lock().map_err(|e| e.to_string())?;
-            let rows = h.old_snapshots(id)?;
+            let (rows, _) = h.old_snapshots(id)?;
             if !rows.is_empty() {
                 s.import_snapshots(id, &rows)?;
                 h.drop_old_snapshots(id)?;
             }
             Ok(())
         });
+        if let Err(e) = r {
+            eprintln!("parameter blocks of {id}: {e:?}");
+        }
     }
     Ok(done)
 }
@@ -145,17 +154,24 @@ pub async fn installation_settings(state: State<'_, AppState>, installation: Str
     })
 }
 
-/// Store one setting of an installation: "cell_types" (address → type), "groups", "pairs" or "diagnosis"; null removes it.
+/// The cell types of the places the UI changed (address → type, null removes it); the others stay.
+#[tauri::command]
+pub async fn set_installation_cell_types(state: State<'_, AppState>, installation: String, changes: BTreeMap<u8, Value>) -> Result<(), MaintError> {
+    let changes: BTreeMap<u8, Option<String>> = changes.into_iter().map(|(a, v)| (a, (!v.is_null()).then(|| v.to_string()))).collect();
+    with_store(&state, |s| {
+        s.installation(&installation)?;
+        s.change_cell_types(&installation, &changes)
+    })
+    .map_err(maint::store_refusal)
+}
+
+/// Store one setting the UI edits as a whole: "groups", "pairs" or "diagnosis"; null removes it.
 #[tauri::command]
 pub async fn set_installation_setting(state: State<'_, AppState>, installation: String, key: String, value: Value) -> Result<(), MaintError> {
     let text = (!value.is_null()).then(|| value.to_string());
     with_store(&state, |s| {
         s.installation(&installation)?;
         match key.as_str() {
-            "cell_types" => {
-                let map: BTreeMap<u8, Value> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-                s.set_cell_types(&installation, &map.into_iter().map(|(a, v)| (a, v.to_string())).collect())
-            }
             "groups" => s.set_groups(&installation, text.as_deref()),
             "pairs" => s.set_pairs(&installation, text.as_deref()),
             "diagnosis" => match &text {
@@ -204,7 +220,12 @@ pub async fn installation_merge(state: State<'_, AppState>, source: String, targ
         return Err(maint::refused("installation-connected"));
     }
     with_store(&state, |s| s.installation(&source).and(s.installation(&target))).map_err(maint::store_refusal)?;
-    let merged = state.history.lock().map_err(text)?.merge_site(&source, &target).map_err(text)?;
+    let merged = {
+        let mut h = state.history.lock().map_err(text)?;
+        h.merge_site(&source, &target).map_err(text)?;
+        // also what an interrupted earlier attempt moved
+        h.merged(&source, &target).map_err(text)?
+    };
     with_store(&state, |s| s.merge(&source, &target, serde_json::to_value(&merged).unwrap_or_default(), history::now_ms())).map_err(maint::store_refusal)
 }
 
@@ -229,8 +250,17 @@ pub async fn installation_delete(state: State<'_, AppState>, installation: Strin
     if crate::link_now(&state).installation.as_deref() == Some(installation.as_str()) {
         return Err(maint::refused("installation-connected"));
     }
-    with_store(&state, |s| s.delete_installation(&installation)).map_err(maint::store_refusal)?;
-    state.history.lock().map_err(text)?.clear(Some(&installation)).map_err(text)
+    with_store(&state, |s| s.may_delete(&installation)).map_err(maint::store_refusal)?;
+    // the recording first: an installation without its store rows but with its recording would come back at the next
+    // start as moved-in old data
+    {
+        let mut h = state.history.lock().map_err(text)?;
+        if !h.ready() {
+            return Err(maint::refused("history-preparing"));
+        }
+        h.clear(Some(&installation)).map_err(text)?;
+    }
+    with_store(&state, |s| s.delete_installation(&installation)).map_err(maint::store_refusal)
 }
 
 /// The newest stored parameter block of every place (offline Parameters view).
@@ -327,6 +357,7 @@ mod tests {
         assert_eq!(store.overview(&legacy.id).unwrap().counts.snapshots, 1);
         // merged into the user's installation: everything there, the old one gone, a repeat does nothing
         let merged = h.lock().unwrap().merge_site(&legacy.id, &mine.id).unwrap();
+        assert!(looks_like_id(&legacy.id) && !looks_like_id("gw:4196") && !looks_like_id("inst-x"));
         assert_eq!(merged.pack, 1);
         store.merge(&legacy.id, &mine.id, serde_json::to_value(&merged).unwrap(), 2000).unwrap();
         assert_eq!(store.installations().unwrap().len(), 1);
