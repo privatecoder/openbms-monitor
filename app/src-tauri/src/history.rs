@@ -9,7 +9,10 @@
 //! Parameter snapshots (every 0x47 read and 0xA1 write per installation and pack) live in their own table, created
 //! with `IF NOT EXISTS` and kept when the recording is cleared.
 //!
-//! No migrations before the first release: a database with another schema version is moved aside
+//! Values are keyed per site (`sites`, the text of `sessions.site`): rows of two installations never share a key, and
+//! compaction never merges them. Changes to an existing file are migrations (`migrate.rs`, counted in `meta.migration`)
+//! that keep every row; `user_version` stays 1 so a build from before a migration does not move the file aside
+//! (its writes fail on the new key columns instead). A file with another `user_version` is moved aside
 //! (`history.sqlite.v<old>-<time>`) and a new one is created.
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -33,18 +36,59 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE sessions(id INTEGER PRIMARY KEY, site TEXT NOT NULL, bus TEXT NOT NULL, source TEXT NOT NULL,
   first INTEGER, last INTEGER);
 CREATE TABLE site_packs(site TEXT NOT NULL, pack INTEGER NOT NULL, PRIMARY KEY(site, pack)) WITHOUT ROWID;
-CREATE TABLE pack(pack INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
+-- the site of the value rows as a small number (sessions.site as text would be repeated in every row and index)
+CREATE TABLE sites(id INTEGER PRIMARY KEY, site TEXT NOT NULL UNIQUE);
+CREATE TABLE pack(site INTEGER NOT NULL, pack INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
   current INTEGER, soc INTEGER, voltage INTEGER, remaining INTEGER, cycles INTEGER,
   cell_max INTEGER, cell_min INTEGER, temp_max INTEGER, temp_min INTEGER, ambient INTEGER, mosfet INTEGER,
-  cells BLOB, temps BLOB, PRIMARY KEY(pack, t)) WITHOUT ROWID;
+  cells BLOB, temps BLOB, PRIMARY KEY(site, pack, t)) WITHOUT ROWID;
 CREATE INDEX pack_t ON pack(t);
-CREATE TABLE system(t INTEGER PRIMARY KEY, session INTEGER NOT NULL, n INTEGER NOT NULL,
+CREATE TABLE system(site INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
   current INTEGER, soc INTEGER, voltage INTEGER, ccl INTEGER, dcl INTEGER, cvl INTEGER,
-  cell_max INTEGER, cell_min INTEGER) WITHOUT ROWID;
+  cell_max INTEGER, cell_min INTEGER, PRIMARY KEY(site, t)) WITHOUT ROWID;
+CREATE INDEX system_t ON system(t);
 CREATE TABLE events(id INTEGER PRIMARY KEY, session INTEGER NOT NULL, pack INTEGER NOT NULL, key TEXT NOT NULL,
   severity TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER);
 CREATE INDEX events_start ON events(start);
 ";
+
+/// Migrations of an existing file, in order; a new file gets SCHEMA and counts them as done. The SQL is frozen
+/// as it was written: later changes are new steps.
+const MIGRATIONS: &[crate::migrate::Step] = &[site_keys];
+
+/// 1: `pack` and `system` keyed per site (from their session), so compaction no longer merges two installations'
+/// rows of the same minute. Rows whose session is gone were in no site's view; they keep the empty site.
+fn site_keys(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE sites(id INTEGER PRIMARY KEY, site TEXT NOT NULL UNIQUE);
+         INSERT INTO sites(site) SELECT DISTINCT site FROM sessions ORDER BY site;
+         INSERT OR IGNORE INTO sites(site) SELECT '' WHERE EXISTS(SELECT 1 FROM pack WHERE session NOT IN (SELECT id FROM sessions))
+           OR EXISTS(SELECT 1 FROM system WHERE session NOT IN (SELECT id FROM sessions));
+         CREATE TEMP TABLE session_site AS SELECT x.id AS session, s.id AS site FROM sessions x JOIN sites s ON s.site = x.site;
+         CREATE TABLE pack_new(site INTEGER NOT NULL, pack INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
+           current INTEGER, soc INTEGER, voltage INTEGER, remaining INTEGER, cycles INTEGER,
+           cell_max INTEGER, cell_min INTEGER, temp_max INTEGER, temp_min INTEGER, ambient INTEGER, mosfet INTEGER,
+           cells BLOB, temps BLOB, PRIMARY KEY(site, pack, t)) WITHOUT ROWID;
+         INSERT INTO pack_new SELECT COALESCE((SELECT site FROM session_site WHERE session = p.session), (SELECT id FROM sites WHERE site = '')),
+           pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min, temp_max, temp_min, ambient, mosfet, cells, temps FROM pack p;
+         DROP TABLE pack;
+         ALTER TABLE pack_new RENAME TO pack;
+         CREATE INDEX pack_t ON pack(t);
+         CREATE TABLE system_new(site INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
+           current INTEGER, soc INTEGER, voltage INTEGER, ccl INTEGER, dcl INTEGER, cvl INTEGER,
+           cell_max INTEGER, cell_min INTEGER, PRIMARY KEY(site, t)) WITHOUT ROWID;
+         INSERT INTO system_new SELECT COALESCE((SELECT site FROM session_site WHERE session = y.session), (SELECT id FROM sites WHERE site = '')),
+           t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system y;
+         DROP TABLE system;
+         ALTER TABLE system_new RENAME TO system;
+         CREATE INDEX system_t ON system(t);
+         DROP TABLE temp.session_site;",
+    )
+}
+
+fn mark_migration(db: &Connection, n: usize) -> rusqlite::Result<()> {
+    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('migration', ?1)", [n.to_string()]).map(|_| ())
+}
 
 /// Additive, outside SCHEMA: an existing database gets it without a version bump.
 const SNAPSHOTS: &str = "
@@ -133,7 +177,8 @@ pub struct History {
     settings: Settings,
     /// site and bus of the current connection, if any
     link: Option<(String, String)>,
-    session: Option<i64>,
+    /// the session rows go to and its site's key in `sites`
+    session: Option<(i64, i64)>,
     last: HashMap<u8, i64>,
     open_events: OpenEvents,
     last_maintain: i64,
@@ -152,7 +197,7 @@ fn open_db(path: &Path) -> Result<Connection, String> {
     if path.exists() {
         let version: i32 = Connection::open(path).and_then(|c| c.pragma_query_value(None, "user_version", |r| r.get(0))).map_err(e)?;
         if version != SCHEMA_VERSION {
-            // before the first release there are no migrations: keep the old file aside
+            // not a history file of this layout family (migrations keep the version): keep it aside
             let aside = path.with_extension(format!("sqlite.v{version}-{}", now_ms()));
             std::fs::rename(path, &aside).map_err(|err| format!("{}: {err}", path.display()))?;
             for ext in ["sqlite-wal", "sqlite-shm"] {
@@ -162,16 +207,21 @@ fn open_db(path: &Path) -> Result<Connection, String> {
     }
     let fresh = !path.exists();
     let c = Connection::open(path).map_err(e)?;
+    c.busy_timeout(std::time::Duration::from_secs(5)).map_err(e)?;
     if fresh {
         // auto_vacuum must be set before the first table
         c.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;").map_err(e)?;
         c.execute_batch(SCHEMA).map_err(e)?;
         c.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(e)?;
+        mark_migration(&c, MIGRATIONS.len()).map_err(e)?;
+    } else {
+        // before anything reads or compacts the file
+        let done: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'migration'", [], |r| r.get(0)).optional().map_err(e)?;
+        crate::migrate::run(&c, Some(path), done.and_then(|d| d.parse().ok()).unwrap_or(0), MIGRATIONS, mark_migration)?;
     }
     c.execute_batch(SNAPSHOTS).map_err(e)?;
     c.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
     c.pragma_update(None, "synchronous", "NORMAL").map_err(e)?;
-    c.busy_timeout(std::time::Duration::from_secs(5)).map_err(e)?;
     Ok(c)
 }
 
@@ -257,16 +307,20 @@ impl History {
         self.last.clear();
     }
 
-    /// The session rows go to, if recording; created with the first row.
-    fn session(&mut self) -> Option<i64> {
+    /// The session rows go to and its site key, if recording; created with the first row.
+    fn session(&mut self) -> Option<(i64, i64)> {
         if !self.settings.enabled {
             return None;
         }
         if self.session.is_none() {
             let (site, bus) = self.link.clone()?;
             let db = self.db.as_ref()?;
-            match db.execute("INSERT INTO sessions(site, bus, source) VALUES(?1, ?2, 'live')", params![site, bus]) {
-                Ok(_) => self.session = Some(db.last_insert_rowid()),
+            let r = site_id(db, &site).and_then(|id| {
+                db.execute("INSERT INTO sessions(site, bus, source) VALUES(?1, ?2, 'live')", params![site, bus])?;
+                Ok((db.last_insert_rowid(), id))
+            });
+            match r {
+                Ok(s) => self.session = Some(s),
                 Err(e) => self.error = Some(e.to_string()),
             }
         }
@@ -278,7 +332,7 @@ impl History {
         if !self.settings.packs.is_empty() && !self.settings.packs.contains(&address) {
             return;
         }
-        let Some(session) = self.session() else { return };
+        let Some((session, site_key)) = self.session() else { return };
         let due = self.due(address, t);
         let site = self.link.as_ref().map(|l| l.0.clone()).unwrap_or_default();
         let Some(db) = self.db.as_ref() else { return };
@@ -287,7 +341,7 @@ impl History {
             if !due {
                 return Ok(false);
             }
-            let wrote = insert_pack(db, session, t, address, update, false)?;
+            let wrote = insert_pack(db, site_key, session, t, address, update, false)?;
             if wrote {
                 touch(db, session, &site, address, t)?;
             }
@@ -301,12 +355,12 @@ impl History {
         if !self.settings.system {
             return;
         }
-        let Some(session) = self.session() else { return };
+        let Some((session, site_key)) = self.session() else { return };
         if !self.due(SYSTEM, t) {
             return;
         }
         let Some(db) = self.db.as_ref() else { return };
-        let r = insert_system(db, session, t, update, false).and_then(|wrote| {
+        let r = insert_system(db, site_key, session, t, update, false).and_then(|wrote| {
             if wrote {
                 db.execute("UPDATE sessions SET first = COALESCE(first, ?2), last = ?2 WHERE id = ?1", params![session, t])?;
             }
@@ -356,16 +410,47 @@ impl History {
         let e = |e: rusqlite::Error| e.to_string();
         match site {
             Some(s) => {
-                let ids = "(SELECT id FROM sessions WHERE site = ?1)";
-                for table in ["pack", "system", "events"] {
-                    db.execute(&format!("DELETE FROM {table} WHERE session IN {ids}"), [s]).map_err(e)?;
+                for table in ["pack", "system"] {
+                    db.execute(&format!("DELETE FROM {table} WHERE site = (SELECT id FROM sites WHERE site = ?1)"), [s]).map_err(e)?;
                 }
-                db.execute("DELETE FROM site_packs WHERE site = ?1", [s]).map_err(e)?;
-                db.execute("DELETE FROM sessions WHERE site = ?1", [s]).map_err(e)?;
+                db.execute("DELETE FROM events WHERE session IN (SELECT id FROM sessions WHERE site = ?1)", [s]).map_err(e)?;
+                for table in ["site_packs", "sessions", "sites"] {
+                    db.execute(&format!("DELETE FROM {table} WHERE site = ?1"), [s]).map_err(e)?;
+                }
             }
-            None => db.execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions;").map_err(e)?,
+            None => db
+                .execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites;")
+                .map_err(e)?,
         }
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e)
+    }
+
+    /// Give a site's recording, pack list and parameter snapshots another key (e.g. an installation id) in one
+    /// transaction. The new key must be unused: merging two sites is a decision of its own.
+    #[allow(dead_code)] // for moving endpoint sites to installations
+    pub fn rename_site(&mut self, old: &str, new: &str) -> Result<(), String> {
+        self.end_session(now_ms());
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        let used: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sites WHERE site = ?1) OR EXISTS(SELECT 1 FROM sessions WHERE site = ?1)
+                   OR EXISTS(SELECT 1 FROM site_packs WHERE site = ?1) OR EXISTS(SELECT 1 FROM param_snapshots WHERE site = ?1)",
+                [new],
+                |r| r.get(0),
+            )
+            .map_err(e2s)?;
+        if used {
+            return Err("site-taken".into());
+        }
+        let tx = db.unchecked_transaction().map_err(e2s)?;
+        for table in ["sites", "sessions", "site_packs", "param_snapshots"] {
+            tx.execute(&format!("UPDATE {table} SET site = ?2 WHERE site = ?1"), params![old, new]).map_err(e2s)?;
+        }
+        tx.commit().map_err(e2s)?;
+        if let Some(link) = self.link.as_mut().filter(|l| l.0 == old) {
+            link.0 = new.to_string();
+        }
+        Ok(())
     }
 
     /// Store a parameter block of `address` for the connected installation (also while not recording).
@@ -444,7 +529,7 @@ fn unblob_i16(b: &[u8]) -> Vec<i64> {
 
 /// One pack row from a PackUpdate; false if the answer carries no telemetry.
 /// `keep_existing`: an import never overwrites what is already there (same pack and time).
-fn insert_pack(db: &Connection, session: i64, t: i64, address: u8, update: &Value, keep_existing: bool) -> rusqlite::Result<bool> {
+fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, update: &Value, keep_existing: bool) -> rusqlite::Result<bool> {
     let tm = &update["telemetry"];
     if !tm.is_object() {
         return Ok(false);
@@ -459,7 +544,7 @@ fn insert_pack(db: &Connection, session: i64, t: i64, address: u8, update: &Valu
     let changed = db
         .prepare_cached(&format!(
             "INSERT OR {} INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min,
-               temp_max, temp_min, ambient, mosfet, cells, temps) VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+               temp_max, temp_min, ambient, mosfet, cells, temps, site) VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             if keep_existing { "IGNORE" } else { "REPLACE" }
         ))?
         .execute(params![
@@ -479,19 +564,20 @@ fn insert_pack(db: &Connection, session: i64, t: i64, address: u8, update: &Valu
         scaled(&tm["power_temperature"], 10.0),
         blob_u16(&cells),
         blob_i16(&temps),
+        site,
     ])?;
     Ok(changed > 0)
 }
 
-fn insert_system(db: &Connection, session: i64, t: i64, update: &Value, keep_existing: bool) -> rusqlite::Result<bool> {
+fn insert_system(db: &Connection, site: i64, session: i64, t: i64, update: &Value, keep_existing: bool) -> rusqlite::Result<bool> {
     let v = &update["values"];
     if !v.is_object() {
         return Ok(false);
     }
     let changed = db
         .prepare_cached(&format!(
-            "INSERT OR {} INTO system(t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min)
-             VALUES(?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR {} INTO system(t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min, site)
+             VALUES(?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             if keep_existing { "IGNORE" } else { "REPLACE" }
         ))?
         .execute(params![
@@ -505,8 +591,15 @@ fn insert_system(db: &Connection, session: i64, t: i64, update: &Value, keep_exi
         scaled(&v["charge_voltage_limit"], 100.0),
         scaled(&v["highest_cell_voltage"], 1000.0),
         scaled(&v["lowest_cell_voltage"], 1000.0),
+        site,
     ])?;
     Ok(changed > 0)
+}
+
+/// The key of a site in `sites`, added on first use.
+fn site_id(db: &Connection, site: &str) -> rusqlite::Result<i64> {
+    db.prepare_cached("INSERT OR IGNORE INTO sites(site) VALUES(?1)")?.execute([site])?;
+    db.prepare_cached("SELECT id FROM sites WHERE site = ?1")?.query_row([site], |r| r.get(0))
 }
 
 /// Extend the session's time span and remember which packs the installation has.
@@ -619,20 +712,21 @@ struct PackAcc {
     temps: Vec<Acc>,
 }
 
+/// One row per site, pack and minute.
 fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
-    let mut groups: BTreeMap<(u8, i64), PackAcc> = BTreeMap::new();
+    let mut groups: BTreeMap<(i64, u8, i64), PackAcc> = BTreeMap::new();
     {
         let mut st = tx.prepare(
-            "SELECT pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
+            "SELECT site, pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
                temp_max, temp_min, cells, temps FROM pack WHERE t >= ?1 AND t < ?2",
         )?;
         let mut rows = st.query([from, to])?;
         while let Some(r) = rows.next()? {
-            let t: i64 = r.get(1)?;
-            let key = (r.get::<_, u8>(0)?, t.div_euclid(MINUTE_MS) * MINUTE_MS);
-            let w: i64 = r.get(3)?;
+            let t: i64 = r.get(2)?;
+            let key = (r.get::<_, i64>(0)?, r.get::<_, u8>(1)?, t.div_euclid(MINUTE_MS) * MINUTE_MS);
+            let w: i64 = r.get(4)?;
             let g = groups.entry(key).or_insert_with(|| PackAcc {
-                session: r.get(2).unwrap_or(0),
+                session: r.get(3).unwrap_or(0),
                 n: 0,
                 cols: Default::default(),
                 cell_max: Acc::default(),
@@ -643,14 +737,14 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
                 temps: vec![],
             });
             g.n += w;
-            for (i, col) in [4, 5, 6, 7, 8, 9, 10].into_iter().enumerate() {
+            for (i, col) in [5, 6, 7, 8, 9, 10, 11].into_iter().enumerate() {
                 g.cols[i].add(r.get(col)?, w);
             }
-            g.cell_max.add(r.get(11)?, w);
-            g.cell_min.add(r.get(12)?, w);
-            g.temp_max.add(r.get(13)?, w);
-            g.temp_min.add(r.get(14)?, w);
-            for (list, blob) in [(&mut g.cells, unblob_u16(&r.get::<_, Vec<u8>>(15).unwrap_or_default())), (&mut g.temps, unblob_i16(&r.get::<_, Vec<u8>>(16).unwrap_or_default()))] {
+            g.cell_max.add(r.get(12)?, w);
+            g.cell_min.add(r.get(13)?, w);
+            g.temp_max.add(r.get(14)?, w);
+            g.temp_min.add(r.get(15)?, w);
+            for (list, blob) in [(&mut g.cells, unblob_u16(&r.get::<_, Vec<u8>>(16).unwrap_or_default())), (&mut g.temps, unblob_i16(&r.get::<_, Vec<u8>>(17).unwrap_or_default()))] {
                 if list.len() < blob.len() {
                     list.resize(blob.len(), Acc::default());
                 }
@@ -663,40 +757,42 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
     tx.execute("DELETE FROM pack WHERE t >= ?1 AND t < ?2", [from, to])?;
     let mut ins = tx.prepare(
         "INSERT INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
-           temp_max, temp_min, cells, temps) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+           temp_max, temp_min, cells, temps, site) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
     )?;
-    for ((pack, t), g) in groups {
+    for ((site, pack, t), g) in groups {
         let m = |i: usize| g.cols[i].mean();
         let cells: Vec<i64> = g.cells.iter().filter_map(Acc::mean).collect();
         let temps: Vec<i64> = g.temps.iter().filter_map(Acc::mean).collect();
         ins.execute(params![
             pack, t, g.session, g.n, m(0), m(1), m(2), m(3), g.cols[4].max, m(5), m(6),
-            g.cell_max.max, g.cell_min.min, g.temp_max.max, g.temp_min.min, blob_u16(&cells), blob_i16(&temps)
+            g.cell_max.max, g.cell_min.min, g.temp_max.max, g.temp_min.min, blob_u16(&cells), blob_i16(&temps), site
         ])?;
     }
     Ok(())
 }
 
+/// One row per site and minute.
 fn compact_system(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
-    let mut groups: BTreeMap<i64, (i64, i64, Vec<Acc>)> = BTreeMap::new();
+    let mut groups: BTreeMap<(i64, i64), (i64, i64, Vec<Acc>)> = BTreeMap::new();
     {
-        let mut st = tx.prepare("SELECT t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE t >= ?1 AND t < ?2")?;
+        let mut st = tx.prepare("SELECT site, t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE t >= ?1 AND t < ?2")?;
         let mut rows = st.query([from, to])?;
         while let Some(r) = rows.next()? {
-            let t: i64 = r.get(0)?;
-            let w: i64 = r.get(2)?;
-            let g = groups.entry(t.div_euclid(MINUTE_MS) * MINUTE_MS).or_insert_with(|| (r.get(1).unwrap_or(0), 0, vec![Acc::default(); 8]));
+            let t: i64 = r.get(1)?;
+            let w: i64 = r.get(3)?;
+            let key = (r.get::<_, i64>(0)?, t.div_euclid(MINUTE_MS) * MINUTE_MS);
+            let g = groups.entry(key).or_insert_with(|| (r.get(2).unwrap_or(0), 0, vec![Acc::default(); 8]));
             g.1 += w;
             for i in 0..8 {
-                g.2[i].add(r.get(3 + i)?, w);
+                g.2[i].add(r.get(4 + i)?, w);
             }
         }
     }
     tx.execute("DELETE FROM system WHERE t >= ?1 AND t < ?2", [from, to])?;
-    let mut ins = tx.prepare("INSERT INTO system(t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
-    for (t, (session, n, a)) in groups {
+    let mut ins = tx.prepare("INSERT INTO system(site, t, session, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")?;
+    for ((site, t), (session, n, a)) in groups {
         // limits: the lowest in the minute (the stricter one), extremes as extremes
-        ins.execute(params![t, session, n, a[0].mean(), a[1].mean(), a[2].mean(), a[3].min, a[4].min, a[5].min, a[6].max, a[7].min])?;
+        ins.execute(params![site, t, session, n, a[0].mean(), a[1].mean(), a[2].mean(), a[3].min, a[4].min, a[5].min, a[6].max, a[7].min])?;
     }
     Ok(())
 }
@@ -725,7 +821,7 @@ pub fn sites(db: &Connection) -> Result<Vec<SiteSpan>, String> {
                 .and_then(|mut s| s.query_map([&site], |r| r.get(0))?.collect::<Result<Vec<u8>, _>>())
                 .map_err(e2s)?;
             let has_system = db
-                .query_row("SELECT EXISTS(SELECT 1 FROM system WHERE session IN (SELECT id FROM sessions WHERE site = ?1))", [&site], |r| r.get(0))
+                .query_row("SELECT EXISTS(SELECT 1 FROM system WHERE site = (SELECT id FROM sites WHERE site = ?1))", [&site], |r| r.get(0))
                 .map_err(e2s)?;
             Ok(SiteSpan { site, from, to, packs, has_system })
         })
@@ -844,23 +940,27 @@ enum Reduce {
     Min,
 }
 
+/// Value rows of the site `?1` (its key, so the primary key serves the query).
+const IN_SITE: &str = "site = (SELECT id FROM sites WHERE site = ?1)";
+
 /// The data for the charts: every requested pack and the master on a common grid of at most `max_points`.
 pub fn series(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], cells_pack: Option<u8>, max_points: usize) -> Result<Series, String> {
     let to = to.max(from + 1);
     let sessions = "session IN (SELECT id FROM sessions WHERE site = ?1)";
+    let in_site = IN_SITE;
     let pack_list = if packs.is_empty() { "0".to_string() } else { packs.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",") };
     let in_packs = format!("pack IN ({pack_list})");
 
     // typical interval: span per row of the busiest source
     let busiest: i64 = db
         .query_row(
-            &format!("SELECT COALESCE(MAX(c), 0) FROM (SELECT COUNT(*) AS c FROM pack WHERE {in_packs} AND t >= ?2 AND t <= ?3 AND {sessions} GROUP BY pack)"),
+            &format!("SELECT COALESCE(MAX(c), 0) FROM (SELECT COUNT(*) AS c FROM pack WHERE {in_site} AND {in_packs} AND t >= ?2 AND t <= ?3 GROUP BY pack)"),
             params![site, from, to],
             |r| r.get(0),
         )
         .map_err(e2s)?;
     let sys_rows: i64 = db
-        .query_row(&format!("SELECT COUNT(*) FROM system WHERE t >= ?2 AND t <= ?3 AND {sessions}"), params![site, from, to], |r| r.get(0))
+        .query_row(&format!("SELECT COUNT(*) FROM system WHERE {in_site} AND t >= ?2 AND t <= ?3"), params![site, from, to], |r| r.get(0))
         .map_err(e2s)?;
     let per_source = busiest.max(sys_rows);
     let span = (to - from) as f64;
@@ -875,7 +975,7 @@ pub fn series(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], cel
         // current, soc, voltage, cell max, cell min, cell difference, warmest, coldest
         let mut cols: BTreeMap<u8, [Col; 8]> = BTreeMap::new();
         let mut st = db
-            .prepare(&format!("SELECT pack, t, n, current, soc, voltage, cell_max, cell_min, temp_max, temp_min FROM pack WHERE {in_packs} AND t >= ?2 AND t <= ?3 AND {sessions}"))
+            .prepare(&format!("SELECT pack, t, n, current, soc, voltage, cell_max, cell_min, temp_max, temp_min FROM pack WHERE {in_site} AND {in_packs} AND t >= ?2 AND t <= ?3"))
             .map_err(e2s)?;
         let mut q = st.query(params![site, from, to]).map_err(e2s)?;
         while let Some(r) = q.next().map_err(e2s)? {
@@ -912,7 +1012,7 @@ pub fn series(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], cel
     let system = if sys_rows > 0 {
         let mut c: [Col; 8] = std::array::from_fn(|_| Col::new(n));
         let mut st = db
-            .prepare(&format!("SELECT t, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE t >= ?2 AND t <= ?3 AND {sessions}"))
+            .prepare(&format!("SELECT t, n, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE {in_site} AND t >= ?2 AND t <= ?3"))
             .map_err(e2s)?;
         let mut q = st.query(params![site, from, to]).map_err(e2s)?;
         while let Some(r) = q.next().map_err(e2s)? {
@@ -939,7 +1039,7 @@ pub fn series(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], cel
     let mut cells = vec![];
     if let Some(p) = cells_pack {
         let mut cols: Vec<Col> = vec![];
-        let mut st = db.prepare(&format!("SELECT t, n, cells FROM pack WHERE pack = ?4 AND t >= ?2 AND t <= ?3 AND {sessions}")).map_err(e2s)?;
+        let mut st = db.prepare(&format!("SELECT t, n, cells FROM pack WHERE {in_site} AND pack = ?4 AND t >= ?2 AND t <= ?3")).map_err(e2s)?;
         let mut q = st.query(params![site, from, to, p]).map_err(e2s)?;
         while let Some(r) = q.next().map_err(e2s)? {
             let Some(b) = grid.bucket(r.get(0).map_err(e2s)?) else { continue };
@@ -1012,17 +1112,17 @@ fn f(v: Option<i64>, scale: f64) -> Value {
 /// (one file for the packs, one for the master if it has values).
 pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], format: Format, out: &Path) -> Result<ExportStats, String> {
     let mut stats = ExportStats::default();
-    let sessions = "session IN (SELECT id FROM sessions WHERE site = ?1)";
+    let in_site = IN_SITE;
     let pack_list = if packs.is_empty() { "0".to_string() } else { packs.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",") };
     let io = |e: std::io::Error| format!("{}: {e}", out.display());
     let mut ps = db
         .prepare(&format!(
             "SELECT t, pack, current, soc, voltage, remaining, cycles, ambient, mosfet, cells, temps, n FROM pack
-             WHERE pack IN ({pack_list}) AND t >= ?2 AND t <= ?3 AND {sessions} ORDER BY t, pack"
+             WHERE {in_site} AND pack IN ({pack_list}) AND t >= ?2 AND t <= ?3 ORDER BY t, pack"
         ))
         .map_err(e2s)?;
     let mut ss = db
-        .prepare(&format!("SELECT t, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE t >= ?2 AND t <= ?3 AND {sessions} ORDER BY t"))
+        .prepare(&format!("SELECT t, current, soc, voltage, ccl, dcl, cvl, cell_max, cell_min FROM system WHERE {in_site} AND t >= ?2 AND t <= ?3 ORDER BY t"))
         .map_err(e2s)?;
 
     let pack_json = |r: &rusqlite::Row| -> rusqlite::Result<(i64, Value)> {
@@ -1154,6 +1254,7 @@ fn import(db: &mut Connection, file: &Path, site: &str) -> Result<ImportStats, S
     let reader = std::io::BufReader::new(std::fs::File::open(file).map_err(io)?);
     let name = file.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let tx = db.transaction().map_err(e2s)?;
+    let site_key = site_id(&tx, site).map_err(e2s)?;
     tx.execute("INSERT INTO sessions(site, bus, source) VALUES(?1, '', ?2)", params![site, name]).map_err(e2s)?;
     let session = tx.last_insert_rowid();
     let mut stats = ImportStats::default();
@@ -1179,13 +1280,13 @@ fn import(db: &mut Connection, file: &Path, site: &str) -> Result<ImportStats, S
         } else if v["pack"].is_object() {
             let a = v["pack"]["address"].as_u64().unwrap_or(0) as u8;
             track_events(&tx, &mut open, session, t, a, &v["pack"]).map_err(e2s)?;
-            let w = insert_pack(&tx, session, t, a, &v["pack"], true).map_err(e2s)?;
+            let w = insert_pack(&tx, site_key, session, t, a, &v["pack"], true).map_err(e2s)?;
             if w {
                 seen_packs.insert(a);
             }
             w
         } else if v["system"].is_object() {
-            insert_system(&tx, session, t, &v["system"], true).map_err(e2s)?
+            insert_system(&tx, site_key, session, t, &v["system"], true).map_err(e2s)?
         } else {
             stats.skipped += 1;
             false
@@ -1390,6 +1491,142 @@ mod tests {
         assert_eq!(serde_json::to_value(&a.packs).unwrap(), serde_json::to_value(&b.packs).unwrap());
         assert_eq!(serde_json::to_value(&a.cells).unwrap(), serde_json::to_value(&b.cells).unwrap());
         assert_eq!(b.system.unwrap().ccl[0], Some(150.0));
+    }
+
+    /// The layout before per-site keys, as earlier versions created it.
+    const SCHEMA_BEFORE_SITE_KEYS: &str = "
+    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE sessions(id INTEGER PRIMARY KEY, site TEXT NOT NULL, bus TEXT NOT NULL, source TEXT NOT NULL, first INTEGER, last INTEGER);
+    CREATE TABLE site_packs(site TEXT NOT NULL, pack INTEGER NOT NULL, PRIMARY KEY(site, pack)) WITHOUT ROWID;
+    CREATE TABLE pack(pack INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
+      current INTEGER, soc INTEGER, voltage INTEGER, remaining INTEGER, cycles INTEGER,
+      cell_max INTEGER, cell_min INTEGER, temp_max INTEGER, temp_min INTEGER, ambient INTEGER, mosfet INTEGER,
+      cells BLOB, temps BLOB, PRIMARY KEY(pack, t)) WITHOUT ROWID;
+    CREATE INDEX pack_t ON pack(t);
+    CREATE TABLE system(t INTEGER PRIMARY KEY, session INTEGER NOT NULL, n INTEGER NOT NULL,
+      current INTEGER, soc INTEGER, voltage INTEGER, ccl INTEGER, dcl INTEGER, cvl INTEGER,
+      cell_max INTEGER, cell_min INTEGER) WITHOUT ROWID;
+    CREATE TABLE events(id INTEGER PRIMARY KEY, session INTEGER NOT NULL, pack INTEGER NOT NULL, key TEXT NOT NULL,
+      severity TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER);
+    CREATE INDEX events_start ON events(start);
+    PRAGMA user_version = 1;
+    ";
+
+    /// An old-layout file: sites A and B answered in the same minute (pack 3 and the master), one row has lost its session.
+    fn old_db(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("openbms-history-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(SCHEMA_BEFORE_SITE_KEYS).unwrap();
+        db.pragma_update(None, "journal_mode", "WAL").unwrap();
+        let b = 10 * DAY_MS;
+        db.execute_batch(&format!(
+            "INSERT INTO sessions VALUES(1, 'site-a', 'can', 'live', {b}, {b} + 30000), (2, 'site-b', 'can', 'live', {b}, {b} + 20000);
+             INSERT INTO site_packs VALUES('site-a', 3), ('site-b', 3);
+             INSERT INTO pack(pack, t, session, n, current, cell_max) VALUES(3, {b} + 10000, 1, 1, 1000, 3300), (3, {b} + 20000, 2, 1, 9000, 3400),
+               (3, {b} + 30000, 1, 1, 3000, 3310), (4, {b} + 40000, 99, 1, 7, 3000);
+             INSERT INTO system(t, session, n, current, ccl) VALUES({b} + 10000, 1, 1, 2000, 100000), ({b} + 20000, 2, 1, 8000, 50000);
+             INSERT INTO events(session, pack, key, severity, start, end) VALUES(2, 3, 'cell_high', 'warning', {b} + 20000, {b} + 20000);"
+        ))
+        .unwrap();
+        path
+    }
+
+    fn pack_rows(path: &Path) -> Vec<(String, u8, i64, i64)> {
+        reader(path)
+            .unwrap()
+            .prepare("SELECT s.site, p.pack, p.n, p.current FROM pack p JOIN sites s ON s.id = p.site ORDER BY s.site, p.pack")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn an_old_file_is_migrated_and_compacted_per_site() {
+        let path = old_db("migrate");
+        let mut h = History::default();
+        // opening migrates first, then compacts (the rows are older than the default 30 days)
+        h.open(&path).unwrap();
+        assert_eq!(
+            pack_rows(&path),
+            vec![("".into(), 4, 1, 7), ("site-a".into(), 3, 2, 2000), ("site-b".into(), 3, 1, 9000)],
+            "both sites keep their own minute; the row without a session is kept"
+        );
+        let db = reader(&path).unwrap();
+        let sys: Vec<(i64, i64)> = db.prepare("SELECT current, ccl FROM system ORDER BY current").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(sys, vec![(2000, 100000), (8000, 50000)]);
+        let s = series(&db, "site-b", 10 * DAY_MS, 10 * DAY_MS + MINUTE_MS, &[3], None, 10).unwrap();
+        assert_eq!(s.packs[&3].current.iter().flatten().copied().collect::<Vec<_>>(), vec![9.0]);
+        assert_eq!(s.events.len(), 1);
+        let version: i32 = db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(version, 1, "a build from before the migration must not move the file aside");
+        // and its writes (without a site) fail instead of landing under a wrong key
+        assert!(Connection::open(&path).unwrap().execute("INSERT INTO pack(pack, t, session, n) VALUES(1, 1, 1, 1)", []).is_err());
+        // the copy holds the file as it was
+        assert_eq!(crate::migrate::backups(&path), vec!["history.sqlite.bak-1".to_string()]);
+        let bak = Connection::open(path.with_file_name("history.sqlite.bak-1")).unwrap();
+        let n: i64 = bak.query_row("SELECT COUNT(*) FROM pack", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 4);
+        assert!(bak.prepare("SELECT site FROM pack").is_err(), "old layout");
+        // new rows of both sites in one minute stay apart, too
+        h.set_settings(Settings { enabled: true, keep_full_days: 1, ..Settings::default() }).unwrap();
+        for (site, current) in [("site-a", 1.0), ("site-b", 5.0)] {
+            h.connected(site, "can");
+            h.pack(20 * DAY_MS + 1000, 3, &pack_update(3, current, &[3.3], &[]));
+            h.system(20 * DAY_MS + 1000, &system_update(current));
+        }
+        h.maintain(30 * DAY_MS);
+        drop(h);
+        // opening again: nothing to migrate, no new copy, nothing lost
+        let mut h = History::default();
+        h.open(&path).unwrap();
+        assert_eq!(crate::migrate::backups(&path).len(), 1);
+        assert_eq!(pack_rows(&path).len(), 5);
+        let n: i64 = reader(&path).unwrap().query_row("SELECT COUNT(*) FROM system WHERE t >= ?1", [20 * DAY_MS], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let done: String = reader(&path).unwrap().query_row("SELECT value FROM meta WHERE key = 'migration'", [], |r| r.get(0)).unwrap();
+        assert_eq!(done, "1");
+    }
+
+    #[test]
+    fn a_fresh_file_needs_no_migration() {
+        let (path, mut h) = temp_db("fresh");
+        assert!(crate::migrate::backups(&path).is_empty());
+        let done: String = reader(&path).unwrap().query_row("SELECT value FROM meta WHERE key = 'migration'", [], |r| r.get(0)).unwrap();
+        assert_eq!(done, MIGRATIONS.len().to_string());
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("gw", "pack");
+        h.pack(1000, 1, &pack_update(1, 2.0, &[3.3], &[]));
+        drop(h);
+        let mut h = History::default();
+        h.open(&path).unwrap();
+        assert!(crate::migrate::backups(&path).is_empty());
+        assert_eq!(pack_rows(&path), vec![("gw".into(), 1, 1, 2000)]);
+    }
+
+    #[test]
+    fn a_site_gets_a_new_key_only_if_it_is_unused() {
+        let (path, mut h) = temp_db("rename");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        for site in ["gw-a", "gw-b"] {
+            h.connected(site, "pack");
+            h.pack(1000, 1, &pack_update(1, 2.0, &[3.3], &[]));
+            h.snapshot(1000, 1, SnapshotKind::Written, &[1]).unwrap();
+        }
+        assert_eq!(h.rename_site("gw-a", "gw-b"), Err("site-taken".to_string()));
+        h.rename_site("gw-a", "inst-1").unwrap();
+        // the connection's site follows: its next rows and snapshots go to the new key
+        h.connected("gw-b", "pack");
+        h.rename_site("gw-b", "inst-2").unwrap();
+        h.pack(2000, 1, &pack_update(1, 2.0, &[3.3], &[]));
+        assert_eq!(h.last_write(1).unwrap().at, Some(1000));
+        let names: Vec<String> = sites(&reader(&path).unwrap()).unwrap().into_iter().map(|s| s.site).collect();
+        assert_eq!(names, vec!["inst-2".to_string(), "inst-1".to_string()]);
+        assert_eq!(pack_rows(&path).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["inst-1", "inst-2", "inst-2"]);
     }
 
     #[test]
