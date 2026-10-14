@@ -6,6 +6,9 @@
 //! `keep_full_days + keep_minutes_days` are deleted (0 = kept forever). Alarms are stored as events with
 //! start and end. Old JSON Lines recordings can be imported; any span can be exported as JSON Lines or CSV.
 //!
+//! Parameter snapshots (every 0x47 read and 0xA1 write per installation and pack) live in their own table, created
+//! with `IF NOT EXISTS` and kept when the recording is cleared.
+//!
 //! No migrations before the first release: a database with another schema version is moved aside
 //! (`history.sqlite.v<old>-<time>`) and a new one is created.
 
@@ -42,6 +45,46 @@ CREATE TABLE events(id INTEGER PRIMARY KEY, session INTEGER NOT NULL, pack INTEG
   severity TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER);
 CREATE INDEX events_start ON events(start);
 ";
+
+/// Additive, outside SCHEMA: an existing database gets it without a version bump.
+const SNAPSHOTS: &str = "
+CREATE TABLE IF NOT EXISTS param_snapshots(id INTEGER PRIMARY KEY, site TEXT NOT NULL, pack INTEGER NOT NULL,
+  t INTEGER NOT NULL, kind TEXT NOT NULL, block TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS param_snapshots_pack ON param_snapshots(site, pack, id);
+";
+
+/// What a parameter snapshot records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotKind {
+    Read,
+    Written,
+    Refused,
+}
+
+impl SnapshotKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            SnapshotKind::Read => "read",
+            SnapshotKind::Written => "written",
+            SnapshotKind::Refused => "refused",
+        }
+    }
+}
+
+/// The last write of a pack and the block it replaced (the read right before it).
+#[derive(Debug, Default, PartialEq)]
+pub struct LastWrite {
+    pub at: Option<i64>,
+    pub previous: Option<Vec<u8>>,
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02X}")).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    (0..s.len()).step_by(2).map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect()
+}
 
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
@@ -125,6 +168,7 @@ fn open_db(path: &Path) -> Result<Connection, String> {
         c.execute_batch(SCHEMA).map_err(e)?;
         c.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(e)?;
     }
+    c.execute_batch(SNAPSHOTS).map_err(e)?;
     c.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
     c.pragma_update(None, "synchronous", "NORMAL").map_err(e)?;
     c.busy_timeout(std::time::Duration::from_secs(5)).map_err(e)?;
@@ -322,6 +366,42 @@ impl History {
             None => db.execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions;").map_err(e)?,
         }
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e)
+    }
+
+    /// Store a parameter block of `address` for the connected installation (also while not recording).
+    pub fn snapshot(&mut self, t: i64, address: u8, kind: SnapshotKind, block: &[u8]) -> Result<(), String> {
+        let site = self.link.as_ref().map(|l| l.0.clone()).ok_or("not connected")?;
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        db.execute(
+            "INSERT INTO param_snapshots(site, pack, t, kind, block) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![site, address, t, kind.as_str(), hex(block)],
+        )
+        .map_err(e2s)?;
+        Ok(())
+    }
+
+    /// The last write of `address` at the connected installation and the block read right before it.
+    pub fn last_write(&self, address: u8) -> Result<LastWrite, String> {
+        let Some(site) = self.link.as_ref().map(|l| l.0.clone()) else { return Ok(LastWrite::default()) };
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        let last: Option<(i64, i64)> = db
+            .query_row(
+                "SELECT id, t FROM param_snapshots WHERE site = ?1 AND pack = ?2 AND kind = 'written' ORDER BY id DESC LIMIT 1",
+                params![site, address],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(e2s)?;
+        let Some((id, at)) = last else { return Ok(LastWrite::default()) };
+        let previous: Option<String> = db
+            .query_row(
+                "SELECT block FROM param_snapshots WHERE site = ?1 AND pack = ?2 AND kind = 'read' AND id < ?3 ORDER BY id DESC LIMIT 1",
+                params![site, address, id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(e2s)?;
+        Ok(LastWrite { at: Some(at), previous: previous.as_deref().and_then(unhex) })
     }
 
     /// Import a JSON Lines recording (the format of earlier versions and of the export) as its own session.
@@ -1148,6 +1228,35 @@ mod tests {
         let mut h = History::default();
         h.open(&path).unwrap();
         (path, h)
+    }
+
+    #[test]
+    fn parameter_snapshots_per_site_and_pack_survive_clear() {
+        let (path, mut h) = temp_db("snapshots");
+        assert!(h.snapshot(1, 3, SnapshotKind::Read, &[1]).is_err(), "needs a connection");
+        h.connected("gw-a:4196", "pack");
+        assert_eq!(h.last_write(3).unwrap(), LastWrite::default());
+        h.snapshot(10, 3, SnapshotKind::Read, &[0x01, 0xAB]).unwrap();
+        h.snapshot(11, 3, SnapshotKind::Read, &[0x02, 0xAB]).unwrap();
+        h.snapshot(12, 4, SnapshotKind::Read, &[0x09]).unwrap();
+        h.snapshot(13, 3, SnapshotKind::Refused, &[0x03]).unwrap();
+        h.snapshot(14, 3, SnapshotKind::Written, &[0x04]).unwrap();
+        h.snapshot(15, 3, SnapshotKind::Read, &[0x04]).unwrap();
+        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(14), previous: Some(vec![0x02, 0xAB]) });
+        assert_eq!(h.last_write(4).unwrap(), LastWrite::default(), "read only");
+        // another installation does not see them
+        h.connected("gw-b:4196", "pack");
+        assert_eq!(h.last_write(3).unwrap(), LastWrite::default());
+        h.clear(None).unwrap();
+        h.connected("gw-a:4196", "pack");
+        assert_eq!(h.last_write(3).unwrap().at, Some(14));
+        // reopening an existing database keeps the table
+        let mut h2 = History::default();
+        h2.open(&path).unwrap();
+        h2.connected("gw-a:4196", "pack");
+        assert_eq!(h2.last_write(3).unwrap().at, Some(14));
+        assert_eq!(unhex("0aFF"), Some(vec![0x0A, 0xFF]));
+        assert_eq!(unhex("0"), None);
     }
 
     #[test]
