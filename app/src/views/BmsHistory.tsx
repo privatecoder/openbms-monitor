@@ -144,7 +144,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
                     <td className="py-1.5">
                       {r.alarms.length === 0 ? <span className="text-muted">–</span> : (
                         <ul className="space-y-0.5">
-                          {r.alarms.map((a) => <li key={a.id} className="flex items-center gap-1.5"><SevIcon severity={a.severity} className="h-3.5 w-3.5 shrink-0" />{helpTitle(a.id, lang)}</li>)}
+                          {r.alarms.map((a) => <li key={a.id} className="flex items-center gap-1.5 whitespace-nowrap"><SevIcon severity={a.severity} className="h-3.5 w-3.5 shrink-0" />{helpTitle(a.id, lang)}</li>)}
                         </ul>
                       )}
                     </td>
