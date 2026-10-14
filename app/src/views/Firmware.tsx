@@ -160,8 +160,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: imageLabel(image, t, true), blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
       {image && imageWarning(image) && (imageWarningIsAlarm(image)
         ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t(imageWarning(image)!)}</p>
-        : <p className="text-sm text-muted">{t(imageWarning(image)!)}</p>)}
-      {pending && <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>}
+        : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t(imageWarning(image)!)}</p>)}
+      {/* the same colour before and after „Eigene Firmware zulassen“: orange for a known maintenance build, red for an unknown checksum */}
+      {pending && (imageWarningIsAlarm(pending.info)
+        ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>
+        : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
     </div>
   );
