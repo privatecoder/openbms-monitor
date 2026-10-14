@@ -11,7 +11,8 @@ import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
 import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
 import { Segmented } from "../components/PackPicker";
-import { ClockLine } from "../components/BmsClock";
+import { ClockLine, usePackChoice } from "../components/BmsClock";
+import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -47,6 +48,9 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const [onlyDiff, setOnlyDiff] = useState(false);
   const [saved, setSaved] = useState<{ path: string } | { error: string } | null>(null);
   const file = useRef<HTMLInputElement>(null);
+  // one pack for the clock, the CAN protocol and the calibration
+  const [chosen, setChosen] = usePackChoice(packs);
+  const writable = connected && (bus === "pack" || isDemo);
 
   const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading;
 
@@ -123,7 +127,9 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
             : bus === "can" && !isDemo ? t("par.canBus")
             : t("par.packBus")}
         </p>
-        <ClockLine connected={connected} bus={bus} packs={packs} />
+        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} />
+        <CanProtocolLine address={chosen} usable={writable} />
+        <CalibrationSection address={chosen} usable={writable} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}
