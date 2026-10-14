@@ -250,7 +250,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
             <p>{t("fw.manualQuiet")}</p>
           </div>
         )}
-        {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion, can: target.can_protocol })}</p>}
+        {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion })}</p>}
         {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: targetVersion, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
