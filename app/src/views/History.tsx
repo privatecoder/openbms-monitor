@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChartLine, Download, FileUp, RotateCcw } from "lucide-react";
-import { api, isDemo, type Series, type SiteSpan } from "../api";
+import { api, isDemo, type Bus, type Series, type SiteSpan } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { Segmented, Tick } from "../components/PackPicker";
@@ -10,6 +10,7 @@ import { InfoIcon, helpTitle } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { Chart, useDark, type Line } from "../history/Chart";
 import { exportName, packColor, shares } from "../history/data";
+import { BmsHistory } from "./BmsHistory";
 
 const no = (a: number) => String(a).padStart(2, "0");
 const HOUR = 3_600_000;
@@ -34,10 +35,14 @@ type Span = { preset: number | "all" } | { from: number; to: number };
 // kept while the app runs, so switching views keeps the choice
 let keptSpan: Span = { preset: 24 };
 let keptMetrics: Metric[] = ["current", "soc", "delta", "sysCurrent"];
+let keptTab: "app" | "bms" = "app";
 
-/** Recorded history from the database as synchronized charts, with export and import. */
-export function History({ site: liveSite }: { site: string }) {
+/** Two tabs: the app's own recording (charts from the database, with export and import) and the history the BMS
+ *  keeps itself (read on demand over RS485-1/2). */
+export function History({ site: liveSite, connected, bus, packs: livePacks }: { site: string; connected: boolean; bus: Bus | null; packs: number[] }) {
   const { t, i18n } = useTranslation();
+  const [tab, setTabState] = useState(keptTab);
+  const setTab = (v: "app" | "bms") => { keptTab = v; setTabState(v); };
   const lang = i18n.language;
   const dark = useDark();
   const [sites, setSites] = useState<SiteSpan[] | null>(null);
@@ -170,6 +175,14 @@ export function History({ site: liveSite }: { site: string }) {
         <p className="mt-1 max-w-3xl text-muted">{t("hist.intro")}</p>
       </header>
 
+      <div className="flex rounded-md bg-sunken p-0.5 text-sm" role="group">
+        {(["app", "bms"] as const).map((k) => (
+          <button key={k} aria-pressed={tab === k} onClick={() => setTab(k)}
+            className={cn("flex-1 rounded px-2 py-1", tab === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>{t(`hist.tab.${k}`)}</button>
+        ))}
+      </div>
+
+      {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} /> : <>
       <Panel className="space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           {hasData && (
@@ -270,6 +283,7 @@ export function History({ site: liveSite }: { site: string }) {
           <Events events={data.events.filter((e) => !hidden.has(e.pack))} lang={lang} tm={tm} onShow={(a, b) => setSpan({ from: a, to: b })} />
         </>
       )}
+      </>}
     </div>
   );
 }

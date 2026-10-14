@@ -8,6 +8,7 @@ import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
 import { busyMessage, busyWaitStep, portBusy } from "../maint";
 import { RecordingEntry } from "./Recording";
+import { readMark } from "../bmsMemory";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -193,7 +194,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // Fixed timeout: no successful answer for CONN_TIMEOUT_MS (since connecting or since the last data) = disconnected.
   useEffect(() => {
     if (isDemo || busy || !connected) return;
-    if (now - Math.max(lastUpdate, since || now) < CONN_TIMEOUT_MS) return;
+    // a BMS history read pauses polling: that time is no lost connection
+    if (now - Math.max(lastUpdate, since || now, readMark()) < CONN_TIMEOUT_MS) return;
     markLost(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 

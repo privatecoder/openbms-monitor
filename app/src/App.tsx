@@ -84,7 +84,7 @@ export default function App() {
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (
-            <History site={site} />
+            <History site={site} connected={connected} bus={bus} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
           ) : view === "params" && maintenance ? (
             <ParametersView connected={connected} bus={bus} site={site} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
           ) : !connected ? (

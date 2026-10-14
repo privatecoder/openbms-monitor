@@ -11,6 +11,7 @@ import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
 import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
 import { Segmented } from "../components/PackPicker";
+import { ClockLine } from "../components/BmsClock";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -122,6 +123,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
             : bus === "can" && !isDemo ? t("par.canBus")
             : t("par.packBus")}
         </p>
+        <ClockLine connected={connected} bus={bus} packs={packs} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}
