@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 mod bms_memory;
 mod firmware;
 mod history;
+mod installations;
 mod maint;
 mod maint_store;
 mod migrate;
@@ -37,6 +38,44 @@ struct AppState {
     memory_busy: Arc<AtomicBool>,
     /// Asks the running history read to stop after the current frame.
     memory_cancel: Arc<AtomicBool>,
+    /// The installation of the monitor connection (None: „Nur ansehen“ or not connected).
+    link: Mutex<Link>,
+}
+
+/// The installation a connection belongs to. `gen` counts connects and disconnects: an answer that arrives after one is
+/// never stored under another connection's installation.
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Link {
+    pub gen: u64,
+    pub installation: Option<String>,
+}
+
+pub(crate) fn link_now(state: &AppState) -> Link {
+    state.link.lock().map(|l| l.clone()).unwrap_or_default()
+}
+
+/// A new connection or none: what comes after belongs to it.
+pub(crate) fn new_link(state: &AppState, installation: Option<String>) {
+    if let Ok(mut l) = state.link.lock() {
+        l.gen += 1;
+        l.installation = installation;
+    }
+}
+
+/// Store something for the installation of the connection an answer came on (`before`, taken before the exchange):
+/// only while that connection is still the current one. A failure is logged; it must not fail the exchange.
+pub(crate) fn for_link<T>(state: &AppState, before: &Link, what: &str, f: impl FnOnce(&maint_store::Store, &str) -> Result<T, String>) -> Option<T> {
+    let inst = before.installation.as_deref()?;
+    if link_now(state).gen != before.gen {
+        return None;
+    }
+    match maint::with_store(state, |s| f(s, inst)) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("{what}: {e:?}");
+            None
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -156,25 +195,40 @@ fn list_ports() -> Vec<String> {
     list_serial_ports()
 }
 
+/// What `connect` did with the installation: its endpoint was linked to it just now.
+#[derive(Serialize)]
+struct Connected {
+    linked: bool,
+}
+
+/// Open the monitor connection for an installation (None: „Nur ansehen“, nothing is stored). The endpoint is linked to
+/// the installation after the port opened and before the first recorded row; recorder and stores use the installation
+/// for this whole connection.
 #[tauri::command]
-async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<(), String> {
+async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation: Option<String>) -> Result<Connected, String> {
     let _port_slot = reserve_port(&state.port_busy).ok_or_else(|| port_busy_error(current_action(&state)))?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
+    }
+    if let Some(id) = &installation {
+        maint::with_store(&state, |s| s.installation(id)).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
     }
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
     let key = endpoint.key();
-    // the installation is named by its gateway address or port, like the groups in the UI
-    let (ep, bus, site) = match endpoint {
-        EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), path),
-        EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr: addr.clone() }, Bus::from(bus), addr),
+    let (ep, bus, control) = match endpoint {
+        EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), maint_store::ControlEndpoint::Serial { path }),
+        EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr: addr.clone() }, Bus::from(bus), maint_store::ControlEndpoint::Tcp { addr }),
     };
     // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
     lock(&state.conn)?.take();
-    // the old connection is gone; control exchanges must not route through it
+    // the old connection is gone; control exchanges must not route through it, nothing more is stored for it
     *state.main.lock().map_err(|e| e.to_string())? = None;
+    new_link(&state, None);
+    if let Ok(mut h) = state.history.lock() {
+        h.disconnected();
+    }
     let conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     {
         // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
@@ -185,11 +239,17 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg) -> Result<()
         *slot = Some(conn);
     }
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
-    *state.main.lock().map_err(|e| e.to_string())? = Some((key, bus));
-    if let Ok(mut h) = state.history.lock() {
-        h.connected(&site, if bus == Bus::CanSocketBus { "can" } else { "pack" });
+    *state.main.lock().map_err(|e| e.to_string())? = Some((key.clone(), bus));
+    let can = bus == Bus::CanSocketBus;
+    let linked = match &installation {
+        Some(id) => maint::with_store(&state, |s| s.link_connection(id, &key, control, can, history::now_ms())).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?,
+        None => false,
+    };
+    new_link(&state, installation.clone());
+    if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
+        h.connected(id, if can { "can" } else { "pack" });
     }
-    Ok(())
+    Ok(Connected { linked })
 }
 
 /// Stop polling and drop the monitor's connection (also before a firmware update takes the port).
@@ -201,6 +261,7 @@ fn stop_monitor(state: &AppState) -> Result<(), String> {
     if let Ok(mut m) = state.main.lock() {
         *m = None;
     }
+    new_link(state, None);
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }
@@ -254,12 +315,24 @@ async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry,
     with_conn(&state.conn, &state.flashing, |c| c.telemetry(address))
 }
 
+/// A serial number read and what it says about the board at that place of the connection's installation (None:
+/// „Nur ansehen“, or not stored).
+#[derive(Serialize)]
+struct SerialRead {
+    #[serde(flatten)]
+    serials: SerialNumbers,
+    board: Option<maint_store::BoardSeen>,
+}
+
 /// Battery and BMS serial number of one pack, as far as the connected bus shows them (RS485-1/2: both; CAN socket
-/// bus: the master's battery serial number only, slaves are not asked).
+/// bus: the master's battery serial number only, slaves are not asked). Every read is a board seen at its place.
 #[tauri::command]
-async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<SerialNumbers, String> {
+async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<SerialRead, String> {
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
-    with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))
+    let before = link_now(&state);
+    let serials = with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))?;
+    let board = for_link(&state, &before, "board", |s, inst| s.board_seen(inst, address, &serials.bms, &serials.battery, history::now_ms()));
+    Ok(SerialRead { serials, board })
 }
 
 /// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
@@ -269,8 +342,9 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
     if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
         return Err("parameters can only be read on RS485-1/2".into());
     }
+    let before = link_now(&state);
     let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
-    bms_memory::snapshot(&state, address, history::SnapshotKind::Read, &p.block);
+    bms_memory::snapshot(&state, &before, address, history::SnapshotKind::Read, &p.block);
     Ok(p)
 }
 
@@ -593,7 +667,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, maint::maint_delete_installation, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
