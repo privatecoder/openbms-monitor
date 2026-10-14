@@ -317,7 +317,10 @@ const resources = {
         notTaken: "nicht übernommen", unread: "Geschrieben; Rücklesen fehlgeschlagen ({{err}}). Die Packs neu lesen.",
         refused: "Vom BMS abgelehnt: Werte nicht plausibel. Die Schalter dieses Blocks sind trotzdem schon aktiv, aber nicht gespeichert.",
         liveSwitches: "Aktiv, aber nicht gespeichert:", noLiveSwitches: "Die gesendeten Schalter entsprechen dem gespeicherten Stand.",
-        restore: "Gespeicherte Schalter wiederherstellen", restartHint: "Auch ein Neustart des Packs stellt die gespeicherten Schalter wieder her.",
+        restore: "Gespeicherte Schalter wiederherstellen", restartHint: "Auch ein Neustart des Packs stellt die gespeicherten Schalter wieder her; danach die Packs neu lesen.",
+        pendingBlock: "Bis der gespeicherte Stand wieder aktiv ist, schreibt die App nichts anderes auf dieses Pack.",
+        refusedShort: "Vom BMS abgelehnt: Werte nicht plausibel. Nichts gespeichert.",
+        restoreRefused: "Auch das Wiederherstellen wurde abgelehnt. Ein Neustart des Packs stellt die gespeicherten Schalter her; danach die Packs neu lesen.",
         invalid: "Vom BMS nicht angenommen (RTN 04: Block-Kennung). Nichts geändert.", error: "Nicht geschrieben: {{err}}",
       },
       snw: {
@@ -327,6 +330,7 @@ const resources = {
         refused: "Das BMS hat den Wert nicht angenommen.", error: "Nicht geschrieben: {{err}}",
         masterHint: "Master (Adresse 0): Steht bei einer Anlage die alte BMS-Seriennummer als Master-Seriennummer, übernimmt die App nach dem Schreiben die neue, damit die Prüfung vor dem Flashen weiter passt.",
         masterUpdated: "Master-Seriennummer gespeichert für: {{names}}.",
+        masterUnchecked: "Die gespeicherte Master-Seriennummer der Anlage wurde nicht aktualisiert (alter oder neuer Wert nicht lesbar); die Prüfung vor dem Flashen meldet dann eine andere Bank, „Seriennummer übernehmen“ behebt das.",
       },
       dash: {
         empty: "Wähle links Gateway oder Adapter und verbinde dich mit der Batterie.",
@@ -716,7 +720,10 @@ const resources = {
         notTaken: "not taken", unread: "Written; reading back failed ({{err}}). Read the packs again.",
         refused: "Refused by the BMS: values not plausible. The switches of this block are already active nevertheless, but not stored.",
         liveSwitches: "Active, but not stored:", noLiveSwitches: "The switches sent match the stored state.",
-        restore: "Restore stored switches", restartHint: "A restart of the pack restores the stored switches, too.",
+        restore: "Restore stored switches", restartHint: "A restart of the pack restores the stored switches, too; then read the packs again.",
+        pendingBlock: "Until the stored state is active again, the app writes nothing else to this pack.",
+        refusedShort: "Refused by the BMS: values not plausible. Nothing stored.",
+        restoreRefused: "Restoring was refused, too. A restart of the pack restores the stored switches; then read the packs again.",
         invalid: "Not accepted by the BMS (RTN 04: block markers). Nothing changed.", error: "Not written: {{err}}",
       },
       snw: {
@@ -726,6 +733,7 @@ const resources = {
         refused: "The BMS did not accept the value.", error: "Not written: {{err}}",
         masterHint: "Master (address 0): if an installation has the old BMS serial number stored as its master serial, the app stores the new one after writing, so the check before flashing still matches.",
         masterUpdated: "Master serial stored for: {{names}}.",
+        masterUnchecked: "The installation's stored master serial was not updated (old or new value not readable); the check before flashing then reports another bank, “take over the serial number” resolves it.",
       },
       dash: {
         empty: "Choose a gateway or adapter on the left and connect to the battery.",

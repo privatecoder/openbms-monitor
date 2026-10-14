@@ -107,8 +107,9 @@ export type ParamWrite =
   | { kind: "refused"; refusal: "refused" | "invalid"; stored: Parameters };
 /** The last write of a pack at this installation and the parameters it replaced. */
 export interface ParamHistory { last_written: number | null; previous: Parameters | null }
-/** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed. */
-export interface SerialSet { value: SerialValue | null; read_error: string | null; master_updated: string[] }
+/** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed;
+ *  `master_unchecked`: master String 2, but the old or new value could not be read, so none was updated. */
+export interface SerialSet { value: SerialValue | null; read_error: string | null; master_updated: string[]; master_unchecked: boolean }
 export interface MaintStatus { marker: boolean; effective_slaves: number }
 /** Recording into the history database. Off by default; changes apply at once. */
 export interface HistorySettings {
@@ -348,7 +349,7 @@ function demoApi(): typeof tauriApi {
       const w = demoWritten.get(address);
       return { last_written: w?.at ?? null, previous: w?.previous ?? null };
     },
-    setSerial: async (_address, _which, text) => ({ value: { kind: "set", value: text.trim(), truncated: false }, read_error: null, master_updated: [] }),
+    setSerial: async (_address, _which, text) => ({ value: { kind: "set", value: text.trim(), truncated: false }, read_error: null, master_updated: [], master_unchecked: false }),
     saveParameters: async (name, content) => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([content], { type: "application/xml" }));

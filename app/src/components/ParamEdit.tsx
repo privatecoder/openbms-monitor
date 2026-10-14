@@ -41,8 +41,13 @@ export function left(e: Edit, i: number): Edit {
 /** Learned full capacity of the edited pack (0x42), read when the edit starts. */
 export type Full = { address: number; ah: number } | { address: number; error: string } | null;
 
-/** After a write or a refusal: a note, or the refusal of 0xA1 with the stored block for restoring the switches. */
-export type Note = { text: string; error: boolean } | { refused: Parameters; live: number[] };
+/** After a write: what happened. */
+export type Note = { text: string; error: boolean };
+
+/** A 0xA1 refusal (RTN 06) that left switches live but not stored: the stored block (read right before) and the
+ *  switches sent. Until the stored block is back, the pack takes no other write: a fresh read would show the live
+ *  switches, and the rebase would adopt them as if the pack had changed. */
+export interface Refused { stored: Parameters; live: number[] }
 
 /** An input in the edited column; P65 only when unlocked. */
 export function EditCell({ e, i, level, disabled, onChange }: { e: Edit; i: number; level?: ParamLevel; disabled: boolean; onChange: (f: (e: Edit) => Edit) => void }) {
@@ -80,8 +85,10 @@ export function EditSwitch({ e, g, b, disabled, onChange }: { e: Edit; g: number
 const MAX_LINES = 10;
 
 /** The sticky bar of an edit: change list, datasheet findings, blockers, the capacity line, write and discard. */
-export function EditBar({ e, pack, changes, blockers, sheet, full, note, busy, locked, sources, onChange, onTakeOver, onWrite, onRestore, onDiscard }: {
+export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused, busy, locked, sources, onChange, onTakeOver, onWrite, onRestore, onDiscard }: {
   e: Edit; pack: string; changes: Change[]; blockers: Blocker[];
+  /** a refusal of this pack whose switches are still live: writing waits for the restore */
+  refused: Refused | null;
   /** datasheet findings of the changed values: index, level, limit text */
   sheet: { index: number; level: ParamLevel; limit: string }[];
   full: Full; note: Note | null; busy: boolean; locked: boolean;
@@ -97,7 +104,7 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, busy, l
     return UNITS[i] ? `${v} ${UNITS[i]}` : v;
   };
   const pname = (i: number) => `P${i} ${helpTitle(`param.${KEYS[i]}`, lang)}`;
-  const swName = (g: number, b: number) => helpTitle(`switch.${g}.${b}`, lang);
+  const swName = (g: number, b: number) => switchName(g, b, lang);
   const line = (c: Change) => c.kind === "param"
     ? `${pname(c.index)}: ${fmt(c.index, c.from)} → ${fmt(c.index, c.to)}`
     : t("pw.switchLine", { name: swName(c.group, c.bit), g: c.group, b: c.bit, to: c.on ? t("par.on") : t("par.off") });
@@ -109,7 +116,7 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, busy, l
   const fullAh = full && full.address === e.address && "ah" in full ? full.ah : null;
   const nf2 = new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const resets = capacityResets(fullAh, e.raws[RATED_INDEX]);
-  const canWrite = !busy && !locked && changes.length > 0 && blockers.length === 0;
+  const canWrite = !busy && !locked && !refused && changes.length > 0 && blockers.length === 0;
   const capacityLine = (rated: number) => fullAh !== null && capacityResets(fullAh, rated) &&
     t("pw.full.resets", { full: nf2.format(fullAh), rated: nf2.format(fromRaw(RATED_INDEX, rated)) });
 
@@ -168,25 +175,40 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, busy, l
           </p>
         )}
 
-      {note && ("refused" in note ? (
-        <div className="space-y-2 rounded-md border border-alarm/40 bg-alarm/10 p-3">
-          <p className="text-alarm">{t("pw.refused")}</p>
-          {(() => {
-            const live = switchDiff(note.live, note.refused.function_switches);
-            return live.length ? (
-              <div>
-                <p>{t("pw.liveSwitches")}</p>
-                <ul className="list-disc pl-5">{live.map((c) => <li key={`${c.group}.${c.bit}`}>{t("pw.switchLine", { name: swName(c.group, c.bit), g: c.group, b: c.bit, to: c.on ? t("par.on") : t("par.off") })}</li>)}</ul>
-              </div>
-            ) : <p className="text-muted">{t("pw.noLiveSwitches")}</p>;
-          })()}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={busy || locked} onClick={() => onRestore(note.refused)}>{busy ? t("pw.writing") : t("pw.restore")}</Button>
-            <span className="text-muted">{t("pw.restartHint")}</span>
-          </div>
-          {capacityLine(note.refused.parameters[RATED_INDEX].raw) && <p className="text-discharge">{capacityLine(note.refused.parameters[RATED_INDEX].raw)}</p>}
+      {refused && <RefusedPanel refused={refused} fullAh={fullAh} busy={busy} locked={locked} onRestore={onRestore} />}
+      {note && <p className={note.error ? "text-alarm" : "text-ok"}>{note.text}</p>}
+    </div>
+  );
+}
+
+const switchName = (g: number, b: number, lang: string) => helpTitle(`switch.${g}.${b}`, lang);
+
+/** The pending refusal: which switches are live but not stored, and „Gespeicherte Schalter wiederherstellen“. */
+export function RefusedPanel({ refused, fullAh, busy, locked, pack, onRestore }: {
+  refused: Refused; fullAh: number | null; busy: boolean; locked: boolean; pack?: string; onRestore: (stored: Parameters) => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language;
+  const nf2 = new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const live = switchDiff(refused.live, refused.stored.function_switches);
+  const rated = refused.stored.parameters[RATED_INDEX].raw;
+  return (
+    <div className="space-y-2 rounded-md border border-alarm/40 bg-alarm/10 p-3 text-sm">
+      <p className="text-alarm">{pack ? `${t("par.pack", { n: pack })}: ` : ""}{t("pw.refused")}</p>
+      {live.length ? (
+        <div>
+          <p>{t("pw.liveSwitches")}</p>
+          <ul className="list-disc pl-5">{live.map((c) => <li key={`${c.group}.${c.bit}`}>{t("pw.switchLine", { name: switchName(c.group, c.bit, lang), g: c.group, b: c.bit, to: c.on ? t("par.on") : t("par.off") })}</li>)}</ul>
         </div>
-      ) : <p className={note.error ? "text-alarm" : "text-ok"}>{note.text}</p>)}
+      ) : <p className="text-muted">{t("pw.noLiveSwitches")}</p>}
+      <p>{t("pw.pendingBlock")}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={busy || locked} onClick={() => onRestore(refused.stored)}>{busy ? t("pw.writing") : t("pw.restore")}</Button>
+        <span className="text-muted">{t("pw.restartHint")}</span>
+      </div>
+      {fullAh !== null && capacityResets(fullAh, rated) && (
+        <p className="text-discharge">{t("pw.full.resets", { full: nf2.format(fullAh), rated: nf2.format(fromRaw(RATED_INDEX, rated)) })}</p>
+      )}
     </div>
   );
 }

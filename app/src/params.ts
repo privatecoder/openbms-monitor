@@ -92,6 +92,8 @@ export const GROUPS: { id: string; indices: number[] }[] = [
 export interface Source {
   id: string;
   kind: "pack" | "file";
+  /** pack columns: the address the parameters were read from */
+  address?: number;
   label: string;
   /** device name from the BMS or the export */
   device?: string;
@@ -109,8 +111,9 @@ export interface Source {
   notTaken?: { params: Set<number>; switches: Set<number> };
 }
 
-export const fromPack = (p: Parameters): Source => ({
-  id: `pack-${p.address}`, kind: "pack", label: String(p.address).padStart(2, "0"), device: p.device_name,
+/** A pack column; `address` is the address asked, not byte 0 of the answer, so a write goes where the column says. */
+export const fromPack = (p: Parameters, address = p.address): Source => ({
+  id: `pack-${address}`, kind: "pack", address, label: String(address).padStart(2, "0"), device: p.device_name,
   values: p.parameters.map((x) => x.value), switches: p.function_switches, read: p,
 });
 

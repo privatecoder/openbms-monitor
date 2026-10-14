@@ -393,14 +393,21 @@ impl History {
             .optional()
             .map_err(e2s)?;
         let Some((id, at)) = last else { return Ok(LastWrite::default()) };
-        let previous: Option<String> = db
-            .query_row(
-                "SELECT block FROM param_snapshots WHERE site = ?1 AND pack = ?2 AND kind = 'read' AND id < ?3 ORDER BY id DESC LIMIT 1",
-                params![site, address, id],
-                |r| r.get(0),
-            )
-            .optional()
+        // the newest read before the write that no refused write follows: after RTN 06 a read shows the refused
+        // block's switches live in RAM, not the stored state
+        let mut stmt = db
+            .prepare("SELECT kind, block FROM param_snapshots WHERE site = ?1 AND pack = ?2 AND id < ?3 ORDER BY id DESC")
             .map_err(e2s)?;
+        let mut rows = stmt.query(params![site, address, id]).map_err(e2s)?;
+        let mut previous: Option<String> = None;
+        while let Some(r) = rows.next().map_err(e2s)? {
+            match r.get::<_, String>(0).map_err(e2s)?.as_str() {
+                "read" if previous.is_none() => previous = Some(r.get(1).map_err(e2s)?),
+                "refused" => previous = None,
+                "written" => break,
+                _ => {}
+            }
+        }
         Ok(LastWrite { at: Some(at), previous: previous.as_deref().and_then(unhex) })
     }
 
@@ -1242,19 +1249,28 @@ mod tests {
         h.snapshot(13, 3, SnapshotKind::Refused, &[0x03]).unwrap();
         h.snapshot(14, 3, SnapshotKind::Written, &[0x04]).unwrap();
         h.snapshot(15, 3, SnapshotKind::Read, &[0x04]).unwrap();
-        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(14), previous: Some(vec![0x02, 0xAB]) });
+        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(14), previous: Some(vec![0x02, 0xAB]) }, "the read before the refused write");
+        // a later write after a plain read: that read
+        h.snapshot(16, 3, SnapshotKind::Written, &[0x05]).unwrap();
+        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(16), previous: Some(vec![0x04]) });
+        // refused, read (switches live), written: the read before the refusal, not the one after it
+        h.snapshot(17, 3, SnapshotKind::Read, &[0x06]).unwrap();
+        h.snapshot(18, 3, SnapshotKind::Refused, &[0x07]).unwrap();
+        h.snapshot(19, 3, SnapshotKind::Read, &[0x08]).unwrap();
+        h.snapshot(20, 3, SnapshotKind::Written, &[0x09]).unwrap();
+        assert_eq!(h.last_write(3).unwrap(), LastWrite { at: Some(20), previous: Some(vec![0x06]) });
         assert_eq!(h.last_write(4).unwrap(), LastWrite::default(), "read only");
         // another installation does not see them
         h.connected("gw-b:4196", "pack");
         assert_eq!(h.last_write(3).unwrap(), LastWrite::default());
         h.clear(None).unwrap();
         h.connected("gw-a:4196", "pack");
-        assert_eq!(h.last_write(3).unwrap().at, Some(14));
+        assert_eq!(h.last_write(3).unwrap().at, Some(20));
         // reopening an existing database keeps the table
         let mut h2 = History::default();
         h2.open(&path).unwrap();
         h2.connected("gw-a:4196", "pack");
-        assert_eq!(h2.last_write(3).unwrap().at, Some(14));
+        assert_eq!(h2.last_write(3).unwrap().at, Some(20));
         assert_eq!(unhex("0aFF"), Some(vec![0x0A, 0xFF]));
         assert_eq!(unhex("0"), None);
     }
