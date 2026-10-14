@@ -137,12 +137,29 @@ pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, calibration:
     with_conn(&state.conn, &state.flashing, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
 }
 
-/// Set the CAN inverter protocol (0xA6, 1..=6) and read the device info (0x51) back for its new name.
+/// Result of a protocol set the BMS accepted: the device info read back, or why that read failed.
+#[derive(Serialize, Debug)]
+pub struct CanProtocolSet {
+    pub device: Option<DeviceInfo>,
+    pub read_error: Option<String>,
+}
+
+impl CanProtocolSet {
+    fn from_read(r: Result<DeviceInfo, String>) -> Self {
+        match r {
+            Ok(d) => Self { device: Some(d), read_error: None },
+            Err(e) => Self { device: None, read_error: Some(e) },
+        }
+    }
+}
+
+/// Set the CAN inverter protocol (0xA6, 1..=6) and read the device info (0x51) back for its new name. Once the BMS
+/// has accepted, a failed read-back is still a success (the protocol is set), with `read_error`.
 #[tauri::command]
-pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, protocol: u8) -> Result<DeviceInfo, String> {
+pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, protocol: u8) -> Result<CanProtocolSet, String> {
     pack_bus_only(&state)?;
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
-    with_conn(&state.conn, &state.flashing, |c| c.device_info(address))
+    Ok(CanProtocolSet::from_read(with_conn(&state.conn, &state.flashing, |c| c.device_info(address))))
 }
 
 /// Read the whole history of one pack; progress arrives as "bms-history-progress" events. One read at a time.
@@ -204,6 +221,16 @@ mod tests {
         assert!(refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x02)))).is_err());
         assert!(refusable::<()>(Err(E::Closed)).is_err());
         assert_eq!(refusable(Ok(5)).unwrap(), Ok(5));
+    }
+
+    #[test]
+    fn a_failed_read_back_is_still_a_set() {
+        let s = CanProtocolSet::from_read(Err("timeout".into()));
+        assert!(s.device.is_none());
+        assert_eq!(s.read_error.as_deref(), Some("timeout"));
+        let d = DeviceInfo { device_name: "SYN".into(), firmware_version: "16.06".into(), can_protocol: "CAN:Victron".into() };
+        let s = CanProtocolSet::from_read(Ok(d.clone()));
+        assert_eq!((s.device, s.read_error), (Some(d), None));
     }
 
     #[test]

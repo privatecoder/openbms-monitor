@@ -64,3 +64,13 @@ export const NOT_CALIBRATED_BIT: Record<Calibration["kind"], number> = { zero_po
 /** Whether the pack still reports that flag (status events, event 8 = index 7). */
 export const notCalibrated = (events: number[] | undefined, kind: Calibration["kind"]) =>
   !!events && ((events[7] ?? 0) & (1 << NOT_CALIBRATED_BIT[kind])) !== 0;
+
+/** The flag after a calibration the BMS accepted: gone, still set, or unknown because the read-back failed. */
+export type FlagAfter = "gone" | "still" | "unread";
+export const flagAfter = (events: number[] | undefined, kind: Calibration["kind"]): FlagAfter =>
+  events === undefined ? "unread" : notCalibrated(events, kind) ? "still" : "gone";
+
+/** A protocol set the BMS accepted: the pack reports the chosen one, another one, or 0x51 could not be read back. */
+export type ProtocolSetResult = "done" | "mismatch" | "unread";
+export const protocolSetResult = (choice: number, reported: string | null | undefined): ProtocolSetResult =>
+  reported === null || reported === undefined ? "unread" : protocolOf(reported)?.n === choice ? "done" : "mismatch";
