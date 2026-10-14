@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Crosshair, Network } from "lucide-react";
+import { ChevronDown, ChevronRight, Crosshair, Network, RefreshCw } from "lucide-react";
 import { api, type DeviceInfo, type PackLive } from "../api";
 import { CAN_PROTOCOLS, cellMv, cellStats, centiAmps, currentAllowed, flagAfter, notCalibrated, parseNumber, protocolOf, protocolSetResult, refusal, MIN_CURRENT_A, NOT_CALIBRATED_BIT, type Calibration, type FlagAfter } from "../calibration";
 import { InfoIcon, helpTitle } from "../help";
@@ -30,6 +30,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
   const [choice, setChoice] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note>(null);
+  const [reload, setReload] = useState(0);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -43,7 +44,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
       setChoice(protocolOf(d?.can_protocol)?.n ?? null);
     }, (e) => alive && setDevice({ error: String(e) }));
     return () => { alive = false; };
-  }, [address, usable]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [address, usable, reload]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!usable || address === null) return null;
 
   const set = async () => {
@@ -74,6 +75,8 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
         {device === null ? <span className="text-muted">{t("can.reading")}</span>
           : "error" in device ? <span className="text-alarm">{t("can.readError", { err: device.error })}</span>
           : <span>{t("can.current", { name: protocolName(device.can_protocol) || "–" })}</span>}
+        <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={busy || locked || device === null} onClick={() => setReload((n) => n + 1)}
+          aria-label={t("can.reload")} title={t("can.reload")}><RefreshCw className="h-4 w-4" /></Button>
         <select value={choice ?? ""} onChange={(e) => setChoice(e.target.value ? Number(e.target.value) : null)} disabled={busy || locked} aria-label={t("can.choose")}
           className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
           {choice === null && <option value="">{t("can.choose")}</option>}

@@ -173,7 +173,7 @@ const resources = {
         pointer: "Uhr stellen unter „Parameter“ (Wartungsfunktionen).",
       },
       can: {
-        title: "CAN-Protokoll", current: "{{name}} (laut Pack)", reading: "Lese Protokoll …", readError: "Protokoll nicht lesbar: {{err}}", noAnswer: "keine Antwort",
+        title: "CAN-Protokoll", current: "{{name}} (laut Pack)", reading: "Lese Protokoll …", reload: "Vom Pack neu lesen", readError: "Protokoll nicht lesbar: {{err}}", noAnswer: "keine Antwort",
         choose: "Protokoll wählen …", set: "Setzen", setting: "Setze …",
         done: "Gesetzt. Das Pack meldet jetzt {{name}}.", mismatch: "Gesendet, aber das Pack meldet {{text}}.",
         refused: "Das BMS hat den Wert nicht angenommen.", error: "Nicht gesetzt: {{err}}", unread: "Gesetzt; Rücklesen fehlgeschlagen ({{err}}).",
@@ -541,7 +541,7 @@ const resources = {
         pointer: "Set the clock under “Parameters” (maintenance functions).",
       },
       can: {
-        title: "CAN protocol", current: "{{name}} (per pack)", reading: "Reading protocol …", readError: "Protocol not readable: {{err}}", noAnswer: "no answer",
+        title: "CAN protocol", current: "{{name}} (per pack)", reading: "Reading protocol …", reload: "Read again from the pack", readError: "Protocol not readable: {{err}}", noAnswer: "no answer",
         choose: "Choose protocol …", set: "Set", setting: "Setting …",
         done: "Set. The pack now reports {{name}}.", mismatch: "Sent, but the pack reports {{text}}.",
         refused: "The BMS did not accept the value.", error: "Not set: {{err}}", unread: "Set; reading it back failed ({{err}}).",
