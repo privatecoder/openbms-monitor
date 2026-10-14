@@ -173,7 +173,7 @@ const resources = {
         pointer: "Uhr stellen unter „Parameter“ (Wartungsfunktionen).",
       },
       bmsh: {
-        intro: "Die Datensätze, die das BMS selbst speichert: bis zu 500 je Pack, alle Parameter 75 (Betrieb) bzw. 76 (Standby) Minuten, auch aus Zeiten ohne App.",
+        intro: "Die Datensätze, die das BMS selbst speichert: bis zu 500 je Pack, bei jeder Änderung von Zustand oder Meldungen und sonst alle Parameter 75 (Betrieb) bzw. 76 (Standby) Minuten, auch aus Zeiten ohne App.",
         pack: "Pack", read: "Historie lesen", cancel: "Abbrechen", reading: "Datensatz {{n}} …", save: "Als CSV speichern",
         saved: "Gespeichert: {{name}}", saveError: "Nicht gespeichert: {{err}}",
         needConnection: "Zum Lesen über RS485-1/2 verbinden.",
@@ -497,7 +497,7 @@ const resources = {
         pointer: "Set the clock under “Parameters” (maintenance functions).",
       },
       bmsh: {
-        intro: "The records the BMS keeps itself: up to 500 per pack, written every parameter 75 (working) or 76 (standby) minutes, also from times without the app.",
+        intro: "The records the BMS keeps itself: up to 500 per pack, written on every change of state or messages and otherwise every parameter 75 (working) or 76 (standby) minutes, also from times without the app.",
         pack: "Pack", read: "Read history", cancel: "Cancel", reading: "Record {{n}} …", save: "Save as CSV",
         saved: "Saved: {{name}}", saveError: "Not saved: {{err}}",
         needConnection: "Connect via RS485-1/2 to read.",
