@@ -1,7 +1,7 @@
 ---
 title: Verlauf
 short: Zeigt die aufgezeichneten Werte als Diagramme über die Zeit, mit Export und Import.
-related: topic.recording, value.share
+related: topic.recording, value.share, topic.bmsHistory
 ---
 - **Anlage und Zeitraum:** Die Daten sind nach Anlage getrennt (Gateway-Adresse bzw. Port). Zeiträume bis jetzt (1 h bis 30 Tage) aktualisieren sich alle 30 s; „Alles“ zeigt die ganze Aufzeichnung.
 - **Diagramme je Pack:** Strom, Stromanteil, SOC, Pack-Spannung, höchste und niedrigste Zelle, Zelldifferenz, wärmste und kälteste Zelle. Jeder Pack hat überall dieselbe Farbe; über die Pack-Knöpfe blendest du einzelne aus.

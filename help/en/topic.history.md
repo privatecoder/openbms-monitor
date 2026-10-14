@@ -1,7 +1,7 @@
 ---
 title: History
 short: Shows the recorded values as charts over time, with export and import.
-related: topic.recording, value.share
+related: topic.recording, value.share, topic.bmsHistory
 ---
 - **Installation and span:** data is kept per installation (gateway address or port). Spans up to now (1 h to 30 days) refresh every 30 s; “All” shows the whole recording.
 - **Charts per pack:** current, current share, SOC, pack voltage, highest and lowest cell, cell difference, warmest and coldest cell. Each pack keeps its colour everywhere; the pack buttons hide single packs.

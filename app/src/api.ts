@@ -65,6 +65,31 @@ export interface SystemValues {
   discharge_voltage_limit: number;
   total_capacity_ah: number;
 }
+/** Calendar time of the BMS clock (no zone). */
+export interface BmsTime { year: number; month: number; day: number; hour: number; minute: number; second: number }
+/** One record of the pack's internal history (0x4B). */
+export interface BmsHistoryRecord {
+  time: BmsTime;
+  system_status: number;
+  events: number[];
+  alarms: ActiveAlarm[];
+  cell_voltages: number[];
+  cell_temperatures: number[];
+  ambient_temperature: number;
+  power_temperature: number;
+  current: number;
+  pack_voltage: number;
+  remaining_capacity_ah: number;
+  full_capacity_ah: number;
+  soc: number;
+  rated_capacity_ah: number;
+  cycles: number;
+  soh: number;
+  port_voltage: number;
+}
+/** A history read, oldest record first. end: last = the pack flagged its last record; empty = no (more) records;
+ *  cap = 520 records without a last flag; error = stopped by `error` after the records read so far. */
+export interface BmsHistoryRead { address: number; records: BmsHistoryRecord[]; end: "last" | "empty" | "cancelled" | "cap" | "error"; error: string | null }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 export interface MaintStatus { marker: boolean; effective_slaves: number }
@@ -166,6 +191,16 @@ const tauriApi = {
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
+  /** RS485-1/2 only, like the parameters */
+  bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
+  /** sets the clock to `time` and returns the clock read back */
+  setBmsClock: (address: number, time: BmsTime) => invoke<BmsTime>("set_bms_clock", { address, time }),
+  /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
+  bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
+  bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
+  onBmsHistoryProgress: (f: (p: { address: number; n: number }) => void) => listen<{ address: number; n: number }>("bms-history-progress", (e) => f(e.payload)),
+  /** writes the CSV to a path from the save dialog */
+  saveBmsHistory: (path: string, content: string) => invoke<void>("save_bms_history", { path, content }),
   firmwareCheckImage: (path: string, allowCustom: boolean, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, allowCustom, lang }),
   /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
   firmwareInspect: (port: string, address: number, lang: string) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang }),
@@ -207,6 +242,8 @@ const balanceDemo = new URLSearchParams(location.search).get("balance");
 function demoApi(): typeof tauriApi {
   const packL = new Set<(u: PackUpdate) => void>();
   const sysL = new Set<(u: SystemUpdate) => void>();
+  const histL = new Set<(p: { address: number; n: number }) => void>();
+  let demoCancel = false;
   let timer: number | undefined;
   const load = () => import("./demo/capture.json").then((m) => m.default as unknown as {
     scan: { address: number; device: DeviceInfo }[];
@@ -281,6 +318,29 @@ function demoApi(): typeof tauriApi {
       return name;
     },
     revealParameters: async () => {},
+    // preview: a clock 3 min 12 s behind, and a synthetic history of a few days
+    bmsClock: async (address) => {
+      await new Promise((r) => setTimeout(r, 150));
+      if (address === 0) throw new Error("timeout after 1500 ms");
+      const d = new Date(Date.now() - 192_000);
+      return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes(), second: d.getSeconds() };
+    },
+    setBmsClock: async (_address, time) => time,
+    bmsHistory: async (address) => {
+      demoCancel = false;
+      const records: BmsHistoryRecord[] = [];
+      const n = 48;
+      for (let i = 0; i < n; i++) {
+        if (demoCancel) return { address, records, end: "cancelled", error: null };
+        await new Promise((r) => setTimeout(r, 40));
+        records.push(demoRecord(Date.now() - 192_000 - (n - 1 - i) * 2 * HOUR_MS, i));
+        histL.forEach((f) => f({ address, n: records.length }));
+      }
+      return { address, records, end: "last", error: null };
+    },
+    bmsHistoryCancel: async () => { demoCancel = true; },
+    onBmsHistoryProgress: (f) => sub(histL, f),
+    saveBmsHistory: async () => {},
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
@@ -300,6 +360,23 @@ function demoApi(): typeof tauriApi {
     onFirmwareDone: async () => () => {},
     onFirmwareBusy: async () => () => {},
     revealFirmwareLogs: async () => {},
+  };
+}
+const HOUR_MS = 3_600_000;
+/** Preview: one synthetic history record; charging by day, discharging at night, one warning in the evening. */
+function demoRecord(ms: number, i: number): BmsHistoryRecord {
+  const d = new Date(ms), h = d.getHours();
+  const current = h > 9 && h < 16 ? 40 : h > 18 || h < 6 ? -15 : 0;
+  const soc = Math.max(10, Math.min(98, 50 + (h - 12) * 4));
+  const cell = (c: number) => Math.round((3.28 + soc / 2000 + Math.sin(c * 1.7 + i) * 0.004) * 1000) / 1000;
+  const warn = h === 20 && i % 2 === 0;
+  return {
+    time: { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: h, minute: d.getMinutes(), second: d.getSeconds() },
+    system_status: current > 0 ? 0x02 : current < 0 ? 0x01 : 0x10, events: [0, warn ? 0x04 : 0, 0, 0, 0, 0, 0, 0],
+    alarms: warn ? [{ id: "alarm.ev2.b2", key: "cell_low_voltage_warning", severity: "warning" }] : [],
+    cell_voltages: Array.from({ length: 16 }, (_, c) => cell(c)), cell_temperatures: [21.5, 22.1, 21.8, 22.4],
+    ambient_temperature: 20.3, power_temperature: 23.9, current, pack_voltage: 52.8 + soc / 50,
+    remaining_capacity_ah: (280 * soc) / 100, full_capacity_ah: 280, soc, rated_capacity_ah: 280, cycles: 120, soh: 100, port_voltage: 52.9 + soc / 50,
   };
 }
 const DEMO_PARAMS = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,

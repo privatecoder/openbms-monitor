@@ -15,6 +15,8 @@ The vendor tool BatteryMonitor reads and sets the BMS clock and reads the pack's
 
 ## Design
 
+**Placement changed by the user 2026-10-14:** no separate view; the clock line (1) sits near the top of the existing **Parameters** view for a chosen pack, the history (2) is a second tab **„Aus dem BMS“** next to **„App-Aufzeichnung“** in **Verlauf**, with the pack's clock deviation and a pointer to Parameters; the help topic is `topic.bmsHistory`. The text below describes the content of both parts.
+
 One new view **„BMS-Speicher“** (sidebar, next to „Verlauf“), available while the monitor is connected on RS485-1/2 (otherwise the same hint as parameters: „nur über RS485-1/2 lesbar“). A pack picker (addresses of the connection) on top.
 
 1. **Clock line:** BMS time, PC time, difference („BMS-Uhr geht 3 min 12 s nach“). Button **„Uhr stellen: <PC local time> (<PC time zone, e.g. MEZ/UTC+1>)“** — the label shows the exact time and zone that will be sent (the BMS stores calendar fields without a zone; a PC in another time zone would shift all later records). Sends 0x4E with the PC's local time, reads 0x4D back and shows the new difference. One click, no dialog. Note: 0x4E rewrites 16 RTC registers from register 0 (control bytes and weekday to 00); no known effect in this firmware. Optional: „Alle Packs stellen“ (one 0x4E per pack in the list).
