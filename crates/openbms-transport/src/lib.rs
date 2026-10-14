@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{frame, memory, modbus, serial, BmsTime, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{calibration, frame, memory, modbus, serial, BmsTime, Calibration, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -233,6 +233,19 @@ impl Connection {
     /// Set the BMS clock (0x4E; RS485-1/2 only). Implausible calendar fields are refused before sending.
     pub fn set_clock(&mut self, address: u8, time: BmsTime) -> Result<()> {
         self.ascii(&memory::set_clock_request(address, time)?, address)?;
+        Ok(())
+    }
+
+    /// One calibration step (0xA0; RS485-1/2 only). A refusal comes back as RTN 06, an unknown sub as RTN 04
+    /// (`openbms_proto::Refusal::from_error`). Success proves the new factor in RAM only.
+    pub fn calibrate(&mut self, address: u8, cal: Calibration) -> Result<()> {
+        self.ascii(&calibration::calibrate_request(address, cal)?, address)?;
+        Ok(())
+    }
+
+    /// Set the CAN inverter protocol (0xA6; RS485-1/2 only), 1..=6. The new name shows in 0x51.
+    pub fn set_can_protocol(&mut self, address: u8, protocol: u8) -> Result<()> {
+        self.ascii(&calibration::set_can_protocol_request(address, protocol)?, address)?;
         Ok(())
     }
 
@@ -479,6 +492,25 @@ mod tests {
         assert!(last);
         assert_eq!(r.time.year, 2026);
         assert!(matches!(c.history_record(3, false), Err(Error::Proto(openbms_proto::Error::Rtn(0x08)))));
+    }
+
+    #[test]
+    fn calibration_and_can_protocol() {
+        let cur = Calibration::Current { centi_amps: 2000 };
+        let mut c = scripted(vec![
+            (calibration::calibrate_request(1, Calibration::ZeroPoint).unwrap(), answer(1, 0, &[])),
+            (calibration::calibrate_request(1, cur).unwrap(), answer(1, 0x06, &[])),
+            (calibration::set_can_protocol_request(1, 3).unwrap(), answer(1, 0, &[])),
+        ]);
+        c.calibrate(1, Calibration::ZeroPoint).unwrap();
+        let refused = match c.calibrate(1, cur) {
+            Err(Error::Proto(e)) => openbms_proto::Refusal::from_error(&e),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(refused, Some(openbms_proto::Refusal::Refused));
+        c.set_can_protocol(1, 3).unwrap();
+        // 7 is refused before anything is sent
+        assert!(matches!(c.set_can_protocol(1, 7), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
     }
 
     fn two() -> Vec<SocketAddr> {
