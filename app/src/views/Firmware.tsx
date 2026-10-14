@@ -224,7 +224,6 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           the master's full version is the panel's last read */}
       {tab === "manual" && <section className="space-y-3 rounded-md border border-line p-4">
         <p className="text-sm text-muted">{t("fw.manualHint")}</p>
-        <p className="text-sm">{t("fw.manualQuiet")}</p>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           {/* the RS485-1/2 port of this tab: always free to choose; the installation's checks apply on its own port */}
           <label className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
@@ -244,7 +243,13 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         </div>
         {imagePicker}
         <Button variant="secondary" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
-        {inspectError && <p className="flex gap-2 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{inspectError}</p>}
+        {/* a polling master is the usual cause: busy bus or no answer */}
+        {inspectError && (
+          <div className="space-y-1 text-sm">
+            <p className="flex gap-2 text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{inspectError}</p>
+            <p>{t("fw.manualQuiet")}</p>
+          </div>
+        )}
         {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion, can: target.can_protocol })}</p>}
         {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: targetVersion, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
