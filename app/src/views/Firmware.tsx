@@ -8,7 +8,7 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, imageLabel, imageWarning, progressFraction, resultVersions, steps } from "../firmware";
-import { errorKey, otherBank, packPortOf, packVersion } from "../maint";
+import { errorKey, otherBank, packPortOf, packVersion, releaseFirst } from "../maint";
 import type { Maint } from "../maintStore";
 import { PackKindSelect } from "./MaintSetup";
 import { PackBusPanel } from "./PackBusPanel";
@@ -104,7 +104,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   /** Start a flash (panel or manual): refusals are thrown back as the backend sent them. */
-  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, installation: string | null) => {
+  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, installation: string | null, releaseMaster: boolean) => {
     if (!path || !image) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
@@ -112,7 +112,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, installation);
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, installation, releaseMaster);
       setFlashed({ address: a, image, checked: from, bank: r.bank });
       // the pending record is written now
       void maint.loadLists();
@@ -133,12 +133,14 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   // the master read and the installation's checks count only on the installation's own port
   const samePort = mPort === port;
+  // C' in this tab too: the master's flash releases a marker that is on
+  const release = samePort && releaseFirst(master, address, image?.kind ?? null);
   const targetVersion = target ? packVersion(address, target.firmware_version, samePort ? master : null) : null;
   const manualStart = async () => {
     const confirmation = typed;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setTyped(""); setTarget(null); setCheckedFor(null);
-    try { await startFlash(mPort, address, confirmation, targetVersion, samePort ? inst?.id ?? null : null); }
+    try { await startFlash(mPort, address, confirmation, targetVersion, samePort ? inst?.id ?? null : null, release); }
     catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
   };
 
@@ -178,7 +180,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null)} onMaster={setMaster} />}
+        onFlash={(a, from, release) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null, release)} onMaster={setMaster} />}
 
       {(running || done) && (
         <section className="space-y-3 border-t border-line pt-5">
@@ -245,7 +247,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
         </label>
-        <Button variant="primary" disabled={!s.start} onClick={manualStart}>{t("fw.start")}</Button>
+        {release && <p className="text-sm text-discharge">{t("maint.packs.cPrime")}</p>}
+        <Button variant="primary" disabled={!s.start} onClick={manualStart}>{t(release ? "maint.packs.releaseAndFlash" : "fw.start")}</Button>
         {error && (
           <div className="space-y-1 text-sm text-alarm">
             <p>{error.text}</p>

@@ -35,7 +35,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   /** counts finished flashes: the list is scanned again and „Fertig“ shows */
   flashTick: number;
   /** start a flash of `address` (confirmed here); throws a refusal */
-  onFlash: (address: number, from: string | null) => Promise<void>;
+  onFlash: (address: number, from: string | null, releaseMaster: boolean) => Promise<void>;
   /** the master read of the live status (for the full version of address 0 elsewhere) */
   onMaster: (m: MasterView | null) => void;
   onUserAction: () => void;
@@ -125,7 +125,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
     await api.maintAdoptMasterSerial(inst.id, serial);
     setScan((s) => (s ? { ...s, bank: { state: "match", serial: null } } : s));
   });
-  const flash = (address: number, from: string | null) => run("flash", async () => { setConfirm(null); await onFlash(address, from); });
+  const flash = (address: number, from: string | null, release: boolean) => run("flash", async () => { setConfirm(null); await onFlash(address, from, release); });
 
   const line = port ? busLine(live, running, t) : { tone: "muted" as Tone, text: t("maint.live.noPort") };
   const mLine = master ? masterLine(master, t) : null;
@@ -228,6 +228,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
               const blocked = flashBlocked({ image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port });
               const name = a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a });
               const version = d ? packVersion(a, d.firmware_version, master) : null;
+              const release = releaseFirst(master, a, image?.kind ?? null);
               return (
                 <li key={a} className="space-y-1 rounded-md border border-line p-2">
                   <div className="flex flex-wrap items-center gap-3">
@@ -236,11 +237,11 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
                     {confirm !== a && d && <Button variant="secondary" size="sm" className="ml-auto" disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => setConfirm(a)}>{t("maint.packs.flash")}</Button>}
                   </div>
                   {pending && <p className="text-alarm">{t("maint.packs.pending", { pack: a })}</p>}
-                  {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
+                  {release && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                   {confirm === a && image && d && (
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{t(image.custom ? "maint.packs.confirmCustom" : "maint.packs.confirm", { to: imageLabel(image, t) })}</span>
-                      <ActButton variant="primary" size="sm" spinning={action === "flash"} disabled={!!blocked} onClick={() => flash(a, version)}>{t("maint.packs.flashNow")}</ActButton>
+                      <ActButton variant="primary" size="sm" spinning={action === "flash"} disabled={!!blocked} onClick={() => flash(a, version, release)}>{t(release ? "maint.packs.releaseAndFlash" : "maint.packs.flashNow")}</ActButton>
                       <Button variant="secondary" size="sm" onClick={() => setConfirm(null)}>{t("maint.setup.cancel")}</Button>
                     </div>
                   )}
