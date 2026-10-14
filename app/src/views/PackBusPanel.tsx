@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, endpointKey, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, releaseFirst, showDone, type Tone } from "../maint";
+import { busLine, endpointKey, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, releaseFirst, showDone, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { imageLabel } from "../firmware";
 import { Button } from "../components/ui/button";
@@ -217,19 +217,20 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
               const pending = pendingHere.find((p) => p.pack === a);
               const blocked = flashBlocked({ image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port });
               const name = a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a });
+              const version = d ? packVersion(a, d.firmware_version, master) : null;
               return (
                 <li key={a} className="space-y-1 rounded-md border border-line p-2">
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="font-medium">{name}</span>
-                    <span className="text-muted">{d ? t("maint.packs.version", { version: d.firmware_version }) : t("maint.packs.silent")}</span>
+                    <span className="text-muted">{version ? t("maint.packs.version", { version }) : t("maint.packs.silent")}</span>
                     {confirm !== a && d && <Button variant="secondary" size="sm" className="ml-auto" disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => setConfirm(a)}>{t("maint.packs.flash")}</Button>}
                   </div>
                   {pending && <p className="text-alarm">{t("maint.packs.pending", { pack: a })}</p>}
                   {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                   {confirm === a && image && d && (
                     <div className="flex flex-wrap items-center gap-2">
-                      <span>{t(image.custom ? "maint.packs.confirmCustom" : "maint.packs.confirm", { name, from: d.firmware_version, to: imageLabel(image, t) })}</span>
-                      <ActButton variant="primary" size="sm" spinning={action === "flash"} disabled={!!blocked} onClick={() => flash(a, d.firmware_version)}>{t("maint.packs.flashNow")}</ActButton>
+                      <span>{t(image.custom ? "maint.packs.confirmCustom" : "maint.packs.confirm", { to: imageLabel(image, t) })}</span>
+                      <ActButton variant="primary" size="sm" spinning={action === "flash"} disabled={!!blocked} onClick={() => flash(a, version)}>{t("maint.packs.flashNow")}</ActButton>
                       <Button variant="secondary" size="sm" onClick={() => setConfirm(null)}>{t("maint.setup.cancel")}</Button>
                     </div>
                   )}

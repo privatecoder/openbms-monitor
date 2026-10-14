@@ -191,6 +191,12 @@ export function masterLine(m: MasterView, t: T): { tone: Tone; text: string } {
   }
 }
 
+/** The version shown for a pack: 0x51 only knows major.minor (e.g. 16.06); for the master (address 0) a trusted
+ *  maintenance read over the CAN socket gives the full build. */
+export function packVersion(address: number, firmware: string, master: MasterView | null): string {
+  return address === 0 && master?.kind === "maint" && master.version ? master.version : firmware;
+}
+
 /** Scenario C': the master (address 0) with a trusted maintenance build and its marker on gets an image that is
  *  not a maintenance build only after „Master freigeben“ (the backend refuses it too). */
 export function releaseFirst(master: MasterView | null, address: number, kind: FirmwareImage["kind"] | null): boolean {

@@ -88,7 +88,7 @@ const resources = {
           title: "Packs", rescan: "Neu suchen", none: "Kein Pack antwortet am Pack-Bus.",
           inverter: "Während der Wartung meldet der Master dem Wechselrichter nur sein eigenes Pack.",
           master: "Master (0)", pack: "Pack {{address}}", version: "Firmware {{version}}", silent: "antwortet nicht",
-          flash: "Flashen", flashNow: "Jetzt flashen", confirm: "{{name}}: Firmware {{from}} → {{to}}", confirmCustom: "{{name}}: Firmware {{from}} → Eigene Firmware, nicht freigegeben ({{to}})",
+          flash: "Flashen", flashNow: "Jetzt flashen", confirm: "Neue Firmware: {{to}}", confirmCustom: "Neue Firmware: eigene Firmware, nicht freigegeben ({{to}})",
           pending: "Pack {{pack}} hängt eventuell im Bootloader. Neu flashen geht in der App noch nicht (das Update braucht eine Antwort der Anwendung).",
           cPrime: "Das Image ist kein Wartungs-Build: erst am Master DIP 5–8 auf OFF, dann „Master freigeben“, dann flashen, danach DIP 5–8 zurückstellen.",
           why: {
@@ -383,7 +383,7 @@ const resources = {
           title: "Packs", rescan: "Search again", none: "No pack answers on the pack bus.",
           inverter: "During maintenance the master reports only its own pack to the inverter.",
           master: "Master (0)", pack: "Pack {{address}}", version: "firmware {{version}}", silent: "does not answer",
-          flash: "Flash", flashNow: "Flash now", confirm: "{{name}}: firmware {{from}} → {{to}}", confirmCustom: "{{name}}: firmware {{from}} → custom firmware, not released ({{to}})",
+          flash: "Flash", flashNow: "Flash now", confirm: "New firmware: {{to}}", confirmCustom: "New firmware: custom firmware, not released ({{to}})",
           pending: "Pack {{pack}} may hang in its bootloader. Flashing it again is not possible in the app yet (the updater needs an answer of the application).",
           cPrime: "The image is not a maintenance build: first set DIP 5–8 of the master OFF, then “Release master”, then flash, then set DIP 5–8 back.",
           why: {
