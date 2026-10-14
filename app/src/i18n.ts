@@ -106,6 +106,7 @@ const resources = {
         done: {
           title: "Fertig", dip: "DIP 5–8 am Master zurückstellen.",
           hint: "Danach zeigt die Statuszeile „Master fragt … Slaves ab“ als Bestätigung.",
+          back: "Wartung abgeschlossen: Der Master fragt seine Slaves wieder ab.",
         },
         banner: {
           unassigned: "Die Verbindung {{endpoint}} gehört zu keiner Anlage. Angezeigt wird weiter „{{name}}“.",
@@ -403,6 +404,7 @@ const resources = {
         done: {
           title: "Done", dip: "Set DIP 5–8 of the master back.",
           hint: "The status line then shows “Master polls … slaves” as confirmation.",
+          back: "Maintenance finished: the master polls its slaves again.",
         },
         banner: {
           unassigned: "The connection {{endpoint}} belongs to no installation. Still showing “{{name}}”.",
