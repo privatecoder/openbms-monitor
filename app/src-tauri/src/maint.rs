@@ -582,6 +582,22 @@ pub async fn maint_release(state: State<'_, AppState>, installation: String) -> 
 
 static LAST_LIVE: Mutex<String> = Mutex::new(String::new());
 
+/// Scenario C' inside the master's flash („Master freigeben und flashen“): `stop` while the maintenance build still
+/// runs, then a fresh read must show the marker off. The caller holds the operation lock.
+pub fn release_for_flash(state: &AppState, inst: &Installation) -> Result<(), MaintError> {
+    event(state, "release for flash");
+    let r = control_dialog(state, inst, Action::Stop)?;
+    let after = read_master(state, inst);
+    if let Ok(m) = &after {
+        event(state, &format!("release for flash read {}", master_text(&master_view(m))));
+    }
+    r?;
+    match after? {
+        m if m.marker() == Some(MarkerWord::Off) => Ok(()),
+        _ => Err(refused("release-failed")),
+    }
+}
+
 fn marker_action(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
     let name = if action == Action::Start { "halt" } else { "release" };
     event(state, &format!("{name} pressed"));
