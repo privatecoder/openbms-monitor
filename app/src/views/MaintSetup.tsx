@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { RefreshCw } from "lucide-react";
 import { api, type ControlEndpoint, type Installation } from "../api";
 import { errorKey, nameCheck, setupEndpoints, setupFields } from "../maint";
 import { Button } from "../components/ui/button";
@@ -10,14 +11,17 @@ const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-in
 const blank: Installation = { id: "", name: "", endpoints: [], control: null };
 
 /** A port select that also shows a stored port that is not plugged in (it must not vanish from the form). */
-function PortSelect({ value, ports, onChange, label, disabled }: { value: string; ports: string[]; onChange: (v: string) => void; label: string; disabled: boolean }) {
+function PortSelect({ value, ports, onChange, onRefresh, label, disabled }: { value: string; ports: string[]; onChange: (v: string) => void; onRefresh: () => void; label: string; disabled: boolean }) {
   const { t } = useTranslation();
   return (
-    <select className={input} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} aria-label={label}>
-      <option value="">{t("conn.port")}</option>
-      {value && !ports.includes(value) && <option value={value}>{t("maint.setup.notPlugged", { port: value })}</option>}
-      {ports.map((p) => <option key={p} value={p}>{p}</option>)}
-    </select>
+    <span className="flex items-center gap-1">
+      <select className={input} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+        <option value="">{t("conn.port")}</option>
+        {value && !ports.includes(value) && <option value={value}>{t("maint.setup.notPlugged", { port: value })}</option>}
+        {ports.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+      <Button variant="ghost" size="icon" disabled={disabled} onClick={onRefresh} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+    </span>
   );
 }
 
@@ -52,7 +56,8 @@ export function MaintSetup({ installation, installations, onSaved, onDeleted, on
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  useEffect(() => { api.listPorts().then(setPorts).catch(() => setPorts([])); }, []);
+  const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
+  useEffect(loadPorts, []);
 
   const can: ControlEndpoint | null = !f.canValue.trim() ? null : f.canKind === "tcp" ? { kind: "tcp", addr: f.canValue.trim() } : { kind: "serial", path: f.canValue };
 
@@ -89,7 +94,7 @@ export function MaintSetup({ installation, installations, onSaved, onDeleted, on
           </select>
           {f.canKind === "tcp"
             ? <input className={input} value={f.canValue} disabled={disabled} onChange={(e) => edit({ canValue: e.target.value })} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
-            : <PortSelect value={f.canValue} ports={ports} onChange={(v) => edit({ canValue: v })} label={t("conn.port")} disabled={disabled} />}
+            : <PortSelect value={f.canValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ canValue: v })} label={t("conn.port")} disabled={disabled} />}
         </div>
         <p className="text-muted">{t("maint.setup.controlHint")}</p>
       </div>
@@ -98,7 +103,7 @@ export function MaintSetup({ installation, installations, onSaved, onDeleted, on
         <p className="font-medium">{t("maint.setup.rs485")}</p>
         <div className="flex flex-wrap items-center gap-3">
           <PackKindSelect disabled={disabled} />
-          <PortSelect value={f.pack} ports={ports} onChange={(v) => edit({ pack: v })} label={t("maint.setup.rs485")} disabled={disabled} />
+          <PortSelect value={f.pack} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ pack: v })} label={t("maint.setup.rs485")} disabled={disabled} />
         </div>
         <p className="text-muted">{t("maint.setup.rs485Hint")}</p>
       </div>
