@@ -11,6 +11,7 @@ mod firmware;
 mod history;
 mod maint;
 mod maint_store;
+mod migrate;
 use history::{Format, Settings, SharedHistory};
 
 #[derive(Default)]
