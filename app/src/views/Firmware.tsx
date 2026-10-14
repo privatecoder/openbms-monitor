@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, FolderOpen, TriangleAlert } from "lucide-react";
-import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress } from "../api";
+import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type MasterView } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, imageLabel, imageWarning, progressFraction, resultVersions, steps } from "../firmware";
-import { errorKey, otherBank, packPortOf } from "../maint";
+import { errorKey, otherBank, packPortOf, packVersion } from "../maint";
 import type { Maint } from "../maintStore";
 import { PackBusPanel } from "./PackBusPanel";
 
@@ -37,6 +37,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [pending, setPending] = useState<{ path: string; info: FirmwareImage } | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [target, setTarget] = useState<DeviceInfo | null>(null);
+  const [master, setMaster] = useState<MasterView | null>(null);
   const [checkedFor, setCheckedFor] = useState<{ port: string; address: number } | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -123,11 +124,12 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     finally { setBusy(false); }
   };
 
+  const targetVersion = target ? packVersion(address, target.firmware_version, master) : null;
   const manualStart = async () => {
     const confirmation = typed;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setTyped(""); setTarget(null); setCheckedFor(null);
-    try { await startFlash(address, confirmation, target?.firmware_version ?? null); }
+    try { await startFlash(address, confirmation, targetVersion); }
     catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
   };
 
@@ -159,7 +161,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => startFlash(a, confirmationPhrase(a, image?.custom), from)} />
+        onFlash={(a, from) => startFlash(a, confirmationPhrase(a, image?.custom), from)} onMaster={setMaster} />
 
       {(running || done) && (
         <section className="space-y-3 border-t border-line pt-5">
@@ -211,8 +213,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         </div>
         {imagePicker}
         <Button variant="secondary" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
-        {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: target.firmware_version, can: target.can_protocol })}</p>}
-        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: target.firmware_version, to: imageLabel(image, t) })}</p>}
+        {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion, can: target.can_protocol })}</p>}
+        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: targetVersion, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
