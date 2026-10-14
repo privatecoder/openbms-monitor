@@ -185,7 +185,9 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
           <h3 className="font-medium">{t("maint.quiet.title")}</h3>
           {/* an image that is not a maintenance build would need „Master freigeben“ again before the master's flash
               (C'): DIP 5–8 OFF keep the bus quiet for every pack; halting stays possible for the slaves only */}
-          {master?.may_halt && inst && image && image.kind !== "maintenance" ? (
+          {/* a halted master may finish the round it had started: no DIP advice for that */}
+          {master?.marker === "on" && master.slaves === 0 ? <p>{t("maint.quiet.halted")}</p>
+          : master?.may_halt && inst && image && image.kind !== "maintenance" ? (
             <>
               <p>{t("maint.quiet.dip")}</p>
               <p className="text-muted">{t("maint.quiet.dipForImage")}</p>

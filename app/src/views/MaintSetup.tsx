@@ -28,7 +28,7 @@ export function PackKindSelect({ disabled }: { disabled: boolean }) {
   return (
     <select className={input} value="serial" disabled={disabled} onChange={() => {}} aria-label={t("maint.setup.rs485Kind")}>
       <option value="serial">{t("conn.serial")}</option>
-      <option value="tcp" disabled>{t("maint.setup.tcpLater")}</option>
+      <option value="tcp" disabled>{t("conn.tcp")}</option>
     </select>
   );
 }
