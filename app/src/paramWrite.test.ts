@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RULES, blockers, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations } from "./paramWrite";
+import { RULES, blockers, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations } from "./paramWrite";
 import { KEYS, UNITS, type Parameters } from "./params";
 
 /** A synthetic, plausible configuration (display values, P0..P86). */
@@ -213,5 +213,15 @@ describe("change list and checks", () => {
     expect(capacityResets(undefined, 28000)).toBe(false);
     expect(ratedFor(265.004)).toBe(26500);
     expect(capacityResets(265, ratedFor(265))).toBe(false);
+  });
+});
+
+describe("pending refusal", () => {
+  const p = (raw0: number, sw7: number): Parameters => ({ address: 1, device_name: "SYN", function_switches: [0, 0, 0, 0, 0, 0, 0, sw7],
+    parameters: KEYS.map((key, index) => ({ index, key, raw: index === 0 ? raw0 : 7, value: 0, unit: UNITS[index] })) });
+  it("a read frees the pack only when it shows the stored block", () => {
+    expect(sameBlock(p(3650, 0x1f), p(3650, 0x1f))).toBe(true);
+    expect(sameBlock(p(3650, 0x1f), p(3650, 0x1e))).toBe(false);
+    expect(sameBlock(p(3650, 0x1f), p(3651, 0x1f))).toBe(false);
   });
 });

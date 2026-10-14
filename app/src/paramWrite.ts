@@ -144,3 +144,8 @@ export function blockers(base: Raws, raws: Raws, badInput: number[], seriesUnloc
     ...violations(raws).map((v): Blocker => ({ kind: "rule", v })),
   ];
 }
+
+/** Whether a read shows exactly a given block's values and switches (e.g. the stored block again after a restart). */
+export const sameBlock = (a: Parameters, b: Parameters) =>
+  a.parameters.length === b.parameters.length && a.parameters.every((x, i) => x.raw === b.parameters[i].raw)
+  && a.function_switches.every((s, g) => s === b.function_switches[g]);

@@ -40,10 +40,11 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
       if (current.current !== a) return; // another pack is shown now
       if (r.value) setRead((s) => (s && "battery" in s ? { ...s, [which]: r.value } : s));
       const res = serialSetResult(text, r.value);
-      const extra = r.master_updated.length ? ` ${t("snw.masterUpdated", { names: r.master_updated.join(", ") })}` : "";
+      const extra = r.master_unchecked ? ` ${t("snw.masterUnchecked")}`
+        : r.master_updated.length ? ` ${t("snw.masterUpdated", { names: r.master_updated.join(", ") })}` : "";
       setNote((n) => ({ ...n, [which]: {
         text: (res === "done" ? t("snw.done") : res === "mismatch" ? t("snw.mismatch", { text: r.value ? serialText(r.value, which, "pack", a === 0, t).text : "" }) : t("snw.unread", { err: r.read_error ?? "" })) + extra,
-        error: res === "mismatch",
+        error: res === "mismatch" || r.master_unchecked,
       } }));
       if (res === "done") setInput((i) => ({ ...i, [which]: "" }));
     } catch (e) {

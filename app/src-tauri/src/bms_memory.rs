@@ -202,6 +202,10 @@ pub enum ParamWrite {
 pub async fn write_parameters(state: State<'_, AppState>, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
     pack_bus_only(&state)?;
     let fresh = read_parameters(&state, address)?;
+    // byte 0 is the pack's own address: a block from another pack must never be written here
+    if fresh.address != address {
+        return Err(format!("the pack at address {address} answered with address {}", fresh.address));
+    }
     let values = if restore { edited } else {
         match Values::rebase(&base, &edited, &fresh.values()) {
             Some(v) => v,
@@ -244,12 +248,14 @@ pub fn follow_master_serial<'a>(installations: &'a [Installation], old: &SerialV
 }
 
 /// A serial number write the BMS accepted: the value read back (or why that read failed) and the installations
-/// whose stored master serial followed it.
+/// whose stored master serial followed it. `master_unchecked`: String 2 of the master, but the old value (or the
+/// store, or the new value) could not be read, so no installation's stored master serial was updated.
 #[derive(Serialize, Debug)]
 pub struct SerialSet {
     pub value: Option<SerialValue>,
     pub read_error: Option<String>,
     pub master_updated: Vec<String>,
+    pub master_unchecked: bool,
 }
 
 /// Write a serial number (0xA3 battery, 0xA5 BMS) and read it back. String 2 of the master (address 0): an
@@ -263,6 +269,7 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, t
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
     let read = with_conn(&state.conn, &state.flashing, |c| c.serial(address, which));
     let mut master_updated = vec![];
+    let mut master_unchecked = master && (old.is_none() || read.is_err());
     if let (Some(old), Ok(new)) = (&old, &read) {
         let key = state.main.lock().map_err(|e| e.to_string())?.as_ref().map(|m| m.0.clone());
         if let (Some(key), SerialValue::Set { value, .. }) = (key, new) {
@@ -276,13 +283,16 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, t
             });
             match r {
                 Ok(names) => master_updated = names,
-                Err(e) => eprintln!("master serial: {e:?}"),
+                Err(e) => {
+                    eprintln!("master serial: {e:?}");
+                    master_unchecked = true;
+                }
             }
         }
     }
     Ok(match read {
-        Ok(v) => SerialSet { value: Some(v), read_error: None, master_updated },
-        Err(e) => SerialSet { value: None, read_error: Some(e), master_updated },
+        Ok(v) => SerialSet { value: Some(v), read_error: None, master_updated, master_unchecked },
+        Err(e) => SerialSet { value: None, read_error: Some(e), master_updated, master_unchecked },
     })
 }
 

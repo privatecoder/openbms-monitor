@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, FileUp, FolderOpen, History, PenLine, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
 import { api, isDemo, type Bus } from "../api";
@@ -7,8 +7,8 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, parseExport, toExport, type Parameters, type Source } from "../params";
-import { blockers, changes, fromRaw, notTaken, rawsOf, takeOver, toWire, SERIES_INDEX } from "../paramWrite";
-import { EditBar, EditCell, EditSwitch, badInput, type Edit, type Full, type Note } from "../components/ParamEdit";
+import { blockers, changes, fromRaw, notTaken, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX } from "../paramWrite";
+import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { SerialLine } from "../components/SerialWrite";
 import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
@@ -20,8 +20,14 @@ import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
 
-// kept while the app runs, so switching views does not drop what was read
+// kept while the app runs, so switching views does not drop what was read; `keptLink` is the site and connection it
+// was read on: after a change the pack columns stay for comparison but can no longer be edited
 let kept: Source[] = [];
+let keptLink = "";
+// refusals whose switches are still live, per site and address (see Refused); they outlive a view switch
+const keptRefused = new Map<string, Refused>();
+/** Pack columns of another site or connection: values stay, nothing to edit or undo from. */
+const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
 // the datasheet chosen for the check; null = follow the packs' cell type
 let keptRef: Assignment | "none" | null = null;
 
@@ -45,7 +51,11 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const common = commonAssignment(assigned);
   const ref = refChoice === "none" ? undefined : refChoice ?? common;
   const refCell = ref ? db.entries.find((e) => e.cell.id === ref.cell)?.cell : undefined;
-  const [sources, setSourcesState] = useState<Source[]>(kept);
+  const link = `${site}|${connected}`;
+  const [sources, setSourcesState] = useState<Source[]>(() => {
+    if (keptLink !== link) { kept = unlink(kept); keptLink = link; }
+    return kept;
+  });
   const setSources = (f: (s: Source[]) => Source[]) => setSourcesState((s) => (kept = f(s)));
   const [reading, setReading] = useState<{ address: number; n: number; of: number } | null>(null);
   const [onlyDiff, setOnlyDiff] = useState(false);
@@ -64,6 +74,21 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const [full, setFull] = useState<Full>(null);
   const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
   const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading && !edit && !writing.params;
+  // another installation or a new connection: what was read no longer belongs to the packs on the bus
+  useEffect(() => {
+    if (keptLink === link) return;
+    keptLink = link;
+    setSources(unlink); setEdit(null); setNote(null);
+  }, [link]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [, rerender] = useState(0);
+  const refusedOf = (a: number) => keptRefused.get(`${site}|${a}`) ?? null;
+  const setRefused = (a: number, r: Refused | null) => {
+    if (r) keptRefused.set(`${site}|${a}`, r); else keptRefused.delete(`${site}|${a}`);
+    rerender((n) => n + 1);
+  };
+  /** A read of a pack with a pending refusal: once it shows the stored block again (restart), the pack is free. */
+  const seen = (a: number, p: Parameters) => { const r = refusedOf(a); if (r && sameBlock(p, r.stored)) setRefused(a, null); };
 
   const replace = (next: Source) => setSources((s) => s.map((x) => (x.id === next.id ? { ...next, lastWritten: x.lastWritten, previous: x.previous } : x)));
   // last write and the parameters it replaced, kept per installation and pack in the history database
@@ -80,7 +105,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
     for (const [n, address] of packs.entries()) {
       setReading({ address, n: n + 1, of: packs.length });
       let next: Source;
-      try { next = fromPack(await api.parameters(address)); void loadHistory(address); }
+      try { const p = await api.parameters(address); next = fromPack(p, address); seen(address, p); void loadHistory(address); }
       catch (e) { next = { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) }; }
       setSources((s) => s.map((x) => (x.id === next.id ? next : x)));
     }
@@ -102,8 +127,8 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   };
 
   const startEdit = (c: Source, from?: Parameters | null) => {
-    if (!c.read) return;
-    const a = c.read.address;
+    if (!c.read || c.address === undefined) return;
+    const a = c.address;
     const base = rawsOf(c.read), baseSwitches = [...c.read.function_switches];
     // „Vorherigen Stand“: that block, with P65 as now (it changes only when unlocked)
     const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
@@ -121,36 +146,45 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
     setEdit((e) => e && { ...e, raws: takeOver(e.raws, src.values!, !e.seriesUnlocked), switches: [...src.switches!], text: {} });
   };
 
-  /** Write the edit, or with `restore` the stored block after a refusal (its switches are live but not stored then). */
-  const write = async (restore?: Parameters) => {
-    if (!edit) return;
-    const a = edit.address, pack = packNo(a);
-    const sent = restore ? rawsOf(restore) : edit.raws, sentSwitches = restore ? restore.function_switches : edit.switches;
+  /** Write the edit of pack `a`, or with `restore` the stored block after a refusal (its switches are live but not
+   *  stored then); a restore needs no open edit. */
+  const write = async (a: number, restore?: Parameters) => {
+    const e0 = edit?.address === a ? edit : null;
+    if (!restore && (!e0 || refusedOf(a))) return;
+    const pack = packNo(a);
+    const sent = restore ? rawsOf(restore) : e0!.raws, sentSwitches = restore ? restore.function_switches : e0!.switches;
+    const base = restore ? toWire(sent, sentSwitches) : toWire(e0!.base, e0!.baseSwitches);
     busyFor("params")(true); setNote(null);
     const say = (n: Note) => setNote({ address: a, note: n });
+    const mine = (f: (e: Edit) => Edit) => setEdit((e) => (e && e.address === a ? f(e) : e));
     try {
-      const r = await api.writeParameters(a, toWire(edit.base, edit.baseSwitches), toWire(sent, sentSwitches), !!restore);
+      const r = await api.writeParameters(a, base, toWire(sent, sentSwitches), !!restore);
       if (r.kind === "stale") {
         // nothing written: the column shows the pack now, the user's changes stay on top of it
         const fresh = rawsOf(r.fresh), fs = r.fresh.function_switches;
-        setEdit((e) => e && {
+        mine((e) => ({
           ...e, base: fresh, baseSwitches: [...fs],
           raws: e.raws.map((x, i) => (x !== e.base[i] ? x : fresh[i])),
           switches: e.switches.map((x, g) => { const touched = x ^ e.baseSwitches[g]; return (x & touched) | (fs[g] & ~touched & 0xff); }),
-        });
-        replace(fromPack(r.fresh));
+        }));
+        replace(fromPack(r.fresh, a));
+        seen(a, r.fresh);
         say({ text: t("pw.stale", { pack }), error: true });
       } else if (r.kind === "refused") {
-        say(r.refusal === "refused" ? { refused: r.stored, live: [...sentSwitches] } : { text: t("pw.invalid"), error: true });
+        // only the first refusal knows the stored block: later reads show the live switches
+        if (r.refusal === "refused" && !refusedOf(a) && switchDiff(sentSwitches, r.stored.function_switches).length)
+          setRefused(a, { stored: r.stored, live: [...sentSwitches] });
+        say({ text: t(r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
       } else {
         void loadHistory(a);
+        if (restore) setRefused(a, null);
         if (r.read_back) {
           const missed = notTaken(sent, sentSwitches, rawsOf(r.read_back), r.read_back.function_switches);
-          replace({ ...fromPack(r.read_back), notTaken: missed });
+          replace({ ...fromPack(r.read_back, a), notTaken: missed });
           const n = missed.params.size + missed.switches.size;
           say(n ? { text: t("pw.notTakenCount", { count: n }), error: true } : { text: t(restore ? "pw.restored" : "pw.done"), error: false });
           // after restoring, the edit stays open on the stored state, so the values can be corrected
-          if (restore) setEdit((e) => e && { ...e, base: rawsOf(r.read_back!), baseSwitches: [...r.read_back!.function_switches] });
+          if (restore) mine((e) => ({ ...e, base: rawsOf(r.read_back!), baseSwitches: [...r.read_back!.function_switches] }));
         } else say({ text: t("pw.unread", { err: r.read_error ?? "" }), error: true });
         if (!restore) setEdit(null);
       }
@@ -298,11 +332,16 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
           )}
           {edit && editCol >= 0 && (
             <EditBar e={edit} pack={packNo(edit.address)} changes={editChanges} blockers={editBlockers} sheet={editSheet} full={full}
-              note={note?.address === edit.address ? note.note : null} busy={writing.params} locked={lockedBut("params")} sources={takeOverSources}
-              onChange={(f) => setEdit((e) => e && f(e))} onTakeOver={takeOverFrom} onWrite={() => write()} onRestore={(stored) => write(stored)}
+              note={note?.address === edit.address ? note.note : null} refused={refusedOf(edit.address)} busy={writing.params} locked={lockedBut("params")} sources={takeOverSources}
+              onChange={(f) => setEdit((e) => e && f(e))} onTakeOver={takeOverFrom} onWrite={() => write(edit.address)} onRestore={(stored) => write(edit.address, stored)}
               onDiscard={() => { setEdit(null); setNote(null); }} />
           )}
-          {!edit && note && !("refused" in note.note) && (
+          {cols.flatMap((c) => {
+            const r = c.kind === "pack" && c.address !== undefined && c.address !== edit?.address ? refusedOf(c.address) : null;
+            return r ? [<RefusedPanel key={c.id} refused={r} fullAh={full && "ah" in full && full.address === c.address ? full.ah : null} pack={c.label}
+              busy={writing.params} locked={lockedBut("params")} onRestore={(stored) => write(c.address!, stored)} />] : [];
+          })}
+          {!edit && note && (
             <p className={cn("text-sm", note.note.error ? "text-alarm" : "text-ok")}>{t("par.pack", { n: packNo(note.address) })}: {note.note.text}</p>
           )}
           <Panel className="overflow-x-auto">
