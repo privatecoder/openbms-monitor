@@ -136,8 +136,9 @@ fn reserve_port_wait(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
     }
 }
 
-/// Longer than one live status (listen plus master read).
-const PORT_WAIT: Duration = Duration::from_secs(5);
+/// Longer than one live status (listen plus master read) and one pack scan (15 silent addresses at 600 ms plus the
+/// installation check): a user action pressed during a scan waits for it instead of failing with "busy".
+const PORT_WAIT: Duration = Duration::from_secs(15);
 
 /// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
 fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {

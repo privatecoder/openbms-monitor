@@ -4,7 +4,6 @@ import { LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
 import { busLine, endpointKey, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, releaseFirst, showDone, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
-import { imageLabel } from "../firmware";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
@@ -35,7 +34,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   /** counts finished flashes: the list is scanned again and „Fertig“ shows */
   flashTick: number;
   /** start a flash of `address` (confirmed here); throws a refusal */
-  onFlash: (address: number, from: string | null, releaseMaster: boolean) => Promise<void>;
+  onFlash: (address: number, from: string | null) => Promise<void>;
   /** the master read of the live status (for the full version of address 0 elsewhere) */
   onMaster: (m: MasterView | null) => void;
   onUserAction: () => void;
@@ -48,7 +47,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   // halt, release, adopt: the live loop waits meanwhile
   const [action, setAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ text: string; serial: string | null } | null>(null);
-  const [confirm, setConfirm] = useState<number | null>(null);
+  // the pack whose „Prüfen & flashen“ was pressed last (its button spins while the check and the flash run)
+  const [target, setTarget] = useState<number | null>(null);
   const [flashed, setFlashed] = useState(false);
   // after a flash the master polls again (DIP back or released): the maintenance is over
   const [back, setBack] = useState(false);
@@ -86,7 +86,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
             if (l.bus === "quiet" && liveRef.current?.bus !== "quiet") wantScan.current = true;
             if (l.master?.marker !== liveRef.current?.master?.marker) void maint.loadLists();
             liveRef.current = l; setLive(l);
-            if (wantScan.current && l.bus === "quiet") { wantScan.current = false; await doScan(a.installation, a.port); }
+            // a user action that started meanwhile goes first: a scan of 16 addresses holds the port for seconds
+            if (wantScan.current && l.bus === "quiet" && !args.current.action && !args.current.running) { wantScan.current = false; await doScan(a.installation, a.port); }
           }
         } catch (e) {
           // busy: another operation holds the port, the last status stays
@@ -100,7 +101,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // another port or installation: nothing of the old one counts
-  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setConfirm(null); setActionError(null); setBack(false); wantScan.current = true; }, [port, inst?.id]);
+  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); wantScan.current = true; }, [port, inst?.id]);
   useEffect(() => { if (flashTick) { setFlashed(true); setBack(false); wantScan.current = true; } }, [flashTick]);
   useEffect(() => { if (flashed && !running && live?.bus === "polling") { setFlashed(false); setBack(true); } }, [flashed, running, live?.bus]);
 
@@ -125,7 +126,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
     await api.maintAdoptMasterSerial(inst.id, serial);
     setScan((s) => (s ? { ...s, bank: { state: "match", serial: null } } : s));
   });
-  const flash = (address: number, from: string | null, release: boolean) => run("flash", async () => { setConfirm(null); await onFlash(address, from, release); });
+  const flash = (address: number, from: string | null) => run("flash", async () => { setTarget(address); await onFlash(address, from); });
 
   const line = port ? busLine(live, running, t) : { tone: "muted" as Tone, text: t("maint.live.noPort") };
   const mLine = master ? masterLine(master, t) : null;
@@ -187,17 +188,9 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
       {live && !quiet && !running && live.bus !== "no-port" && (
         <div className="space-y-2">
           <h3 className="font-medium">{t("maint.quiet.title")}</h3>
-          {/* an image that is not a maintenance build would need „Master freigeben“ again before the master's flash
-              (C'): DIP 5–8 OFF keep the bus quiet for every pack; halting stays possible for the slaves only */}
           {/* a halted master may finish the round it had started: no DIP advice for that */}
           {master?.marker === "on" && master.slaves === 0 ? <p>{t("maint.quiet.halted")}</p>
-          : master?.may_halt && inst && image && image.kind !== "maintenance" ? (
-            <>
-              <p>{t("maint.quiet.dip")}</p>
-              <p className="text-muted">{t("maint.quiet.dipForImage")}</p>
-              <ActButton variant="secondary" size="sm" spinning={action === "halt"} disabled={busy} onClick={() => marker(false)}>{t("maint.quiet.haltSlaves")}</ActButton>
-            </>
-          ) : master?.may_halt && inst ? (
+          : master?.may_halt && inst ? (
             <ActButton variant="primary" size="sm" spinning={action === "halt"} disabled={busy} onClick={() => marker(false)}>{t("maint.halt")}</ActButton>
           ) : <p>{t("maint.quiet.dip")}</p>}
           <p className="text-muted">{t("maint.quiet.hint")}</p>
@@ -228,23 +221,16 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
               const blocked = flashBlocked({ image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port });
               const name = a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a });
               const version = d ? packVersion(a, d.firmware_version, master) : null;
-              const release = releaseFirst(master, a, image?.kind ?? null);
               return (
                 <li key={a} className="space-y-1 rounded-md border border-line p-2">
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="font-medium">{name}</span>
                     <span className="text-muted">{version ? t("maint.packs.version", { version }) : t("maint.packs.silent")}</span>
-                    {confirm !== a && d && <Button variant="secondary" size="sm" className="ml-auto" disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => setConfirm(a)}>{t("maint.packs.flash")}</Button>}
+                    {/* one button in a fixed place: the backend checks quiet bus, target and installation, then flashes */}
+                    {d && <ActButton variant="secondary" size="sm" className="ml-auto" spinning={(action === "flash" || running) && target === a} disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => flash(a, version)}>{t("maint.packs.flash")}</ActButton>}
                   </div>
                   {pending && <p className="text-alarm">{t("maint.packs.pending", { pack: a })}</p>}
-                  {release && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
-                  {confirm === a && image && d && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span>{t(image.custom ? "maint.packs.confirmCustom" : "maint.packs.confirm", { to: imageLabel(image, t) })}</span>
-                      <ActButton variant="primary" size="sm" spinning={action === "flash"} disabled={!!blocked} onClick={() => flash(a, version, release)}>{t(release ? "maint.packs.releaseAndFlash" : "maint.packs.flashNow")}</ActButton>
-                      <Button variant="secondary" size="sm" onClick={() => setConfirm(null)}>{t("maint.setup.cancel")}</Button>
-                    </div>
-                  )}
+                  {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                 </li>
               );
             })}

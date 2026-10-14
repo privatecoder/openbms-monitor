@@ -22,7 +22,7 @@ User feedback after lab use: the panel is a maze of six steps, checkboxes and de
 | A | single pack, any firmware | the pack | connect RS485-1/2 | bus quiet → flash |
 | B | multi-pack, original master | slave or master | set **DIP 5–8 of the master OFF** | waits until the bus is quiet → flash any pack → afterwards: „DIP 5–8 zurückstellen“, then shows polling again |
 | C | multi-pack, patched master (MAINT) | slave or master | connect the CAN socket too, press **„Master anhalten“** | marker start, waits for `0` slaves and quiet bus → flash any pack → afterwards **„Master freigeben“** (marker stop), then shows polling again |
-| C' | multi-pack, patched master, new master image is **not** a maintenance build (original or other custom) | master | set **DIP 5–8 of the master OFF**, press **„Master freigeben und flashen“**, set DIP back | shows this order only for this case (amended 2026-10-14 after the lab run): the one button sends the marker stop while the patched image still runs, requires a fresh read with the marker off, listens 2.5 s for a quiet bus (refuses with „DIP 5–8 auf OFF“ if the master polls again), then flashes. A master without a set marker is flashed without the release step. Reason: the original ignores the marker, would poll right after the flash (the UART0 post-check fails although the flash may be fine) and the marker word would stay hidden in flash. |
+| C' | multi-pack, patched master, new master image is **not** a maintenance build (original or other custom) | master | set **DIP 5–8 of the master OFF**, press **„Master freigeben“** (marker stop, while the patched image still runs), flash the master, set DIP back | shows this order only for this case (2026-10-14: the one-button variant „Master freigeben und flashen“ was tried and removed again after lab use; two plain steps are clearer); the master flash button stays disabled until the marker reads off and the bus is quiet. Reason: the original ignores the marker, would poll right after the flash (the UART0 post-check fails although the flash may be fine) and the marker word would stay hidden in flash. |
 
 ## The panel (one screen, no step numbers)
 
@@ -32,12 +32,12 @@ User feedback after lab use: the panel is a maze of six steps, checkboxes and de
 2. **„Bus ruhig machen“ (only shown while the bus is not quiet):**
    - patched master reachable: button **„Master anhalten“**;
    - otherwise: text „Am Master DIP 5–8 auf OFF stellen“ (+ picture). The status line turns green by itself.
-3. **Packs (shown when the bus is quiet):** list of addresses that answer on the pack bus (one scan, `0x51`), each with version and a **„Flashen“** button; one image picker above the list. The master row (address 0) carries the C' hint when it applies.
+3. **Packs (shown when the bus is quiet):** list of addresses that answer on the pack bus (one scan, `0x51`), each with version and one **„Prüfen & flashen“** button in a fixed place (no confirmation row; amended 2026-10-14); one image picker above the list. The master row (address 0) carries the C' hint when it applies.
    - The „Flashen“ button itself re-checks quiet bus (2 s) and the target's answer right before `0x45`; nothing to tick.
    - One information line above the list: „Während der Wartung meldet der Master dem Wechselrichter nur sein eigenes Pack.“
 4. **„Fertig“ (shown after at least one flash or when the marker is on):**
    - patched master: button **„Master freigeben“** (marker stop);
-   - DIP path: text „DIP 5–8 am Master zurückstellen“;
+   - otherwise (DIP path, no patched master): text „DIP 5–8 am Master zurückstellen“ in place of the button;
    - the status line then shows „Master fragt N Slaves ab“ as confirmation.
 
 ## What stays persistent
@@ -60,7 +60,7 @@ User feedback after lab use: the panel is a maze of six steps, checkboxes and de
 1. Bus quiet for 2 s right before every `0x45` (inside the flash button).
 2. Target answers `0x51` (and `0x47`, existing preflight) at its address right before `0x45`.
 3. Image file passes the format checks; unknown images need „Eigene Firmware“ (exists).
-4. `stop` (marker off) only on the user's button (also „Master freigeben und flashen“ in C'), only when `0x64` shows the marker on; never automatic.
+4. `stop` (marker off) only on the user's button, only when `0x64` shows the marker on; never automatic.
 5. `bootloader-pending` (above).
 6. **Right bank:** when an installation is selected and the bus is quiet, the app reads the master's BMS serial (String 2, `0xA4` at address 0 on the pack bus) before a flash. The installation stores it the first time (no dialog); afterwards a different value refuses the flash with „An diesem Anschluss hängt eine andere Anlage (BMS-SN …)“ and an offer „Diese Anlage hat einen neuen Master: Seriennummer übernehmen“. No answer to `0xA4` (e.g. a single pack whose address-0 pack is the target itself and answers, or firmware without 0xA4): flash allowed, the line shows „Anlage nicht geprüft“. Without a selected installation nothing is checked.
 7. Implementation rule: the live status timer and scans never send on the pack bus while a flash runs (existing `port_busy` / `stop_monitor`); the status line takes the flash progress then.

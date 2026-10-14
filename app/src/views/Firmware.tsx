@@ -106,7 +106,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   /** Start a flash (panel or manual): refusals are thrown back as the backend sent them. */
-  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, installation: string | null, releaseMaster: boolean) => {
+  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, installation: string | null) => {
     if (!path || !image) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
@@ -114,7 +114,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, installation, releaseMaster);
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, installation);
       setFlashed({ address: a, image, checked: from, bank: r.bank });
       // the pending record is written now
       void maint.loadLists();
@@ -135,14 +135,14 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   // the master read and the installation's checks count only on the installation's own port
   const samePort = mPort === port;
-  // C' in this tab too: the master's flash releases a marker that is on
+  // C': a master with its marker on needs „Master freigeben“ before an image without maintenance functions
   const release = samePort && releaseFirst(master, address, image?.kind ?? null);
   const targetVersion = target ? packVersion(address, target.firmware_version, samePort ? master : null) : null;
   const manualStart = async () => {
     const confirmation = typed;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setTyped(""); setTarget(null); setCheckedFor(null);
-    try { await startFlash(mPort, address, confirmation, targetVersion, samePort ? inst?.id ?? null : null, release); }
+    try { await startFlash(mPort, address, confirmation, targetVersion, samePort ? inst?.id ?? null : null); }
     catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
   };
 
@@ -187,7 +187,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from, release) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null, release)} onMaster={setMaster} />}
+        onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null)} onMaster={setMaster} />}
 
       {/* one pack by hand: address, check, typed confirmation; the same checks in the backend. No live status here:
           the master's full version is the panel's last read */}
@@ -226,7 +226,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
         </label>
         {release && <p className="text-sm text-discharge">{t("maint.packs.cPrime")}</p>}
-        <Button variant="primary" disabled={!s.start} onClick={manualStart}>{t(release ? "maint.packs.releaseAndFlash" : "fw.start")}</Button>
+        <Button variant="primary" disabled={!s.start} onClick={manualStart}>{t("fw.start")}</Button>
         {error && (
           <div className="space-y-1 text-sm text-alarm">
             <p>{error.text}</p>
