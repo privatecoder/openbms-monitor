@@ -109,7 +109,8 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   useEffect(() => { onMaster(master); }, [master]); // eslint-disable-line react-hooks/exhaustive-deps
   const quiet = live?.bus === "quiet";
   const busy = !!action || scanning;
-  const pendingHere = maint.alerts.pending.filter((p) => port && p.endpoint === endpointKey({ kind: "serial", path: port, bus: "pack" }));
+  // the running flash stores its own record before the restart: it counts only once the flash has ended (like the banner)
+  const pendingHere = running ? [] : maint.alerts.pending.filter((p) => port && p.endpoint === endpointKey({ kind: "serial", path: port, bus: "pack" }));
 
   const run = async (key: string, f: () => Promise<void>) => {
     onUserAction(); setAction(key); setActionError(null); setBack(false);
