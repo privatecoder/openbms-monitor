@@ -163,7 +163,7 @@ const resources = {
         failAfter: "Das Pack ist vermutlich im Update-Modus. Nicht einfach neu starten: Log sichern und Hilfe lesen.",
         log: "Log", showLog: "Im Ordner zeigen", back: "Zurück zum Monitor", again: "Neues Update", reports: "Pack meldet {{v}}",
         runTitle: "Update Pack {{address}}", pendingAfter: "Pack {{pack}} hängt eventuell im Bootloader (Hinweis oben).",
-        tab: { bus: "Pack-Bus", manual: "Einzelnes Pack" },
+        tab: { bus: "Pack-Bus", manual: "Einzelnes Pack" }, manualQuiet: "Der Bus muss ruhig sein. In einer Bank am Master DIP 5–8 auf OFF stellen (alte Stellung notieren) oder einen Master mit Wartungs-Build im Tab „Pack-Bus“ anhalten. Ein einzelnes Pack ist ohnehin ruhig.",
         manualHint: "Adresse wählen, Pack prüfen und mit der Bestätigungsphrase flashen. Es gelten dieselben Prüfungen wie im Tab „Pack-Bus“.",
       },
       par: {
@@ -463,7 +463,7 @@ const resources = {
         failAfter: "The pack is probably in update mode. Do not just restart it: keep the log and read the help.",
         log: "Log", showLog: "Show in folder", back: "Back to monitor", again: "New update", reports: "pack reports {{v}}",
         runTitle: "Update pack {{address}}", pendingAfter: "Pack {{pack}} may hang in its bootloader (note above).",
-        tab: { bus: "Pack bus", manual: "Single pack" },
+        tab: { bus: "Pack bus", manual: "Single pack" }, manualQuiet: "The bus must be quiet. In a bank set DIP 5–8 of the master OFF (note the old positions) or halt a master with a maintenance build in the “Pack bus” tab. A single pack is quiet anyway.",
         manualHint: "Choose the address, check the pack and flash with the confirmation phrase. The same checks as in the “Pack bus” tab apply.",
       },
       par: {
