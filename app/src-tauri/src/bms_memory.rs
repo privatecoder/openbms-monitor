@@ -265,12 +265,13 @@ pub struct SerialSet {
 pub async fn set_serial(state: State<'_, AppState>, address: u8, which: Which, text: String) -> Result<SerialSet, String> {
     pack_bus_only(&state)?;
     let master = which == Which::Bms && address == 0;
-    let old = if master { with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)).ok() } else { None };
+    // String 2 before the write: whether the board keeps its identity under the new serial depends on it
+    let old = if which == Which::Bms { with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)).ok() } else { None };
     with_conn(&state.conn, &state.flashing, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
     let read = with_conn(&state.conn, &state.flashing, |c| c.serial(address, which));
     let mut master_updated = vec![];
     let mut master_unchecked = master && (old.is_none() || read.is_err());
-    if let (Some(old), Ok(new)) = (&old, &read) {
+    if let (true, Some(old), Ok(new)) = (master, &old, &read) {
         let key = state.main.lock().map_err(|e| e.to_string())?.as_ref().map(|m| m.0.clone());
         if let (Some(key), SerialValue::Set { value, .. }) = (key, new) {
             let r = crate::maint::with_store(&state, |s| {

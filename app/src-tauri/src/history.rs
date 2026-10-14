@@ -64,7 +64,9 @@ fn site_keys(db: &Connection) -> rusqlite::Result<()> {
          INSERT INTO sites(site) SELECT DISTINCT site FROM sessions ORDER BY site;
          INSERT OR IGNORE INTO sites(site) SELECT '' WHERE EXISTS(SELECT 1 FROM pack WHERE session NOT IN (SELECT id FROM sessions))
            OR EXISTS(SELECT 1 FROM system WHERE session NOT IN (SELECT id FROM sessions));
-         CREATE TEMP TABLE session_site AS SELECT x.id AS session, s.id AS site FROM sessions x JOIN sites s ON s.site = x.site;
+         -- keyed, so the lookup per row is not a scan
+         CREATE TEMP TABLE session_site(session INTEGER PRIMARY KEY, site INTEGER NOT NULL);
+         INSERT INTO session_site SELECT x.id, s.id FROM sessions x JOIN sites s ON s.site = x.site;
          CREATE TABLE pack_new(site INTEGER NOT NULL, pack INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
            current INTEGER, soc INTEGER, voltage INTEGER, remaining INTEGER, cycles INTEGER,
            cell_max INTEGER, cell_min INTEGER, temp_max INTEGER, temp_min INTEGER, ambient INTEGER, mosfet INTEGER,
@@ -166,6 +168,8 @@ pub struct Status {
     pub bytes: u64,
     /// rows written since the app started
     pub rows: u64,
+    /// the database is being prepared (a migration of a big file takes a while); recording starts after it
+    pub preparing: bool,
     pub error: Option<String>,
 }
 
@@ -179,6 +183,8 @@ pub struct History {
     link: Option<(String, String)>,
     /// the session rows go to and its site's key in `sites`
     session: Option<(i64, i64)>,
+    /// the file is being created or migrated (`prepare`), not open yet
+    preparing: bool,
     last: HashMap<u8, i64>,
     open_events: OpenEvents,
     last_maintain: i64,
@@ -211,9 +217,12 @@ fn open_db(path: &Path) -> Result<Connection, String> {
     if fresh {
         // auto_vacuum must be set before the first table
         c.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;").map_err(e)?;
-        c.execute_batch(SCHEMA).map_err(e)?;
-        c.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(e)?;
-        mark_migration(&c, MIGRATIONS.len()).map_err(e)?;
+        // all of it or nothing: a half-created file would later count as an old one
+        let tx = c.unchecked_transaction().map_err(e)?;
+        tx.execute_batch(SCHEMA).map_err(e)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(e)?;
+        mark_migration(&tx, MIGRATIONS.len()).map_err(e)?;
+        tx.commit().map_err(e)?;
     } else {
         // before anything reads or compacts the file
         let done: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'migration'", [], |r| r.get(0)).optional().map_err(e)?;
@@ -234,11 +243,34 @@ pub fn reader(path: &Path) -> Result<Connection, String> {
 }
 
 impl History {
+    /// `prepare` and `attach` in one go (the app runs them apart).
+    #[cfg(test)]
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
+        let db = Self::prepare(path)?;
+        self.attach(db, path)
+    }
+
+    /// Create or migrate the file. A migration of a big file takes a while, so this runs without holding the
+    /// recorder (see `set_preparing`); `attach` then puts the connection to use.
+    pub fn prepare(path: &Path) -> Result<Connection, String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let db = open_db(path)?;
+        open_db(path)
+    }
+
+    pub fn set_preparing(&mut self, on: bool) {
+        self.preparing = on;
+    }
+
+    /// Opening failed: the recording stays off and the status shows why.
+    pub fn failed(&mut self, error: String) {
+        self.preparing = false;
+        self.error = Some(error);
+    }
+
+    pub fn attach(&mut self, db: Connection, path: &Path) -> Result<(), String> {
+        self.preparing = false;
         self.settings = db
             .query_row("SELECT value FROM meta WHERE key = 'settings'", [], |r| r.get::<_, String>(0))
             .optional()
@@ -268,6 +300,7 @@ impl History {
             path: self.path.as_ref().map(|p| p.display().to_string()),
             bytes,
             rows: self.rows,
+            preparing: self.preparing,
             error: self.error.clone(),
         }
     }

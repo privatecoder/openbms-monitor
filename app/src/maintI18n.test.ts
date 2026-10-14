@@ -7,7 +7,7 @@ import type { MasterView } from "./api";
 const sources = import.meta.glob(["./views/PackBusPanel.tsx", "./views/MaintBanner.tsx", "./views/MaintSetup.tsx", "./views/Firmware.tsx", "./views/NameDialog.tsx", "./maint.ts", "./maintStore.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 // every refusal key the backend can send
-const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "release-master-first-unread", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation"];
+const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "release-master-first-unread", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation", "installation-busy"];
 const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
 
 describe("maintenance texts", () => {

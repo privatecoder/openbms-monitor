@@ -124,7 +124,7 @@ export interface HistorySettings {
   /** days minute values are kept after that, 0 = forever */
   keep_minutes_days: number;
 }
-export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; error: string | null }
+export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; error: string | null }
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
 export interface PackCols { current: Col; soc: Col; voltage: Col; cell_max: Col; cell_min: Col; delta: Col; temp_max: Col; temp_min: Col }

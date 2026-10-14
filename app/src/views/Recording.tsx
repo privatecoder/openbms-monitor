@@ -116,6 +116,7 @@ function RecordingSheet({ open, onOpenChange, rec, site, packs, systemAvailable,
               <dt className="text-muted">{t("rec.database")}</dt><dd className="tabular-nums">{size(s.bytes)}</dd>
               {s.rows > 0 && <><dt className="text-muted">{t("rec.rows")}</dt><dd className="tabular-nums">{s.rows.toLocaleString()}</dd></>}
             </dl>
+            {s.preparing && <p className="mt-2 text-sm text-muted">{t("rec.preparing")}</p>}
             {s.error && <p className="mt-2 text-sm text-alarm">{t("rec.writeError", { err: s.error })}</p>}
             {err && <p className="mt-2 text-sm text-alarm">{err}</p>}
             <div className="mt-4 flex flex-wrap gap-2">

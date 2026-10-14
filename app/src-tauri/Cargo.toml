@@ -20,3 +20,7 @@ tauri-plugin-dialog = "2.8"
 openbms-proto = { path = "../../crates/openbms-proto" }
 openbms-flash = { path = "../../crates/openbms-flash" }
 openbms-transport = { path = "../../crates/openbms-transport" }
+
+[target.'cfg(unix)'.dependencies]
+# free disk space before a migration copies a database
+libc = "0.2"

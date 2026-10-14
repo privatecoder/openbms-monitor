@@ -39,7 +39,7 @@ python3 tools/gen_help.py      # regenerate help/ after editing the help tables
 - Content is generic: help texts, examples, code comments and test names never cite a particular installation (no dates, pack numbers or readings from someone's bank). Use neutral examples ("pack A / pack B, 40 mV at 10 A").
 - No private files in the repo (own parameter exports, poll logs, recordings). Tests use synthetic data.
 - No documentation of modified firmware here; that lives elsewhere.
-- No database or settings migrations before the first release: on an unsupported schema the old file is moved aside.
+- Databases with user data change only by migrations (`app/src-tauri/src/migrate.rs`): numbered steps counted in `user_version` (`maintenance.sqlite`) or `meta.migration` (`history.sqlite`, whose `user_version` stays 1 so older builds do not move it aside), each in one transaction after a copy `<file>.bak-<n>`, idempotent, every row kept. SQL of a released step is frozen; changes are new steps. Only a file of an unknown layout is moved aside.
 - Match the surrounding code: short comments that explain why, compact components, Tailwind tokens from `index.css` (`text-muted`, `bg-sunken`, `text-alarm`, …).
 - Checks that compare packs wait until every found pack has answered, so a partial picture right after connecting does not raise false warnings.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Pushing to `main` is routine.

@@ -12,7 +12,6 @@
 //! Tables of earlier versions stay in old files and are no longer read.
 
 use crate::history::SnapshotKind;
-use openbms_proto::serial::classify;
 use openbms_proto::SerialValue;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -361,12 +360,19 @@ impl Store {
         })
     }
 
-    /// Delete an installation with its endpoints, stored serial number, master read, boards, settings and snapshots.
-    /// Pending bootloader records belong to the endpoint, not to the installation: they stay. So do log files and
-    /// their index rows.
+    /// Delete an installation with its endpoints, stored serial number, master read, boards, settings and snapshots;
+    /// log files and their index rows stay. Refused ("installation-busy") while it has open work: the last master
+    /// read showed the marker on, or a pack on one of its endpoints may hang in its bootloader.
     pub fn delete_installation(&self, id: &str) -> Result<(), String> {
         self.atomic(|s| {
-            s.installation(id)?;
+            let inst = s.installation(id)?;
+            let mut pending = false;
+            for ep in &inst.endpoints {
+                pending |= !s.pending_on(ep)?.is_empty();
+            }
+            if pending || s.marker_last_on(id)? {
+                return Err("installation-busy".into());
+            }
             for sql in [
                 "DELETE FROM installation_links WHERE installation = ?1",
                 "DELETE FROM master_serial WHERE installation = ?1",
@@ -531,22 +537,23 @@ impl Store {
         Ok(())
     }
 
-    /// The app's own String 2 write (0xA5) the BMS accepted: not a board swap. `before`: String 2 as read right
-    /// before the write, if it was read; a real one that differs from the newest board is recorded as a board first.
-    /// The board then keeps its row under the written serial, the old one as an alias. Writing a value that is not a
-    /// real serial (empty, the placeholder) changes nothing: that board can no longer be told apart.
-    pub fn board_written(&self, inst: &str, address: u8, before: &SerialValue, written: &str, now: i64) -> Result<(), String> {
+    /// The app's own String 2 write (0xA5) the BMS accepted. `before`: String 2 read right before the write;
+    /// `after`: read back after it. Only when `before` was a real serial is it the same board for sure: it is recorded
+    /// (a board swap shows there) and keeps its row under the new serial, the old one as an alias. Otherwise the
+    /// read-back value counts like any read. A read-back that is not a real serial (empty, the placeholder, not
+    /// read) changes nothing: that board can no longer be told apart.
+    pub fn board_written(&self, inst: &str, address: u8, before: &SerialValue, after: &SerialValue, now: i64) -> Result<(), String> {
         self.installation(inst)?;
-        let SerialValue::Set { value, .. } = classify(written) else { return Ok(()) };
+        let Some(after_serial) = real(after) else { return Ok(()) };
         self.atomic(|s| {
+            if real(before).is_none() {
+                return s.seen_rows(inst, address, after, &SerialValue::NoAnswer, now).map(|_| ());
+            }
             s.seen_rows(inst, address, before, &SerialValue::NoAnswer, now)?;
+            // the newest board now carries `before`
             match s.current_board(inst, address)? {
-                Some(b) if b.bms_serial == value => {
-                    s.db.execute("UPDATE boards SET last_seen = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
-                    Ok(())
-                }
-                Some(b) => s.rename_board(&b, &value, now),
-                None => s.seen_rows(inst, address, &SerialValue::Set { value: value.clone(), truncated: false }, &SerialValue::NoAnswer, now).map(|_| ()),
+                Some(b) if b.bms_serial != after_serial => s.rename_board(&b, after_serial, now),
+                _ => Ok(()),
             }
         })
     }
@@ -672,6 +679,13 @@ mod tests {
         s.set_master_read(&a.id, "{}", false, 3).unwrap();
         assert!(s.markers_on().unwrap().is_empty());
         let p = s.add_pending("serial:/dev/p", 3, "16.06.13", 4).unwrap();
+        // open work: a pack on its endpoint may hang in its bootloader, or the marker was on
+        assert_eq!(s.delete_installation(&a.id), Err("installation-busy".to_string()));
+        s.clear_pending(p, "confirmed", 5).unwrap();
+        s.set_master_read(&a.id, "{}", true, 6).unwrap();
+        assert_eq!(s.delete_installation(&a.id), Err("installation-busy".to_string()));
+        s.set_master_read(&a.id, "{}", false, 7).unwrap();
+        let p = s.add_pending("serial:/dev/other", 3, "16.06.13", 8).unwrap();
         s.delete_installation(&a.id).unwrap();
         assert!(s.installations().unwrap().is_empty());
         assert_eq!(s.master_read(&a.id).unwrap(), None);
@@ -812,7 +826,7 @@ mod tests {
         let a = s.create_installation("A", None, vec![]).unwrap();
         let none = SerialValue::NoAnswer;
         s.board_seen(&a.id, 2, &set("SYN-A"), &none, 10).unwrap();
-        s.board_written(&a.id, 2, &none, "SYN-A2", 20).unwrap();
+        s.board_written(&a.id, 2, &set("SYN-A"), &set("SYN-A2"), 20).unwrap();
         assert_eq!(serials(&s, &a.id, 2), vec![("SYN-A2".into(), vec!["SYN-A".into()])], "no board swap");
         let b = s.current_board(&a.id, 2).unwrap().unwrap();
         assert_eq!((b.first_seen, b.last_seen), (10, 20));
@@ -820,16 +834,20 @@ mod tests {
         // the old serial written back by another tool: still this board
         assert_eq!(s.board_seen(&a.id, 2, &set("SYN-A"), &none, 40).unwrap(), BoardSeen::Same);
         assert_eq!(serials(&s, &a.id, 2), vec![("SYN-A".into(), vec!["SYN-A".into(), "SYN-A2".into()])]);
-        // empty or the placeholder written: the board can no longer be told apart, nothing changes
-        s.board_written(&a.id, 2, &none, "  ", 50).unwrap();
-        s.board_written(&a.id, 2, &none, "EMU110110S-XXXX-20000101-00001", 50).unwrap();
-        assert_eq!(s.current_board(&a.id, 2).unwrap().unwrap().bms_serial, "SYN-A");
-        // read before the write shows another board: that one is recorded and renamed, the old one stays
-        s.board_written(&a.id, 2, &set("SYN-B"), "SYN-B2", 60).unwrap();
+        // read back as empty or the placeholder: the board can no longer be told apart, nothing changes
+        s.board_written(&a.id, 2, &set("SYN-A"), &SerialValue::Empty, 50).unwrap();
+        s.board_written(&a.id, 2, &set("SYN-A"), &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, 50).unwrap();
+        assert_eq!(s.current_board(&a.id, 2).unwrap().unwrap().last_seen, 40);
+        // String 2 before the write not read: not sure it is the same board, the new serial counts like a read
+        s.board_written(&a.id, 2, &none, &set("SYN-Z"), 55).unwrap();
+        assert_eq!(serials(&s, &a.id, 2).len(), 2);
+        assert_eq!(serials(&s, &a.id, 2)[0], ("SYN-Z".into(), vec![]));
+        // read before the write shows another board: that one is recorded and renamed, the others stay
+        s.board_written(&a.id, 2, &set("SYN-B"), &set("SYN-B2"), 60).unwrap();
         assert_eq!(serials(&s, &a.id, 2)[0], ("SYN-B2".into(), vec!["SYN-B".into()]));
-        assert_eq!(s.boards(&a.id, 2).unwrap().len(), 2);
-        // a place without a board: the written serial identifies it from now on
-        s.board_written(&a.id, 5, &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, "SYN-C", 70).unwrap();
+        assert_eq!(s.boards(&a.id, 2).unwrap().len(), 3);
+        // a place without a board (placeholder before): the read-back serial identifies it from now on
+        s.board_written(&a.id, 5, &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, &set("SYN-C"), 70).unwrap();
         assert_eq!(serials(&s, &a.id, 5), vec![("SYN-C".into(), vec![])]);
     }
 
@@ -849,7 +867,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(rows, vec![(None, "read".into(), vec![1, 2]), (Some("SYN-A".into()), "written".into(), vec![3])]);
-        s.board_written(&a.id, 1, &SerialValue::NoAnswer, "SYN-A2", 8).unwrap();
+        s.board_written(&a.id, 1, &set("SYN-A"), &set("SYN-A2"), 8).unwrap();
         s.set_cell_type(&a.id, 1, Some("{}")).unwrap();
         let b = s.create_installation("B", None, vec![]).unwrap();
         s.board_seen(&b.id, 1, &set("SYN-X"), &SerialValue::NoAnswer, 9).unwrap();
