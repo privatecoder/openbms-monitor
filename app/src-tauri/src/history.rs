@@ -263,6 +263,11 @@ impl History {
         self.preparing = on;
     }
 
+    /// Writes to a pack wait while this is true: their snapshots (the state before) would be lost.
+    pub fn preparing(&self) -> bool {
+        self.preparing
+    }
+
     /// Opening failed: the recording stays off and the status shows why.
     pub fn failed(&mut self, error: String) {
         self.preparing = false;

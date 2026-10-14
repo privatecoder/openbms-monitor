@@ -14,9 +14,6 @@ pub fn run(db: &Connection, backup: Option<&Path>, done: usize, steps: &[Step], 
     if done >= steps.len() {
         return Ok(0);
     }
-    if let Some(path) = backup {
-        enough_space(path)?;
-    }
     for (i, step) in steps.iter().enumerate().skip(done) {
         let n = i + 1;
         let err = |e: rusqlite::Error| format!("migration {n}: {e}");
@@ -27,8 +24,10 @@ pub fn run(db: &Connection, backup: Option<&Path>, done: usize, steps: &[Step], 
         step(&tx).and_then(|_| mark(&tx, n)).map_err(err)?;
         tx.commit().map_err(err)?;
     }
-    // the rewritten tables out of the log, so the file alone is the whole database again
-    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| format!("checkpoint: {e}"))?;
+    // the rewritten tables out of the log, so the file alone is the whole database again; the data is safe without it
+    if let Err(e) = db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+        eprintln!("checkpoint after migration: {e}");
+    }
     Ok(steps.len() - done)
 }
 
@@ -38,13 +37,18 @@ pub fn backup_path(path: &Path, n: usize) -> PathBuf {
 }
 
 /// A consistent copy (including what is still in the write-ahead log), written under a temporary name so that only
-/// a complete copy carries the backup name. A complete copy of an earlier attempt is kept: that step never
-/// committed, so the file is still as it was then.
+/// a complete copy carries the backup name. A sound copy of an earlier attempt is kept: that step never committed, so
+/// the file is still as it was then. A damaged one is moved aside (`.bad-<time>`) and copied anew.
 fn copy(db: &Connection, path: &Path, n: usize) -> Result<(), String> {
     let to = backup_path(path, n);
     if to.exists() {
-        return Ok(());
+        if sound_copy(db, &to) {
+            return Ok(());
+        }
+        let bad = PathBuf::from(format!("{}.bad-{}", to.display(), crate::history::now_ms()));
+        std::fs::rename(&to, &bad).map_err(|e| format!("backup {}: {e}", to.display()))?;
     }
+    enough_space(path)?;
     let tmp = PathBuf::from(format!("{}.tmp", to.display()));
     let _ = std::fs::remove_file(&tmp);
     let r = db
@@ -55,6 +59,16 @@ fn copy(db: &Connection, path: &Path, n: usize) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
     }
     r
+}
+
+/// The copy passes SQLite's quick check and has the tables the file has (a step that never committed changed none).
+fn sound_copy(db: &Connection, copy: &Path) -> bool {
+    let tables = |c: &Connection| -> rusqlite::Result<Vec<String>> {
+        c.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?.query_map([], |r| r.get(0))?.collect()
+    };
+    let Ok(c) = Connection::open_with_flags(copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
+    let ok = c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)).is_ok_and(|r| r == "ok");
+    ok && matches!((tables(&c), tables(db)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// The copy and the rewritten tables need about twice the file (with its log) on the disk.
@@ -139,5 +153,26 @@ mod tests {
         assert_eq!(count(&Connection::open(backup_path(&path, 1)).unwrap()), 1);
         assert_eq!(run(&db, Some(&path), 1, good, mark).unwrap(), 0);
         assert!(free_space(path.parent().unwrap()).is_none_or(|f| f > 0));
+    }
+
+    #[test]
+    fn a_damaged_copy_is_moved_aside_and_made_anew() {
+        let path = temp("damaged");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);").unwrap();
+        std::fs::write(backup_path(&path, 1), b"not a database").unwrap();
+        let good: &[Step] = &[|db| db.execute_batch("INSERT INTO t VALUES (2);")];
+        run(&db, Some(&path), 0, good, mark).unwrap();
+        let names = backups(&path);
+        assert_eq!(names.len(), 2);
+        assert!(names[1].starts_with("data.sqlite.bak-1.bad-"), "{names:?}");
+        assert_eq!(count(&Connection::open(backup_path(&path, 1)).unwrap()), 1);
+        // a sound copy of another layout (tables differ) is not taken either
+        let other = temp("other");
+        let db = Connection::open(&other).unwrap();
+        db.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);").unwrap();
+        Connection::open(backup_path(&other, 1)).unwrap().execute_batch("CREATE TABLE u(y);").unwrap();
+        run(&db, Some(&other), 0, good, mark).unwrap();
+        assert_eq!(count(&Connection::open(backup_path(&other, 1)).unwrap()), 1);
     }
 }
