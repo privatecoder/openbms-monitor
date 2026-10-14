@@ -17,15 +17,15 @@ const packNo = (a: number) => String(a).padStart(2, "0");
 const num = (s: string) => (s.trim() === "" ? undefined : Number(s.replace(",", ".")));
 
 /** Resistance diagnosis: zero at rest, live inner resistance, outer resistance against the busbar, pair currents. */
-export function Diagnosis({ packs, site }: { packs: Record<number, PackEntry>; site: string }) {
+export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; scope: string | null }) {
   const { t, i18n } = useTranslation();
-  const { pairs: allPairs } = usePairs(site);
+  const { pairs: allPairs } = usePairs(scope);
   const [point, setPoint] = useState<RefPoint>("bus");
   const [restIn, setRestIn] = useState<Record<string, string>>({});
   const [nowIn, setNowIn] = useState<Record<string, string>>({});
   const list = Object.values(packs).filter((p) => p.telemetry).sort((a, b) => a.address - b.address);
   const pairs = validPairs(allPairs, list.map((p) => p.address));
-  const d = useDiag(site, packs, pairs);
+  const d = useDiag(scope, packs, pairs);
   // input keys: "bus" or the plus pack of a pair
   const refsOf = (vals: Record<string, string>): Refs => ({ bus: num(vals.bus ?? ""), perPair: Object.fromEntries(pairs.map((p) => [p.plus, num(vals[p.plus] ?? "")])) });
   const restRefs = refsOf(restIn), nowRefs = refsOf(nowIn);

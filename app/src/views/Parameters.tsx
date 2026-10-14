@@ -1,16 +1,15 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Download, FileUp, FolderOpen, History, PenLine, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
-import { api, isDemo, type Bus } from "../api";
+import { Archive, Download, FileUp, FolderOpen, History, PenLine, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
+import { api, isDemo, type Bus, type Installation } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
-import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, parseExport, toExport, type Parameters, type Source } from "../params";
+import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, type Parameters, type Source } from "../params";
 import { blockers, changes, fromRaw, notTaken, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX } from "../paramWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { SerialLine } from "../components/SerialWrite";
-import { useHistoryPreparing } from "../history/preparing";
 import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
 import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
@@ -31,6 +30,9 @@ const keptRefused = new Map<string, Refused>();
 const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
 // the datasheet chosen for the check; null = follow the packs' cell type
 let keptRef: Assignment | "none" | null = null;
+// the installations view's link to the stored state: the view opens with those columns
+let wantStored = false;
+export function showStoredParameters() { wantStored = true; }
 
 /** The cell type most packs have, as the default datasheet for the check. */
 function commonAssignment(assigned: Record<number, Assignment>): Assignment | undefined {
@@ -42,11 +44,13 @@ function commonAssignment(assigned: Record<number, Assignment>): Assignment | un
   return [...count.values()].sort((x, y) => y.n - x.n)[0]?.a;
 }
 
-/** Read the packs' parameters (RS485-1/2) or open BatteryMonitor exports, and compare them side by side. */
-export function ParametersView({ connected, bus, packs, site }: { connected: boolean; bus: Bus | null; packs: number[]; site: string }) {
+/** Read the packs' parameters (RS485-1/2), show the stored state of the chosen installation, or open BatteryMonitor
+ *  exports, and compare them side by side. Editing needs a connection with that installation. */
+export function ParametersView({ connected, bus, packs, installation }: { connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null }) {
   const { t, i18n } = useTranslation();
   const db = useCellDb();
-  const { assigned } = useAssignments(site);
+  const site = installation?.id ?? "";
+  const { assigned } = useAssignments(installation?.id ?? null);
   const [refChoice, setRefChoiceState] = useState(keptRef);
   const setRef = (r: Assignment | "none" | null) => { keptRef = r; setRefChoiceState(r); };
   const common = commonAssignment(assigned);
@@ -54,7 +58,11 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const refCell = ref ? db.entries.find((e) => e.cell.id === ref.cell)?.cell : undefined;
   const link = `${site}|${connected}`;
   const [sources, setSourcesState] = useState<Source[]>(() => {
-    if (keptLink !== link) { kept = unlink(kept); keptLink = link; }
+    if (keptLink !== link) {
+      // another installation: its stored columns go as well
+      if (keptLink.split("|")[0] !== site) kept = kept.filter((x) => x.kind !== "stored");
+      kept = unlink(kept); keptLink = link;
+    }
     return kept;
   });
   const setSources = (f: (s: Source[]) => Source[]) => setSourcesState((s) => (kept = f(s)));
@@ -64,9 +72,8 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const file = useRef<HTMLInputElement>(null);
   // one pack for the clock, the CAN protocol and the calibration
   const [chosen, setChosen] = usePackChoice(packs);
-  const writable = connected && (bus === "pack" || isDemo);
-  // writes keep the state before as a snapshot: not while the recording's database is being updated
-  const preparing = useHistoryPreparing();
+  // „Nur ansehen“ writes nothing to a pack
+  const writable = connected && (isDemo || (bus === "pack" && !!installation));
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
@@ -80,9 +87,27 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   // another installation or a new connection: what was read no longer belongs to the packs on the bus
   useEffect(() => {
     if (keptLink === link) return;
+    // another installation: its stored columns go as well
+    if (keptLink.split("|")[0] !== site) setSources((s) => s.filter((x) => x.kind !== "stored"));
     keptLink = link;
     setSources(unlink); setEdit(null); setNote(null);
   }, [link]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // the stored state of every place (newest block of its current board), after the stored columns of before
+  const [storedNote, setStoredNote] = useState<string | null>(null);
+  const loadStored = async () => {
+    if (!installation) return;
+    setStoredNote(null);
+    try {
+      const rows = await api.installationSnapshots(installation.id);
+      setSources((s) => [...s.filter((x) => x.kind !== "stored"), ...rows.map(fromStored)]);
+      if (!rows.length) setStoredNote(t("par.storedNone"));
+    } catch (e) { setStoredNote(String(e)); }
+  };
+  // from the installations view, or nothing shown yet without a connection
+  useEffect(() => {
+    if (installation && (wantStored || (!connected && !sources.length))) { wantStored = false; void loadStored(); }
+  }, [installation?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [, rerender] = useState(0);
   const refusedOf = (a: number) => keptRefused.get(`${site}|${a}`) ?? null;
@@ -198,7 +223,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   const nf = (i: number) => new Intl.NumberFormat(i18n.language, { minimumFractionDigits: decimals(i), maximumFractionDigits: decimals(i) });
   const editId = edit ? `pack-${edit.address}` : null;
   // the edited column shows the values as edited, so differences and the datasheet check follow the input
-  const cols = [...sources.filter((c) => c.kind === "file"), ...sources.filter((c) => c.kind === "pack")]
+  const cols = [...sources.filter((c) => c.kind === "file"), ...sources.filter((c) => c.kind === "stored"), ...sources.filter((c) => c.kind === "pack")]
     .map((c) => (edit && c.id === editId ? { ...c, values: edit.raws.map((r, i) => fromRaw(i, r)), switches: edit.switches } : c));
   const paramKeys = (i: number) => cols.map((c) => (c.values ? fmtParam(i, c.values[i]) : undefined));
   const switchKeys = (g: number) => cols.map((c) => (c.switches ? String(c.switches[g]) : undefined));
@@ -225,7 +250,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   }) : [];
   const takeOverSources = cols.filter((c) => c.id !== editId && c.values && c.switches && !c.error && (c.suspectFrom === undefined || c.suspectFrom === null))
     .map((c) => ({ id: c.id, label: c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label }));
-  const editable = (c: Source) => writable && !preparing && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
+  const editable = (c: Source) => writable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
   return (
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
@@ -238,6 +263,7 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
       <Panel className="space-y-3 p-5">
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="primary" disabled={!canRead} onClick={read}><Download className="h-4 w-4" />{t("par.read")}</Button>
+          <Button disabled={!installation || isDemo} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".xml,application/xml,text/xml" multiple className="hidden" onChange={(e) => open(e.target.files)} />
           {cols.length > 0 && <Button variant="ghost" disabled={!!reading || !!edit || writing.params} onClick={() => { setSources(() => []); setSaved(null); }}>{t("par.clear")}</Button>}
@@ -250,12 +276,13 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
           {reading ? t("par.reading", { pack: packNo(reading.address), n: reading.n, of: reading.of })
             : !connected ? t("par.needConnection")
             : bus === "can" && !isDemo ? t("par.canBus")
+            : !installation && !isDemo ? t("par.viewOnly")
             : t("par.packBus")}
         </p>
+        {storedNote && <p className="text-sm text-muted">{storedNote}</p>}
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
-        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial") || preparing} onBusy={busyFor("serial")} />
-        {writable && preparing && <p className="text-sm text-muted">{t("rec.preparing")}</p>}
+        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
@@ -336,14 +363,14 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
           )}
           {edit && editCol >= 0 && (
             <EditBar e={edit} pack={packNo(edit.address)} changes={editChanges} blockers={editBlockers} sheet={editSheet} full={full}
-              note={note?.address === edit.address ? note.note : null} refused={refusedOf(edit.address)} busy={writing.params} locked={lockedBut("params") || preparing} sources={takeOverSources}
+              note={note?.address === edit.address ? note.note : null} refused={refusedOf(edit.address)} busy={writing.params} locked={lockedBut("params")} sources={takeOverSources}
               onChange={(f) => setEdit((e) => e && f(e))} onTakeOver={takeOverFrom} onWrite={() => write(edit.address)} onRestore={(stored) => write(edit.address, stored)}
               onDiscard={() => { setEdit(null); setNote(null); }} />
           )}
           {cols.flatMap((c) => {
             const r = c.kind === "pack" && c.address !== undefined && c.address !== edit?.address ? refusedOf(c.address) : null;
             return r ? [<RefusedPanel key={c.id} refused={r} fullAh={full && "ah" in full && full.address === c.address ? full.ah : null} pack={c.label}
-              busy={writing.params} locked={lockedBut("params") || preparing} onRestore={(stored) => write(c.address!, stored)} />] : [];
+              busy={writing.params} locked={lockedBut("params")} onRestore={(stored) => write(c.address!, stored)} />] : [];
           })}
           {!edit && note && (
             <p className={cn("text-sm", note.note.error ? "text-alarm" : "text-ok")}>{t("par.pack", { n: packNo(note.address) })}: {note.note.text}</p>
@@ -445,7 +472,7 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
       <div className="flex items-center justify-end gap-1">
         {c.suspectFrom !== undefined && c.suspectFrom !== null && <TriangleAlert className="h-3.5 w-3.5 text-discharge" aria-label={t("par.suspectShort")} />}
         <span className={cn("truncate font-medium text-ink", c.kind === "file" && "max-w-40")} title={c.label}>
-          {c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label}
+          {c.kind === "pack" ? t("par.pack", { n: c.label }) : c.kind === "stored" ? t("par.storedCol", { n: c.label }) : c.label}
         </span>
         {onEdit && (
           <button onClick={onEdit} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink" title={t("pw.edit")} aria-label={t("pw.edit")}>
@@ -457,12 +484,12 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
             <History className="h-3.5 w-3.5" />
           </button>
         )}
-        {c.kind === "pack" && c.read && (
+        {c.kind !== "file" && c.read && (
           <button onClick={onSave} disabled={busy} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.save")} aria-label={t("par.save")}>
             <Download className="h-3.5 w-3.5" />
           </button>
         )}
-        {(c.kind === "file" || c.error) && (
+        {(c.kind !== "pack" || c.error) && (
           <button onClick={onRemove} disabled={busy} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.remove")} aria-label={t("par.remove")}>
             <X className="h-3.5 w-3.5" />
           </button>
@@ -471,6 +498,13 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
       <div className={cn("text-xs", c.error ? "text-alarm" : "text-muted")} title={c.error}>
         {c.error ? (c.kind === "pack" ? t("par.noAnswer") : t("par.unreadable")) : pending ? t("par.pending") : c.kind === "file" ? (c.device || t("par.file")) : c.device}
       </div>
+      {c.stored && (
+        <div className={cn("text-xs whitespace-nowrap", c.stored.board === "current" ? "text-muted" : "text-discharge")}
+          title={c.stored.board === "previous" ? t("par.previousBoard", { serial: c.stored.serial ?? "" }) : c.stored.board === "unclear" ? t("par.boardUnclear") : undefined}>
+          {new Date(c.stored.at).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" })} · {t(`par.kind.${c.stored.kind}`)}
+          {c.stored.board === "previous" ? ` · ${t("par.previousBoardShort")}` : c.stored.board === "unclear" ? ` · ${t("par.boardUnclearShort")}` : ""}
+        </div>
+      )}
       {c.lastWritten && (
         <div className="text-xs whitespace-nowrap text-muted">
           {t("pw.lastWritten", { at: new Date(c.lastWritten).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })}

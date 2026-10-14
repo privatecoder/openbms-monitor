@@ -40,8 +40,8 @@ export function RecDot({ active, className }: { active: boolean; className?: str
 }
 
 /** Sidebar entry: opens the recording settings and shows at a glance whether the app records. */
-export function RecordingEntry({ site, packs, systemAvailable, connected, onOpenHistory }: {
-  site: string; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void;
+export function RecordingEntry({ scope, packs, systemAvailable, connected, onOpenHistory }: {
+  scope: string | null; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -56,18 +56,18 @@ export function RecordingEntry({ site, packs, systemAvailable, connected, onOpen
         aria-label={`${t("rec.title")}: ${state}`} title={`${t("rec.title")}: ${state}`}>
         <RecDot active={!!s?.active} />
       </Button>
-      <RecordingSheet open={open} onOpenChange={setOpen} rec={rec} site={site} packs={packs} systemAvailable={systemAvailable} connected={connected}
+      <RecordingSheet open={open} onOpenChange={setOpen} rec={rec} scope={scope} packs={packs} systemAvailable={systemAvailable} connected={connected}
         onOpenHistory={() => { setOpen(false); onOpenHistory(); }} />
     </>
   );
 }
 
-function RecordingSheet({ open, onOpenChange, rec, site, packs, systemAvailable, connected, onOpenHistory }: {
+function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable, connected, onOpenHistory }: {
   open: boolean; onOpenChange: (o: boolean) => void; rec: ReturnType<typeof useHistoryStatus>;
-  site: string; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void;
+  scope: string | null; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void;
 }) {
   const { t } = useTranslation();
-  const { groups } = useGroups(site);
+  const { groups } = useGroups(scope);
   const [err, setErr] = useState<string | null>(null);
   const s = rec.status;
   if (!s) return null;
@@ -124,6 +124,7 @@ function RecordingSheet({ open, onOpenChange, rec, site, packs, systemAvailable,
               {!isDemo && <Button variant="ghost" onClick={() => api.revealHistory(s.path)}><FolderOpen className="h-4 w-4" />{t("rec.reveal")}</Button>}
             </div>
             {opts.enabled && !connected && <p className="mt-2 text-sm text-muted">{t("rec.needConnection")}</p>}
+            {opts.enabled && scope === null && !isDemo && <p className="mt-2 text-sm text-discharge">{t("rec.viewOnly")}</p>}
           </section>
 
           <section className="space-y-3">

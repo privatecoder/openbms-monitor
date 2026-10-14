@@ -3,6 +3,8 @@ title: Connection
 short: How the app connects to the batteries: via a USB-RS485 adapter or an RS485-to-Ethernet gateway (TCP).
 related: topic.buses
 ---
+- **Installation:** before connecting you choose the installation at the top. Everything the app stores (recording, serial numbers, parameter states, cell types, groups) then belongs to it. A USB port never changes the choice, since the same adapter moves between banks. A gateway that belongs to exactly one active installation chooses it by itself; if it belongs to several, the chosen one stays when it is among them, otherwise the app asks you to choose. A new endpoint is linked to the chosen installation when connecting (one line, no dialog). While connected the choice is fixed; the automatic reconnect uses it too.
+- **View only:** for a quick look at a foreign bank. Nothing is stored (no recording, no serial numbers, no parameter states) and nothing is written to the packs.
 - **Network (TCP):** gateway address as `host:port`, e.g. `192.168.1.10:4196`. The baud rate is configured on the gateway (CAN socket 9600, RS485-1/2 19200).
 - **USB/serial:** select the adapter's port; the baud rate follows the selected bus.
 - **Order after connecting:** on the CAN socket the app first reads the master's system values (Modbus) and shows them at once. If the master reports its slave count (only with the maintenance firmware, command 0x64), the app polls exactly these packs without a search. Otherwise the **Packs** setting applies: a fixed number starts polling addresses 0 to number−1 at once, “search” scans addresses 0–15. Then all packs are polled every 2 s; names and firmware versions follow shortly after the start. While the master's maintenance mode is active it reports 0 slaves; then the app searches.

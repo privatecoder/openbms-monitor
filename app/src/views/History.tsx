@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChartLine, Download, FileUp, RotateCcw } from "lucide-react";
-import { api, isDemo, type Bus, type Series, type SiteSpan } from "../api";
+import { api, isDemo, type Bus, type Installation, type Series, type SiteSpan } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { Segmented, Tick } from "../components/PackPicker";
@@ -37,16 +37,17 @@ let keptSpan: Span = { preset: 24 };
 let keptMetrics: Metric[] = ["current", "soc", "delta", "sysCurrent"];
 let keptTab: "app" | "bms" = "app";
 
-/** Two tabs: the app's own recording (charts from the database, with export and import) and the history the BMS
- *  keeps itself (read on demand over RS485-1/2). */
-export function History({ site: liveSite, connected, bus, packs: livePacks }: { site: string; connected: boolean; bus: Bus | null; packs: number[] }) {
+/** Two tabs: the app's own recording of the chosen installation (charts from the database, with export and import) and
+ *  the history the BMS keeps itself (read on demand over RS485-1/2). */
+export function History({ installation, connected, bus, packs: livePacks }: { installation: Installation | null; connected: boolean; bus: Bus | null; packs: number[] }) {
   const { t, i18n } = useTranslation();
   const [tab, setTabState] = useState(keptTab);
   const setTab = (v: "app" | "bms") => { keptTab = v; setTabState(v); };
   const lang = i18n.language;
   const dark = useDark();
   const [sites, setSites] = useState<SiteSpan[] | null>(null);
-  const [site, setSite] = useState<string | null>(null);
+  // the recording is keyed by the installation's id; the preview has one synthetic site
+  const site = isDemo ? sites?.[0]?.site ?? null : installation?.id ?? null;
   const [span, setSpanState] = useState<Span>(keptSpan);
   const setSpan = (s: Span) => { keptSpan = s; setSpanState(s); };
   const [metrics, setMetricsState] = useState<Metric[]>(keptMetrics);
@@ -60,11 +61,8 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
   const [tick, setTick] = useState(0);
   const [format, setFormat] = useState<"jsonl" | "csv">("csv");
 
-  const loadSites = () => api.historySites().then((s) => {
-    setSites(s);
-    setSite((cur) => (cur && s.some((x) => x.site === cur) ? cur : s.find((x) => x.site === liveSite)?.site ?? s[0]?.site ?? null));
-  }).catch((e) => { setSites([]); setErr(String(e)); });
-  useEffect(() => { loadSites(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadSites = () => api.historySites().then(setSites).catch((e) => { setSites([]); setErr(String(e)); });
+  useEffect(() => { loadSites(); setHidden(new Set()); }, [site]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const info = sites?.find((s) => s.site === site);
   const packs = useMemo(() => info?.packs ?? [], [info]);
@@ -108,7 +106,7 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const [, exports] = await api.historyDirs();
-      const path = await save({ defaultPath: `${exports}/${exportName(site, format)}`, filters: [{ name: format === "csv" ? "CSV" : "JSON Lines", extensions: [format] }] });
+      const path = await save({ defaultPath: `${exports}/${exportName(installation?.name ?? site, format)}`, filters: [{ name: format === "csv" ? "CSV" : "JSON Lines", extensions: [format] }] });
       if (!path) return;
       const r = await api.historyExport(site, from, to, shown, format, path);
       setNote(t("hist.exported", { count: r.rows, files: r.files.map((f) => f.split(/[\\/]/).pop()).join(", ") }));
@@ -122,12 +120,11 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
       const picked = await open({ multiple: true, defaultPath: recordings, filters: [{ name: "JSON Lines", extensions: ["jsonl", "json", "txt"] }] });
       const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
       if (!paths.length) return;
-      const target = site ?? liveSite ?? "import";
+      if (!site) return;
       let rows = 0;
-      for (const p of paths) { setNote(t("hist.importing", { name: p.split(/[\\/]/).pop() })); rows += (await api.historyImport(p, target)).rows; }
-      setNote(t("hist.imported", { count: rows, files: paths.length, site: target }));
+      for (const p of paths) { setNote(t("hist.importing", { name: p.split(/[\\/]/).pop() })); rows += (await api.historyImport(p, site)).rows; }
+      setNote(t("hist.imported", { count: rows, files: paths.length, site: installation?.name ?? site }));
       await loadSites();
-      setSite(target);
       setSpan({ preset: "all" });
     } catch (e) { setErr(String(e)); }
   };
@@ -164,7 +161,7 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
   const dt = (ms: number) => new Intl.DateTimeFormat(lang, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(ms);
   const tm = (ms: number) => new Intl.DateTimeFormat(lang, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(ms);
   const presetLabel = (h: number | "all") => (h === "all" ? t("hist.all") : h < 24 ? t("hist.hours", { count: h }) : t("hist.daysShort", { count: h / 24 }));
-  const hasData = !!sites?.length;
+  const hasData = !!info;
 
   return (
     <div className="view-in mx-auto max-w-7xl space-y-6">
@@ -185,14 +182,7 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
       {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} /> : <>
       <Panel className="space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {hasData && (
-            sites!.length > 1 ? (
-              <select value={site ?? ""} onChange={(e) => { setSite(e.target.value); setHidden(new Set()); }}
-                className="h-9 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge" aria-label={t("hist.site")}>
-                {sites!.map((s) => <option key={s.site} value={s.site}>{s.site}</option>)}
-              </select>
-            ) : <span className="font-medium">{site}</span>
-          )}
+          <span className="font-medium">{isDemo ? site : installation?.name ?? t("hist.noInstallation")}</span>
           {hasData && (
             <Segmented value={"preset" in span ? String(span.preset) : ""} onChange={(v) => setSpan({ preset: v === "all" ? "all" : Number(v) })}
               items={[...PRESETS, "all" as const].map((h) => [String(h), presetLabel(h)] as [string, string])} />
@@ -204,7 +194,7 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
                 <Button variant="secondary" disabled={isDemo || !data} onClick={doExport}><Download className="h-4 w-4" />{t("hist.export")}</Button>
               </>
             )}
-            <Button variant="ghost" disabled={isDemo} onClick={doImport}><FileUp className="h-4 w-4" />{t("hist.import")}</Button>
+            <Button variant="ghost" disabled={isDemo || !site} onClick={doImport}><FileUp className="h-4 w-4" />{t("hist.import")}</Button>
           </div>
         </div>
         {hasData && <p className="text-sm text-muted">{t("hist.exportHint")}</p>}
@@ -214,7 +204,7 @@ export function History({ site: liveSite, connected, bus, packs: livePacks }: { 
 
       {sites && !hasData ? (
         <div className="flex max-w-lg flex-col gap-3 py-10 text-lg text-muted">
-          <ChartLine className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("hist.empty")}
+          <ChartLine className="h-8 w-8" strokeWidth={1.5} aria-hidden />{site ? t("hist.empty") : t("hist.chooseInstallation")}
         </div>
       ) : data && (
         <>

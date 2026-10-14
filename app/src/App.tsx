@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Cable } from "lucide-react";
+import { Cable, X } from "lucide-react";
 import { Sidebar } from "./views/Sidebar";
 import { MaintBanner } from "./views/MaintBanner";
 import { NameDialog } from "./views/NameDialog";
@@ -9,28 +9,35 @@ import { Dashboard } from "./views/Dashboard";
 import { PackDetail } from "./views/PackDetail";
 import { Cells } from "./views/Cells";
 import { Diagnosis } from "./views/Diagnosis";
-import { ParametersView } from "./views/Parameters";
+import { ParametersView, showStoredParameters } from "./views/Parameters";
 import { History } from "./views/History";
+import { Installations } from "./views/Installations";
 import { HelpProvider } from "./help";
 import { useLiveData } from "./store";
 import { useMaint } from "./maintStore";
 import { api, isDemo, type Bus } from "./api";
-import type { Monitor } from "./maint";
+import { defaultName, type Monitor } from "./maint";
+import i18n from "./i18n";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
 // views listed in the sidebar only while "show maintenance functions" is on
 const MAINT_VIEWS = ["diag", "params", "firmware"];
 
+/** „Andere Platine an Adresse 07 (Seriennummer …)?“: a serial read found another board than the place had. */
+type BoardNotice = { address: number; serial: string; previous: string };
+
 export default function App() {
   const { t } = useTranslation();
   const live = useLiveData();
   const maint = useMaint();
+  // the installation drives everything stored (null: „Nur ansehen“); it cannot change while connected
+  const scope = maint.installation;
   const [connected, setConnected] = useState(false);
-  const [site, setSite] = useState("");
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
   const [flashing, setFlashing] = useState(false);
+  const [boards, setBoards] = useState<BoardNotice[]>([]);
   // counts actions the user starts in the firmware view or the pack bus panel: the sidebar's wait for a busy port stops
   const [userActions, setUserActions] = useState(0);
   const userAction = () => setUserActions((n) => n + 1);
@@ -49,9 +56,17 @@ export default function App() {
     return () => { un.then((f) => f()); };
   }, []);
 
-  // the banner's „Anzeigen“: the firmware view with the pack bus panel
-  const openPanel = () => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); setView("firmware"); setPack(null); };
-  const endpointText = (ep: { kind: string; addr?: string; path?: string }) => ep.addr ?? ep.path ?? "";
+  const enableMaintenance = () => { localStorage.setItem("maint.enabled", "1"); setMaintenance(true); };
+  // the banner's „Anzeigen“: the firmware view with the pack bus panel of that installation. Another installation than
+  // the connected one ends the connection first: the choice and the connection always belong together.
+  const show = async (id: string) => {
+    if (id !== maint.installation) {
+      if (connected) { await api.disconnect().catch(() => {}); live.reset(); setConnected(false); setMonitor("offline"); }
+      maint.switchTo(id);
+    }
+    enableMaintenance(); setView("firmware"); setPack(null);
+  };
+  const packList = Object.keys(live.packs).map(Number).sort((a, b) => a - b);
 
   return (
     <HelpProvider>
@@ -60,41 +75,48 @@ export default function App() {
           userActions={userActions}
           connected={connected}
           paused={monitor === "paused"}
-          site={site}
-          packs={Object.keys(live.packs).map(Number)}
+          maint={maint}
+          packs={packList}
           lastUpdate={Math.max(0, ...Object.values(live.packs).map((p) => p.updated))}
           locked={flashing}
           maintenance={maintenance}
           setMaintenance={(v) => { localStorage.setItem("maint.enabled", v ? "1" : "0"); setMaintenance(v); if (!v && MAINT_VIEWS.includes(view)) setView("dashboard"); }}
           view={view}
           setView={(v) => { setView(v); setPack(null); }}
-          onConnected={(found, s, b) => { live.setDevices(found); setSite(s); setBus(b); setConnected(true); setMonitor("connected"); if (!isDemo) setPack(null); }}
+          onConnected={(found, b) => { live.setDevices(found); setBus(b); setConnected(true); setMonitor("connected"); setBoards([]); if (!isDemo) setPack(null); }}
           onDevices={live.addDevices}
           onSerials={live.setSerials}
-          onEndpoint={(ep) => maint.attach(ep)}
+          onBoard={(n) => setBoards((list) => [...list.filter((x) => x.address !== n.address), n])}
           onDisconnected={(lost) => { live.reset(); setConnected(false); setPack(null); setMonitor(lost ? "lost" : "offline"); }}
         />
         <main className="flex-1 overflow-y-auto px-10 py-10">
-          <MaintBanner alerts={maint.alerts} failed={maint.alertsFailed} flashing={flashing} unassigned={maint.unassigned} shownName={maint.current?.name ?? null}
-            onAssign={() => maint.unassigned && maint.assign(maint.unassigned)} onChanged={() => void maint.loadLists()}
-            onShow={(id) => { if (id !== maint.installation) void maint.switchTo(id); openPanel(); }} />
-          {maint.naming && <NameDialog key={maint.naming.suggested + endpointText(maint.naming.endpoint)} endpoint={maint.naming.endpoint} suggested={maint.naming.suggested} onConfirm={maint.confirmNaming} onCancel={maint.cancelNaming} />}
+          <MaintBanner alerts={maint.alerts} failed={maint.alertsFailed} flashing={flashing} onChanged={() => void maint.loadLists()} onShow={(id) => void show(id)} />
+          {boards.map((b) => (
+            <div key={b.address} role="status" className="mb-3 flex items-start gap-3 rounded-md border border-discharge p-3 text-sm">
+              <p className="flex-1">{t("inst.otherBoard", { pack: String(b.address).padStart(2, "0"), serial: b.serial, previous: b.previous })}</p>
+              <button className="text-muted hover:text-ink" aria-label={t("inst.dismiss")} title={t("inst.dismiss")} onClick={() => setBoards((l) => l.filter((x) => x !== b))}><X className="h-4 w-4" /></button>
+            </div>
+          ))}
+          {maint.naming && <NameDialog suggested={defaultName(maint.installations, i18n.t("maint.picker.base"))} onConfirm={maint.create} onCancel={() => maint.setNaming(false)} />}
           {view === "firmware" && maintenance ? (
             <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
+          ) : view === "installations" ? (
+            <Installations maint={maint} connected={connected}
+              onParameters={(id) => { showStoredParameters(); if (id !== maint.installation) maint.switchTo(id); enableMaintenance(); setView("params"); }} />
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (
-            <History site={site} connected={connected} bus={bus} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
+            <History installation={maint.current} connected={connected} bus={bus} packs={packList} />
           ) : view === "params" && maintenance ? (
-            <ParametersView connected={connected} bus={bus} site={site} packs={Object.keys(live.packs).map(Number).sort((a, b) => a - b)} />
+            <ParametersView connected={connected} bus={bus} installation={maint.current} packs={packList} />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
           ) : view === "diag" && maintenance ? (
-            <Diagnosis packs={live.packs} site={site} />
+            <Diagnosis packs={live.packs} scope={scope} />
           ) : current ? (
-            <PackDetail p={current} bus={bus} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} site={site} packs={live.packs} />
+            <PackDetail p={current} bus={bus} multi={Object.keys(live.packs).length > 1} onBack={() => setPack(null)} scope={scope} packs={live.packs} />
           ) : (
-            <Dashboard packs={live.packs} system={live.system} site={site} onOpen={setPack} />
+            <Dashboard packs={live.packs} system={live.system} scope={scope} onOpen={setPack} />
           )}
         </main>
       </div>
