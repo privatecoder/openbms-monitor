@@ -51,6 +51,10 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
   // one pack for the clock, the CAN protocol and the calibration
   const [chosen, setChosen] = usePackChoice(packs);
   const writable = connected && (bus === "pack" || isDemo);
+  // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false });
+  const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
+  const lockedBut = (k: keyof typeof writing) => Object.entries(writing).some(([o, b]) => o !== k && b);
 
   const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading;
 
@@ -127,9 +131,9 @@ export function ParametersView({ connected, bus, packs, site }: { connected: boo
             : bus === "can" && !isDemo ? t("par.canBus")
             : t("par.packBus")}
         </p>
-        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} />
-        <CanProtocolLine address={chosen} usable={writable} />
-        <CalibrationSection address={chosen} usable={writable} />
+        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} />
+        <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
+        <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}

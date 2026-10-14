@@ -48,8 +48,10 @@ export function usePackChoice(packs: number[]) {
 }
 
 /** The clock line of the parameters view: BMS time, PC time, difference, and setting it to the PC's local time. */
-export function ClockLine({ connected, bus, packs, address, setAddress }: {
+export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy }: {
   connected: boolean; bus: Bus | null; packs: number[]; address: number | null; setAddress: (a: number) => void;
+  /** another write (CAN protocol, calibration) runs: pack picker and clock buttons wait */
+  locked?: boolean; onBusy?: (busy: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
@@ -57,6 +59,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress }: {
   const usable = connected && (bus === "pack" || isDemo);
   const { read, setRead } = useBmsClock(address, usable);
   const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
   useEffect(() => setNote(null), [address]);
 
@@ -95,7 +98,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress }: {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="flex items-center gap-1.5 font-medium"><Clock className="h-4 w-4" aria-hidden />{t("clock.title")}<InfoIcon id="topic.bmsHistory" /></span>
         {packs.length > 0 && (
-          <select value={address ?? ""} onChange={(e) => setAddress(Number(e.target.value))} disabled={!!busy} aria-label={t("bmsh.pack")}
+          <select value={address ?? ""} onChange={(e) => setAddress(Number(e.target.value))} disabled={!!busy || locked} aria-label={t("bmsh.pack")}
             className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
             {packs.map((a) => <option key={a} value={a}>{t("bmsh.pack")} {no(a)}</option>)}
           </select>
@@ -116,8 +119,8 @@ export function ClockLine({ connected, bus, packs, address, setAddress }: {
       </div>
       {usable && address !== null && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={!!busy} onClick={setOne} className="tabular-nums">{label}</Button>
-          {packs.length > 1 && <Button size="sm" variant="ghost" disabled={!!busy} onClick={setAll}>{t("clock.setAll")}</Button>}
+          <Button size="sm" disabled={!!busy || locked} onClick={setOne} className="tabular-nums">{label}</Button>
+          {packs.length > 1 && <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={setAll}>{t("clock.setAll")}</Button>}
           <span className="text-muted">{busy ?? t("clock.hint")}</span>
         </div>
       )}

@@ -95,6 +95,8 @@ export interface PackUpdate { address: number; telemetry: Telemetry | null; stat
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 /** Telemetry and status of one pack, read on demand (calibration). */
 export interface PackLive { telemetry: Telemetry; status: Status }
+/** A CAN protocol set the BMS accepted; `device` is null when the read-back of 0x51 failed. */
+export interface CanProtocolSet { device: DeviceInfo | null; read_error: string | null }
 export interface MaintStatus { marker: boolean; effective_slaves: number }
 /** Recording into the history database. Off by default; changes apply at once. */
 export interface HistorySettings {
@@ -202,8 +204,8 @@ const tauriApi = {
   packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
   /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
   bmsCalibrate: (address: number, calibration: Calibration) => invoke<void>("bms_calibrate", { address, calibration }),
-  /** RS485-1/2 only, 1…6; returns the device info read back */
-  setCanProtocol: (address: number, protocol: number) => invoke<DeviceInfo>("set_can_protocol", { address, protocol }),
+  /** RS485-1/2 only, 1…6; once accepted, the device info read back or why that read failed */
+  setCanProtocol: (address: number, protocol: number) => invoke<CanProtocolSet>("set_can_protocol", { address, protocol }),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -353,7 +355,7 @@ function demoApi(): typeof tauriApi {
       demoProtocol.set(address, CAN_PROTOCOLS.find((x) => x.n === protocol)?.text ?? "");
       const d = (await load()).scan.find((s) => s.address === address)?.device;
       if (!d) throw new Error("timeout after 1500 ms");
-      return { ...d, can_protocol: demoProtocol.get(address)! };
+      return { device: { ...d, can_protocol: demoProtocol.get(address)! }, read_error: null };
     },
     bmsHistory: async (address) => {
       demoCancel = false;

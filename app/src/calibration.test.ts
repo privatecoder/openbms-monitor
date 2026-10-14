@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cellMv, cellStats, centiAmps, currentAllowed, notCalibrated, parseNumber, protocolOf, refusal } from "./calibration";
+import { cellMv, cellStats, centiAmps, currentAllowed, flagAfter, notCalibrated, parseNumber, protocolOf, protocolSetResult, refusal } from "./calibration";
 
 describe("current button", () => {
   it("needs both values at 10 A or more in the same direction", () => {
@@ -70,6 +70,20 @@ describe("input and answers", () => {
     expect(notCalibrated(ev, "voltage")).toBe(true);
     expect(notCalibrated([0, 0, 0, 0, 0, 0, 0, 0b01000], "voltage")).toBe(false);
     expect(notCalibrated(undefined, "current")).toBe(false);
+  });
+});
+
+describe("after a write", () => {
+  it("tells gone, still set and not read back apart", () => {
+    expect(flagAfter([0, 0, 0, 0, 0, 0, 0, 0], "current")).toBe("gone");
+    expect(flagAfter([0, 0, 0, 0, 0, 0, 0, 0b1000], "current")).toBe("still");
+    expect(flagAfter(undefined, "current")).toBe("unread");
+  });
+
+  it("a protocol set without read-back is not a failure", () => {
+    expect(protocolSetResult(3, "CAN:Victron")).toBe("done");
+    expect(protocolSetResult(3, "CAN:MUST")).toBe("mismatch");
+    expect(protocolSetResult(3, null)).toBe("unread");
   });
 });
 
