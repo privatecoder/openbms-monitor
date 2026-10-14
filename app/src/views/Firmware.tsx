@@ -222,6 +222,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           the master's full version is the panel's last read */}
       {tab === "manual" && <section className="space-y-3 rounded-md border border-line p-4">
         <p className="text-sm text-muted">{t("fw.manualHint")}</p>
+        <p className="text-sm">{t("fw.manualQuiet")}</p>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           {/* the RS485-1/2 port of this tab: always free to choose; the installation's checks apply on its own port */}
           <label className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
