@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { KEYS, UNITS, type Parameters } from "./params";
 import { CAN_PROTOCOLS, type Calibration } from "./calibration";
+import { fromRaw, isSigned, toRaw, violations, type Wire } from "./paramWrite";
 
 export type Bus = "pack" | "can";
 export type Endpoint = { kind: "serial"; path: string; bus: Bus } | { kind: "tcp"; addr: string; bus: Bus };
@@ -97,6 +98,17 @@ export interface SystemUpdate { values: SystemValues | null; error: string | nul
 export interface PackLive { telemetry: Telemetry; status: Status }
 /** A CAN protocol set the BMS accepted; `device` is null when the read-back of 0x51 failed. */
 export interface CanProtocolSet { device: DeviceInfo | null; read_error: string | null }
+/** Outcome of a parameter write. stale: the pack changed an untouched value since the edit's read, nothing written;
+ *  refused: the BMS did not take the block, `stored` is the read right before the write (after RTN 06 the switches
+ *  sent are live, these are the stored ones). */
+export type ParamWrite =
+  | { kind: "stale"; fresh: Parameters }
+  | { kind: "written"; read_back: Parameters | null; read_error: string | null }
+  | { kind: "refused"; refusal: "refused" | "invalid"; stored: Parameters };
+/** The last write of a pack at this installation and the parameters it replaced. */
+export interface ParamHistory { last_written: number | null; previous: Parameters | null }
+/** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed. */
+export interface SerialSet { value: SerialValue | null; read_error: string | null; master_updated: string[] }
 export interface MaintStatus { marker: boolean; effective_slaves: number }
 /** Recording into the history database. Off by default; changes apply at once. */
 export interface HistorySettings {
@@ -206,6 +218,12 @@ const tauriApi = {
   bmsCalibrate: (address: number, calibration: Calibration) => invoke<void>("bms_calibrate", { address, calibration }),
   /** RS485-1/2 only, 1…6; once accepted, the device info read back or why that read failed */
   setCanProtocol: (address: number, protocol: number) => invoke<CanProtocolSet>("set_can_protocol", { address, protocol }),
+  /** RS485-1/2 only: reads 0x47 again, writes `edited` (changes against `base`) on top of it and reads back;
+   *  `restore` sends `edited` as it is (the stored block after a refusal) */
+  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean) => invoke<ParamWrite>("write_parameters", { address, base, edited, restore }),
+  paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
+  /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
+  setSerial: (address: number, which: "battery" | "bms", text: string) => invoke<SerialSet>("set_serial", { address, which, text }),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -312,17 +330,25 @@ function demoApi(): typeof tauriApi {
     historyClear: async () => {},
     historyDirs: async () => ["", ""],
     revealHistory: async () => {},
-    // preview: the same configuration in every pack, pack 05 with a different balancing start and switch byte
     parameters: async (address) => {
       await new Promise((r) => setTimeout(r, 250));
       if (address === 0) throw new Error("timeout after 1000 ms");
-      const values = DEMO_PARAMS.map((v, i) => (address === 5 && i === 8 ? 3.45 : v));
-      return {
-        address, device_name: "1101-SP75",
-        function_switches: address === 5 ? [0xff, 0xff, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f] : [0xff, 0xdf, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f],
-        parameters: values.map((value, index) => ({ index, key: KEYS[index], raw: 0, value, unit: UNITS[index] })),
-      };
+      return demoParams(address);
     },
+    // preview: blocks that break the firmware's rules are refused like RTN 06; nothing is kept beyond the session
+    writeParameters: async (address, _base, edited) => {
+      await new Promise((r) => setTimeout(r, 400));
+      const stored = demoParams(address);
+      const signed = edited.raws.map((r, i) => (isSigned(i) && r >= 0x8000 ? r - 0x10000 : r));
+      if (violations(signed).length) return { kind: "refused", refusal: "refused", stored };
+      demoWritten.set(address, { raws: signed, switches: edited.switches, at: Date.now(), previous: stored });
+      return { kind: "written", read_back: demoParams(address), read_error: null };
+    },
+    paramHistory: async (address) => {
+      const w = demoWritten.get(address);
+      return { last_written: w?.at ?? null, previous: w?.previous ?? null };
+    },
+    setSerial: async (_address, _which, text) => ({ value: { kind: "set", value: text.trim(), truncated: false }, read_error: null, master_updated: [] }),
     saveParameters: async (name, content) => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([content], { type: "application/xml" }));
@@ -391,6 +417,18 @@ function demoApi(): typeof tauriApi {
     onFirmwareDone: async () => () => {},
     onFirmwareBusy: async () => () => {},
     revealFirmwareLogs: async () => {},
+  };
+}
+/** Preview: parameter blocks written in this session. */
+const demoWritten = new Map<number, { raws: number[]; switches: number[]; at: number; previous: Parameters }>();
+/** Preview: the same configuration in every pack, pack 05 with a different balancing start and switch byte. */
+function demoParams(address: number): Parameters {
+  const w = demoWritten.get(address);
+  const raws = w?.raws ?? DEMO_PARAMS.map((v, i) => toRaw(i, address === 5 && i === 8 ? 3.45 : v));
+  return {
+    address, device_name: "1101-SP75",
+    function_switches: w?.switches ?? (address === 5 ? [0xff, 0xff, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f] : [0xff, 0xdf, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f]),
+    parameters: raws.map((r, index) => ({ index, key: KEYS[index], raw: r < 0 ? r + 0x10000 : r, value: fromRaw(index, r), unit: UNITS[index] })),
   };
 }
 /** Preview: CAN protocols set in this session. */

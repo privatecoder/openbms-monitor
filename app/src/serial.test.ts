@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { serialText } from "./serial";
+import { serialInputOk, serialSetResult, serialText } from "./serial";
 
 const t = (key: string, params?: Record<string, unknown>) => i18n.t(key, { lng: "de", ...params });
 
@@ -28,5 +28,27 @@ describe("serial number display", () => {
     for (const lng of ["de", "en"])
       for (const k of ["battery", "bms", "unknown", "first22", "placeholder", "empty", "noAnswer", "packBusOnly", "unsupported"])
         expect(i18n.exists(`sn.${k}`, { lng }), `${lng} sn.${k}`).toBe(true);
+  });
+});
+
+describe("serial number writes", () => {
+  it("takes printable ASCII up to 30 characters", () => {
+    expect(serialInputOk("SYN-0001")).toBe(true);
+    expect(serialInputOk(" SYN-0001 ")).toBe(true);
+    expect(serialInputOk("A".repeat(30))).toBe(true);
+    expect(serialInputOk("A".repeat(31))).toBe(false);
+    expect(serialInputOk("")).toBe(false);
+    expect(serialInputOk("   ")).toBe(false);
+    expect(serialInputOk("SYN-ä")).toBe(false);
+    expect(serialInputOk("SYN\t1")).toBe(false);
+    expect(serialInputOk(" !~")).toBe(true);
+  });
+  it("compares the read-back with what was sent", () => {
+    expect(serialSetResult(" SYN-0001", { kind: "set", value: "SYN-0001", truncated: false })).toBe("done");
+    expect(serialSetResult("SYN-0001", { kind: "set", value: "SYN-0002", truncated: false })).toBe("mismatch");
+    expect(serialSetResult("EMU110110S-XXXX-1", { kind: "placeholder", value: "EMU110110S-XXXX-1" })).toBe("done");
+    expect(serialSetResult("SYN-0001", { kind: "empty" })).toBe("mismatch");
+    expect(serialSetResult("SYN-0001", null)).toBe("unread");
+    expect(serialSetResult("SYN-0001", { kind: "no_answer" })).toBe("unread");
   });
 });
