@@ -134,13 +134,13 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
                 return (
                   <tr key={i} className="border-b border-line/60 align-top">
                     <td className="whitespace-nowrap py-1.5 pr-4">{fmtBmsTime(r.time, lang)}</td>
-                    <td className="py-1.5 pr-4 text-right">{fmt(r.soc, 1, "%")}</td>
-                    <td className="py-1.5 pr-4 text-right">{fmt(r.current, 2, "A")}</td>
-                    <td className="py-1.5 pr-4 text-right">{fmt(r.pack_voltage, 2, "V")}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(r.soc, 1, "%")}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(r.current, 2, "A")}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(r.pack_voltage, 2, "V")}</td>
                     <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(s.min, 3, "V")} <span className="text-muted">{t("bmsh.cell", { n: s.minCell })}</span></td>
                     <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(s.max, 3, "V")} <span className="text-muted">{t("bmsh.cell", { n: s.maxCell })}</span></td>
-                    <td className="py-1.5 pr-4 text-right">{fmt(s.spreadMv, 0, "mV")}</td>
-                    <td className="py-1.5 pr-4 text-right">{fmt(s.maxTemp, 1, "°C")}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(s.spreadMv, 0, "mV")}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-4 text-right">{fmt(s.maxTemp, 1, "°C")}</td>
                     <td className="py-1.5">
                       {r.alarms.length === 0 ? <span className="text-muted">–</span> : (
                         <ul className="space-y-0.5">
