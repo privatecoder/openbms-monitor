@@ -17,6 +17,27 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
+/// The maintenance event log (`firmware-logs/maint-events.log`): what the live status saw whenever it changes,
+/// and every halt, release and flash with its result. For bench work and for finding out afterwards who
+/// changed the marker.
+pub fn event(state: &AppState, line: &str) {
+    use std::io::Write;
+    let Some(app) = state.app.get() else { return };
+    let Ok(dir) = tauri::Manager::path(app).app_data_dir().map(|d| d.join("firmware-logs")) else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let stamp = format!("{}.{:03}", crate::firmware::utc_stamp(now.as_secs()), now.subsec_millis());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("maint-events.log")) {
+        let _ = writeln!(f, "{stamp} {line}");
+    }
+}
+
+/// One line for a master read: kind, version, marker word, effective slaves.
+fn master_text(m: &MasterView) -> String {
+    format!("master={} version={} marker={} word={} slaves={}", m.kind, m.version.as_deref().unwrap_or("-"),
+        m.marker.unwrap_or("-"), m.marker_word.as_deref().unwrap_or("-"), m.slaves.map_or("-".into(), |n| n.to_string()))
+}
+
 #[derive(Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MaintError {
@@ -501,6 +522,16 @@ pub async fn maint_live(app: AppHandle, state: State<'_, AppState>, installation
         },
         _ => (None, None),
     };
+    // only changes, else one line every 2 s
+    let line = format!("live bus={bus} polled={polled:?}{} {}{}", bus_error.as_deref().map(|e| format!(" bus_error={e}")).unwrap_or_default(),
+        master.as_ref().map(master_text).unwrap_or_else(|| "master=-".into()),
+        master_error.as_ref().map(|e| format!(" master_error={}", serde_json::to_string(e).unwrap_or_default())).unwrap_or_default());
+    if let Ok(mut last) = LAST_LIVE.lock() {
+        if *last != line {
+            event(&state, &line);
+            *last = line;
+        }
+    }
     Ok(LiveStatus { bus, polled, bus_error, master, master_error })
 }
 
@@ -549,7 +580,23 @@ pub async fn maint_release(state: State<'_, AppState>, installation: String) -> 
     marker_action(&state, &installation, Action::Stop)
 }
 
+static LAST_LIVE: Mutex<String> = Mutex::new(String::new());
+
 fn marker_action(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
+    let name = if action == Action::Start { "halt" } else { "release" };
+    event(state, &format!("{name} pressed"));
+    let r = marker_action_inner(state, installation, action);
+    match &r {
+        Ok(m) => event(state, &format!("{name} done {}", master_text(m))),
+        Err(e) => event(state, &format!("{name} failed {}", serde_json::to_string(e).unwrap_or_default())),
+    }
+    if let Ok(mut last) = LAST_LIVE.lock() {
+        last.clear();
+    }
+    r
+}
+
+fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }

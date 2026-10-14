@@ -276,6 +276,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind
     let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, crate::history::now_ms())).map_err(to_text)?;
+    maint::event(&state, &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
     let store = state.maint.clone();
     std::thread::spawn(move || {
         let mut last = None;
@@ -296,6 +297,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
             Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
         };
+        maint::event(&app.state::<AppState>(), &format!("flash done address={address} ok={} stage={:?} error={:?}", done.ok, done.stage, done.error));
         drop(slot);
         drop(port_slot);
         let _ = app.emit("firmware-done", done);
