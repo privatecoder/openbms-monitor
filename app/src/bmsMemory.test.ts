@@ -86,9 +86,9 @@ describe("history read runner", () => {
   it("a second start re-attaches to the running read; only its end clears the run and the read mark", async () => {
     let finish!: (r: BmsHistoryRead) => void;
     const read = vi.fn(() => new Promise<BmsHistoryRead>((res) => { finish = res; }));
-    const a = startHistoryRead(2, read, () => Promise.reject(new Error("unused")));
+    const a = startHistoryRead(2, read);
     noteProgress(5);
-    const b = startHistoryRead(3, read, () => Promise.reject(new Error("unused")));
+    const b = startHistoryRead(3, read);
     expect(b).toBe(a);
     expect(read).toHaveBeenCalledTimes(1);
     expect(currentRun()).toMatchObject({ address: 2, n: 5 });
@@ -99,11 +99,11 @@ describe("history read runner", () => {
     expect(lastRead()?.records).toHaveLength(3);
   });
 
-  it("an error becomes the result; 'already running' waits for the backend's own end instead", async () => {
-    const failed = startHistoryRead(1, () => Promise.reject("timeout"), () => Promise.reject(new Error("unused")));
+  it("an error, also 'already running', becomes the result and ends the run", async () => {
+    const failed = startHistoryRead(1, () => Promise.reject("timeout"));
     expect(await failed.promise).toMatchObject({ end: "error", error: "timeout", records: [] });
-    const other = startHistoryRead(1, () => Promise.reject("a history read is already running"), async () => done(4, 2));
-    expect(await other.promise).toMatchObject({ address: 4, end: "last" });
+    const other = startHistoryRead(1, () => Promise.reject("a history read is already running"));
+    expect(await other.promise).toMatchObject({ end: "error", records: [] });
     expect(currentRun()).toBeNull();
   });
 });

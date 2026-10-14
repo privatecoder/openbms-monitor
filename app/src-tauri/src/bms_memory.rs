@@ -99,8 +99,7 @@ pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, time: BmsTim
     })
 }
 
-/// Read the whole history of one pack; progress arrives as "bms-history-progress" events, the result also as
-/// "bms-history-done". One read at a time.
+/// Read the whole history of one pack; progress arrives as "bms-history-progress" events. One read at a time.
 #[tauri::command]
 pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8) -> Result<HistoryRead, String> {
     pack_bus_only(&state)?;
@@ -109,17 +108,14 @@ pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8
     let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let _busy: PortSlot = busy;
-        let read = read_all(
+        read_all(
             address,
             &cancel,
             |next| with_conn(&conn, &flashing, |c| c.history_record(address, next)),
             |n| {
                 let _ = app.emit("bms-history-progress", Progress { address, n });
             },
-        );
-        // for a UI that lost track of this read (e.g. reloaded) and waits for its end
-        let _ = app.emit("bms-history-done", read.clone());
-        read
+        )
     })
     .await
     .map_err(|e| e.to_string())
