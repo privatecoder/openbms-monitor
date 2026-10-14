@@ -152,8 +152,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         setSince(Date.now()); setLost(false);
         setMsg(note);
         await api.startPolling(addrs, 2000);
-        // serial numbers only of the packs that answered the device query
-        api.scan(addrs).then((found) => { onDevices(found); void readSerials(found.map(([a]) => a)); }).catch(() => {});
+        // serial numbers only of the packs that answered the device query; no answer at all: likely the wrong port or bus
+        const gen = serialGen.current;
+        api.scan(addrs).then((found) => {
+          if (!found.length && gen === serialGen.current) setMsg(t("conn.noAnswer"));
+          onDevices(found); void readSerials(found.map(([a]) => a));
+        }).catch(() => {});
         return;
       }
       const found = await api.scan();
