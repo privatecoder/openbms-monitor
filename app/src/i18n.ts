@@ -190,6 +190,7 @@ const resources = {
             "installation-busy": "Diese Anlage hat offene Arbeit (Marker an, ein Pack evtl. im Bootloader oder ein unterbrochener Import). Erst abschließen, dann löschen oder zusammenführen.",
             "disk-full": "Auf der Platte ist nicht genug Platz für diese Datei; nichts wurde übernommen.",
             "installation-connected": "Mit dieser Anlage ist die App gerade verbunden. Erst trennen.",
+            "installation-in-use": "An dieser Anlage läuft gerade ein Verbinden, Zusammenführen, Löschen, Export oder Import. Danach noch einmal versuchen.",
             "merge-self": "Eine Anlage lässt sich nicht mit sich selbst zusammenführen.",
             "history-preparing": "Die Aufzeichnung wird noch vorbereitet; gleich noch einmal versuchen.",
             "bundle-unreadable": "Die Datei ist kein lesbares ZIP.", "bundle-entry": "Die Datei enthält etwas, das in keinen Export dieser App gehört; nichts wurde übernommen.",
@@ -294,7 +295,12 @@ const resources = {
           restart: "einem Neustart", on_off: "dem Ein-/Ausschalten", heater: "der Heizung", clear: "dem Löschen der Historie", remaining: "dem Setzen der Restkapazität",
           params: "dem Schreiben der Parameter", read: "dem Lesen der Parameter", history: "dem Lesen der Historie", clock: "dem Stellen der Uhr",
           calibration: "einer Kalibrierung", can: "dem Setzen des CAN-Protokolls", serial: "dem Schreiben einer Seriennummer",
+          serial_read: "dem Lesen der Seriennummern", live: "der Bus-Beobachtung im Wartungsbereich", scan: "der Pack-Suche im Wartungsbereich",
+          halt: "dem Anhalten des Masters", release: "dem Freigeben des Masters", flash: "einem Firmware-Update", port: "einer anderen Aktion am Port",
         },
+        silent: "Das Pack antwortet nicht. Ein Master mit Slaves antwortet auf RS485-1/2 nicht: erst den Master anhalten (Wartungsstopp) oder DIP 5–8 auf OFF stellen.",
+        linkChanged: "Die Verbindung hat während der Aktion gewechselt; an das Pack wurde nichts mehr gesendet.",
+        reread: "Parameter von Pack {{pack}} nach dem Neustart nicht gelesen: {{err}}",
         refused: "Das BMS hat den Befehl abgelehnt.", invalid: "Das BMS kennt diesen Befehl nicht (RTN 04).", error: "Nicht ausgeführt: {{err}}",
         sentUnread: "Gesendet; der Zustand ließ sich danach nicht lesen. Neu lesen.",
         restart: {
@@ -304,6 +310,7 @@ const resources = {
           noInterruption: "Neustart nicht bestätigt: das Pack hat ohne Unterbrechung geantwortet.",
           noAnswer: "Pack {{pack}} antwortet seit dem Neustart nicht. Später neu lesen.",
           notReachable: "Das Pack antwortet nicht; nichts gesendet. Ein Master mit Slaves antwortet auf RS485-1/2 nicht: erst den Master anhalten (Wartungsstopp) oder DIP 5–8 auf OFF stellen.",
+          linkLost: "Neustart gesendet, Verbindung danach verloren ({{err}}). Ob das Pack wieder antwortet, zeigt das nächste Lesen.",
         },
         onOff: {
           on: "Einschalten", off: "Ausschalten",
@@ -384,7 +391,7 @@ const resources = {
         outside_one: "1 Parameter liegt außerhalb des Datenblatts ({{cell}}):", outside_other: "{{count}} Parameter liegen außerhalb des Datenblatts ({{cell}}):",
         inside: "Alle geprüften Grenzwerte liegen innerhalb des Datenblatts ({{cell}}).",
         ratedNote: "(nur Hinweis: passt nicht zu Zellen × Nennkapazität)", inAll_one: "in der Quelle", inAll_other: "in allen {{count}} Quellen", inSome: "in {{list}}",
-        parameter: "Parameter", pack: "Pack {{n}}", file: "Export", pending: "wird gelesen", noAnswer: "keine Antwort", unreadable: "nicht lesbar",
+        parameter: "Parameter", pack: "Pack {{n}}", file: "Export", pending: "wird gelesen", noAnswer: "keine Antwort", busyShort: "beschäftigt", unreadable: "nicht lesbar",
         save: "Als BatteryMonitor-XML speichern", remove: "Entfernen", on: "an", off: "aus", bit: "Bit {{b}}", byte: "Wert (hex)",
         group: { cellVoltage: "Zellspannung", packVoltage: "Pack-Spannung und Ladegerät", tempCharge: "Zelltemperatur beim Laden", tempDischarge: "Zelltemperatur beim Entladen",
           tempBoard: "Umgebung und MOSFET", heating: "Heizung", current: "Strom", capacity: "Kapazität und SOC", balancing: "Balancing", activation: "Ladeaktivierung und Standby", pack: "Pack" },
@@ -439,7 +446,7 @@ const resources = {
         busyAction: {
           live: "der Pack-Bus wird gerade beobachtet (Pack-Bus-Ansicht offen)", scan: "Packs werden gerade gesucht",
           halt: "der Master wird gerade angehalten", release: "der Master wird gerade freigegeben",
-          flash: "Firmware-Update läuft gerade", other: "eine andere Aktion läuft gerade (z. B. Pack prüfen)",
+          flash: "Firmware-Update läuft gerade", pack: "an einem Pack läuft gerade eine Aktion (z. B. Neustart oder Schreiben)", other: "eine andere Aktion läuft gerade (z. B. Pack prüfen)",
         },
       },
       sn: {
@@ -743,6 +750,7 @@ const resources = {
             "installation-busy": "This installation has open work (marker on, a pack possibly in its bootloader, or an interrupted import). Finish it first, then delete or merge.",
             "disk-full": "Not enough disk space for this file; nothing was taken.",
             "installation-connected": "The app is connected with this installation right now. Disconnect first.",
+            "installation-in-use": "This installation is being connected, merged, deleted, exported or imported right now. Try again afterwards.",
             "merge-self": "An installation cannot be merged with itself.",
             "history-preparing": "The recording is still being prepared; try again in a moment.",
             "bundle-unreadable": "The file is no readable ZIP.", "bundle-entry": "The file holds something that belongs in no export of this app; nothing was taken.",
@@ -847,7 +855,12 @@ const resources = {
           restart: "a restart", on_off: "switching on or off", heater: "the heater", clear: "clearing its history", remaining: "setting the remaining capacity",
           params: "writing parameters", read: "reading parameters", history: "reading its history", clock: "setting the clock",
           calibration: "a calibration", can: "setting the CAN protocol", serial: "writing a serial number",
+          serial_read: "reading its serial numbers", live: "watching the bus in the maintenance panel", scan: "the pack search in the maintenance panel",
+          halt: "halting the master", release: "releasing the master", flash: "a firmware update", port: "another action on the port",
         },
+        silent: "The pack does not answer. A master with slaves does not answer on RS485-1/2: halt the master first (maintenance halt) or set DIP 5–8 to OFF.",
+        linkChanged: "The connection changed during the action; nothing more was sent to the pack.",
+        reread: "Parameters of pack {{pack}} not read after the restart: {{err}}",
         refused: "The BMS refused the command.", invalid: "The BMS does not know this command (RTN 04).", error: "Not done: {{err}}",
         sentUnread: "Sent; the state could not be read afterwards. Read again.",
         restart: {
@@ -857,6 +870,7 @@ const resources = {
           noInterruption: "Restart not confirmed: the pack answered without interruption.",
           noAnswer: "Pack {{pack}} has not answered since the restart. Read again later.",
           notReachable: "The pack does not answer; nothing sent. A master with slaves does not answer on RS485-1/2: halt the master first (maintenance halt) or set DIP 5–8 to OFF.",
+          linkLost: "Restart sent, connection lost afterwards ({{err}}). The next read shows whether the pack answers again.",
         },
         onOff: {
           on: "Switch on", off: "Switch off",
@@ -937,7 +951,7 @@ const resources = {
         outside_one: "1 parameter lies outside the datasheet ({{cell}}):", outside_other: "{{count}} parameters lie outside the datasheet ({{cell}}):",
         inside: "All checked limits lie inside the datasheet ({{cell}}).",
         ratedNote: "(note only: does not match cells × nominal capacity)", inAll_one: "in the source", inAll_other: "in all {{count}} sources", inSome: "in {{list}}",
-        parameter: "Parameter", pack: "Pack {{n}}", file: "Export", pending: "reading", noAnswer: "no answer", unreadable: "unreadable",
+        parameter: "Parameter", pack: "Pack {{n}}", file: "Export", pending: "reading", noAnswer: "no answer", busyShort: "busy", unreadable: "unreadable",
         save: "Save as BatteryMonitor XML", remove: "Remove", on: "on", off: "off", bit: "Bit {{b}}", byte: "Value (hex)",
         group: { cellVoltage: "Cell voltage", packVoltage: "Pack voltage and charger", tempCharge: "Cell temperature while charging", tempDischarge: "Cell temperature while discharging",
           tempBoard: "Ambient and MOSFET", heating: "Heating", current: "Current", capacity: "Capacity and SOC", balancing: "Balancing", activation: "Charge activation and standby", pack: "Pack" },
@@ -992,7 +1006,7 @@ const resources = {
         busyAction: {
           live: "the pack bus is being watched (pack bus panel open)", scan: "packs are being searched",
           halt: "the master is being halted", release: "the master is being released",
-          flash: "a firmware update is running", other: "another action is running (e.g. check pack)",
+          flash: "a firmware update is running", pack: "an action is running on a pack (e.g. a restart or a write)", other: "another action is running (e.g. check pack)",
         },
       },
       sn: {

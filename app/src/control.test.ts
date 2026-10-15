@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Status } from "./api";
-import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
+import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -58,6 +58,12 @@ describe("errors", () => {
     expect(packBusy("timeout")).toBeNull();
     expect(errorText(e, t)).toBe('ctl.busy {"pack":"03","action":"ctl.action.history"}');
     expect(errorText("timeout after 1500 ms", t)).toBe("timeout after 1500 ms");
+    // a silent pack and a connection changed meanwhile have their own texts
+    expect(noAnswer('{"kind":"no-answer"}')).toBe(true);
+    expect(linkChanged('{"kind":"link-changed"}')).toBe(true);
+    expect(noAnswer('{"kind":"refused"}')).toBe(false);
+    expect(errorText('{"kind":"no-answer"}', t)).toBe("ctl.silent");
+    expect(errorText('{"kind":"link-changed"}', t)).toBe("ctl.linkChanged");
   });
 
   it("writes energy in kWh or MWh", () => {
