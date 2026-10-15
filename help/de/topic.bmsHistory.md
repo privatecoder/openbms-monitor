@@ -1,7 +1,7 @@
 ---
 title: Historie aus dem BMS
 short: Die Datensätze, die jedes Pack selbst speichert, und die BMS-Uhr, von der ihre Zeitstempel stammen.
-related: topic.history, topic.params
+related: topic.history, topic.params, topic.control
 ---
 - **Was gespeichert wird:** Jedes Pack schreibt in einen eigenen Speicher (EEPROM) einen Datensatz mit Uhrzeit, Zustand (Laden, Entladen, Standby), allen Alarmen und Schutzmeldungen, den 16 Zellspannungen, den Temperaturen, Strom, Spannung, Kapazitäten, SOC und Zyklen. Platz ist für **bis zu 500 Datensätze**; danach überschreibt der neueste den ältesten.
 - **Wann:** sofort, wenn sich der Zustand oder eine Meldung ändert (dann auch mehrere Sätze im Sekundenabstand), sonst im Intervall: Parameter **75** im Betrieb, Parameter **76** im Standby (jeweils Minuten). Ein Satz, der durch eine Änderung entsteht, zeigt noch die Meldungen von **vor** der Änderung; der neue Stand steht im nächsten Satz. Die Historie deckt damit auch Zeiten ab, in denen keine App verbunden war, z. B. um einen Schutzfall im Nachhinein zu verstehen.
@@ -9,4 +9,4 @@ related: topic.history, topic.params
 - **Kein Schnappschuss:** Ist der Speicher voll und schreibt das Pack während des Lesens einen neuen Datensatz, verschiebt sich der Anfang des Rings. Dann kann ein alter Datensatz fehlen oder ein neuer dazukommen.
 - **Uhr:** Die Zeitstempel stammen von der BMS-Uhr zum Zeitpunkt des Schreibens. Geht sie falsch, sind alle Zeiten entsprechend verschoben. Die Abweichung steht über der Tabelle; stellen lässt sich die Uhr unter **Parameter** (Wartungsfunktionen), für ein Pack oder alle.
 - **Zeitzone:** Gesendet wird die **Ortszeit dieses PCs**; der Knopf zeigt genau die Zeit und Zone, die ankommt. Das BMS speichert nur Datum und Uhrzeit, keine Zone. Ein PC in einer anderen Zeitzone verschiebt alle späteren Datensätze. Nach einer Zeitumstellung (Sommer-/Winterzeit) geht die BMS-Uhr eine Stunde falsch, bis du sie neu stellst.
-- **Löschen** der Historie bietet die App nicht an: Der Befehl dafür setzt auch den Zyklenzähler auf 0.
+- **Löschen:** unter Parameter → Steuern („Historie und Zähler löschen …“). Der Befehl setzt auch die Energiezähler und den Zyklenzähler auf 0, endgültig.

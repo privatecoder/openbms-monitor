@@ -111,15 +111,15 @@ export interface Source {
   /** after a write: values and switch bytes the read-back does not show as sent */
   notTaken?: { params: Set<number>; switches: Set<number> };
   /** stored columns: when and how the block was kept, and whether it is of the place's current board */
-  stored?: { at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null };
+  stored?: { at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null; unconfirmed?: boolean };
 }
 
 /** The stored state of a place as a column (compare, datasheet check and XML save; never edited). */
-export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null }): Source => ({
+export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null; switches_unconfirmed?: boolean }): Source => ({
   id: `stored-${s.address}`, kind: "stored", address: s.address, label: String(s.address).padStart(2, "0"),
   device: s.parameters?.device_name, values: s.parameters?.parameters.map((x) => x.value), switches: s.parameters?.function_switches,
   read: s.parameters ?? undefined, error: s.parameters ? undefined : "unreadable",
-  stored: { at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial },
+  stored: { at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial, unconfirmed: !!s.switches_unconfirmed },
 });
 
 /** A pack column; `address` is the address asked, not byte 0 of the answer, so a write goes where the column says. */

@@ -1,13 +1,15 @@
 //! The BMS clock, the pack's internal history, calibration, the CAN inverter protocol, writing parameters and serial
-//! numbers (RS485-1/2 only, like reading the parameters).
+//! numbers (RS485-1/2 only, like reading the parameters). Every write reserves its pack for the whole exchange
+//! (`control::reserve_pack`), the history read too.
 //!
 //! A history read runs on its own thread and takes the connection lock per frame, through `with_conn` like every
 //! other exchange; meanwhile `memory_busy` pauses polling, so the bus serves the read alone. Between two frames a
 //! disconnect, a reconnect or a flash can still take the connection; the read then stops with that error.
 
 use crate::history::{now_ms, SnapshotKind};
+use crate::control::reserve_pack_wait;
 use crate::maint_store::Installation;
-use crate::{for_link, link_now, with_conn, AppState, Link, PortSlot};
+use crate::{for_link, link_now, with_conn, with_link, AppState, Link, PortSlot};
 use openbms_proto::serial::Which;
 use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Parameters, Refusal, SerialValue, Status, Telemetry, Values};
 use openbms_transport::Bus;
@@ -23,7 +25,7 @@ pub const PRE_READ: &str = "pre-read: String 2 could not be read before the writ
 
 const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 
-fn pack_bus_only(state: &AppState) -> Result<(), String> {
+pub(crate) fn pack_bus_only(state: &AppState) -> Result<(), String> {
     if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
         return Err(PACK_BUS_ONLY.into());
     }
@@ -34,7 +36,7 @@ fn pack_bus_only(state: &AppState) -> Result<(), String> {
 /// before, and the pack may belong to a foreign bank).
 /// `installation`: the one the UI writes for; it must be the connection's, so a choice changed meanwhile never writes
 /// to a pack of another bank.
-fn bound(state: &AppState, installation: Option<&str>) -> Result<Link, String> {
+pub(crate) fn bound(state: &AppState, installation: Option<&str>) -> Result<Link, String> {
     let l = link_now(state);
     if l.installation.is_none() {
         return Err("view only: writing to a pack needs a connection with an installation".into());
@@ -115,8 +117,9 @@ pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTim
 #[tauri::command]
 pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<BmsTime, String> {
     pack_bus_only(&state)?;
-    bound(&state, installation.as_deref())?;
-    with_conn(&state.conn, &state.flashing, |c| {
+    let link = bound(&state, installation.as_deref())?;
+    let _guard = reserve_pack_wait(&state, address, "clock")?;
+    with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
         c.set_clock(address, time)?;
         c.clock(address)
     })
@@ -124,12 +127,12 @@ pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation
 
 /// A write the BMS answered with RTN 06/04, as JSON for the UI (`refusal` in calibration.ts):
 /// `{"kind":"refused"}` or `{"kind":"invalid"}`. Every other error stays plain text.
-fn refusal_error(r: Refusal) -> String {
+pub(crate) fn refusal_error(r: Refusal) -> String {
     serde_json::json!({ "kind": r }).to_string()
 }
 
 /// Run a write; a refusal by the BMS comes back as `Err(Refusal)` instead of a plain error.
-fn refusable<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Result<T, Refusal>> {
+pub(crate) fn refusable<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Result<T, Refusal>> {
     match r {
         Ok(v) => Ok(Ok(v)),
         Err(openbms_transport::Error::Proto(e)) => Refusal::from_error(&e).map(Err).ok_or_else(|| e.into()),
@@ -137,7 +140,7 @@ fn refusable<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Re
     }
 }
 
-/// Telemetry and status of one pack, for the live values of the calibration (one frame per lock).
+/// Telemetry and status of one pack, for the live values of the calibration and the control.
 #[derive(Serialize)]
 pub struct PackLive {
     pub telemetry: Telemetry,
@@ -147,8 +150,8 @@ pub struct PackLive {
 #[tauri::command]
 pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLive, String> {
     pack_bus_only(&state)?;
-    let telemetry = with_conn(&state.conn, &state.flashing, |c| c.telemetry(address))?;
-    let status = with_conn(&state.conn, &state.flashing, |c| c.status(address))?;
+    // both frames under one lock: no calibration falls between the values and the flags shown beside them
+    let (telemetry, status) = with_conn(&state.conn, &state.flashing, |c| Ok((c.telemetry(address)?, c.status(address)?)))?;
     Ok(PackLive { telemetry, status })
 }
 
@@ -156,8 +159,9 @@ pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLi
 #[tauri::command]
 pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<(), String> {
     pack_bus_only(&state)?;
-    bound(&state, installation.as_deref())?;
-    with_conn(&state.conn, &state.flashing, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
+    let link = bound(&state, installation.as_deref())?;
+    let _guard = reserve_pack_wait(&state, address, "calibration")?;
+    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
 }
 
 /// Result of a protocol set the BMS accepted: the device info read back, or why that read failed.
@@ -181,9 +185,10 @@ impl CanProtocolSet {
 #[tauri::command]
 pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<CanProtocolSet, String> {
     pack_bus_only(&state)?;
-    bound(&state, installation.as_deref())?;
-    with_conn(&state.conn, &state.flashing, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
-    Ok(CanProtocolSet::from_read(with_conn(&state.conn, &state.flashing, |c| c.device_info(address))))
+    let link = bound(&state, installation.as_deref())?;
+    let _guard = reserve_pack_wait(&state, address, "can")?;
+    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
+    Ok(CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.device_info(address))))
 }
 
 /// Keep a parameter block for the place in the connection's installation (`before`: the link when the exchange
@@ -194,7 +199,7 @@ pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind
 
 /// A 0x47 read through the connection, kept as a snapshot.
 fn read_parameters(state: &AppState, link: &Link, address: u8) -> Result<Parameters, String> {
-    let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
+    let p = with_link(&state.conn, &state.flashing, &state.link, link, |c| c.parameters(address))?;
     snapshot(state, link, address, SnapshotKind::Read, &p.block);
     Ok(p)
 }
@@ -220,6 +225,8 @@ pub enum ParamWrite {
 pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
+    // fresh read, write and read-back belong together: no restart or other control of this pack in between
+    let _guard = reserve_pack_wait(&state, address, "params")?;
     let fresh = read_parameters(&state, &link, address)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
@@ -232,7 +239,7 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
         }
     };
     let block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
-    if let Err(refusal) = with_conn(&state.conn, &state.flashing, |c| refusable(c.write_parameters(address, &block)))? {
+    if let Err(refusal) = with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.write_parameters(address, &block)))? {
         snapshot(&state, &link, address, SnapshotKind::Refused, &block);
         return Ok(ParamWrite::Refused { refusal, stored: fresh });
     }
@@ -286,19 +293,20 @@ pub struct SerialSet {
 pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<SerialSet, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
+    let _guard = reserve_pack_wait(&state, address, "serial")?;
     let master = which == Which::Bms && address == 0;
     // String 2 before the write: whether the board keeps its identity under the new serial depends on it. Unread, the
     // app's own write could not be told from a board swap: no write then.
     let old = if which == Which::Bms {
-        match with_conn(&state.conn, &state.flashing, |c| c.serial(address, which)) {
+        match with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.serial(address, which)) {
             Ok(SerialValue::NoAnswer | SerialValue::Unavailable) | Err(_) => return Err(PRE_READ.into()),
             Ok(v) => Some(v),
         }
     } else {
         None
     };
-    with_conn(&state.conn, &state.flashing, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
-    let read = with_conn(&state.conn, &state.flashing, |c| c.serial(address, which));
+    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
+    let read = with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.serial(address, which));
     // the app's own String 2 write: the board keeps its identity under the new serial
     if let (Which::Bms, Ok(new)) = (which, &read) {
         let before = old.clone().unwrap_or(SerialValue::NoAnswer);
@@ -337,14 +345,18 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
 pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8) -> Result<HistoryRead, String> {
     pack_bus_only(&state)?;
     let busy = crate::reserve_port(&state.memory_busy).ok_or("a history read is already running")?;
+    // clearing the same pack meanwhile would cut the read short
+    let pack = reserve_pack_wait(&state, address, "history")?;
     state.memory_cancel.store(false, Ordering::SeqCst);
     let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
+    // records of another connection's pack must not continue this read
+    let (links, link) = (state.link.clone(), link_now(&state));
     tauri::async_runtime::spawn_blocking(move || {
-        let _busy: PortSlot = busy;
+        let (_busy, _pack): (PortSlot, _) = (busy, pack);
         read_all(
             address,
             &cancel,
-            |next| with_conn(&conn, &flashing, |c| c.history_record(address, next)),
+            |next| with_link(&conn, &flashing, &links, &link, |c| c.history_record(address, next)),
             |n| {
                 let _ = app.emit("bms-history-progress", Progress { address, n });
             },
