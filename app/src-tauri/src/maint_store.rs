@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 mod transfer;
-pub use transfer::{ImportRow, ImportState, InstallationData, Into as ImportInto, LogPlan};
+pub use transfer::{ImportRow, InstallationData, Into as ImportInto, LogPlan};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS installations(id TEXT PRIMARY KEY, name TEXT NOT NULL, control TEXT, created INTEGER NOT NULL);

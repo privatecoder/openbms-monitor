@@ -283,6 +283,77 @@ pub async fn installation_snapshots(state: State<'_, AppState>, installation: St
         .collect())
 }
 
+/// A failure of the bundle code as a refusal key for the UI (`bundle-checksum: logs/x` → `bundle-checksum`).
+fn bundle_error(err: String) -> MaintError {
+    const KEYS: [&str; 12] = [
+        "bundle-unreadable", "bundle-entry", "bundle-too-large", "bundle-no-manifest", "bundle-manifest", "bundle-format", "bundle-checksum",
+        "bundle-missing", "bundle-symlink", "import-conflict", "import-master-differs", "import-id-exists",
+    ];
+    let key = err.split(':').next().unwrap_or_default();
+    if KEYS.contains(&key) || ["unknown-installation", "installation-busy", "history-preparing"].contains(&key) {
+        maint::refused(key)
+    } else {
+        text(err)
+    }
+}
+
+fn imports_dir(app: &AppHandle) -> Result<std::path::PathBuf, MaintError> {
+    use tauri::Manager;
+    Ok(app.path().app_data_dir().map_err(text)?.join("imports"))
+}
+
+/// Write an installation's bundle (ZIP) to the file the user picked; the recording only when asked.
+#[tauri::command]
+pub async fn installation_export(app: AppHandle, state: State<'_, AppState>, installation: String, path: String, recording: bool) -> Result<crate::installation_bundle::Exported, MaintError> {
+    let store = state.maint.clone();
+    let db = state.history.lock().map_err(text)?.path();
+    let logs = crate::firmware::logs_dir(&app).map_err(text)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::installation_bundle::export(&store, db.as_deref(), &logs, &installation, std::path::Path::new(&path), recording, history::now_ms())
+    })
+    .await
+    .map_err(text)?
+    .map_err(bundle_error)
+}
+
+/// Unpack and check a bundle; what it holds and where it may go. Nothing is written to the databases.
+#[tauri::command]
+pub async fn installation_import_inspect(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<crate::installation_bundle::Preview, MaintError> {
+    let store = state.maint.clone();
+    let imports = imports_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || crate::installation_bundle::inspect(&store, &imports, std::path::Path::new(&path)))
+        .await
+        .map_err(text)?
+        .map_err(bundle_error)
+}
+
+/// Import an inspected bundle (or resume an unfinished import of it) into the place the user chose.
+#[tauri::command]
+pub async fn installation_import_apply(app: AppHandle, state: State<'_, AppState>, export_id: String, into: crate::maint_store::ImportInto) -> Result<crate::installation_bundle::Applied, MaintError> {
+    let (store, hist) = (state.maint.clone(), state.history.clone());
+    let imports = imports_dir(&app)?;
+    let logs = crate::firmware::logs_dir(&app).map_err(text)?;
+    tauri::async_runtime::spawn_blocking(move || crate::installation_bundle::apply(&store, &hist, &imports, &logs, &export_id, &into))
+        .await
+        .map_err(text)?
+        .map_err(bundle_error)
+}
+
+#[derive(Serialize)]
+pub struct OpenImport {
+    export_id: String,
+    installation: String,
+    name: String,
+    started: i64,
+}
+
+/// Unfinished imports (resumed by importing the same file again).
+#[tauri::command]
+pub async fn installation_imports_open(state: State<'_, AppState>) -> Result<Vec<OpenImport>, MaintError> {
+    let rows = crate::installation_bundle::open_imports(&state.maint).map_err(bundle_error)?;
+    Ok(rows.into_iter().map(|(r, name)| OpenImport { export_id: r.export_id, installation: r.installation, name, started: r.started }).collect())
+}
+
 /// Firmware logs that belong to no installation (from before installations owned their logs), newest first.
 #[tauri::command]
 pub async fn logs_unassigned(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<String>, MaintError> {
