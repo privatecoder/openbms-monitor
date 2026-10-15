@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
+import { CircleCheck, Cpu, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
 import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type MasterView } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
@@ -147,7 +147,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); setError(null); setInspectError(null); setFlashed(null); };
   const versions = done && flashed ? resultVersions(done, flashed.checked, flashed.image, t) : null;
 
-  if (isDemo) return <div className="max-w-2xl space-y-3"><h1 className="font-display text-2xl font-semibold">{t("fw.title")}</h1><p className="text-muted">{t("fw.demo")}</p></div>;
+  if (isDemo) return <div className="view-in mx-auto max-w-7xl space-y-3"><h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight"><Cpu className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("fw.title")}</h1><p className="text-muted">{t("fw.demo")}</p></div>;
 
   const imagePicker = (
     <div className="space-y-2">
@@ -168,10 +168,12 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   );
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="view-in mx-auto max-w-7xl space-y-6">
       <header className="space-y-2">
-        <h1 className="flex items-center gap-2 font-display text-2xl font-semibold">{t("fw.title")}<InfoIcon id="topic.firmware" /></h1>
-        <p className="text-muted">{t("fw.intro")}</p>
+        <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight">
+          <Cpu className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("fw.title")}<InfoIcon id="topic.firmware" />
+        </h1>
+        <p className="mt-1 max-w-3xl text-muted">{t("fw.intro")}</p>
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}
       </header>
 

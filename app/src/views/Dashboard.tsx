@@ -78,7 +78,7 @@ export function Dashboard({ packs, system, scope, onOpen }: { packs: Record<numb
   const balancingPacks = list.filter((p) => (p.status?.balancing ?? 0) !== 0).length;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-10">
+    <div className="mx-auto max-w-7xl space-y-10">
       <header className="space-y-5">
         <div>
           <h1 className="flex items-center gap-3 font-display text-4xl font-semibold tracking-tight">
