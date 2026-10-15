@@ -283,12 +283,13 @@ const resources = {
           limit: "Das BMS verlangt Zellen unter 20 mV auseinander, höchstens 30 mV Abweichung je Zelle und höchstens 2 V am Ausgang.",
         },
       },
+      sec: { reload: "Neu lesen", asOf: "Stand {{time}}" },
       ctl: {
         title: "Steuern", closed: "Neu starten, ein-/ausschalten, Heizung, Restkapazität, Historie löschen (gewähltes Pack)",
         reading: "Lese Zustand …", readError: "Zustand nicht lesbar: {{err}}", reload: "Zustand neu lesen", running: "Sende …", cancel: "Abbrechen",
         state: {
           command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt", offCommand: "ausgeschaltet",
-          soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} Zyklus", cycles_other: "{{count}} Zyklen", at: "Stand {{time}}",
+          soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} Zyklus", cycles_other: "{{count}} Zyklen",
         },
         busy: "Pack {{pack}} ist gerade mit {{action}} beschäftigt. Danach noch einmal versuchen.",
         action: {
@@ -846,12 +847,13 @@ const resources = {
           limit: "The BMS needs cells less than 20 mV apart, at most 30 mV deviation per cell and at most 2 V at the output.",
         },
       },
+      sec: { reload: "Read again", asOf: "as of {{time}}" },
       ctl: {
         title: "Control", closed: "Restart, switch on/off, heater, remaining capacity, clear history (chosen pack)",
         reading: "Reading state …", readError: "State not readable: {{err}}", reload: "Read state again", running: "Sending …", cancel: "Cancel",
         state: {
           command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked", offCommand: "switched off",
-          soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} cycle", cycles_other: "{{count}} cycles", at: "as of {{time}}",
+          soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} cycle", cycles_other: "{{count}} cycles",
         },
         busy: "Pack {{pack}} is busy with {{action}} right now. Try again afterwards.",
         action: {

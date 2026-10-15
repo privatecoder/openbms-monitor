@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Hash, RefreshCw } from "lucide-react";
+import { Hash } from "lucide-react";
 import { api, type SerialNumbers } from "../api";
 import { refusal } from "../calibration";
 import { errorText } from "../control";
-import { InfoIcon } from "../help";
 import { serialInputOk, serialSetResult, serialText } from "../serial";
+import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 import { useCurrent } from "./Calibration";
 
@@ -20,6 +20,7 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
   const [busy, setBusy] = useState<Which | null>(null);
   const [note, setNote] = useState<Partial<Record<Which, Note>>>({});
   const [reload, setReload] = useState(0);
+  const [readAt, setReadAt] = useState<Date | null>(null);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   // nothing typed for one pack may be written to another
@@ -28,7 +29,7 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
     setRead(null);
     if (address === null || !usable) return;
     let alive = true;
-    api.serialNumbers(address).then((r) => alive && setRead(r), (e) => alive && setRead({ error: errorText(e, t) }));
+    api.serialNumbers(address).then((r) => { if (alive) { setRead(r); setReadAt(new Date()); } }, (e) => alive && setRead({ error: errorText(e, t) }));
     return () => { alive = false; };
   }, [address, usable, reload]);
   if (!usable || address === null) return null;
@@ -70,22 +71,19 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
           <Button size="sm" disabled={!!busy || locked || !serialInputOk(s)} onClick={() => write(which)}>{busy === which ? t("snw.writing") : t("snw.write")}</Button>
           {bad && <span className="text-alarm">{t("snw.invalid")}</span>}
         </div>
-        {n && <p className={n.error ? "text-alarm" : "text-ok"}>{n.text}</p>}
+        {n && <StatusLine tone={n.error ? "error" : "ok"}>{n.text}</StatusLine>}
       </div>
     );
   };
 
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="flex items-center gap-1.5 font-medium"><Hash className="h-4 w-4" aria-hidden />{t("snw.title")}<InfoIcon id="topic.paramWrite" /></span>
-        {read && "error" in read && <span className="text-alarm">{t("snw.readError", { err: read.error })}</span>}
-        <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={!!busy || locked || read === null} onClick={() => setReload((r) => r + 1)}
-          aria-label={t("snw.reload")} title={t("snw.reload")}><RefreshCw className="h-4 w-4" /></Button>
-      </div>
+      <SectionHead icon={Hash} title={t("snw.title")} help="topic.paramWrite" onReload={() => setReload((r) => r + 1)} reloading={read === null}
+        reloadDisabled={!!busy || locked} reloadLabel={t("snw.reload")} readAt={readAt} />
+      {read && "error" in read && <StatusLine tone="error">{t("snw.readError", { err: read.error })}</StatusLine>}
       {row("battery")}
       {row("bms")}
-      {address === 0 && <p className="text-muted">{t("snw.masterHint")}</p>}
+      {address === 0 && <StatusLine>{t("snw.masterHint")}</StatusLine>}
     </div>
   );
 }

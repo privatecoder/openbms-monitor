@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Power, RefreshCw } from "lucide-react";
+import { Power } from "lucide-react";
 import { api, type PackLive } from "../api";
 import { refusal } from "../calibration";
 import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
-import { InfoIcon, helpTitle } from "../help";
+import { helpTitle } from "../help";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
+import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 
 const input = "h-8 w-28 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge";
@@ -183,36 +184,25 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const blockers = st && !dischargeFree(st) ? blockingAlarms(st, "discharge") : [];
   const chargeBlockers = st && !chargeFree(st) ? blockingAlarms(st, "charge") : [];
 
-  const noteLine = note && <p className={note.tone === "ok" ? "text-ok" : note.tone === "warn" ? "text-discharge" : "text-alarm"}>{note.text}</p>;
+  const noteLine = note && <StatusLine tone={note.tone}>{note.text}</StatusLine>;
 
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
-      <div className="flex items-center gap-1.5">
-        <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex items-center gap-1.5 font-medium hover:text-ink">
-          {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
-          <Power className="h-4 w-4" aria-hidden />{t("ctl.title")}
-        </button>
-        <InfoIcon id="topic.control" />
-        {!open && <span className="text-muted">{t("ctl.closed")}</span>}
-      </div>
+      <SectionHead icon={Power} title={t("ctl.title")} help="topic.control" open={open} onToggle={() => setOpen(!open)} closedHint={t("ctl.closed")}
+        onReload={open ? () => void reload(address) : undefined} reloading={reading} reloadDisabled={disabled} reloadLabel={t("ctl.reload")} readAt={readAt} />
       {open && (
         <div className="space-y-3">
           <div className="space-y-1 tabular-nums">
-            {live === null ? <span className="text-muted">{t("ctl.reading")}</span>
-              : "error" in live ? <span className="text-alarm">{t("ctl.readError", { err: live.error })}</span>
+            {live === null ? <StatusLine>{t("ctl.reading")}</StatusLine>
+              : "error" in live ? <StatusLine tone="error">{t("ctl.readError", { err: live.error })}</StatusLine>
               : <>
                 <div>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span></div>
                 <div>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</div>
                 <div>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</div>
                 <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</div>
                 <div>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</div>
+                <div>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</div>
                 </>}
-            <div className="flex items-center gap-x-3">
-              {live !== null && !("error" in live) && <span>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</span>}
-            <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={disabled || live === null} onClick={() => void reload(address)}
-              aria-label={t("ctl.reload")} title={t("ctl.reload")}><RefreshCw className={cn("h-4 w-4", reading && "animate-spin")} /></Button>
-            {readAt && <span className="text-muted">{t("ctl.state.at", { time: readAt.toLocaleTimeString(lang) })}</span>}
-            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -238,8 +228,8 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
               </Button>
               {raw !== null && full !== undefined && !remainingAllowed(raw, full) && <span className="text-discharge">{t("ctl.remaining.tooLarge")}</span>}
             </div>
-            {under === true && <p className="text-discharge">{t("ctl.remaining.under", { p: nf(0).format(p79!) })}</p>}
-            {under === null && soc !== null && <p className="text-muted">{t("ctl.remaining.underUnknown")}</p>}
+            {under === true && <StatusLine tone="warn">{t("ctl.remaining.under", { p: nf(0).format(p79!) })}</StatusLine>}
+            {under === null && soc !== null && <StatusLine>{t("ctl.remaining.underUnknown")}</StatusLine>}
             {noteFor === "remaining" && noteLine}
             <p className="max-w-3xl text-muted">{t("ctl.remaining.hint")}</p>
           </div>

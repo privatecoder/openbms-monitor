@@ -4,8 +4,8 @@ import { Clock } from "lucide-react";
 import { api, isDemo, type BmsTime, type Bus } from "../api";
 import { errorText } from "../control";
 import { CLOCK_OK_S, clockDiff, durationText, fmtBmsTime, fromBmsTime, toBmsTime, zoneLabel } from "../bmsMemory";
-import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
+import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 import { useNow } from "./live";
 
@@ -60,7 +60,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
   const lang = i18n.language;
   const now = useNow();
   const usable = connected && (bus === "pack" || isDemo);
-  const { read, setRead } = useBmsClock(address, usable);
+  const { read, setRead, reload } = useBmsClock(address, usable);
   const [busy, setBusy] = useState<string | null>(null);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
@@ -98,21 +98,16 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
   const bmsNow = read && "bms" in read ? toBmsTime(new Date(fromBmsTime(read.bms).getTime() + (now - read.at))) : null;
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
+      <SectionHead icon={Clock} title={t("clock.title")} help="topic.bmsHistory" onReload={usable && address !== null ? reload : undefined}
+        reloading={usable && address !== null && read === null} reloadDisabled={!!busy || locked} readAt={read && "bms" in read ? new Date(read.at) : null} />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="flex items-center gap-1.5 font-medium"><Clock className="h-4 w-4" aria-hidden />{t("clock.title")}<InfoIcon id="topic.bmsHistory" /></span>
         {packs.length > 0 && (
           <select value={address ?? ""} onChange={(e) => setAddress(Number(e.target.value))} disabled={!!busy || locked} aria-label={t("bmsh.pack")}
             className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
             {packs.map((a) => <option key={a} value={a}>{t("bmsh.pack")} {no(a)}</option>)}
           </select>
         )}
-        {!usable ? (
-          <span className={cn(bus === "can" && connected ? "text-discharge" : "text-muted")}>{bus === "can" && connected ? t("clock.canBus") : t("clock.needConnection")}</span>
-        ) : read === null ? (
-          <span className="text-muted">{t("clock.reading")}</span>
-        ) : "error" in read ? (
-          <span className="text-alarm">{t("clock.readError", { err: read.error })}</span>
-        ) : (
+        {usable && read && "bms" in read && (
           <>
             <span className="tabular-nums">{t("clock.bms", { time: fmtBmsTime(bmsNow!, lang) })}</span>
             <span className="tabular-nums text-muted">{t("clock.pc", { time: fmtBmsTime(toBmsTime(pc), lang) })}</span>
@@ -120,14 +115,21 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
           </>
         )}
       </div>
+      {!usable ? (
+        <StatusLine tone={bus === "can" && connected ? "warn" : "muted"}>{bus === "can" && connected ? t("clock.canBus") : t("clock.needConnection")}</StatusLine>
+      ) : read === null ? (
+        <StatusLine>{t("clock.reading")}</StatusLine>
+      ) : "error" in read && (
+        <StatusLine tone="error">{t("clock.readError", { err: read.error })}</StatusLine>
+      )}
       {usable && canWrite && address !== null && (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={!!busy || locked} onClick={setOne} className="tabular-nums">{label}</Button>
           {packs.length > 1 && <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={setAll}>{t("clock.setAll")}</Button>}
-          <span className="text-muted">{busy ?? t("clock.hint")}</span>
         </div>
       )}
-      {note && <p className={note.error ? "text-alarm" : "text-ok"}>{note.text}</p>}
+      {usable && canWrite && address !== null && <StatusLine>{busy ?? t("clock.hint")}</StatusLine>}
+      {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}
     </div>
   );
 }

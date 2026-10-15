@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Crosshair, Network, RefreshCw } from "lucide-react";
+import { Crosshair, Network } from "lucide-react";
 import { api, type DeviceInfo, type PackLive } from "../api";
 import { CAN_PROTOCOLS, cellMv, cellStats, centiAmps, currentAllowed, flagAfter, notCalibrated, parseNumber, protocolOf, protocolSetResult, refusal, MIN_CURRENT_A, NOT_CALIBRATED_BIT, type Calibration, type FlagAfter } from "../calibration";
 import { errorText } from "../control";
-import { InfoIcon, helpTitle } from "../help";
+import { helpTitle } from "../help";
 import { cn } from "../lib/utils";
+import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 
 const input = "h-8 w-28 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge";
@@ -32,6 +33,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note>(null);
   const [reload, setReload] = useState(0);
+  const [readAt, setReadAt] = useState<Date | null>(null);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -42,6 +44,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
       if (!alive) return;
       const d = r[0]?.[1];
       setDevice(d ?? { error: t("can.noAnswer") });
+      if (d) setReadAt(new Date());
       setChoice(protocolOf(d?.can_protocol)?.n ?? null);
     }, (e) => alive && setDevice({ error: String(e) }));
     return () => { alive = false; };
@@ -71,13 +74,12 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
 
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
+      <SectionHead icon={Network} title={t("can.title")} help="topic.calibration" onReload={() => setReload((n) => n + 1)} reloading={device === null}
+        reloadDisabled={busy || locked} reloadLabel={t("can.reload")} readAt={readAt} />
+      {device === null ? <StatusLine>{t("can.reading")}</StatusLine>
+        : "error" in device && <StatusLine tone="error">{t("can.readError", { err: device.error })}</StatusLine>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="flex items-center gap-1.5 font-medium"><Network className="h-4 w-4" aria-hidden />{t("can.title")}<InfoIcon id="topic.calibration" /></span>
-        {device === null ? <span className="text-muted">{t("can.reading")}</span>
-          : "error" in device ? <span className="text-alarm">{t("can.readError", { err: device.error })}</span>
-          : <span>{t("can.current", { name: protocolName(device.can_protocol) || "–" })}</span>}
-        <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={busy || locked || device === null} onClick={() => setReload((n) => n + 1)}
-          aria-label={t("can.reload")} title={t("can.reload")}><RefreshCw className="h-4 w-4" /></Button>
+        {device !== null && !("error" in device) && <span>{t("can.current", { name: protocolName(device.can_protocol) || "–" })}</span>}
         <select value={choice ?? ""} onChange={(e) => setChoice(e.target.value ? Number(e.target.value) : null)} disabled={busy || locked} aria-label={t("can.choose")}
           className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
           {choice === null && <option value="">{t("can.choose")}</option>}
@@ -85,8 +87,8 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
         </select>
         <Button size="sm" disabled={busy || locked || choice === null} onClick={set}>{busy ? t("can.setting") : t("can.set")}</Button>
       </div>
-      <p className="text-muted">{t("can.hint")}</p>
-      {note && <p className={note.error ? "text-alarm" : "text-ok"}>{note.text}</p>}
+      {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}
+      <StatusLine>{t("can.hint")}</StatusLine>
     </div>
   );
 }
@@ -105,6 +107,8 @@ export function CalibrationSection({ address, usable, locked, onBusy }: WritePro
   const [outcome, setOutcome] = useState<Partial<Record<Kind, Outcome>>>({});
   const [amps, setAmps] = useState("");
   const [volts, setVolts] = useState("");
+  const [kick, setKick] = useState(0);
+  const [readAt, setReadAt] = useState<Date | null>(null);
   const gen = useRef(0);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -118,13 +122,13 @@ export function CalibrationSection({ address, usable, locked, onBusy }: WritePro
     const mine = ++gen.current;
     let timer: number | undefined;
     const tick = async () => {
-      try { const l = await api.packLive(address); if (gen.current === mine) setLive(l); }
+      try { const l = await api.packLive(address); if (gen.current === mine) { setLive(l); setReadAt(new Date()); } }
       catch (e) { if (gen.current === mine) setLive({ error: String(e) }); }
       if (gen.current === mine) timer = window.setTimeout(tick, 2000);
     };
     void tick();
     return () => { gen.current++; window.clearTimeout(timer); };
-  }, [open, usable, address]);
+  }, [open, usable, address, kick]);
   if (!usable || address === null) return null;
 
   const nf = (d: number) => new Intl.NumberFormat(lang, { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -166,25 +170,19 @@ export function CalibrationSection({ address, usable, locked, onBusy }: WritePro
     const o = outcome[k];
     if (!o) return null;
     return o.ok
-      ? <p className="text-ok">{t("cal.done", { value: o.value })} {t(FLAG_TEXT[o.flag], { name: flagName(k) })} <span className="text-muted">{t("cal.ram")}</span></p>
-      : <p className="text-alarm">{o.text}</p>;
+      ? <StatusLine tone="ok">{t("cal.done", { value: o.value })} {t(FLAG_TEXT[o.flag], { name: flagName(k) })} <span className="text-muted">{t("cal.ram")}</span></StatusLine>
+      : <StatusLine tone="error">{o.text}</StatusLine>;
   };
   const diff = measured !== null && tel ? measured - tel.current : null;
 
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
-      <div className="flex items-center gap-1.5">
-        <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex items-center gap-1.5 font-medium hover:text-ink">
-          {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
-          <Crosshair className="h-4 w-4" aria-hidden />{t("cal.title")}
-        </button>
-        <InfoIcon id="topic.calibration" />
-        {!open && <span className="text-muted">{t("cal.closed")}</span>}
-      </div>
+      <SectionHead icon={Crosshair} title={t("cal.title")} help="topic.calibration" open={open} onToggle={() => setOpen(!open)} closedHint={t("cal.closed")}
+        onReload={open ? () => setKick((n) => n + 1) : undefined} reloading={open && live === null} reloadDisabled={!!busy || locked} readAt={readAt} />
       {open && (
         <div className="space-y-3">
-          <p className="max-w-3xl text-muted">{t("cal.intro")}</p>
-          {live && "error" in live && <p className="text-alarm">{t("cal.liveError", { err: live.error })}</p>}
+          <StatusLine>{t("cal.intro")}</StatusLine>
+          {live && "error" in live && <StatusLine tone="error">{t("cal.liveError", { err: live.error })}</StatusLine>}
 
           <Block title={t("cal.zero.title")} guide={t("cal.zero.guide")}>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
