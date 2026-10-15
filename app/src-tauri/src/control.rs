@@ -28,6 +28,8 @@ pub(crate) struct OpsState {
     packs: HashMap<u8, &'static str>,
     /// installations under a structural operation: id → the operation
     installations: HashMap<String, &'static str>,
+    /// a disconnect waits for the running pack actions: no new one starts
+    disconnecting: bool,
 }
 
 pub(crate) type Ops = Arc<Mutex<OpsState>>;
@@ -58,6 +60,9 @@ pub(crate) fn reserve_pack(state: &AppState, address: u8, action: &'static str) 
     let mut m = state.ops.lock().map_err(|e| e.to_string())?;
     if let Some(running) = m.packs.get(&address) {
         return Err(pack_busy_error(address, running));
+    }
+    if m.disconnecting {
+        return Err(pack_busy_error(address, "disconnect"));
     }
     if state.port_busy.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(pack_busy_error(address, current_action(state).unwrap_or("port")));
@@ -100,7 +105,25 @@ pub(crate) fn reserve_bus_wait(state: &AppState) -> Option<PortSlot> {
     }
 }
 
-/// Wait until no pack is reserved, at most `max` (disconnect: a running action ends first).
+/// A disconnect in progress: no new pack action starts until it is dropped.
+pub(crate) struct Disconnecting(Ops);
+
+impl Drop for Disconnecting {
+    fn drop(&mut self) {
+        if let Ok(mut m) = self.0.lock() {
+            m.disconnecting = false;
+        }
+    }
+}
+
+pub(crate) fn begin_disconnect(ops: &Ops) -> Disconnecting {
+    if let Ok(mut m) = ops.lock() {
+        m.disconnecting = true;
+    }
+    Disconnecting(ops.clone())
+}
+
+/// Wait until no pack is reserved, at most `max` (disconnect: a running action ends first). Blocking.
 pub(crate) fn wait_packs_idle(ops: &Ops, max: Duration) {
     let until = Instant::now() + max;
     while any_pack_action(ops).is_some() && Instant::now() < until {
@@ -280,6 +303,18 @@ mod tests {
         drop(bus);
         assert!(!state.port_busy.load(Ordering::SeqCst));
         assert!(reserve_pack(&state, 1, "params").is_ok());
+    }
+
+    #[test]
+    fn no_new_pack_action_while_a_disconnect_waits() {
+        let state = AppState::default();
+        let running = reserve_pack(&state, 1, "restart").unwrap();
+        let d = begin_disconnect(&state.ops);
+        assert_eq!(json(&reserve_pack(&state, 2, "params").err().unwrap())["action"], "disconnect");
+        drop(running);
+        wait_packs_idle(&state.ops, Duration::from_secs(1));
+        drop(d);
+        assert!(reserve_pack(&state, 2, "params").is_ok());
     }
 
     #[test]

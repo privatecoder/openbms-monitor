@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
+import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, pickable, portBusy, preselect } from "../maint";
 import { RecordingEntry } from "./Recording";
 import { readMark } from "../bmsMemory";
@@ -120,9 +121,18 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const serialGen = useRef(0);
   const readSerials = async (addresses: number[]) => {
     const gen = ++serialGen.current;
-    for (const a of addresses) {
+    // a pack busy with another action (a write, the parameter read) is asked again at the end, at most three times
+    const queue = addresses.map((a) => ({ a, tries: 0 }));
+    for (let q = queue.shift(); q; q = queue.shift()) {
+      const { a } = q;
       if (gen !== serialGen.current) return;
-      const s = await api.serialNumbers(a).catch(() => null);
+      let busyNow = false;
+      const s = await api.serialNumbers(a).catch((e) => { busyNow = !!packBusy(e); return null; });
+      if (busyNow && q.tries < 3) {
+        queue.push({ a, tries: q.tries + 1 });
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
       if (s && gen === serialGen.current) {
         onSerials(a, s);
         if (s.board?.kind === "other" && s.bms.kind === "set") onBoard({ address: a, serial: s.bms.value, previous: s.board.previous });
@@ -218,7 +228,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // Browser preview: connect straight away so the recorded system is visible.
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const disconnect = async () => { stopWaiting(); serialGen.current += 1; await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
+  const disconnect = async () => {
+    stopWaiting(); serialGen.current += 1;
+    // a running pack action (a restart up to 15 s) ends first
+    setMsg(t("conn.disconnectWait"));
+    await api.disconnect();
+    onDisconnected(false); setMsg(null); setLost(false);
+  };
   // another installation chosen anywhere (installations view, banner, new installation): this connection ends first
   const live = useRef(false);
   live.current = connected || lost;

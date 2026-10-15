@@ -489,7 +489,7 @@ pub const SILENT_FOR: Duration = Duration::from_secs(1);
 
 /// The restart watch: `answered` is one 0x51 try. An interruption (`SILENT_TRIES` misses in a row or `SILENT_FOR` of
 /// silence) followed by an answer is a comeback, counted from `sent`. A single late answer (a gateway delay) is no
-/// interruption. Answers throughout: not seen; silent at the end of `limit`: no answer.
+/// interruption. Silent at the end of `limit` (an interruption that did not end): no answer; else not seen.
 pub fn watch_comeback<E>(sent: Instant, limit: Duration, mut answered: impl FnMut() -> std::result::Result<bool, E>) -> std::result::Result<Comeback, E> {
     // the start of the current run of unanswered tries, and their number
     let mut silent: Option<(Instant, u32)> = None;
@@ -507,7 +507,9 @@ pub fn watch_comeback<E>(sent: Instant, limit: Duration, mut answered: impl FnMu
             silent = Some((since, misses + 1));
         }
     }
-    Ok(if silent.is_some() { Comeback::NoAnswer } else { Comeback::NoInterruption })
+    // a single late miss on the last try is no interruption either
+    let interrupted = silent.is_some_and(|(since, misses)| misses >= SILENT_TRIES || since.elapsed() >= SILENT_FOR);
+    Ok(if interrupted { Comeback::NoAnswer } else { Comeback::NoInterruption })
 }
 
 /// Raw byte access for tools that speak another framing on the same bus (the bootloader).
@@ -734,6 +736,14 @@ mod tests {
         assert_eq!(watch_comeback(Instant::now(), short, || Ok::<_, Error>(false)).unwrap(), Comeback::NoAnswer);
         let mut n = 0;
         assert_eq!(watch_comeback(Instant::now(), short, || { n += 1; Ok::<_, Error>(n < 3) }).unwrap(), Comeback::NoAnswer);
+        // answered throughout except one late miss on the very last try
+        let mut n = 0;
+        let r = watch_comeback(Instant::now(), Duration::from_millis(100), || {
+            n += 1;
+            std::thread::sleep(Duration::from_millis(30));
+            Ok::<_, Error>(n < 4)
+        });
+        assert_eq!(r.unwrap(), Comeback::NoInterruption);
         // a broken link ends the watch with its error
         assert!(watch_comeback(Instant::now(), limit, || Err::<bool, _>("closed")).is_err());
     }
