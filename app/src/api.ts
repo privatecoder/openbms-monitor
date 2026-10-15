@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { KEYS, UNITS, type Parameters } from "./params";
 import { CAN_PROTOCOLS, type Calibration } from "./calibration";
+import type { RestartResult } from "./control";
 import { fromRaw, isSigned, toRaw, violations, type Wire } from "./paramWrite";
 
 export type Bus = "pack" | "can";
@@ -282,6 +283,16 @@ const tauriApi = {
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
   /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
   setSerial: (address: number, which: "battery" | "bms", text: string) => invoke<SerialSet>("set_serial", { address, which, text, installation: chosen }),
+  /** RS485-1/2 only, one pack each; every one fails with `{"kind":"pack-busy",…}` while another action holds the pack
+   *  (see `packBusy` in control.ts) and with a refusal like `bmsCalibrate`. Restart: 0x51 before, then up to 15 s
+   *  watching for the pack to answer again */
+  packRestart: (address: number) => invoke<RestartResult>("pack_restart", { address, installation: chosen }),
+  packOnOff: (address: number, on: boolean) => invoke<void>("pack_on_off", { address, on, installation: chosen }),
+  packHeater: (address: number, on: boolean) => invoke<void>("pack_heater", { address, on, installation: chosen }),
+  /** history, energy counters and cycle count to 0; not reversible */
+  packClearHistory: (address: number) => invoke<void>("pack_clear_history", { address, installation: chosen }),
+  /** remaining capacity in 10 mAh; RAM only until the BMS saves its state */
+  packSetRemaining: (address: number, raw: number) => invoke<void>("pack_set_remaining", { address, raw, installation: chosen }),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -362,6 +373,13 @@ function demoApi(): typeof tauriApi {
     packs: { address: number; telemetry: Telemetry; status: Status }[];
     system: SystemValues;
   });
+  // the capture's pack, or the copy pack control changed
+  const demoControl = new Map<number, PackLive>();
+  const demoPack = async (address: number): Promise<PackLive | undefined> => {
+    if (demoControl.has(address)) return demoControl.get(address);
+    const p = (await load()).packs.find((x) => x.address === address);
+    return p && { telemetry: p.telemetry, status: p.status };
+  };
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
@@ -452,9 +470,9 @@ function demoApi(): typeof tauriApi {
     // preview: live values from the capture; calibrations are taken unless the current is off by 3 A or more
     packLive: async (address) => {
       await new Promise((r) => setTimeout(r, 120));
-      const p = (await load()).packs.find((x) => x.address === address);
+      const p = await demoPack(address);
       if (!p) throw new Error("timeout after 1500 ms");
-      return { telemetry: p.telemetry, status: p.status };
+      return p;
     },
     bmsCalibrate: async (address, calibration) => {
       await new Promise((r) => setTimeout(r, 300));
@@ -467,6 +485,41 @@ function demoApi(): typeof tauriApi {
       const d = (await load()).scan.find((s) => s.address === address)?.device;
       if (!d) throw new Error("timeout after 1500 ms");
       return { device: { ...d, can_protocol: demoProtocol.get(address)! }, read_error: null };
+    },
+    // preview: control acts on a copy of the capture's status and telemetry, kept for the session
+    packRestart: async (address) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      const p = await demoPack(address);
+      if (!p) return { kind: "not_reachable" };
+      demoControl.set(address, { ...p, status: { ...p.status, system_status: p.status.system_status & ~0x20, switch_state: p.status.switch_state & ~0x08 } });
+      return { kind: "back", after_ms: 3200 };
+    },
+    packOnOff: async (address, on) => {
+      await new Promise((r) => setTimeout(r, 200));
+      const p = await demoPack(address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      const s = p.status;
+      demoControl.set(address, { ...p, status: { ...s, system_status: on ? s.system_status & ~0x20 : s.system_status | 0x20, switch_state: on ? s.switch_state | 0x01 : s.switch_state & ~0x01 } });
+    },
+    packHeater: async (address, on) => {
+      await new Promise((r) => setTimeout(r, 200));
+      const p = await demoPack(address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      demoControl.set(address, { ...p, status: { ...p.status, switch_state: on ? p.status.switch_state | 0x08 : p.status.switch_state & ~0x08 } });
+    },
+    packClearHistory: async (address) => {
+      await new Promise((r) => setTimeout(r, 300));
+      const p = await demoPack(address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      demoControl.set(address, { ...p, telemetry: { ...p.telemetry, cycles: 0, energy_charged_kwh: 0, energy_discharged_kwh: 0 } });
+    },
+    packSetRemaining: async (address, raw) => {
+      await new Promise((r) => setTimeout(r, 200));
+      const p = await demoPack(address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      if (raw > Math.round(p.telemetry.full_capacity_ah * 100)) throw JSON.stringify({ kind: "refused" });
+      const ah = raw / 100;
+      demoControl.set(address, { ...p, telemetry: { ...p.telemetry, remaining_capacity_ah: ah, soc: Math.round((ah / p.telemetry.full_capacity_ah) * 1000) / 10 } });
     },
     bmsHistory: async (address) => {
       demoCancel = false;

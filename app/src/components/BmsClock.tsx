@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
 import { api, isDemo, type BmsTime, type Bus } from "../api";
+import { errorText } from "../control";
 import { CLOCK_OK_S, clockDiff, durationText, fmtBmsTime, fromBmsTime, toBmsTime, zoneLabel } from "../bmsMemory";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
@@ -75,7 +76,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
     try {
       const bms = await api.setBmsClock(address, toBmsTime(new Date()));
       setRead({ bms, at: Date.now() });
-    } catch (e) { setNote({ text: t("clock.setError", { err: String(e) }), error: true }); }
+    } catch (e) { setNote({ text: t("clock.setError", { err: errorText(e, t) }), error: true }); }
     finally { setBusy(null); }
   };
   const setAll = async () => {
