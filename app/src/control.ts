@@ -11,8 +11,21 @@ export const dischargeFree = (s: Status) => (s.switch_state & 0x01) !== 0;
 export const chargeFree = (s: Status) => (s.switch_state & 0x02) !== 0;
 export const heaterOn = (s: Status) => (s.switch_state & 0x08) !== 0;
 
-/** Active protections and faults: what closes a MOSFET besides the off command. */
-export const blockingAlarms = (s: Status) => s.alarms.filter((a) => a.severity === "protection" || a.severity === "fault").map((a) => a.id);
+/** Events that close the discharge MOSFET (firmware 16.06.13 `0x7184`): cell/pack undervoltage, discharge and
+ *  ambient temperature, power stage, discharge overcurrent, transient overcurrent, short circuit and their locks,
+ *  SOC protection, output connection fault. */
+const DISCHARGE_BLOCKERS = ["alarm.ev2.b3", "alarm.ev2.b7", "alarm.ev3.b5", "alarm.ev3.b7", "alarm.ev4.b1", "alarm.ev4.b3", "alarm.ev4.b4",
+  "alarm.ev5.b3", "alarm.ev5.b4", "alarm.ev5.b5", "alarm.ev5.b6", "alarm.ev5.b7", "alarm.ev6.b3", "alarm.ev6.b6"];
+/** Events that close the charge MOSFET (`0x6FFA`): cell/pack overvoltage, charge and ambient temperature, power stage,
+ *  charge overcurrent, charger overvoltage, cell too low to charge, reverse polarity, output connection fault. */
+const CHARGE_BLOCKERS = ["alarm.ev2.b1", "alarm.ev2.b5", "alarm.ev3.b1", "alarm.ev3.b3", "alarm.ev4.b1", "alarm.ev4.b3", "alarm.ev4.b4",
+  "alarm.ev5.b1", "alarm.ev6.b0", "alarm.ev6.b4", "alarm.ev6.b5", "alarm.ev6.b6"];
+
+/** Active events that block discharging or charging, in alarm order. */
+export const blockingAlarms = (s: Status, dir: "discharge" | "charge") => {
+  const ids = dir === "discharge" ? DISCHARGE_BLOCKERS : CHARGE_BLOCKERS;
+  return s.alarms.map((a) => a.id).filter((id) => ids.includes(id));
+};
 
 /** Reasons the firmware switches a pack off again right after „on“: cell or pack undervoltage, SOC protection. */
 const OFF_REASONS = ["alarm.ev2.b3", "alarm.ev2.b7", "alarm.ev6.b3"];

@@ -51,16 +51,23 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => forced.clear(), []);
 
+  const [reading, setReading] = useState(false);
+  const [readAt, setReadAt] = useState<Date | null>(null);
   const reload = async (a: number) => {
     const mine = ++gen.current, lk = linkNow.current;
+    setReading(true);
     try {
       const l = await api.packLive(a);
       if (gen.current !== mine || !same(a, lk)) return null;
+      setReadAt(new Date());
+      // the field starts at the pack's current value, so a correction only changes what is wrong
+      setAh((v) => (v === "" ? new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(l.telemetry.remaining_capacity_ah) : v));
       // the forced counter is not readable: an output seen off ends the „forced“ state shown
       if (!heaterOn(l.status)) forced.delete(a);
       setLive(l);
       return l;
     } catch (e) { if (gen.current === mine && same(a, lk)) setLive({ error: errorText(e, t) }); return null; }
+    finally { if (gen.current === mine) setReading(false); }
   };
   useEffect(() => {
     setLive(null); setNote(null); setAh(""); setP79(null); setAsk(null); p79Asked.current.clear();
@@ -171,7 +178,8 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const under = soc !== null ? belowSocProtection(soc, p79) : null;
   const disabled = busy !== null || locked;
   const yesNo = (free: boolean) => <span className={free ? "text-ok" : "text-discharge"}>{t(free ? "ctl.state.free" : "ctl.state.blocked")}</span>;
-  const blockers = st && !dischargeFree(st) && !off ? blockingAlarms(st) : [];
+  const blockers = st && !dischargeFree(st) && !off ? blockingAlarms(st, "discharge") : [];
+  const chargeBlockers = st && !chargeFree(st) ? blockingAlarms(st, "charge") : [];
 
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
@@ -191,13 +199,14 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
               : <>
                 <span>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span></span>
                 <span>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{blockers.length > 0 && <span className="text-discharge"> ({names(blockers)})</span>}</span>
-                <span>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}</span>
+                <span>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</span>
                 <span>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</span>
                 <span>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</span>
-                <span>{t("ctl.state.cycles", { n: live.telemetry.cycles })}</span>
+                <span>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</span>
               </>}
             <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={disabled || live === null} onClick={() => void reload(address)}
-              aria-label={t("ctl.reload")} title={t("ctl.reload")}><RefreshCw className="h-4 w-4" /></Button>
+              aria-label={t("ctl.reload")} title={t("ctl.reload")}><RefreshCw className={cn("h-4 w-4", reading && "animate-spin")} /></Button>
+            {readAt && <span className="text-muted">{t("ctl.state.at", { time: readAt.toLocaleTimeString(lang) })}</span>}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -214,7 +223,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <label className="flex items-center gap-2">{t("ctl.remaining.field")}
-                <input className={input} inputMode="decimal" value={ah} onChange={(e) => setAh(e.target.value)} placeholder="140,00" disabled={disabled} />
+                <input className={input} inputMode="decimal" value={ah} onChange={(e) => setAh(e.target.value)} placeholder="0,00" disabled={disabled} />
               </label>
               {soc !== null && full !== undefined && <span className="tabular-nums">{t("ctl.remaining.soc", { soc: nf(0).format(soc), full: nf(2).format(full) })}</span>}
               <Button size="sm" disabled={disabled || !remainingAllowed(raw, full)} onClick={() => raw !== null && void setRemaining(address, raw)}>
