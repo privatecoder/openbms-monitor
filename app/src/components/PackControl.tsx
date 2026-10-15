@@ -206,11 +206,11 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={disabled} onClick={() => setAsk({ kind: "restart" })}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
-            <Button size="sm" disabled={disabled || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))}>
+            <Button size="sm" disabled={disabled} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
+            <Button size="sm" disabled={disabled || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))} title={t(off ? "ctl.tip.on" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>
-            <Button size="sm" disabled={disabled} onClick={() => void heater(address, !heaterForced)}>
+            <Button size="sm" disabled={disabled} onClick={() => void heater(address, !heaterForced)} title={t(heaterForced ? "ctl.tip.heaterOff" : "ctl.tip.heaterOn")}>
               {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
             </Button>
           </div>
@@ -223,7 +223,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
                 <input className={input} inputMode="decimal" value={ah} onChange={(e) => setAh(e.target.value)} placeholder="0,00" disabled={disabled} />
               </label>
               {soc !== null && full !== undefined && <span className="tabular-nums">{t("ctl.remaining.soc", { soc: nf(0).format(soc), full: nf(2).format(full) })}</span>}
-              <Button size="sm" disabled={disabled || !remainingAllowed(raw, full)} onClick={() => raw !== null && void setRemaining(address, raw)}>
+              <Button size="sm" disabled={disabled || !remainingAllowed(raw, full)} onClick={() => raw !== null && void setRemaining(address, raw)} title={t("ctl.tip.remaining")}>
                 {busy === "remaining" ? t("ctl.running") : t("ctl.remaining.button")}
               </Button>
               {raw !== null && full !== undefined && !remainingAllowed(raw, full) && <span className="text-discharge">{t("ctl.remaining.tooLarge")}</span>}
@@ -235,7 +235,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
           </div>
 
           <div className="space-y-1">
-            <Button size="sm" className="text-alarm" disabled={disabled} onClick={() => void askClear(address)}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
+            <Button size="sm" className="text-alarm" disabled={disabled} onClick={() => void askClear(address)} title={t("ctl.tip.clear")}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
             {noteFor === "clear" && noteLine}
           </div>
         </div>
