@@ -214,6 +214,10 @@ pub fn recheck(dir: &Path) -> Result<Manifest, String> {
     Ok(m)
 }
 
+pub fn sha256_hex(b: &[u8]) -> String {
+    hex(&Sha256::digest(b))
+}
+
 /// SHA-256 of a file on disk (a log already in `firmware-logs`).
 pub fn file_sha256(path: &Path) -> Result<String, String> {
     let mut f = File::open(path).map_err(|e| e.to_string())?;
