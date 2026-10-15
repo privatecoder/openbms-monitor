@@ -160,7 +160,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const clear = (a: number) => run("clear", a, async () => {
     await api.packClearHistory(a);
     const l = await reload(a);
-    return { text: l ? t("ctl.clear.done", { cycles: l.telemetry.cycles }) : t("ctl.sentUnread"), tone: l ? "ok" : "warn" };
+    return { text: l ? t("ctl.clear.done", { cycles: t("ctl.state.cycles", { count: l.telemetry.cycles }) }) : t("ctl.sentUnread"), tone: l ? "ok" : "warn" };
   });
 
   // what the clear dialog names is read right before it opens
@@ -265,7 +265,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
           {ask.kind === "clear" ? (
             <>
               <p>{ask.live
-                ? t("ctl.clear.what", { pack, cycles: ask.live.telemetry.cycles,
+                ? t("ctl.clear.what", { pack, cycles: t("ctl.state.cycles", { count: ask.live.telemetry.cycles }),
                   charged: ask.live.telemetry.energy_charged_kwh !== null ? energyText(ask.live.telemetry.energy_charged_kwh, lang) : "–",
                   discharged: ask.live.telemetry.energy_discharged_kwh !== null ? energyText(ask.live.telemetry.energy_discharged_kwh, lang) : "–" })
                 : t("ctl.clear.whatUnread", { pack })}</p>
