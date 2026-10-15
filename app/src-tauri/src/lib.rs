@@ -405,7 +405,7 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
     // read and `board_seen` together: between the 0xA5 of a serial write and its `board_written` a read would take
     // the new String 2 for another board
-    let _guard = control::reserve_pack(&state, address, "serial_read")?;
+    let _guard = control::reserve_pack_wait(&state, address, "serial_read")?;
     let before = link_now(&state);
     let serials = with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))?;
     let board = for_link(&state, &before, "board", |s, inst| s.board_seen(inst, address, &serials.bms, &serials.battery, history::now_ms()));
@@ -426,7 +426,7 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
 /// snapshot and read-back, so a read in between cannot store the new block as `read` before it (the write's previous
 /// state would then be the written block).
 fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters, String> {
-    let _guard = control::reserve_pack(state, address, "read")?;
+    let _guard = control::reserve_pack_wait(state, address, "read")?;
     let before = link_now(state);
     let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
     bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);

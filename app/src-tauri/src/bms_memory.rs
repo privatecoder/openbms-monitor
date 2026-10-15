@@ -7,7 +7,7 @@
 //! disconnect, a reconnect or a flash can still take the connection; the read then stops with that error.
 
 use crate::history::{now_ms, SnapshotKind};
-use crate::control::reserve_pack;
+use crate::control::reserve_pack_wait;
 use crate::maint_store::Installation;
 use crate::{for_link, link_now, with_conn, with_link, AppState, Link, PortSlot};
 use openbms_proto::serial::Which;
@@ -118,7 +118,7 @@ pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTim
 pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<BmsTime, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
-    let _guard = reserve_pack(&state, address, "clock")?;
+    let _guard = reserve_pack_wait(&state, address, "clock")?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
         c.set_clock(address, time)?;
         c.clock(address)
@@ -160,7 +160,7 @@ pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLi
 pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<(), String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
-    let _guard = reserve_pack(&state, address, "calibration")?;
+    let _guard = reserve_pack_wait(&state, address, "calibration")?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
 }
 
@@ -186,7 +186,7 @@ impl CanProtocolSet {
 pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<CanProtocolSet, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
-    let _guard = reserve_pack(&state, address, "can")?;
+    let _guard = reserve_pack_wait(&state, address, "can")?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
     Ok(CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.device_info(address))))
 }
@@ -226,7 +226,7 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
-    let _guard = reserve_pack(&state, address, "params")?;
+    let _guard = reserve_pack_wait(&state, address, "params")?;
     let fresh = read_parameters(&state, &link, address)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
@@ -293,7 +293,7 @@ pub struct SerialSet {
 pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<SerialSet, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
-    let _guard = reserve_pack(&state, address, "serial")?;
+    let _guard = reserve_pack_wait(&state, address, "serial")?;
     let master = which == Which::Bms && address == 0;
     // String 2 before the write: whether the board keeps its identity under the new serial depends on it. Unread, the
     // app's own write could not be told from a board swap: no write then.
@@ -346,7 +346,7 @@ pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8
     pack_bus_only(&state)?;
     let busy = crate::reserve_port(&state.memory_busy).ok_or("a history read is already running")?;
     // clearing the same pack meanwhile would cut the read short
-    let pack = reserve_pack(&state, address, "history")?;
+    let pack = reserve_pack_wait(&state, address, "history")?;
     state.memory_cancel.store(false, Ordering::SeqCst);
     let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
     // records of another connection's pack must not continue this read
