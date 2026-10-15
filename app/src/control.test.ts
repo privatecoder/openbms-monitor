@@ -14,7 +14,11 @@ describe("state", () => {
     // not switched off, but the discharge MOSFET closed by a protection
     const p = status(0x00, 0x0a, [["alarm.ev2.b3", "protection"], ["alarm.ev2.b2", "warning"], ["alarm.ev4.b6", "info"]]);
     expect([commandedOff(p), dischargeFree(p), heaterOn(p)]).toEqual([false, false, true]);
-    expect(blockingAlarms(p)).toEqual(["alarm.ev2.b3"]);
+    expect(blockingAlarms(p, "discharge")).toEqual(["alarm.ev2.b3"]);
+    // a charge-only protection is no reason for a closed discharge MOSFET, and the other way round
+    const q = status(0x00, 0x00, [["alarm.ev2.b1", "protection"], ["alarm.ev2.b3", "protection"], ["alarm.ev3.b3", "protection"], ["alarm.ev6.b3", "protection"]]);
+    expect(blockingAlarms(q, "discharge")).toEqual(["alarm.ev2.b3", "alarm.ev6.b3"]);
+    expect(blockingAlarms(q, "charge")).toEqual(["alarm.ev2.b1", "alarm.ev3.b3"]);
   });
 
   it("names undervoltage and SOC protection as reasons for switching off again", () => {
