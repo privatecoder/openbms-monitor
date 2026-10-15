@@ -5,7 +5,7 @@ import type { ImportPreview } from "./api";
 
 const t = i18n.getFixedT("de");
 const base: ImportPreview = {
-  export_id: "exp-1", installation: "inst-1", name: "Bank", created: 0, master_serial: "SYN-M",
+  export_id: "exp-1", installation: "inst-1", name: "Bank", created: 0, master_serial: "SYN-M", archived: false,
   places: 2, boards: 2, snapshots: 3, logs: 1, recording_bytes: null,
   same: null, master_differs: false, master_matches: [], completed: null, open_into: null,
 };
@@ -30,7 +30,7 @@ describe("installation transfer", () => {
     for (const p of [base, { ...base, master_matches: [{ id: "x", name: "Hier" }] }, { ...base, same: { id: "i", name: "B" }, master_differs: true }]) {
       for (const c of importChoices(p)) expect(i18n.exists(c.label, { lng: "en" }) && i18n.exists(c.label, { lng: "de" })).toBe(true);
     }
-    const r = importResult({ target: "inst-1", recording_rows: 10, recording_events: 2, logs_copied: 1, already: false,
+    const r = importResult({ target: "inst-1", target_name: "Bank", recording_rows: 10, recording_events: 2, logs_copied: 1, already: false,
       report: { boards_added: 2, snapshots_added: 1, not_taken: { groups: "[1]" } } }, "Bank", t);
     expect(r).toBe("Importiert in „Bank“: 2 Platinen, 1 Parameterstand, 1 Protokoll, 10 Werte und 2 Meldungen der Aufzeichnung. Abweichende Einstellungen der Datei wurden nicht übernommen (die vorhandenen gelten).");
   });

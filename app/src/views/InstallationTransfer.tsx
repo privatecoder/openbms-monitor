@@ -43,7 +43,7 @@ export function importResult(r: ImportApplied, name: string, t: (k: string, o?: 
 }
 
 /** Import a ZIP: pick the file, see what it holds and where it goes, import. Unfinished imports can be resumed. */
-export function ImportPanel({ installations, onDone }: { installations: Installation[]; onDone: () => Promise<void> }) {
+export function ImportPanel({ onDone }: { onDone: () => Promise<void> }) {
   const { t, i18n } = useTranslation();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [choice, setChoice] = useState(0);
@@ -54,7 +54,6 @@ export function ImportPanel({ installations, onDone }: { installations: Installa
   useEffect(() => { void loadOpen(); }, []);
   const date = (ms: number) => new Date(ms).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" });
   const fail = (e: unknown) => { const k = errorKey(e); setMsg({ text: t(k.key, k.params), error: true }); };
-  const nameOf = (id: string) => installations.find((i) => i.id === id)?.name ?? id;
 
   const pick = async () => {
     setMsg(null); setPreview(null);
@@ -72,8 +71,15 @@ export function ImportPanel({ installations, onDone }: { installations: Installa
       const r = await api.installationImportApply(exportId, into);
       setPreview(null);
       await onDone();
-      setMsg({ text: importResult(r, nameOf(r.target) || name, t), error: false });
+      setMsg({ text: importResult(r, r.target_name || name, t), error: false });
     } catch (e) { fail(e); }
+    finally { setBusy(false); void loadOpen(); }
+  };
+  const close = () => { if (preview) void api.installationImportDiscard(preview.export_id).catch(() => {}); setPreview(null); };
+  const abandon = async (exportId: string) => {
+    setBusy(true); setMsg(null);
+    try { await api.installationImportAbandon(exportId); await onDone(); }
+    catch (e) { fail(e); }
     finally { setBusy(false); void loadOpen(); }
   };
 
@@ -85,6 +91,7 @@ export function ImportPanel({ installations, onDone }: { installations: Installa
         <div key={o.export_id} className="flex flex-wrap items-center gap-3 rounded-md border border-discharge p-3 text-sm">
           <p className="flex-1">{t("inst.imp.open", { name: o.name, at: date(o.started) })}</p>
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(o.export_id, { kind: "same" }, o.name)}>{t("inst.imp.resume")}</Button>
+          <Button size="sm" variant="ghost" disabled={busy} title={t("inst.imp.abandonHint")} onClick={() => void abandon(o.export_id)}>{t("inst.imp.abandon")}</Button>
         </div>
       ))}
       {preview && (
@@ -108,6 +115,7 @@ export function ImportPanel({ installations, onDone }: { installations: Installa
               ))}
             </fieldset>
           )}
+          {preview.archived && preview.completed == null && <p className="text-muted">{t("inst.imp.archived")}</p>}
           <p className="text-muted">{t("inst.imp.rules")}</p>
           <div className="flex gap-2">
             {preview.completed == null && (
@@ -116,7 +124,7 @@ export function ImportPanel({ installations, onDone }: { installations: Installa
                 {busy ? t("inst.imp.running") : preview.open_into ? t("inst.imp.resume") : t("inst.imp.go")}
               </Button>
             )}
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => setPreview(null)}>{t("maint.setup.cancel")}</Button>
+            <Button size="sm" variant="secondary" disabled={busy} onClick={close}>{t("maint.setup.cancel")}</Button>
           </div>
         </Panel>
       )}
@@ -141,7 +149,7 @@ export function ExportRow({ inst, recorded }: { inst: Installation; recorded: nu
     try {
       const r = await api.installationExport(inst.id, path, recording);
       const file = r.path.split(/[\\/]/).pop() ?? r.path;
-      setMsg({ text: t("inst.exp.done", { file, mb: mb(r.bytes), logs: r.logs }) + (r.logs_missing ? ` ${t("inst.exp.missing", { count: r.logs_missing })}` : ""), error: false });
+      setMsg({ text: `${t("inst.exp.done", { file, mb: mb(r.bytes), logs: r.logs })} ${t(r.recording ? "inst.exp.withRecording" : "inst.exp.withoutRecording")}` + (r.logs_missing ? ` ${t("inst.exp.missing", { count: r.logs_missing })}` : ""), error: false });
     } catch (e) { const k = errorKey(e); setMsg({ text: t(k.key, k.params), error: true }); }
     finally { setBusy(false); }
   };

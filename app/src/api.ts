@@ -13,12 +13,12 @@ export type Named = { id: string; name: string };
 /** where an import goes (see the import dialog) */
 export type ImportInto = { kind: "same" } | { kind: "merge-anyway" } | { kind: "new"; copy: boolean } | { kind: "merge"; id: string };
 export type ImportPreview = {
-  export_id: string; installation: string; name: string; created: number; master_serial: string | null;
+  export_id: string; installation: string; name: string; created: number; master_serial: string | null; archived: boolean;
   places: number; boards: number; snapshots: number; logs: number; recording_bytes: number | null;
   same: Named | null; master_differs: boolean; master_matches: Named[]; completed: number | null; open_into: Named | null;
 };
 export type ImportApplied = {
-  target: string; recording_rows: number; recording_events: number; logs_copied: number; already: boolean;
+  target: string; target_name: string; recording_rows: number; recording_events: number; logs_copied: number; already: boolean;
   report: { boards_added?: number; snapshots_added?: number; logs_added?: number; logs_missing?: number;
     not_taken?: { cell_types?: Record<string, string>; groups?: string | null; pairs?: string | null; diagnosis?: string | null }; master_serial_not_taken?: string | null };
 };
@@ -321,6 +321,8 @@ const tauriApi = {
   installationImportInspect: (path: string) => invoke<ImportPreview>("installation_import_inspect", { path }),
   installationImportApply: (exportId: string, into: ImportInto) => invoke<ImportApplied>("installation_import_apply", { exportId, into }),
   installationImportsOpen: () => invoke<OpenImport[]>("installation_imports_open"),
+  installationImportDiscard: (exportId: string) => invoke<void>("installation_import_discard", { exportId }),
+  installationImportAbandon: (exportId: string) => invoke<void>("installation_import_abandon", { exportId }),
   /** firmware logs of no installation (full paths), newest first */
   logsUnassigned: () => invoke<string[]>("logs_unassigned"),
   /** the master's new serial number becomes the stored one */
@@ -501,6 +503,8 @@ function demoApi(): typeof tauriApi {
     installationImportInspect: async () => { throw new Error("desktop app only"); },
     installationImportApply: async () => { throw new Error("desktop app only"); },
     installationImportsOpen: async () => [],
+    installationImportDiscard: async () => {},
+    installationImportAbandon: async () => {},
     logsUnassigned: async () => [],
     maintAdoptMasterSerial: async () => { throw new Error("desktop app only"); },
     maintAlerts: async () => ({ markers: [], pending: [] }),

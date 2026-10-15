@@ -51,7 +51,7 @@ export function Installations({ maint, connected, onParameters }: {
             </label>
           )}
         </div>
-        <ImportPanel installations={maint.installations} onDone={async () => { reloadSettings(); await maint.loadLists(); }} />
+        <ImportPanel onDone={async () => { reloadSettings(); await maint.loadLists(); }} />
         {maint.loaded && !list.length && <p className="text-muted">{t("inst.none")}</p>}
         <div className="space-y-3">
           {list.map((i) => (

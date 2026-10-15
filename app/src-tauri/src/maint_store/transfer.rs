@@ -222,6 +222,13 @@ impl Store {
         Ok(())
     }
 
+    /// Give up an unfinished import: what its store step added stays (it is complete and additive), the import no
+    /// longer blocks its target. Importing the same file again then starts over (deduplicated).
+    pub fn abandon_import(&self, export_id: &str) -> Result<(), String> {
+        self.db.execute("DELETE FROM import_status WHERE export_id = ?1 AND completed IS NULL", [export_id]).map_err(e)?;
+        Ok(())
+    }
+
     pub fn complete_import(&self, export_id: &str, now: i64) -> Result<(), String> {
         self.db.execute("UPDATE import_status SET completed = ?2 WHERE export_id = ?1", params![export_id, now]).map_err(e)?;
         Ok(())
@@ -270,6 +277,10 @@ impl Store {
                 self.installation(&row.installation)?;
                 return Ok(row.state);
             }
+        }
+        // an id of this app's form only: another text could equal an old endpoint key of the recording
+        if !super::looks_like_id(&data.id) {
+            return Err("bundle-manifest: installation id".into());
         }
         for l in &data.logs {
             if !crate::bundle::safe_name(&l.file) || (!l.missing && !logs.bundle_hash.contains_key(&l.file)) {
