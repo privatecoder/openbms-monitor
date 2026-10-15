@@ -110,8 +110,9 @@ static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 
 /// Whether a site key is an installation id (`new_id`), also of one deleted since: never an old endpoint text.
 pub fn looks_like_id(key: &str) -> bool {
+    // `inst-<time>-<pid>-<n>` now; versions before 2026-10-13 made `inst-<time>-<pid>`
     let parts: Vec<&str> = key.split('-').collect();
-    parts.len() == 4 && parts[0] == "inst" && parts[1..].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_hexdigit()))
+    (3..=4).contains(&parts.len()) && parts[0] == "inst" && parts[1..].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn new_id(now: i64) -> String {
