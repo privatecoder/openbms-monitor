@@ -240,6 +240,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const limits = refCell && ref ? paramLimits(refCell, ref.parallel, series) : new Map<number, ParamLimit>();
   const findings = cols.map((c) => (refCell && ref && c.values ? paramFindings(refCell, ref.parallel, c.values) : new Map<number, ParamLevel>()));
   const outside = KEYS.map((_, i) => i).filter((i) => findings.some((f) => f.has(i)));
+  // „Nur Abweichungen“ compares columns, or one column against the datasheet. Without either it does not filter
+  // (the choice stays for later), so the table never empties because a column or the datasheet went away.
+  const diffUsable = withValues >= 2 || (!!refCell && withValues >= 1);
+  const filtered = onlyDiff && diffUsable;
+  const bitsOff = (g: number) => SWITCH_BITS[g].filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
+  const nothingLeft = filtered && GROUPS.every((g) => !g.indices.some((i) => diffParams[i].size || outside.includes(i))) && diffSwitches.every((d) => !d.size);
   const lang = i18n.language;
   const editCol = cols.findIndex((c) => c.id === editId);
   const editChanges = edit ? changes(edit.base, edit.raws, edit.baseSwitches, edit.switches) : [];
@@ -267,9 +273,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".xml,application/xml,text/xml" multiple className="hidden" onChange={(e) => open(e.target.files)} />
           {cols.length > 0 && <Button variant="ghost" disabled={!!reading || !!edit || writing.params} onClick={() => { setSources(() => []); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
-          <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm" title={withValues < 2 ? t("par.onlyDiffNeeds") : t("par.onlyDiffHint")}>
-            <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={onlyDiff} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={withValues < 2} />
-            <span className={cn(withValues < 2 && "text-muted")}>{t("par.onlyDiff")}</span>
+          <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm" title={diffUsable ? t("par.onlyDiffHint") : t("par.onlyDiffNeeds")}>
+            <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={filtered} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={!diffUsable} />
+            <span className={cn(!diffUsable && "text-muted")}>{t("par.onlyDiff")}</span>
           </label>
         </div>
         <p className={cn("text-sm", bus === "can" && connected && !isDemo ? "text-discharge" : "text-muted")}>
@@ -394,7 +400,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
               </thead>
               <tbody>
                 {GROUPS.map((g) => {
-                  const rows = g.indices.filter((i) => !onlyDiff || diffParams[i].size || outside.includes(i));
+                  const rows = g.indices.filter((i) => !filtered || diffParams[i].size || outside.includes(i));
                   if (!rows.length) return null;
                   return (
                     <Fragment key={g.id}>
@@ -421,8 +427,11 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                     </Fragment>
                   );
                 })}
+                {nothingLeft && (
+                  <tr><td colSpan={cols.length + 1 + (refCell ? 1 : 0)} className="px-4 py-3 text-ok">{t("par.noDiff")}</td></tr>
+                )}
                 {Array.from({ length: 8 }, (_, g) => g)
-                  .filter((g) => !onlyDiff || diffSwitches[g].size)
+                  .filter((g) => !filtered || diffSwitches[g].size)
                   .map((g, n) => (
                     <Fragment key={`bg${g}`}>
                       <GroupRow span={cols.length + 1 + (refCell ? 1 : 0)} title={t(`par.switchGroup.${g}`, { g })} help={n === 0 ? "topic.switches" : undefined} first={n === 0} />
@@ -433,8 +442,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                           <ValueCell key={c.id} c={c} off={diffSwitches[g].has(ci)} missed={c.notTaken?.switches.has(g)}>{c.switches ? c.switches[g].toString(16).toUpperCase().padStart(2, "0") : null}</ValueCell>
                         ))}
                       </tr>
-                      {SWITCH_BITS[g]
-                        .filter((b) => !onlyDiff || deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size)
+                      {(filtered ? bitsOff(g) : SWITCH_BITS[g])
                         .map((b) => {
                           const off = deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined)));
                           return (
