@@ -291,6 +291,15 @@ const resources = {
           command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt", offCommand: "ausgeschaltet", offSoon: "das BMS schaltet wegen Unterspannung bzw. SOC-Schutz nach spätestens 60 s wieder aus",
           soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} Zyklus", cycles_other: "{{count}} Zyklen",
         },
+        tip: {
+          restart: "Startet das BMS dieses Packs neu (einige Sekunden ohne Ausgang). Einstellungen bleiben, nur nicht gesicherte Werte im RAM gehen verloren.",
+          off: "Sperrt das Entladen dieses Packs; Laden bleibt möglich und schaltet es wieder ein. Andere Packs bleiben an.",
+          on: "Hebt „Aus“ auf. Besteht Unterspannung weiter, schaltet das BMS gleich wieder aus.",
+          heaterOn: "Schaltet den Heizausgang für 1 Stunde ein, ohne Rücksicht auf Temperatur und Ladegerät.",
+          heaterOff: "Beendet die erzwungene Heizung sofort.",
+          remaining: "Setzt den Ladezustand: Restkapazität in Ah, daraus ergibt sich der SOC. Gespeichert erst beim nächsten Sichern des BMS.",
+          clear: "Löscht die interne Historie, die Energiezähler und die Zyklenzahl dieses Packs. Nicht umkehrbar; fragt vorher nach.",
+        },
         busy: "Pack {{pack}} ist gerade mit {{action}} beschäftigt. Danach noch einmal versuchen.",
         action: {
           restart: "einem Neustart", on_off: "dem Ein-/Ausschalten", heater: "der Heizung", clear: "dem Löschen der Historie", remaining: "dem Setzen der Restkapazität",
@@ -854,6 +863,15 @@ const resources = {
         state: {
           command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked", offCommand: "switched off", offSoon: "the BMS switches off again within 60 s because of undervoltage or SOC protection",
           soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} cycle", cycles_other: "{{count}} cycles",
+        },
+        tip: {
+          restart: "Restarts this pack's BMS (a few seconds without output). Settings stay; only values not yet saved from RAM are lost.",
+          off: "Blocks discharging of this pack; charging stays possible and switches it on again. Other packs stay on.",
+          on: "Clears „off“. If undervoltage persists, the BMS switches off again right away.",
+          heaterOn: "Switches the heater output on for 1 hour, regardless of temperature and charger.",
+          heaterOff: "Ends the forced heating at once.",
+          remaining: "Sets the state of charge: remaining capacity in Ah gives the SOC. Stored only at the BMS's next save.",
+          clear: "Clears this pack's internal history, energy counters and cycle count. Not reversible; asks first.",
         },
         busy: "Pack {{pack}} is busy with {{action}} right now. Try again afterwards.",
         action: {
