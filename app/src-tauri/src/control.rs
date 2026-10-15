@@ -71,6 +71,27 @@ pub(crate) fn reserve_pack(state: &AppState, address: u8, action: &'static str) 
     Ok(PackGuard { ops: state.ops.clone(), address })
 }
 
+/// How long a user action or read waits for its pack before it reports „busy“: long enough for the reads every
+/// section starts on opening (serial numbers, parameters) and short writes, shorter than a history read or a restart.
+pub(crate) const PACK_WAIT: Duration = Duration::from_secs(5);
+
+/// `reserve_pack`, waiting up to `PACK_WAIT` while another action holds the pack or a bus operation runs; a pending
+/// disconnect refuses at once. The frames on the bus are serial anyway (one connection lock); this only orders the
+/// actions so that sections reading at the same time queue instead of failing.
+pub(crate) fn reserve_pack_wait(state: &AppState, address: u8, action: &'static str) -> Result<PackGuard, String> {
+    let until = Instant::now() + PACK_WAIT;
+    loop {
+        match reserve_pack(state, address, action) {
+            Ok(g) => return Ok(g),
+            Err(e) if Instant::now() < until && !state.ops.lock().map(|m| m.disconnecting).unwrap_or(true) => {
+                let _ = e;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The pack action of `address`, if one runs (polling skips a pack while it restarts).
 pub(crate) fn pack_action(ops: &Ops, address: u8) -> Option<&'static str> {
     ops.lock().ok().and_then(|m| m.packs.get(&address).copied())
@@ -207,7 +228,7 @@ fn command<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Resu
 
 /// Run one control frame on the pack the action reserved, on the connection it began on.
 fn control_frame(state: &AppState, link: &Link, address: u8, action: &'static str, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<(), String> {
-    let _guard = reserve_pack(state, address, action)?;
+    let _guard = reserve_pack_wait(state, address, action)?;
     with_link(&state.conn, &state.flashing, &state.link, link, |c| command(f(c)))?
 }
 
@@ -217,7 +238,7 @@ fn control_frame(state: &AppState, link: &Link, address: u8, action: &'static st
 pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Restart, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
-    let guard = reserve_pack(&state, address, "restart")?;
+    let guard = reserve_pack_wait(&state, address, "restart")?;
     let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
@@ -272,6 +293,18 @@ mod tests {
 
     fn json(e: &str) -> serde_json::Value {
         serde_json::from_str(e).unwrap()
+    }
+
+    #[test]
+    fn a_second_action_waits_for_the_pack_instead_of_failing() {
+        let state = AppState::default();
+        let g = reserve_pack(&state, 2, "serial_read").unwrap();
+        let t0 = Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(move || { std::thread::sleep(Duration::from_millis(200)); drop(g); });
+            assert!(reserve_pack_wait(&state, 2, "read").is_ok());
+        });
+        assert!(t0.elapsed() >= Duration::from_millis(150));
     }
 
     #[test]
