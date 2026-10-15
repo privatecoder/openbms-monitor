@@ -395,9 +395,17 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
     if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
         return Err("parameters can only be read on RS485-1/2".into());
     }
-    let before = link_now(&state);
+    read_parameters_reserved(&state, address)
+}
+
+/// 0x47 and its snapshot under the pack's reservation: a write of the same pack keeps it until its own `written`
+/// snapshot and read-back, so a read in between cannot store the new block as `read` before it (the write's previous
+/// state would then be the written block).
+fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters, String> {
+    let _guard = control::reserve_pack(&state.pack_busy, address, "read")?;
+    let before = link_now(state);
     let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
-    bms_memory::snapshot(&state, &before, address, history::SnapshotKind::Read, &p.block);
+    bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
     Ok(p)
 }
 
@@ -747,6 +755,18 @@ mod port_reservation_tests {
         assert!(reserve_port(&busy).is_none());
         drop(slot);
         assert!(reserve_port(&busy).is_some());
+    }
+
+    #[test]
+    fn a_parameter_read_waits_for_a_write_of_the_same_pack() {
+        let state = AppState::default();
+        let write = control::reserve_pack(&state.pack_busy, 2, "params").unwrap();
+        let e = read_parameters_reserved(&state, 2).unwrap_err();
+        assert!(e.contains("pack-busy") && e.contains("params"), "{e}");
+        // another pack is not held up (it fails here only for the missing connection)
+        assert_eq!(read_parameters_reserved(&state, 3).unwrap_err(), "not connected");
+        drop(write);
+        assert_eq!(read_parameters_reserved(&state, 2).unwrap_err(), "not connected");
     }
 
     #[test]

@@ -569,6 +569,31 @@ pub struct StoredSnapshot {
     pub board: &'static str,
     #[serde(skip)]
     pub block: Vec<u8>,
+    /// A read after a refused write whose switches differ from the stored ones at the refusal: they may be live in
+    /// RAM only (a restart brings back the stored ones). Set by `latest_snapshots` only.
+    pub switches_unconfirmed: bool,
+}
+
+/// The function switches of a parameter block (bytes 151..159), None for a block too short.
+fn switches_of(block: &[u8]) -> Option<&[u8]> {
+    block.get(151..159)
+}
+
+/// `read` (newest first, `older` after it, same board only): it follows a refused write with no write in between, and
+/// its switches differ from the read right before the refusal (the stored state then; unknown counts as differing).
+fn switches_unconfirmed(read: &StoredSnapshot, older: &[StoredSnapshot]) -> bool {
+    let mut same = older.iter().filter(|x| x.bms_serial == read.bms_serial);
+    while let Some(x) = same.next() {
+        match x.kind.as_str() {
+            "written" => return false,
+            "refused" => {
+                let stored = same.find(|y| y.kind == "read");
+                return stored.is_none_or(|y| switches_of(&y.block) != switches_of(&read.block));
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A firmware log in the index.
@@ -990,8 +1015,12 @@ impl Store {
         let addresses = stmt.query_map([inst], |r| r.get::<_, u8>(0)).map_err(e)?.collect::<rusqlite::Result<Vec<_>>>().map_err(e)?;
         let mut out = vec![];
         for a in addresses {
-            let all = self.snapshots_at(inst, a, "AND kind IN ('read', 'written')")?;
-            out.extend(all.iter().find(|x| x.board == "current").or(all.first()).cloned());
+            let all = self.snapshots_at(inst, a, "")?;
+            let shown = |x: &StoredSnapshot| x.kind == "read" || x.kind == "written";
+            let Some(i) = all.iter().position(|x| shown(x) && x.board == "current").or(all.iter().position(shown)) else { continue };
+            let mut x = all[i].clone();
+            x.switches_unconfirmed = x.kind == "read" && switches_unconfirmed(&x, &all[i + 1..]);
+            out.push(x);
         }
         Ok(out)
     }
@@ -1004,7 +1033,7 @@ impl Store {
         let rows = stmt
             .query_map(params![inst, address], |r| {
                 let serial: Option<String> = r.get(1)?;
-                Ok(StoredSnapshot { id: r.get(0)?, address, board: board_of(serial.as_deref(), board.as_ref()), bms_serial: serial, at: r.get(2)?, kind: r.get(3)?, block: r.get(4)? })
+                Ok(StoredSnapshot { id: r.get(0)?, address, board: board_of(serial.as_deref(), board.as_ref()), bms_serial: serial, at: r.get(2)?, kind: r.get(3)?, block: r.get(4)?, switches_unconfirmed: false })
             })
             .map_err(e)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
@@ -1438,6 +1467,30 @@ mod tests {
         assert_eq!(latest.iter().map(|x| (x.at, x.board)).collect::<Vec<_>>(), vec![(31, "previous")], "no block of the current board: the newest");
         snap(41, SnapshotKind::Read, 11);
         assert_eq!(s.latest_snapshots(&a.id).unwrap().iter().map(|x| (x.at, x.board)).collect::<Vec<_>>(), vec![(41, "current")]);
+    }
+
+    #[test]
+    fn a_read_after_a_refused_write_marks_switches_that_may_be_live_only() {
+        let s = Store::open(&temp("unconfirmed")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let block = |sw: u8| { let mut b = vec![0; 169]; b[151] = sw; b };
+        let snap = |at: i64, kind: SnapshotKind, sw: u8| s.add_param_snapshot(&a.id, 2, kind, &block(sw), at).unwrap();
+        let flag = || s.latest_snapshots(&a.id).unwrap()[0].switches_unconfirmed;
+        snap(10, SnapshotKind::Read, 1);
+        assert!(!flag());
+        // the write's fresh read (stored), refused, then a read with the refused switches live
+        snap(11, SnapshotKind::Read, 1);
+        snap(12, SnapshotKind::Refused, 5);
+        snap(13, SnapshotKind::Read, 5);
+        assert!(flag());
+        // after a restart the stored switches are back
+        snap(14, SnapshotKind::Read, 1);
+        assert!(!flag());
+        // a successful write in between clears it
+        snap(15, SnapshotKind::Refused, 6);
+        snap(16, SnapshotKind::Written, 7);
+        snap(17, SnapshotKind::Read, 7);
+        assert!(!flag());
     }
 
     #[test]

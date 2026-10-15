@@ -276,6 +276,7 @@ pub struct SnapshotView {
     board: &'static str,
     bms_serial: Option<String>,
     parameters: Option<Parameters>,
+    switches_unconfirmed: bool,
 }
 
 #[tauri::command]
@@ -283,7 +284,7 @@ pub async fn installation_snapshots(state: State<'_, AppState>, installation: St
     let rows = with_store(&state, |s| s.latest_snapshots(&installation))?;
     Ok(rows
         .into_iter()
-        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok() })
+        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok(), switches_unconfirmed: x.switches_unconfirmed })
         .collect())
 }
 

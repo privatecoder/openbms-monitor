@@ -517,6 +517,9 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
           {c.stored.board === "previous" ? ` · ${t("par.previousBoardShort")}` : c.stored.board === "unclear" ? ` · ${t("par.boardUnclearShort")}` : ""}
         </div>
       )}
+      {c.stored?.unconfirmed && (
+        <div className="text-xs whitespace-nowrap text-discharge" title={t("par.switchesUnconfirmed")}>{t("par.switchesUnconfirmedShort")}</div>
+      )}
       {c.lastWritten && (
         <div className="text-xs whitespace-nowrap text-muted">
           {t("pw.lastWritten", { at: new Date(c.lastWritten).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })}
