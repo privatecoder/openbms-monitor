@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Power, RefreshCw } from "lucide-react";
 import { api, type PackLive } from "../api";
 import { refusal } from "../calibration";
-import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
+import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
 import { InfoIcon, helpTitle } from "../help";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
@@ -24,37 +24,58 @@ type Ask = { kind: "restart" | "off" } | { kind: "clear"; live: PackLive | null 
 const forced = new Set<number>();
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack. */
-export function PackControlSection({ address, usable, locked, onBusy, onChanged }: {
+export function PackControlSection({ address, usable, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
   /** after a restart: the pack's parameters column (if shown) is read again */
   onChanged?: (address: number) => void;
+  /** P79 (SOC protection, %) from the pack's read or stored column; null: read once when the field is used */
+  p79?: number | null;
+  /** installation and connection: results of an action begun on another one are dropped */
+  linkKey: string;
 }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const [open, setOpen] = useState(false);
   const [live, setLive] = useState<PackLive | { error: string } | null>(null);
-  const [p79, setP79] = useState<number | null>(null);
+  const [p79Read, setP79] = useState<number | null>(null);
   const [busy, setBusy] = useState<Action | null>(null);
   const [note, setNote] = useState<Note>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [ah, setAh] = useState("");
   const gen = useRef(0);
   const current = useCurrent(address);
+  const linkNow = useCurrent(linkKey);
+  // still the pack and the connection an action or read began on
+  const same = (a: number, lk: string) => current.current === a && linkNow.current === lk;
+  const p79Asked = useRef(new Set<number>());
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => forced.clear(), []);
 
   const reload = async (a: number) => {
-    const mine = ++gen.current;
-    try { const l = await api.packLive(a); if (gen.current === mine && current.current === a) setLive(l); return l; }
-    catch (e) { if (gen.current === mine && current.current === a) setLive({ error: errorText(e, t) }); return null; }
+    const mine = ++gen.current, lk = linkNow.current;
+    try {
+      const l = await api.packLive(a);
+      if (gen.current !== mine || !same(a, lk)) return null;
+      // the forced counter is not readable: an output seen off ends the „forced“ state shown
+      if (!heaterOn(l.status)) forced.delete(a);
+      setLive(l);
+      return l;
+    } catch (e) { if (gen.current === mine && same(a, lk)) setLive({ error: errorText(e, t) }); return null; }
   };
   useEffect(() => {
-    setLive(null); setNote(null); setAh(""); setP79(null); setAsk(null);
+    setLive(null); setNote(null); setAh(""); setP79(null); setAsk(null); p79Asked.current.clear();
     if (!open || !usable || address === null) return;
     void reload(address);
-    // P79 for the warning under the remaining capacity; a pack that does not answer 0x47 gets the general hint
-    api.parameters(address).then((p) => { if (current.current === address) setP79(p.parameters[P79]?.value ?? null); }, () => {});
-  }, [open, usable, address]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, usable, address, linkKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // P79 only when no column shows it and the field is used: one 0x47 per pack; a pack that does not answer gets the
+  // general hint
+  const p79 = p79Shown ?? p79Read;
+  useEffect(() => {
+    if (!open || !usable || address === null || p79 !== null || !ah.trim() || p79Asked.current.has(address)) return;
+    p79Asked.current.add(address);
+    const a = address, lk = linkNow.current;
+    api.parameters(a).then((p) => { if (same(a, lk)) setP79(p.parameters[P79]?.value ?? null); }, () => {});
+  }, [open, usable, address, ah, p79]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!usable || address === null) return null;
 
   const pack = no(address);
@@ -64,24 +85,29 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged 
   const names = (ids: string[]) => ids.map((id) => helpTitle(id, lang)).join(", ");
   const failed = (e: unknown, refused = t("ctl.refused")) => {
     const r = refusal(e);
-    return { text: r === "refused" ? refused : r === "invalid" ? t("ctl.invalid") : t("ctl.error", { err: errorText(e, t) }), tone: "error" as const };
+    // a silent pack: most likely a master that polls its slaves
+    const text = r === "refused" ? refused : r === "invalid" ? t("ctl.invalid") : noAnswer(e) ? t("ctl.silent") : t("ctl.error", { err: errorText(e, t) });
+    return { text, tone: "error" as const };
   };
 
-  /** One action on pack `a`; a reply after a pack switch is dropped. */
-  const run = async (k: Action, a: number, f: () => Promise<Note>) => {
+  /** One action on pack `a`; a reply after a switch of pack, installation or connection is dropped. */
+  const run = async (k: Action, a: number, f: (lk: string) => Promise<Note>) => {
+    const lk = linkNow.current;
     setBusy(k); setNote(null);
-    try { const n = await f(); if (current.current === a) setNote(n); }
-    catch (e) { if (current.current === a) setNote(failed(e, k === "remaining" ? t("ctl.remaining.refused") : undefined)); }
+    try { const n = await f(lk); if (same(a, lk)) setNote(n); }
+    catch (e) { if (same(a, lk)) setNote(failed(e, k === "remaining" ? t("ctl.remaining.refused") : undefined)); }
     finally { setBusy(null); }
   };
 
-  const restart = (a: number) => run("restart", a, async () => {
+  const restart = (a: number) => run("restart", a, async (lk) => {
     const r: RestartResult = await api.packRestart(a);
+    if (!same(a, lk)) return null;
     await reload(a);
-    if (r.kind !== "not_reachable") { forced.delete(a); onChanged?.(a); }
+    if (r.kind !== "not_reachable") { forced.delete(a); if (same(a, lk)) onChanged?.(a); }
     return r.kind === "back" ? { text: t("ctl.restart.back", { pack: no(a), s: nf(1).format(r.after_ms / 1000) }), tone: "ok" }
       : r.kind === "no_interruption" ? { text: t("ctl.restart.noInterruption"), tone: "warn" }
       : r.kind === "no_answer" ? { text: t("ctl.restart.noAnswer", { pack: no(a) }), tone: "error" }
+      : r.kind === "sent_link_lost" ? { text: t("ctl.restart.linkLost", { err: errorText(r.error, t) }), tone: "error" }
       : { text: t("ctl.restart.notReachable"), tone: "error" };
   });
 
@@ -105,20 +131,19 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged 
     await wait(1500);
     const l = await reload(a);
     if (!l) return { text: t("ctl.sentUnread"), tone: "warn" };
-    // the forced counter is not readable: an output that stays off ends the „forced“ state shown
-    if (!heaterOn(l.status)) forced.delete(a);
     return on
       ? { text: heaterOn(l.status) ? t("ctl.heater.onDone") : t("ctl.heater.onNoOutput"), tone: heaterOn(l.status) ? "ok" : "warn" }
       : { text: heaterOn(l.status) ? t("ctl.heater.offStill") : t("ctl.heater.offDone"), tone: heaterOn(l.status) ? "warn" : "ok" };
   });
 
-  const setRemaining = (a: number, raw: number) => run("remaining", a, async () => {
+  const setRemaining = (a: number, raw: number) => run("remaining", a, async (lk) => {
     await api.packSetRemaining(a, raw);
+    if (!same(a, lk)) return null;
     setNote({ text: t("ctl.remaining.taken"), tone: "ok" });
     // 0x42 shows the new value only after the next 1-s evaluation
     await wait(1500);
     const l = await reload(a);
-    if (current.current === a) setAh("");
+    if (same(a, lk)) setAh("");
     return l ? { text: t("ctl.remaining.done", { soc: nf(1).format(l.telemetry.soc), ah: nf(2).format(l.telemetry.remaining_capacity_ah) }), tone: "ok" }
       : { text: t("ctl.sentUnread"), tone: "warn" };
   });
@@ -131,10 +156,11 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged 
 
   // what the clear dialog names is read right before it opens
   const askClear = async (a: number) => {
+    const lk = linkNow.current;
     setBusy("clear");
     const l = await reload(a);
     setBusy(null);
-    if (current.current === a) setAsk({ kind: "clear", live: l });
+    if (same(a, lk)) setAsk({ kind: "clear", live: l });
   };
 
   const off = st ? commandedOff(st) : false;

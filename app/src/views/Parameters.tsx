@@ -17,7 +17,7 @@ import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
-import { errorText } from "../control";
+import { errorText, packBusy } from "../control";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -85,7 +85,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [edit, setEdit] = useState<Edit | null>(null);
   const [full, setFull] = useState<Full>(null);
   const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
-  const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading && !edit && !writing.params;
+  const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading && !edit && !writing.params && !writing.ctl;
   // another installation or a new connection: what was read no longer belongs to the packs on the bus
   useEffect(() => {
     if (keptLink === link) return;
@@ -149,7 +149,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   /** After a restart: the pack's column, if shown, is read again (a refused write's live switches are gone then). */
   const rereadPack = (address: number) => {
     if (!sources.some((x) => x.id === `pack-${address}`)) return;
-    api.parameters(address).then((p) => { replace(fromPack(p, address)); seen(address, p); }, () => {});
+    api.parameters(address).then((p) => { replace(fromPack(p, address)); seen(address, p); },
+      (e) => setNote({ address, note: { text: t("ctl.reread", { pack: packNo(address), err: errorText(e, t) }), error: true } }));
+  };
+  // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
+  const p79Of = (a: number | null) => {
+    const c = a === null ? undefined : sources.find((x) => x.id === `pack-${a}` && x.values) ?? sources.find((x) => x.id === `stored-${a}` && x.values);
+    return c?.values?.[79] ?? null;
   };
 
   const open = async (files: FileList | null) => {
@@ -302,7 +308,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
-        <PackControlSection address={chosen} usable={writable} locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack} />
+        <PackControlSection address={chosen} usable={writable} locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
+          p79={p79Of(chosen)} linkKey={link} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}
@@ -516,8 +523,8 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
           </button>
         )}
       </div>
-      <div className={cn("text-xs", c.error ? "text-alarm" : "text-muted")} title={c.error}>
-        {c.error ? (c.kind === "pack" ? t("par.noAnswer") : t("par.unreadable")) : pending ? t("par.pending") : c.kind === "file" ? (c.device || t("par.file")) : c.device}
+      <div className={cn("text-xs", c.error ? "text-alarm" : "text-muted")} title={c.error && errorText(c.error, t)}>
+        {c.error ? (c.kind === "pack" ? (packBusy(c.error) ? t("par.busyShort") : t("par.noAnswer")) : t("par.unreadable")) : pending ? t("par.pending") : c.kind === "file" ? (c.device || t("par.file")) : c.device}
       </div>
       {c.stored && (
         <div className={cn("text-xs whitespace-nowrap", c.stored.board === "current" ? "text-muted" : "text-discharge")}

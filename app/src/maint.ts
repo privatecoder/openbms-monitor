@@ -127,7 +127,8 @@ export function otherBank(e: unknown): string | null {
 }
 
 /** The backend's refusal of `connect` while another operation holds the port: `{kind: "busy", action}` with the
- *  running maintenance operation ("live", "scan", "halt", "release", "flash"; null when it has none). Else null. */
+ *  running maintenance operation ("live", "scan", "halt", "release", "flash", "pack" for an action on a pack; null
+ *  when it has none). Else null. */
 export function portBusy(e: unknown): { action: string | null } | null {
   let v: unknown = e;
   if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
@@ -144,7 +145,7 @@ export function busyWaitStep(w: { token: number; current: number; locked: boolea
   return w.now >= w.until ? "give-up" : "wait";
 }
 
-const BUSY_ACTIONS = ["live", "scan", "halt", "release", "flash"];
+const BUSY_ACTIONS = ["live", "scan", "halt", "release", "flash", "pack"];
 
 /** "Port busy: the pack bus is being watched." and what happens next: waiting for it, or given up after the wait. */
 export function busyMessage(action: string | null, gaveUp: boolean, t: T): string {

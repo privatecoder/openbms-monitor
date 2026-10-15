@@ -44,7 +44,19 @@ export function energyText(kwh: number, lang: string): string {
 }
 
 /** Outcome of a restart (backend `Restart`). */
-export type RestartResult = { kind: "not_reachable" } | { kind: "back"; after_ms: number } | { kind: "no_interruption" } | { kind: "no_answer" };
+export type RestartResult = { kind: "not_reachable" } | { kind: "back"; after_ms: number } | { kind: "no_interruption" } | { kind: "no_answer" }
+  | { kind: "sent_link_lost"; error: string };
+
+const kindOf = (e: unknown): unknown => {
+  let v: unknown = e;
+  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return undefined; } }
+  return v && typeof v === "object" ? (v as { kind?: unknown }).kind : undefined;
+};
+
+/** The pack did not answer a control command (typically a master polling its slaves). */
+export const noAnswer = (e: unknown) => kindOf(e) === "no-answer";
+/** The connection changed during the action; nothing more was sent. */
+export const linkChanged = (e: unknown) => kindOf(e) === "link-changed";
 
 /** Another action holds the pack, from the backend's JSON error; null for any other error. */
 export function packBusy(e: unknown): { address: number; action: string } | null {
@@ -55,8 +67,11 @@ export function packBusy(e: unknown): { address: number; action: string } | null
   return o.kind === "pack-busy" && typeof o.address === "number" && typeof o.action === "string" ? { address: o.address, action: o.action } : null;
 }
 
-/** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, else as it came. */
+/** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, the texts for a silent pack and a
+ *  changed connection, else as it came. */
 export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>) => string): string {
+  if (noAnswer(e)) return t("ctl.silent");
+  if (linkChanged(e)) return t("ctl.linkChanged");
   const b = packBusy(e);
   if (!b) return String(e);
   return t("ctl.busy", { pack: String(b.address).padStart(2, "0"), action: t(`ctl.action.${b.action}`) });

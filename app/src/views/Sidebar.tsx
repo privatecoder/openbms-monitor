@@ -178,10 +178,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         // serial numbers only of the packs that answered the device query; gaps are named
         const gen = serialGen.current;
         api.scan(addrs).then((found) => {
-          if (gen === serialGen.current) {
-            const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
-            if (gaps) setMsg(`${base} ${gaps}`);
-          }
+          // a late answer of an earlier connection changes nothing
+          if (gen !== serialGen.current) return;
+          const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
+          if (gaps) setMsg(`${base} ${gaps}`);
           onDevices(found); void readSerials(found.map(([a]) => a));
         }).catch(() => {});
         return;
