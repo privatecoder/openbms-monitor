@@ -21,8 +21,10 @@ type Tone = "ok" | "warn" | "error";
 type Note = { text: string; tone: Tone } | null;
 type Ask = { kind: "restart" | "off" } | { kind: "clear"; live: PackLive | null };
 
-// packs the app forced the heater on while the view is open: the button reads „Heizung aus“ for them
-const forced = new Set<number>();
+// when the app forced the heater on, per connection and pack: the button reads „Heizung aus“ and the state line shows
+// the expected end. The BMS's own counter (0x200000C8) is not readable over any command.
+const forced = new Map<string, number>();
+const HEATER_MS = 3600 * 1000;
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack. */
 export function PackControlSection({ address, usable, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
@@ -52,7 +54,6 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const same = (a: number, lk: string) => current.current === a && linkNow.current === lk;
   const p79Asked = useRef(new Set<number>());
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => forced.clear(), []);
 
   const [reading, setReading] = useState(false);
   const [readAt, setReadAt] = useState<Date | null>(null);
@@ -66,7 +67,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
       // the field starts at the pack's current value, so a correction only changes what is wrong
       setAh((v) => (v === "" ? new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(l.telemetry.remaining_capacity_ah) : v));
       // the forced counter is not readable: an output seen off ends the „forced“ state shown
-      if (!heaterOn(l.status)) forced.delete(a);
+      if (!heaterOn(l.status)) forced.delete(`${lk}|${a}`);
       setLive(l);
       return l;
     } catch (e) { if (gen.current === mine && same(a, lk)) setLive({ error: errorText(e, t) }); return null; }
@@ -113,7 +114,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
     const r: RestartResult = await api.packRestart(a);
     if (!same(a, lk)) return null;
     await reload(a);
-    if (r.kind !== "not_reachable") { forced.delete(a); if (same(a, lk)) onChanged?.(a); }
+    if (r.kind !== "not_reachable") { forced.delete(`${lk}|${a}`); if (same(a, lk)) onChanged?.(a); }
     return r.kind === "back" ? { text: t("ctl.restart.back", { pack: no(a), s: nf(1).format(r.after_ms / 1000) }), tone: "ok" }
       : r.kind === "no_interruption" ? { text: t("ctl.restart.noInterruption"), tone: "warn" }
       : r.kind === "no_answer" ? { text: t("ctl.restart.noAnswer", { pack: no(a) }), tone: "error" }
@@ -135,9 +136,9 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
     return { text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" };
   });
 
-  const heater = (a: number, on: boolean) => run("heater", a, async () => {
+  const heater = (a: number, on: boolean) => run("heater", a, async (lk) => {
     await api.packHeater(a, on);
-    if (on) forced.add(a); else forced.delete(a);
+    if (on) forced.set(`${lk}|${a}`, Date.now()); else forced.delete(`${lk}|${a}`);
     await wait(1500);
     const l = await reload(a);
     if (!l) return { text: t("ctl.sentUnread"), tone: "warn" };
@@ -174,7 +175,9 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   };
 
   const off = st ? commandedOff(st) : false;
-  const heaterForced = forced.has(address);
+  const forcedAt = forced.get(`${linkKey}|${address}`);
+  const heaterForced = forcedAt !== undefined && Date.now() < forcedAt + HEATER_MS;
+  const heaterEnd = heaterForced ? new Date(forcedAt! + HEATER_MS).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" }) : null;
   const raw = remainingRaw(ah);
   const full = tel?.full_capacity_ah;
   const soc = raw !== null && full ? socOf(raw, full) : null;
@@ -199,7 +202,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
                 <div>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span>{!off && offReasons(live.status).length > 0 && <span className="text-discharge"> ({t("ctl.state.offSoon")})</span>}</div>
                 <div>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</div>
                 <div>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</div>
-                <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</div>
+                <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}{heaterOn(live.status) && heaterEnd && <span className="text-muted"> ({t("ctl.state.heaterUntil", { time: heaterEnd })})</span>}</div>
                 <div>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</div>
                 <div>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</div>
                 </>}
