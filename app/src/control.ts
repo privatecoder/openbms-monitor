@@ -94,7 +94,11 @@ export function bankRefusal(e: unknown): BankRefusal | null {
 /** The text of a bank refusal: what the pack is and where to confirm it; always says that nothing was written. */
 export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unknown>) => string): string {
   const pack = String(b.address).padStart(2, "0");
-  if (b.state === "failed") return b.error === "no-answer" ? t("bank.refused.silent", { pack }) : t("bank.refused.failed", { pack, err: b.error ?? "" });
+  if (b.state === "failed") {
+    if (b.error === "no-answer") return t("bank.refused.silent", { pack });
+    const reason = ["connection", "store", "no-installation"].includes(b.error ?? "") ? b.error! : "connection";
+    return t("bank.refused.failed", { pack, err: t(`bank.reason.${reason}`) });
+  }
   if (b.why === "foreign") return t("bank.refused.foreign", { pack, name: b.installation?.name ?? "" });
   return t(b.why === "moved" ? "bank.refused.moved" : "bank.refused.new", { pack });
 }

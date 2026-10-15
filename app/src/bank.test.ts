@@ -44,6 +44,9 @@ describe("bank refusals", () => {
     expect(errorText(foreign, t)).toBe('bank.refused.foreign {"pack":"02","name":"B"}');
     expect(errorText('{"kind":"bank","state":"unconfirmed","address":3,"why":"moved"}', t)).toBe('bank.refused.moved {"pack":"03"}');
     expect(errorText('{"kind":"bank","state":"failed","address":0,"error":"no-answer"}', t)).toBe('bank.refused.silent {"pack":"00"}');
+    // backend text never shows: the reason is worded, an unknown one counts as a connection fault
+    expect(errorText('{"kind":"bank","state":"failed","address":1,"error":"store"}', t)).toBe('bank.refused.failed {"pack":"01","err":"bank.reason.store"}');
+    expect(errorText('{"kind":"bank","state":"failed","address":1,"error":"I/O error: broken pipe"}', t)).toBe('bank.refused.failed {"pack":"01","err":"bank.reason.connection"}');
     expect(bankRefusal('{"kind":"pack-busy","address":1,"action":"read"}')).toBeNull();
     expect(bankRefusal("timeout")).toBeNull();
     // a bank refusal is not wrapped into „Nicht geschrieben: …“, other errors are
@@ -53,9 +56,11 @@ describe("bank refusals", () => {
   it("every text exists in German and English", () => {
     const keys = ["bank.new_one", "bank.new_other", "bank.adopt", "bank.foreign_one", "bank.foreign_other", "bank.disconnect", "bank.connectOther", "bank.adoptAnyway",
       "bank.confirmFailed", "bank.noSerial_one", "bank.noSerial_other", "bank.openParams", "bank.unchecked", "bank.refused.new", "bank.refused.moved",
-      "bank.refused.foreign", "bank.refused.silent", "bank.refused.failed", "snw.useBms", "snw.useBmsHint", "snw.useBmsCut", "snw.useBmsCan"];
+      "bank.refused.foreign", "bank.refused.silent", "bank.refused.failed", "bank.reason.connection", "bank.reason.store", "bank.reason.no-installation", "bank.afterConfirm", "rec.held", "rec.heldShort", "snw.useBms", "snw.useBmsHint", "snw.useBmsCut", "snw.useBmsCan"];
     for (const lng of ["de", "en"]) for (const k of keys) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
     const de = i18n.getFixedT("de");
-    expect(bankText({ state: "failed", address: 4, error: "I/O" }, de)).toContain("Nichts geschrieben");
+    expect(bankText({ state: "failed", address: 4, error: "connection" }, de)).toContain("Nichts geschrieben");
+    // a silent pack keeps the hint about a polling master
+    expect(bankText({ state: "failed", address: 0, error: "no-answer" }, de)).toContain("DIP 5–8");
   });
 });

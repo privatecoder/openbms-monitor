@@ -410,7 +410,7 @@ const resources = {
           4: "Funktionsschalter {{g}}: Strom-Meldungen", 5: "Funktionsschalter {{g}}: Sonstige Meldungen", 6: "Funktionsschalter {{g}}: Balancing und Laden", 7: "Funktionsschalter {{g}}: System" },
       },
       rec: {
-        title: "Aufzeichnung", off: "aus", onShort: "läuft", waiting: "an",
+        title: "Aufzeichnung", off: "aus", onShort: "läuft", waiting: "an", held: "Aufzeichnung wartet auf die Prüfung der Anlage", heldShort: "wartet auf die Prüfung der Anlage",
         intro: "Speichert die abgefragten Werte in der Verlaufs-Datenbank der App, solange sie verbunden ist. Ansehen und exportieren unter Verlauf.",
         viewOnly: "Nur ansehen: diese Verbindung wird nicht aufgezeichnet. Dazu in der Seitenleiste eine Anlage wählen und neu verbinden.",
         enable: "Aufzeichnen, solange verbunden", running: "Zeichnet auf", waitingLong: "An: zeichnet auf, sobald die App verbunden ist", stopped: "Aus",
@@ -478,9 +478,11 @@ const resources = {
           new: "Pack {{pack}}: Diese Anlage kennt die Platine noch nicht (neu). Erst in der Seitenleiste übernehmen. Nichts geschrieben.",
           moved: "Pack {{pack}}: Diese Platine gehört zur Anlage, aber an eine andere Adresse (umgesteckt). Erst in der Seitenleiste übernehmen. Nichts geschrieben.",
           foreign: "Pack {{pack}} gehört zur Anlage „{{name}}“. Prüfen, welche Bank angeschlossen ist (Hinweis in der Seitenleiste). Nichts geschrieben.",
-          silent: "Anlage nicht geprüft: Pack {{pack}} antwortet nicht auf die Seriennummer-Abfrage. Nichts geschrieben.",
+          silent: "Anlage nicht geprüft: Pack {{pack}} antwortet nicht auf die Seriennummer-Abfrage. Nichts geschrieben. Ein Master mit Slaves antwortet auf RS485-1/2 nicht: erst den Master anhalten (Wartungsstopp) oder DIP 5–8 auf OFF stellen.",
           failed: "Anlage nicht geprüft (Pack {{pack}}): {{err}}. Nichts geschrieben.",
         },
+        reason: { connection: "die Verbindung zum Pack ist gestört", store: "die Wartungsdatenbank ist nicht lesbar", "no-installation": "keine Anlage gewählt" },
+        afterConfirm: "Die Aufzeichnung startet nach der Bestätigung.",
       },
       sn: {
         battery: "Batterie-SN", bms: "BMS-SN", unknown: "unbekannt", first22: "(erste 22 Zeichen)", placeholder: "nicht gesetzt (Platzhalter)",
@@ -1005,7 +1007,7 @@ const resources = {
           4: "Function switches {{g}}: current messages", 5: "Function switches {{g}}: other messages", 6: "Function switches {{g}}: balancing and charging", 7: "Function switches {{g}}: system" },
       },
       rec: {
-        title: "Recording", off: "off", onShort: "recording", waiting: "on",
+        title: "Recording", off: "off", onShort: "recording", waiting: "on", held: "Recording waits for the installation check", heldShort: "waits for the installation check",
         intro: "Stores the polled values in the app's history database while it is connected. View and export them under History.",
         viewOnly: "View only: this connection is not recorded. Choose an installation in the sidebar and connect again.",
         enable: "Record while connected", running: "Recording", waitingLong: "On: records as soon as the app is connected", stopped: "Off",
@@ -1073,9 +1075,11 @@ const resources = {
           new: "Pack {{pack}}: this installation does not know the board yet (new). Take it over in the sidebar first. Nothing written.",
           moved: "Pack {{pack}}: this board belongs to the installation, but at another address (moved). Take it over in the sidebar first. Nothing written.",
           foreign: "Pack {{pack}} belongs to installation “{{name}}”. Check which bank is connected (note in the sidebar). Nothing written.",
-          silent: "Installation not checked: pack {{pack}} does not answer the serial number request. Nothing written.",
+          silent: "Installation not checked: pack {{pack}} does not answer the serial number request. Nothing written. A master with slaves does not answer on RS485-1/2: halt the master first (maintenance halt) or set DIP 5–8 to OFF.",
           failed: "Installation not checked (pack {{pack}}): {{err}}. Nothing written.",
         },
+        reason: { connection: "the connection to the pack failed", store: "the maintenance database cannot be read", "no-installation": "no installation chosen" },
+        afterConfirm: "Recording starts after the confirmation.",
       },
       sn: {
         battery: "Battery SN", bms: "BMS SN", unknown: "unknown", first22: "(first 22 characters)", placeholder: "not set (placeholder)",

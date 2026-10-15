@@ -808,13 +808,13 @@ impl Store {
         )
     }
 
-    /// The installations whose board at address 0 has this battery serial (String 1); `prefix`: only the first
-    /// characters were readable (Modbus on the CAN socket), a stored value that starts with them counts.
-    pub fn master_battery_places(&self, battery: &str, prefix: bool) -> Result<Vec<SerialPlace>, String> {
+    /// Every place a battery serial (String 1) is stored at, over all installations; `prefix`: only the first characters
+    /// were readable (Modbus on the CAN socket), a stored value that starts with them counts.
+    pub fn battery_places(&self, battery: &str, prefix: bool) -> Result<Vec<SerialPlace>, String> {
         let sql = if prefix {
-            "SELECT installation, address FROM boards WHERE address = 0 AND battery_serial IS NOT NULL AND substr(battery_serial, 1, length(?1)) = ?1"
+            "SELECT installation, address FROM boards WHERE battery_serial IS NOT NULL AND substr(battery_serial, 1, length(?1)) = ?1"
         } else {
-            "SELECT installation, address FROM boards WHERE address = 0 AND battery_serial = ?1"
+            "SELECT installation, address FROM boards WHERE battery_serial = ?1"
         };
         self.places(sql, battery)
     }

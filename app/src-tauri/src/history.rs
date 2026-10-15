@@ -178,6 +178,8 @@ pub struct Status {
     pub rows: u64,
     /// the database is being prepared (a migration of a big file takes a while); recording starts after it
     pub preparing: bool,
+    /// connected, but waiting until the bank is decided (`bank.rs`): nothing is recorded meanwhile
+    pub held: bool,
     pub error: Option<String>,
 }
 
@@ -317,6 +319,7 @@ impl History {
             bytes,
             rows: self.rows,
             preparing: self.preparing,
+            held: self.settings.enabled && self.link.is_some() && self.held,
             error: self.error.clone(),
         }
     }
@@ -347,6 +350,11 @@ impl History {
         self.end_session(now_ms());
         self.link = None;
         self.held = false;
+    }
+
+    #[cfg(test)]
+    pub fn is_held(&self) -> bool {
+        self.held
     }
 
     /// Hold (or resume) recording for the current connection. Rows that arrive while held are dropped, not kept for

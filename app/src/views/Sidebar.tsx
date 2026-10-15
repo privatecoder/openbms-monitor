@@ -10,7 +10,7 @@ import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
 import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, pickable, portBusy, preselect } from "../maint";
-import { RecordingEntry } from "./Recording";
+import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
 import { BAUD, explain, firstLine, noAnswer, otherBus, padAddress, partialLine } from "../connCheck";
 
@@ -76,6 +76,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [since, setSince] = useState(0);
   const [lastTry, setLastTry] = useState(0);
   const now = useNow();
+  const maintRef = useRef(maint); maintRef.current = maint;
+  const recStatus = useHistoryStatus().status;
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
   // what the serial reads of this connection say about each pack's board (right bank before writing)
   const [ids, setIds] = useState<IdentityView[]>([]);
@@ -97,7 +99,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(stopWaiting, [target, kind, bus, packCount, userActions]);
   useEffect(() => { setOffer(null); }, [target, kind, bus]);
   useEffect(() => stopWaiting, []);
-  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<{ linked: boolean; answered: number }> => {
+  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<{ linked: boolean; answered: number; gen: number }> => {
     const token = ++waitToken.current;
     const until = Date.now() + BUSY_WAIT_MS;
     let action: string | null = null;
@@ -124,8 +126,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // other between the polls. A new connection or a disconnect starts a new generation, which ends the old reads;
   // a failed read (port held by a flash, pack silent) leaves the value unknown without a message.
   const serialGen = useRef(0);
-  const readSerials = async (addresses: number[]) => {
+  // `linkGen`: the backend's connection generation; when the reads end (also with no pack, or all failed) the backend
+  // decides whether this connection records (`bank_reads_done`)
+  const readSerials = async (addresses: number[], linkGen: number) => {
     const gen = ++serialGen.current;
+    try { await readEach(addresses, gen); } finally { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); }
+  };
+  const readEach = async (addresses: number[], gen: number) => {
     // a pack busy with another action (a write, the parameter read) is asked again at the end, at most three times
     const queue = addresses.map((a) => ({ a, tries: 0 }));
     for (let q = queue.shift(); q; q = queue.shift()) {
@@ -157,6 +164,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const un = api.onBankUnconfirmed((v) => setIds((all) => withIdentity(all, v)));
     return () => { un.then((f) => f()); };
   }, []);
+  // RS485-1/2: the endpoint is linked to the installation once the bank is decided
+  useEffect(() => {
+    const un = api.onBankLinked((name) => { setMsg((m) => [t("conn.linked", { name }), m].filter(Boolean).join(" ")); void maintRef.current.loadLists(); });
+    return () => { un.then((f) => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const forgetBank = () => { setIds([]); setBankError(null); clearUnchecked(); };
 
   // the installation of the connection: chosen at a manual connect, reused by every automatic reconnect
@@ -176,7 +188,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
-      const { linked, answered } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
       // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
       const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
@@ -207,8 +219,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           if (gen !== serialGen.current) return;
           const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
           if (gaps) setMsg(`${base} ${gaps}`);
-          onDevices(found); void readSerials(found.map(([a]) => a));
-        }).catch(() => {});
+          onDevices(found); void readSerials(found.map(([a]) => a), linkGen);
+        }).catch(() => { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); });
         return;
       }
       const found = await api.scan();
@@ -218,7 +230,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       setSince(Date.now()); setLost(false);
       // on the CAN socket bus the system values are polled even if no pack answered
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
-      void readSerials(found.map(([a]) => a));
+      void readSerials(found.map(([a]) => a), linkGen);
     } catch (e) {
       // a cancelled wait never opened the port: nothing to close, no error
       if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
@@ -449,7 +461,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           )}
           {line?.kind === "new" && (
             <div className="space-y-1 pt-1">
-              <p className="text-sm text-discharge">{t("bank.new", { count: line.packs.length, packs: packList(line.packs), name: instName })}</p>
+              <p className="text-sm text-discharge">
+                {t("bank.new", { count: line.packs.length, packs: packList(line.packs), name: instName })}
+                {!ids.some((v) => v.kind === "known") && ` ${t("bank.afterConfirm")}`}
+              </p>
               <Button variant="secondary" size="sm" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
             </div>
           )}
@@ -460,6 +475,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             </p>
           )}
           {bankError && <p className="text-sm text-alarm">{bankError}</p>}
+          {connected && recStatus?.held && line?.kind !== "new" && <p className="text-xs text-muted">{t("rec.held")}</p>}
           {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
           {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
         </div>
