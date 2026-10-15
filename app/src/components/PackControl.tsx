@@ -196,7 +196,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
             {live === null ? <StatusLine>{t("ctl.reading")}</StatusLine>
               : "error" in live ? <StatusLine tone="error">{t("ctl.readError", { err: live.error })}</StatusLine>
               : <>
-                <div>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span></div>
+                <div>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span>{!off && offReasons(live.status).length > 0 && <span className="text-discharge"> ({t("ctl.state.offSoon")})</span>}</div>
                 <div>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</div>
                 <div>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</div>
                 <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</div>
