@@ -269,6 +269,9 @@ const resources = {
       par: {
         title: "Parameter", intro: "Einstellungen der Packs lesen und vergleichen: aus den Packs über RS485-1/2 oder aus BatteryMonitor-Exporten. Schreiben lassen sich die Parameter eines gelesenen Packs (Stift im Spaltenkopf), Seriennummern, Uhr, CAN-Protokoll und Kalibrierung, jeweils auf Knopfdruck.",
         read: "Aus den Packs lesen", open: "Export öffnen", clear: "Alle entfernen", onlyDiff: "Nur Abweichungen",
+        clearHint: "Leert die Tabelle (gelesene Packs, Exporte, letzter Stand). In den Packs und in der Datenbank ändert sich nichts; „Letzter Stand“ holt die gespeicherten Spalten zurück.",
+        onlyDiffHint: "Zeigt nur Parameter, die sich zwischen den Spalten unterscheiden oder gegen das gewählte Datenblatt verstoßen; bei den Funktionsschaltern nur abweichende Bits.",
+        onlyDiffNeeds: "Erst ab zwei Spalten mit Werten.",
         stored: "Letzter Stand", storedHint: "Zeigt je Pack den zuletzt gespeicherten Stand der gewählten Anlage (gelesen oder geschrieben), auch ohne Verbindung.",
         storedNone: "Für diese Anlage ist noch kein Parameterstand gespeichert. Er entsteht bei jedem Lesen und Schreiben.", storedCol: "Stand {{n}}",
         viewOnly: "Nur ansehen: lesen geht, schreiben nicht. Zum Schreiben mit einer Anlage verbinden.",
@@ -728,6 +731,9 @@ const resources = {
       par: {
         title: "Parameters", intro: "Read and compare the packs' settings: from the packs via RS485-1/2 or from BatteryMonitor exports. The parameters of a read pack (pencil in the column head), serial numbers, the clock, the CAN protocol and the calibration can be written, each on a click.",
         read: "Read from packs", open: "Open export", clear: "Remove all", onlyDiff: "Only differences",
+        clearHint: "Empties the table (packs read, exports, last state). Nothing changes in the packs or the database; “Last state” brings the stored columns back.",
+        onlyDiffHint: "Shows only parameters that differ between the columns or break the chosen datasheet; for the function switches only differing bits.",
+        onlyDiffNeeds: "Needs at least two columns with values.",
         stored: "Last state", storedHint: "Shows per pack the last stored state of the chosen installation (read or written), also without a connection.",
         storedNone: "No parameter state stored for this installation yet. One is kept with every read and write.", storedCol: "State {{n}}",
         viewOnly: "View only: reading works, writing does not. Connect with an installation to write.",

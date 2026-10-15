@@ -266,8 +266,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
           <Button disabled={!installation || isDemo} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".xml,application/xml,text/xml" multiple className="hidden" onChange={(e) => open(e.target.files)} />
-          {cols.length > 0 && <Button variant="ghost" disabled={!!reading || !!edit || writing.params} onClick={() => { setSources(() => []); setSaved(null); }}>{t("par.clear")}</Button>}
-          <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm">
+          {cols.length > 0 && <Button variant="ghost" disabled={!!reading || !!edit || writing.params} onClick={() => { setSources(() => []); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
+          <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm" title={withValues < 2 ? t("par.onlyDiffNeeds") : t("par.onlyDiffHint")}>
             <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={onlyDiff} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={withValues < 2} />
             <span className={cn(withValues < 2 && "text-muted")}>{t("par.onlyDiff")}</span>
           </label>
