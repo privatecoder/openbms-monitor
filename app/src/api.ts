@@ -160,7 +160,8 @@ export interface HistorySettings {
   /** days minute values are kept after that, 0 = forever */
   keep_minutes_days: number;
 }
-export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; error: string | null }
+/** `held`: connected, but recording waits until the bank is checked (right bank before writing) */
+export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; held?: boolean; error: string | null }
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
 export interface PackCols { current: Col; soc: Col; voltage: Col; cell_max: Col; cell_min: Col; delta: Col; temp_max: Col; temp_min: Col }
@@ -244,7 +245,7 @@ const tauriApi = {
   /** opens the port and checks that a pack answers (`addresses` first, then the rest of 0..15); no answer: error
    *  JSON `{ code: "no-answer", noise, intra }`, the port is closed again */
   connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
-    invoke<{ linked: boolean; answered: number }>("connect", { endpoint, installation, addresses: addresses ?? null }),
+    invoke<{ linked: boolean; answered: number; gen: number }>("connect", { endpoint, installation, addresses: addresses ?? null }),
   /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
   probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
@@ -269,6 +270,10 @@ const tauriApi = {
   onBankUnconfirmed: (f: (v: IdentityView) => void) => listen<IdentityView>("bank-unconfirmed", (e) => f(e.payload)),
   /** „Übernehmen“: the listed unconfirmed packs of this connection belong to `installation`; returns those recorded */
   bankConfirm: (installation: string, addresses: number[]) => invoke<number[]>("bank_confirm", { installation, addresses }),
+  /** the serial reads after connection `gen` have ended (also with no pack found): a bank nothing decided records */
+  bankReadsDone: (gen: number) => invoke<void>("bank_reads_done", { gen }),
+  /** RS485-1/2: the endpoint was linked to the installation once its bank was decided; the installation's name */
+  onBankLinked: (f: (name: string) => void) => listen<string>("bank-linked", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
@@ -403,7 +408,7 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => ({ linked: false, answered: 0 }),
+    connect: async () => ({ linked: false, answered: 0, gen: 0 }),
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     disconnect: async () => { clearInterval(timer); },
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
@@ -437,6 +442,8 @@ function demoApi(): typeof tauriApi {
     onMonitorStopped: async () => () => {},
     onBankUnconfirmed: async () => () => {},
     bankConfirm: async (_installation, addresses) => addresses,
+    bankReadsDone: async () => {},
+    onBankLinked: async () => () => {},
     // preview: keep own cells in browser storage
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),

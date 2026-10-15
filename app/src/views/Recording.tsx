@@ -48,7 +48,7 @@ export function RecordingEntry({ scope, packs, systemAvailable, connected, onOpe
   const rec = useHistoryStatus();
   const s = rec.status;
   const on = !!s?.settings.enabled;
-  const state = !on ? t("rec.off") : s?.active ? t("rec.onShort") : t("rec.waiting");
+  const state = !on ? t("rec.off") : s?.active ? t("rec.onShort") : s?.held ? t("rec.heldShort") : t("rec.waiting");
   return (
     <>
       {/* footer icon: the dot is the state (pulsing red = recording); label and state are the tooltip */}
@@ -108,7 +108,7 @@ function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable
                 <span className="block font-medium">{t("rec.enable")}</span>
                 <span className={cn("flex items-center gap-2 text-sm", s.active ? "text-alarm" : "text-muted")}>
                   <RecDot active={s.active} />
-                  {s.active ? t("rec.running") : opts.enabled ? t("rec.waitingLong") : t("rec.stopped")}
+                  {s.active ? t("rec.running") : s.held ? t("rec.held") : opts.enabled ? t("rec.waitingLong") : t("rec.stopped")}
                 </span>
               </span>
             </label>

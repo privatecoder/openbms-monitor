@@ -220,7 +220,10 @@ fn list_ports() -> Vec<String> {
 /// What `connect` did with the installation: its endpoint was linked to it just now.
 #[derive(Serialize)]
 struct Connected {
+    /// RS485-1/2: always false here, the endpoint is linked once the bank is decided (event "bank-linked")
     linked: bool,
+    /// the connection's generation, for `bank_reads_done`
+    gen: u64,
     /// the first pack address that answered the check (Modbus answer of the master on the CAN socket: 0)
     answered: u8,
 }
@@ -288,17 +291,22 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
     *state.main.lock().map_err(|e| e.to_string())? = Some((key.clone(), bus));
     let can = bus == Bus::CanSocketBus;
+    // the CAN socket shows no String 2: linked now. RS485-1/2: only once a serial read decided the bank (`bank.rs`), so
+    // a foreign bank never gets this endpoint linked to the installation
     let linked = match &installation {
-        Some(id) => maint::with_store(&state, |s| s.link_connection(id, &key, control, can, history::now_ms())).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?,
-        None => false,
+        Some(id) if can => maint::with_store(&state, |s| s.link_connection(id, &key, control.clone(), can, history::now_ms())).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?,
+        _ => false,
     };
     new_link(&state, installation.clone());
+    let gen = link_now(&state).gen;
+    let pending = (!can && installation.is_some()).then(|| bank::PendingLink { key: key.clone(), control });
+    bank::begin(&state, gen, !can, pending);
     if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
         h.connected(id, if can { "can" } else { "pack" });
         // RS485-1/2: nothing is recorded until a serial read shows no pack of another installation (`bank.rs`)
         h.hold(!can);
     }
-    Ok(Connected { linked, answered })
+    Ok(Connected { linked, answered, gen })
 }
 
 /// What answered at the other bus's baud rate on a USB port whose connect check found nothing.
@@ -471,8 +479,13 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
 fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters, String> {
     let _guard = control::reserve_pack_wait(state, address, "read")?;
     let before = link_now(state);
+    // the board first (one 0xA4): the values always go to the UI, a snapshot only for a known board or one without a
+    // serial; „Nur ansehen“ stores nothing anyway
+    let checked = if before.installation.is_some() { bank::check(state, &before, address) } else { Err(String::new()) };
     let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
-    bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
+    if bank::snapshot_allowed(&checked) {
+        bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
+    }
     Ok(p)
 }
 
@@ -810,7 +823,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

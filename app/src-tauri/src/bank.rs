@@ -10,12 +10,15 @@
 //! installation (foreign), the connection stores nothing under its installation: `for_link` refuses, the recorder is
 //! held, `maint::read_master` keeps no marker state.
 //!
-//! Data read before the identity is known: on RS485-1/2 the recorder starts held and is released by the first serial
-//! read that finds no foreign pack (rows polled before are dropped, not kept pending: simpler, and a few seconds of
-//! history are worth less than a wrong installation's). A foreign pack found later holds it again; the rows recorded
-//! between the first read and that one stay (seconds, while the bank was not yet in doubt). Parameter snapshots of a
-//! pack that is not confirmed are not stored either. On the CAN socket the BMS serial is not visible: recording runs
-//! from the start, a known master battery serial of another installation is only a hint (`can_hint`).
+//! Data read before the identity is known: on RS485-1/2 the recorder starts held and the endpoint is not linked to the
+//! installation yet. `BankState::verdict` decides: a foreign pack holds; a known pack records; only unconfirmed packs
+//! (a bank never seen, a new installation) hold until „Übernehmen“; packs without a serial record; a failed read decides
+//! nothing, but once the UI's reads of the connection ended (`bank_reads_done`, also with no pack) it records. The first
+//! `Record` links the endpoint. Rows polled while held are dropped, not kept pending (simpler, and a few seconds of
+//! history are worth less than a wrong installation's); the rows recorded before a later foreign find stay. A parameter
+//! read checks 0xA4 first and keeps a snapshot only of a known or unchecked board. On the CAN socket the BMS serial is
+//! not visible: recording and the link run from the start, a master battery serial of another installation is only a
+//! hint (`can_hint`).
 
 use crate::maint_store::{real, SerialPlace, Store};
 use crate::{link_now, with_link, AppState, Link, FLASHING, LINK_CHANGED};
@@ -79,15 +82,20 @@ pub fn identity(store: &Store, inst: &str, address: u8, read: &SerialValue) -> R
     }
 }
 
-/// CAN socket bus: the master's battery serial (Modbus) is a board at address 0 of another installation and of none
-/// of `inst`'s. Only a hint, nothing is held.
+/// CAN socket bus: the master's battery serial (Modbus, maybe only its first 22 characters) names another installation
+/// only when exactly one installation carries it, that one is not `inst`, and it carries it at address 0. A serial in
+/// several installations, or one of `inst`'s own boards, gives no hint. Only a hint, nothing is held.
+pub fn can_hint_of(inst: &str, places: &[SerialPlace]) -> Option<Other> {
+    let first = places.first()?;
+    if places.iter().any(|p| p.installation != first.installation) || first.installation == inst {
+        return None;
+    }
+    places.iter().find(|p| p.address == 0).map(|p| Other { id: p.installation.clone(), name: p.name.clone(), archived: p.archived })
+}
+
 pub fn can_hint(store: &Store, inst: &str, battery: &SerialValue) -> Result<Option<Other>, String> {
     let SerialValue::Set { value, truncated } = battery else { return Ok(None) };
-    let places = store.master_battery_places(value, *truncated)?;
-    if places.iter().any(|p| p.installation == inst) {
-        return Ok(None);
-    }
-    Ok(places.first().map(|p| Other { id: p.installation.clone(), name: p.name.clone(), archived: p.archived }))
+    Ok(can_hint_of(inst, &store.battery_places(value, *truncated)?))
 }
 
 /// What the UI gets about a pack's identity (serial read, write refusal, "bank-unconfirmed" event).
@@ -127,62 +135,188 @@ struct Held {
     why: Why,
 }
 
-/// The unconfirmed packs of one connection; another generation starts empty.
-#[derive(Default)]
-pub(crate) struct BankState {
-    gen: u64,
-    packs: BTreeMap<u8, Held>,
+/// What the connection has learned about a pack.
+#[derive(Clone, Debug)]
+enum Seen {
+    Known,
+    Unchecked,
+    Failed,
+    Unconfirmed(Held),
 }
 
-impl BankState {
-    fn of(&mut self, gen: u64) -> &mut BTreeMap<u8, Held> {
-        if self.gen != gen {
-            self.gen = gen;
-            self.packs.clear();
+impl Seen {
+    fn of(id: &Identity, bms: &SerialValue, battery: &SerialValue) -> Self {
+        match id {
+            Identity::Known => Seen::Known,
+            Identity::Unchecked => Seen::Unchecked,
+            Identity::Failed => Seen::Failed,
+            Identity::Unconfirmed { why, .. } => Seen::Unconfirmed(Held { bms: bms.clone(), battery: battery.clone(), why: *why }),
         }
-        &mut self.packs
     }
 }
 
-/// A pack of connection `gen` is unconfirmed (Some) or not (None). Returns whether the connection is foreign now.
-fn note(state: &AppState, gen: u64, address: u8, held: Option<Held>) -> bool {
-    let Ok(mut b) = state.bank.lock() else { return false };
-    let packs = b.of(gen);
-    match held {
-        Some(h) => packs.insert(address, h),
-        None => packs.remove(&address),
-    };
-    packs.values().any(|h| h.why == Why::Foreign)
+/// The endpoint of a connection on RS485-1/2, linked to its installation only once the bank is decided.
+pub(crate) struct PendingLink {
+    pub key: String,
+    pub control: crate::maint_store::ControlEndpoint,
+}
+
+/// What the connection may do with the installation: record (and link its endpoint), or wait because a pack of another
+/// installation is open (`Foreign`), because every pack decided so far is unconfirmed (`Confirm`), or because no read
+/// has decided anything yet (`Pending`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+    Record,
+    Foreign,
+    Confirm,
+    Pending,
+}
+
+/// What one connection (link generation) has learned about its packs. Only `note` and `begin` start a new generation;
+/// queries about another one find nothing.
+#[derive(Default)]
+pub(crate) struct BankState {
+    gen: u64,
+    packs: BTreeMap<u8, Seen>,
+    /// the UI's serial reads of this connection have ended (`bank_reads_done`)
+    reads_done: bool,
+    /// RS485-1/2: the recorder and the endpoint link follow the verdict; the CAN socket records from the start
+    pack_bus: bool,
+    link: Option<PendingLink>,
+}
+
+impl BankState {
+    fn reset_to(&mut self, gen: u64) {
+        if self.gen != gen {
+            *self = BankState { gen, ..Default::default() };
+        }
+    }
+
+    fn current(&self, gen: u64) -> Option<&Self> {
+        (self.gen == gen).then_some(self)
+    }
+
+    fn foreign(&self) -> bool {
+        self.packs.values().any(|s| matches!(s, Seen::Unconfirmed(h) if h.why == Why::Foreign))
+    }
+
+    fn verdict(&self) -> Verdict {
+        if self.foreign() {
+            return Verdict::Foreign;
+        }
+        let has = |f: fn(&Seen) -> bool| self.packs.values().any(f);
+        if has(|s| matches!(s, Seen::Known)) {
+            Verdict::Record
+        } else if has(|s| matches!(s, Seen::Unconfirmed(_))) {
+            // no known pack at all (an adapter moved to a bank never seen, a new installation): wait for „Übernehmen“
+            Verdict::Confirm
+        } else if has(|s| matches!(s, Seen::Unchecked)) || self.reads_done {
+            // nothing to compare, or every read failed: as before this check existed
+            Verdict::Record
+        } else {
+            Verdict::Pending
+        }
+    }
+
+    /// What a pack showed. A failed read does not replace what an earlier read decided; a write's check (battery not
+    /// read) keeps String 1 of the serial read.
+    fn note(&mut self, address: u8, seen: Seen) {
+        let seen = match (seen, self.packs.get(&address)) {
+            (Seen::Failed, Some(old)) => old.clone(),
+            (Seen::Unconfirmed(mut h), Some(Seen::Unconfirmed(old))) if h.battery == SerialValue::NoAnswer => {
+                h.battery = old.battery.clone();
+                Seen::Unconfirmed(h)
+            }
+            (s, _) => s,
+        };
+        self.packs.insert(address, seen);
+    }
+}
+
+/// A new connection: on RS485-1/2 the recorder waits and `link` is linked once the bank is decided.
+pub(crate) fn begin(state: &AppState, gen: u64, pack_bus: bool, link: Option<PendingLink>) {
+    if let Ok(mut b) = state.bank.lock() {
+        *b = BankState { gen, pack_bus, link, ..Default::default() };
+    }
+}
+
+fn note(state: &AppState, gen: u64, address: u8, seen: Seen) {
+    if let Ok(mut b) = state.bank.lock() {
+        b.reset_to(gen);
+        b.note(address, seen);
+    }
 }
 
 /// A pack of another installation is unconfirmed on connection `gen`: nothing is stored for it.
 pub(crate) fn foreign(state: &AppState, gen: u64) -> bool {
-    state.bank.lock().map(|mut b| b.of(gen).values().any(|h| h.why == Why::Foreign)).unwrap_or(true)
+    state.bank.lock().map(|b| b.current(gen).is_some_and(|b| b.foreign())).unwrap_or(true)
 }
 
 /// The pack at `address` is unconfirmed on connection `gen`.
 pub(crate) fn unconfirmed(state: &AppState, gen: u64, address: u8) -> bool {
-    state.bank.lock().map(|mut b| b.of(gen).contains_key(&address)).unwrap_or(true)
+    state.bank.lock().map(|b| b.current(gen).is_some_and(|b| matches!(b.packs.get(&address), Some(Seen::Unconfirmed(_))))).unwrap_or(true)
 }
 
-/// Hold the recorder while the connection is foreign, else let it run; only while `link` is the current connection.
-fn recorder_follow(state: &AppState, link: &Link, foreign: bool) {
+/// Apply the verdict of `link`'s connection: the recorder waits unless it may record; the first `Record` links the
+/// endpoint to the installation (event "bank-linked" with its name). Never while another connection is current.
+fn settle(state: &AppState, link: &Link) {
+    let (v, pending) = {
+        let Ok(mut b) = state.bank.lock() else { return };
+        if b.gen != link.gen || !b.pack_bus {
+            return;
+        }
+        let v = b.verdict();
+        (v, if v == Verdict::Record { b.link.take() } else { None })
+    };
+    if link_now(state).gen != link.gen {
+        return;
+    }
     if let Ok(mut h) = state.history.lock() {
-        if link_now(state).gen == link.gen {
-            h.hold(foreign);
+        h.hold(v != Verdict::Record);
+    }
+    if let (Some(p), Some(inst)) = (pending, link.installation.as_deref()) {
+        match crate::maint::with_store(state, |s| {
+            let linked = s.link_connection(inst, &p.key, p.control.clone(), false, crate::history::now_ms())?;
+            Ok((linked, s.installation(inst)?.name))
+        }) {
+            Ok((true, name)) => {
+                if let Some(app) = state.app.get() {
+                    let _ = app.emit("bank-linked", name);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("link: {e:?}"),
         }
     }
 }
 
-/// A serial read of the monitor (`serial_numbers`) classified: an unconfirmed pack is kept for the confirmation, the
-/// others are dropped from it; the recorder follows (RS485-1/2: the first decided read releases it).
+/// A serial read of the monitor (`serial_numbers`) classified; the recorder and the endpoint link follow.
 pub(crate) fn after_read(state: &AppState, link: &Link, address: u8, id: &Identity, bms: &SerialValue, battery: &SerialValue) {
-    let held = match id {
-        Identity::Unconfirmed { why, .. } => Some(Held { bms: bms.clone(), battery: battery.clone(), why: *why }),
-        _ => None,
-    };
-    let foreign = note(state, link.gen, address, held);
-    recorder_follow(state, link, foreign);
+    note(state, link.gen, address, Seen::of(id, bms, battery));
+    settle(state, link);
+}
+
+/// The UI's serial reads of connection `gen` have ended (also when it found no pack or every read failed): a bank
+/// where nothing could be decided records as before.
+#[tauri::command]
+pub async fn bank_reads_done(state: State<'_, AppState>, gen: u64) -> Result<(), String> {
+    reads_done(&state, gen);
+    Ok(())
+}
+
+fn reads_done(state: &AppState, gen: u64) {
+    let link = link_now(state);
+    if link.gen != gen {
+        return;
+    }
+    if let Ok(mut b) = state.bank.lock() {
+        if b.gen != gen {
+            return;
+        }
+        b.reads_done = true;
+    }
+    settle(state, &link);
 }
 
 /// The refusal of a write to a pack that is not confirmed, or whose check failed, as JSON for the UI (`bankRefusal`
@@ -200,8 +334,9 @@ pub fn refusal(v: &IdentityView, error: Option<&str>) -> String {
     j.to_string()
 }
 
-fn failed(address: u8, error: &str) -> String {
-    refusal(&IdentityView::of(&Identity::Failed, address, &SerialValue::NoAnswer), Some(error))
+/// `code`: "no-answer" | "connection" | "store" | "no-installation" (the UI words it).
+fn failed(address: u8, code: &str) -> String {
+    refusal(&IdentityView::of(&Identity::Failed, address, &SerialValue::NoAnswer), Some(code))
 }
 
 /// What the check before a write found: `unchecked` (no serial to compare, the UI says so) and the String 2 read.
@@ -210,31 +345,50 @@ pub(crate) struct Checked {
     pub read: SerialValue,
 }
 
-/// The first step of every write, inside its pack reservation and on its connection: read 0xA4 of the target and
-/// classify it. Known and unchecked go on; unconfirmed and a failed check refuse, nothing is written.
-pub(crate) fn check_target(state: &AppState, link: &Link, address: u8) -> Result<Checked, String> {
+/// Read 0xA4 of `address` on `link`'s connection and classify it; what it decides is noted for the connection (an
+/// unconfirmed pack also reaches the sidebar). Errors: a changed connection or a flash as they are, else a bank
+/// refusal of state "failed".
+pub(crate) fn check(state: &AppState, link: &Link, address: u8) -> Result<(Identity, SerialValue), String> {
+    let inst = link.installation.as_deref().ok_or_else(|| failed(address, "no-installation"))?;
     let read = match with_link(&state.conn, &state.flashing, &state.link, link, |c| c.bms_serial(address)) {
         Ok(v) => v,
         // the connection changed or a flash took it: that error, not a bank refusal
         Err(e) if e == LINK_CHANGED || e == FLASHING => return Err(e),
-        Err(e) => return Err(failed(address, &e)),
+        Err(e) => {
+            eprintln!("bank check {address}: {e}");
+            return Err(failed(address, "connection"));
+        }
     };
-    let inst = link.installation.as_deref().ok_or_else(|| failed(address, "no installation"))?;
-    let id = crate::maint::with_store(state, |s| identity(s, inst, address, &read)).map_err(|e| failed(address, &format!("{e:?}")))?;
-    let view = IdentityView::of(&id, address, &read);
+    let id = crate::maint::with_store(state, |s| identity(s, inst, address, &read)).map_err(|e| {
+        eprintln!("bank check {address}: {e:?}");
+        failed(address, "store")
+    })?;
+    if id != Identity::Failed {
+        note(state, link.gen, address, Seen::of(&id, &read, &SerialValue::NoAnswer));
+        settle(state, link);
+    }
+    if matches!(id, Identity::Unconfirmed { .. }) {
+        if let Some(app) = state.app.get() {
+            let _ = app.emit("bank-unconfirmed", &IdentityView::of(&id, address, &read));
+        }
+    }
+    Ok((id, read))
+}
+
+/// A parameter read keeps its snapshot only for a pack whose board is known or has no serial to compare.
+pub(crate) fn snapshot_allowed(checked: &Result<(Identity, SerialValue), String>) -> bool {
+    matches!(checked, Ok((Identity::Known | Identity::Unchecked, _)))
+}
+
+/// The first step of every write, inside its pack reservation and on its connection: read 0xA4 of the target and
+/// classify it. Known and unchecked go on; unconfirmed and a failed check refuse, nothing is written.
+pub(crate) fn check_target(state: &AppState, link: &Link, address: u8) -> Result<Checked, String> {
+    let (id, read) = check(state, link, address)?;
     match id {
         Identity::Known => Ok(Checked { unchecked: false, read }),
         Identity::Unchecked => Ok(Checked { unchecked: true, read }),
         Identity::Failed => Err(failed(address, "no-answer")),
-        Identity::Unconfirmed { why, .. } => {
-            // the sidebar lists it from now on, also when its serial read had not run yet
-            let foreign = note(state, link.gen, address, Some(Held { bms: read.clone(), battery: SerialValue::NoAnswer, why }));
-            recorder_follow(state, link, foreign);
-            if let Some(app) = state.app.get() {
-                let _ = app.emit("bank-unconfirmed", &view);
-            }
-            Err(refusal(&view, None))
-        }
+        Identity::Unconfirmed { .. } => Err(refusal(&IdentityView::of(&id, address, &read), None)),
     }
 }
 
@@ -259,28 +413,26 @@ fn confirm(state: &AppState, installation: &str, addresses: &[u8]) -> Result<Vec
         return Err("the connection belongs to another installation than the one chosen; connect again".into());
     }
     let held: Vec<(u8, Held)> = {
-        let mut b = state.bank.lock().map_err(|e| e.to_string())?;
-        let packs = b.of(link.gen);
-        addresses.iter().filter_map(|a| packs.get(a).map(|h| (*a, h.clone()))).collect()
+        let b = state.bank.lock().map_err(|e| e.to_string())?;
+        let Some(b) = b.current(link.gen) else { return Ok(vec![]) };
+        addresses.iter().filter_map(|a| match b.packs.get(a) { Some(Seen::Unconfirmed(h)) => Some((*a, h.clone())), _ => None }).collect()
     };
     let now = crate::history::now_ms();
     // one transaction per pack (`board_seen`): a failure leaves the packs not recorded yet unconfirmed
-    crate::maint::with_store(state, |s| {
+    let mut done = vec![];
+    let r = crate::maint::with_store(state, |s| {
         for (a, h) in &held {
             s.board_seen(installation, *a, &h.bms, &h.battery, now)?;
+            done.push(*a);
         }
         Ok(())
-    })
-    .map_err(|e| format!("{e:?}"))?;
-    let mut foreign = false;
-    for (a, _) in &held {
-        foreign = note(state, link.gen, *a, None);
+    });
+    for a in &done {
+        note(state, link.gen, *a, Seen::Known);
     }
-    if held.is_empty() {
-        foreign = self::foreign(state, link.gen);
-    }
-    recorder_follow(state, &link, foreign);
-    Ok(held.into_iter().map(|(a, _)| a).collect())
+    settle(state, &link);
+    r.map_err(|e| format!("{e:?}"))?;
+    Ok(done)
 }
 
 #[cfg(test)]
@@ -394,6 +546,131 @@ mod tests {
         // A has the same battery serial at its master too: no hint
         s.board_seen(&a, 0, &set("SYN-A0"), &set("BAT-B0-0123456789-ABCDEFGH"), 1).unwrap();
         assert_eq!(can_hint(&s, &a, &cut).unwrap(), None);
+    }
+
+    fn place(inst: &str, address: u8) -> SerialPlace {
+        SerialPlace { installation: inst.into(), address, name: inst.to_uppercase(), archived: false }
+    }
+
+    #[test]
+    fn the_can_hint_names_only_one_other_installation_with_it_at_its_master() {
+        assert_eq!(can_hint_of("a", &[place("b", 0)]).map(|o| o.name), Some("B".into()));
+        assert_eq!(can_hint_of("a", &[]), None);
+        // in more than one installation (a copy, a reused text): no hint
+        assert_eq!(can_hint_of("a", &[place("b", 0), place("c", 0)]), None);
+        assert_eq!(can_hint_of("a", &[place("a", 5), place("b", 0)]), None, "one of A's own boards carries it");
+        // the other installation has it only at a slave: not its master, no hint
+        assert_eq!(can_hint_of("a", &[place("b", 3)]), None);
+        assert_eq!(can_hint_of("a", &[place("a", 0)]), None);
+    }
+
+    fn held(why: Why, battery: SerialValue) -> Seen {
+        Seen::Unconfirmed(Held { bms: set("SYN-X"), battery, why })
+    }
+
+    #[test]
+    fn the_verdict_records_only_once_the_bank_is_decided() {
+        let mut b = BankState { pack_bus: true, ..Default::default() };
+        assert_eq!(b.verdict(), Verdict::Pending);
+        // a silent master decides nothing, and a later failed read does not undo a decision
+        b.note(0, Seen::Failed);
+        assert_eq!(b.verdict(), Verdict::Pending);
+        // only unconfirmed packs (a bank never seen, a new installation): wait for the confirmation, also after the reads
+        b.note(1, held(Why::New, SerialValue::NoAnswer));
+        b.reads_done = true;
+        assert_eq!(b.verdict(), Verdict::Confirm);
+        b.note(2, Seen::Known);
+        assert_eq!(b.verdict(), Verdict::Record);
+        b.note(2, Seen::Failed);
+        assert_eq!(b.verdict(), Verdict::Record);
+        b.note(3, held(Why::Foreign, SerialValue::NoAnswer));
+        assert_eq!(b.verdict(), Verdict::Foreign);
+        // packs without a serial: nothing to compare, recorded as before
+        let mut c = BankState::default();
+        c.note(4, Seen::Unchecked);
+        assert_eq!(c.verdict(), Verdict::Record);
+        // every read failed, or no pack found at all: recorded once the reads ended
+        let d = BankState { reads_done: true, ..Default::default() };
+        assert_eq!(d.verdict(), Verdict::Record);
+    }
+
+    #[test]
+    fn a_writes_check_keeps_string_1_of_the_serial_read() {
+        let mut b = BankState::default();
+        b.note(0, held(Why::Foreign, set("BAT-0")));
+        b.note(0, held(Why::Foreign, SerialValue::NoAnswer));
+        assert!(matches!(b.packs.get(&0), Some(Seen::Unconfirmed(h)) if h.battery == set("BAT-0")));
+        // a fresh read of String 1 replaces it
+        b.note(0, held(Why::Foreign, SerialValue::Empty));
+        assert!(matches!(b.packs.get(&0), Some(Seen::Unconfirmed(h)) if h.battery == SerialValue::Empty));
+    }
+
+    #[test]
+    fn a_parameter_read_keeps_a_snapshot_only_of_a_known_or_unchecked_board() {
+        assert!(snapshot_allowed(&Ok((Identity::Known, NONE))));
+        assert!(snapshot_allowed(&Ok((Identity::Unchecked, SerialValue::Empty))));
+        assert!(!snapshot_allowed(&Ok((Identity::Unconfirmed { why: Why::New, other: None }, set("SYN-N")))));
+        assert!(!snapshot_allowed(&Ok((Identity::Failed, NONE))));
+        assert!(!snapshot_allowed(&Err(failed(1, "connection"))));
+    }
+
+    #[test]
+    fn queries_about_another_connection_change_nothing() {
+        let state = AppState::default();
+        crate::new_link(&state, Some("a".into()));
+        let gen = link_now(&state).gen;
+        note(&state, gen, 2, held(Why::Foreign, NONE));
+        assert!(!foreign(&state, gen + 1) && !unconfirmed(&state, gen - 1, 2));
+        assert!(foreign(&state, gen) && unconfirmed(&state, gen, 2), "still there");
+    }
+
+    #[test]
+    fn the_recorder_and_the_endpoint_link_wait_for_the_bank() {
+        let s = Store::open(&temp("settle")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap().id;
+        let b = s.create_installation("B", None, vec![]).unwrap().id;
+        s.board_seen(&a, 1, &set("SYN-A1"), &NONE, 1).unwrap();
+        s.board_seen(&b, 0, &set("SYN-B0"), &NONE, 1).unwrap();
+        let state = state_with(s, &a);
+        let pending = || Some(PendingLink { key: "tcp:gw-a:4196".into(), control: crate::maint_store::ControlEndpoint::Tcp { addr: "gw-a:4196".into() } });
+        let start = |state: &AppState| {
+            crate::new_link(state, Some(a.clone()));
+            let link = link_now(state);
+            begin(state, link.gen, true, pending());
+            state.history.lock().unwrap().connected(&a, "pack");
+            state.history.lock().unwrap().hold(true);
+            link
+        };
+        let endpoints = |state: &AppState| crate::maint::with_store(state, |s| s.installation(&a)).unwrap().endpoints;
+        let held = |state: &AppState| state.history.lock().unwrap().is_held();
+        // a silent master at 00 releases nothing; the foreign pack after it holds and never links
+        let link = start(&state);
+        after_read(&state, &link, 0, &Identity::Failed, &NONE, &NONE);
+        assert!(held(&state));
+        let id = crate::maint::with_store(&state, |s| identity(s, &a, 0, &set("SYN-B0"))).unwrap();
+        after_read(&state, &link, 0, &id, &set("SYN-B0"), &NONE);
+        reads_done(&state, link.gen);
+        assert!(held(&state) && endpoints(&state).is_empty());
+        // reconnected: a known pack records and links
+        let link = start(&state);
+        after_read(&state, &link, 1, &Identity::Known, &set("SYN-A1"), &NONE);
+        assert!(!held(&state));
+        assert_eq!(endpoints(&state), vec!["tcp:gw-a:4196".to_string()]);
+        // no pack decided anything (none found, every read failed): recorded once the reads ended
+        let link = start(&state);
+        after_read(&state, &link, 0, &Identity::Failed, &NONE, &NONE);
+        assert!(held(&state));
+        reads_done(&state, link.gen - 1);
+        assert!(held(&state), "the end of another connection's reads");
+        reads_done(&state, link.gen);
+        assert!(!held(&state));
+        // only new boards: held until „Übernehmen“
+        let link = start(&state);
+        after_read(&state, &link, 5, &Identity::Unconfirmed { why: Why::New, other: None }, &set("SYN-N5"), &NONE);
+        reads_done(&state, link.gen);
+        assert!(held(&state));
+        confirm(&state, &a, &[5]).unwrap();
+        assert!(!held(&state));
     }
 
     #[test]
