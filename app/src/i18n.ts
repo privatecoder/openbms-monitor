@@ -288,7 +288,7 @@ const resources = {
         title: "Steuern", closed: "Neu starten, ein-/ausschalten, Heizung, Restkapazität, Historie löschen (gewähltes Pack)",
         reading: "Lese Zustand …", readError: "Zustand nicht lesbar: {{err}}", reload: "Zustand neu lesen", running: "Sende …", cancel: "Abbrechen",
         state: {
-          command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt", offCommand: "ausgeschaltet", offSoon: "das BMS schaltet wegen Unterspannung bzw. SOC-Schutz nach spätestens 60 s wieder aus",
+          command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt", offCommand: "ausgeschaltet", heaterUntil: "bis etwa {{time}}, von der App gestartet", offSoon: "das BMS schaltet wegen Unterspannung bzw. SOC-Schutz nach spätestens 60 s wieder aus",
           soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} Zyklus", cycles_other: "{{count}} Zyklen",
         },
         tip: {
@@ -861,7 +861,7 @@ const resources = {
         title: "Control", closed: "Restart, switch on/off, heater, remaining capacity, clear history (chosen pack)",
         reading: "Reading state …", readError: "State not readable: {{err}}", reload: "Read state again", running: "Sending …", cancel: "Cancel",
         state: {
-          command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked", offCommand: "switched off", offSoon: "the BMS switches off again within 60 s because of undervoltage or SOC protection",
+          command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked", offCommand: "switched off", heaterUntil: "until about {{time}}, started by the app", offSoon: "the BMS switches off again within 60 s because of undervoltage or SOC protection",
           soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} cycle", cycles_other: "{{count}} cycles",
         },
         tip: {
