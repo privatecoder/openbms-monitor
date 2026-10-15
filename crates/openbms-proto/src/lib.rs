@@ -3,6 +3,7 @@
 //! Protocol details: <https://github.com/privatecoder/seplos-emu1101-docs>.
 
 pub mod calibration;
+pub mod control;
 pub mod device_info;
 pub mod error;
 pub mod frame;
@@ -17,6 +18,7 @@ pub mod status;
 pub mod telemetry;
 
 pub use calibration::{Calibration, Refusal};
+pub use control::Comeback;
 pub use device_info::DeviceInfo;
 pub use error::{Error, Result};
 pub use frame::Frame;
