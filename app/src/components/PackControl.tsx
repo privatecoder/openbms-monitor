@@ -178,7 +178,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const under = soc !== null ? belowSocProtection(soc, p79) : null;
   const disabled = busy !== null || locked;
   const yesNo = (free: boolean) => <span className={free ? "text-ok" : "text-discharge"}>{t(free ? "ctl.state.free" : "ctl.state.blocked")}</span>;
-  const blockers = st && !dischargeFree(st) && !off ? blockingAlarms(st, "discharge") : [];
+  const blockers = st && !dischargeFree(st) ? blockingAlarms(st, "discharge") : [];
   const chargeBlockers = st && !chargeFree(st) ? blockingAlarms(st, "charge") : [];
 
   return (
@@ -198,7 +198,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
               : "error" in live ? <span className="text-alarm">{t("ctl.readError", { err: live.error })}</span>
               : <>
                 <span>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span></span>
-                <span>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{blockers.length > 0 && <span className="text-discharge"> ({names(blockers)})</span>}</span>
+                <span>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</span>
                 <span>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</span>
                 <span>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</span>
                 <span>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</span>
@@ -218,6 +218,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
               {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
             </Button>
           </div>
+          {note && <p className={note.tone === "ok" ? "text-ok" : note.tone === "warn" ? "text-discharge" : "text-alarm"}>{note.text}</p>}
           <p className="max-w-3xl text-muted">{t("ctl.heater.hint")}</p>
 
           <div className="space-y-1">
@@ -239,7 +240,6 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
           <div>
             <Button size="sm" variant="ghost" disabled={disabled} onClick={() => void askClear(address)}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
           </div>
-          {note && <p className={note.tone === "ok" ? "text-ok" : note.tone === "warn" ? "text-discharge" : "text-alarm"}>{note.text}</p>}
         </div>
       )}
       {ask && (

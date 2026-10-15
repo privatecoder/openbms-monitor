@@ -287,7 +287,7 @@ const resources = {
         title: "Steuern", closed: "Neu starten, ein-/ausschalten, Heizung, Restkapazität, Historie löschen (gewähltes Pack)",
         reading: "Lese Zustand …", readError: "Zustand nicht lesbar: {{err}}", reload: "Zustand neu lesen", running: "Sende …", cancel: "Abbrechen",
         state: {
-          command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt",
+          command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt", offCommand: "ausgeschaltet",
           soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} Zyklus", cycles_other: "{{count}} Zyklen", at: "Stand {{time}}",
         },
         busy: "Pack {{pack}} ist gerade mit {{action}} beschäftigt. Danach noch einmal versuchen.",
@@ -850,7 +850,7 @@ const resources = {
         title: "Control", closed: "Restart, switch on/off, heater, remaining capacity, clear history (chosen pack)",
         reading: "Reading state …", readError: "State not readable: {{err}}", reload: "Read state again", running: "Sending …", cancel: "Cancel",
         state: {
-          command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked",
+          command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked", offCommand: "switched off",
           soc: "SOC {{soc}} % · {{rem}} / {{full}} Ah", cycles_one: "{{count}} cycle", cycles_other: "{{count}} cycles", at: "as of {{time}}",
         },
         busy: "Pack {{pack}} is busy with {{action}} right now. Try again afterwards.",
