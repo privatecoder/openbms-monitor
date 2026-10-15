@@ -43,7 +43,7 @@ export function Cells() {
   const current = list.find((e) => e.cell.id === selected) ?? list[0];
 
   return (
-    <div className="view-in mx-auto flex h-full max-w-6xl flex-col gap-5">
+    <div className="view-in mx-auto flex h-full max-w-7xl flex-col gap-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight">{t("cells.title")}<InfoIcon id="topic.cells" /></h1>

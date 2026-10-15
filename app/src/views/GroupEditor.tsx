@@ -19,7 +19,9 @@ export function GroupEditor({ open, onOpenChange, groups, packs, onSave, pairs, 
   const [count, setCount] = useState(3);
   const perGroup = Math.ceil(packs.length / Math.max(1, count));
   const [pairDraft, setPairDraft] = useState<Pair[]>(pairs);
-  useEffect(() => { if (open) { setDraft(groups.length ? groups : []); setPairDraft(pairs); } }, [open, groups, pairs]);
+  // take the saved groups only when the editor opens: the parent passes new arrays on every poll (every 2 s), which
+  // would otherwise throw the draft away while it is being edited
+  useEffect(() => { if (open) { setDraft(groups.length ? groups : []); setPairDraft(pairs); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   const setPair = (i: number, k: keyof Pair, v: number) => setPairDraft((d) => d.map((p, j) => (j === i ? { ...p, [k]: v } : p)));
 
   const owner = (a: number) => draft.findIndex((g) => g.packs.includes(a));
