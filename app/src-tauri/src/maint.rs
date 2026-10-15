@@ -293,7 +293,10 @@ pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, Main
     let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()))?
         .map_err(|e| MaintError::Connection { message: e.to_string() })?;
     let m = Master::of(Some(probe));
-    if m != Master::Unknown {
+    // the monitor connection of this installation shows a pack of another installation: nothing is kept for it
+    let link = crate::link_now(state);
+    let foreign = link.installation.as_deref() == Some(inst.id.as_str()) && crate::bank::foreign(state, link.gen);
+    if m != Master::Unknown && !foreign {
         let v = master_view(&m);
         let data = serde_json::to_string(&v).unwrap_or_default();
         with_store(state, |s| s.set_master_read(&inst.id, &data, v.marker == Some("on"), crate::history::now_ms()))?;
