@@ -3,8 +3,9 @@ import { useTranslation } from "react-i18next";
 import { Hash } from "lucide-react";
 import { api, type SerialNumbers } from "../api";
 import { refusal } from "../calibration";
-import { errorText } from "../control";
+import { errorText, writeError } from "../control";
 import { serialInputOk, serialSetResult, serialText } from "../serial";
+import { batteryFromBms, CAN_SHOWN, SERIAL_MAX } from "../bank";
 import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 import { useCurrent } from "./Calibration";
@@ -21,10 +22,12 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
   const [note, setNote] = useState<Partial<Record<Which, Note>>>({});
   const [reload, setReload] = useState(0);
   const [readAt, setReadAt] = useState<Date | null>(null);
+  // „BMS-Nummer übernehmen“ filled the battery field: what to know about the value (cut, CAN shows only part)
+  const [fillNote, setFillNote] = useState<string | null>(null);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   // nothing typed for one pack may be written to another
-  useEffect(() => { setInput({ battery: "", bms: "" }); setNote({}); }, [address]);
+  useEffect(() => { setInput({ battery: "", bms: "" }); setNote({}); setFillNote(null); }, [address]);
   useEffect(() => {
     setRead(null);
     if (address === null || !usable) return;
@@ -48,10 +51,22 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
         text: (res === "done" ? t("snw.done") : res === "mismatch" ? t("snw.mismatch", { text: r.value ? serialText(r.value, which, "pack", a === 0, t).text : "" }) : t("snw.unread", { err: r.read_error ?? "" })) + extra,
         error: res === "mismatch" || r.master_unchecked,
       } }));
-      if (res === "done") setInput((i) => ({ ...i, [which]: "" }));
+      if (res === "done") { setInput((i) => ({ ...i, [which]: "" })); if (which === "battery") setFillNote(null); }
     } catch (e) {
-      if (current.current === a) setNote((n) => ({ ...n, [which]: { text: refusal(e) ? t("snw.refused") : String(e).startsWith("pre-read") ? t("snw.preRead") : t("snw.error", { err: errorText(e, t) }), error: true } }));
+      if (current.current === a) setNote((n) => ({ ...n, [which]: { text: refusal(e) ? t("snw.refused") : String(e).startsWith("pre-read") ? t("snw.preRead") : writeError(e, t, (err) => t("snw.error", { err })), error: true } }));
     } finally { setBusy(null); }
+  };
+
+  // the battery serial is the only one the CAN socket shows (master only): offer the BMS serial for it when it is
+  // empty, the placeholder or another value; the user still writes it
+  const bmsValue = read && "bms" in read && read.bms.kind === "set" && !read.bms.truncated ? read.bms.value : null;
+  const battery = read && "battery" in read ? read.battery : null;
+  const offerBms = !!bmsValue && !!battery && (battery.kind === "empty" || battery.kind === "placeholder" || (battery.kind === "set" && battery.value !== bmsValue));
+  const useBms = () => {
+    if (!bmsValue) return;
+    const f = batteryFromBms(bmsValue);
+    setInput((i) => ({ ...i, battery: f.text }));
+    setFillNote([f.cut ? t("snw.useBmsCut", { n: SERIAL_MAX }) : "", f.beyondCan ? t("snw.useBmsCan", { n: CAN_SHOWN }) : ""].filter(Boolean).join(" ") || null);
   };
 
   const row = (which: Which) => {
@@ -69,8 +84,12 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
             placeholder={t("snw.placeholder")} aria-label={`${t(`snw.${which}`)}: ${t("snw.placeholder")}`}
             className={`h-8 w-72 rounded-md border bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-charge ${bad ? "border-alarm" : "border-line"}`} />
           <Button size="sm" disabled={!!busy || locked || !serialInputOk(s)} onClick={() => write(which)}>{busy === which ? t("snw.writing") : t("snw.write")}</Button>
+          {which === "battery" && offerBms && (
+            <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={useBms} title={t("snw.useBmsHint")}>{t("snw.useBms")}</Button>
+          )}
           {bad && <span className="text-alarm">{t("snw.invalid")}</span>}
         </div>
+        {which === "battery" && fillNote && <StatusLine>{fillNote}</StatusLine>}
         {n && <StatusLine tone={n.error ? "error" : "ok"}>{n.text}</StatusLine>}
       </div>
     );

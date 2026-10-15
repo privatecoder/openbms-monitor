@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
 import { api, isDemo, type BmsTime, type Bus } from "../api";
-import { errorText } from "../control";
+import { bankRefusal, errorText, writeError } from "../control";
 import { CLOCK_OK_S, clockDiff, durationText, fmtBmsTime, fromBmsTime, toBmsTime, zoneLabel } from "../bmsMemory";
 import { cn } from "../lib/utils";
 import { SectionHead, StatusLine } from "./Section";
@@ -76,22 +76,24 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
     try {
       const bms = await api.setBmsClock(address, toBmsTime(new Date()));
       setRead({ bms, at: Date.now() });
-    } catch (e) { setNote({ text: t("clock.setError", { err: errorText(e, t) }), error: true }); }
+    } catch (e) { setNote({ text: writeError(e, t, (err) => t("clock.setError", { err })), error: true }); }
     finally { setBusy(null); }
   };
   const setAll = async () => {
     setNote(null);
     const failed: string[] = [];
+    let bank: unknown = null;
     for (const [n, a] of packs.entries()) {
       setBusy(t("clock.settingAll", { pack: no(a), n: n + 1, of: packs.length }));
       try {
         const bms = await api.setBmsClock(a, toBmsTime(new Date()));
         if (a === address) setRead({ bms, at: Date.now() });
-      } catch { failed.push(no(a)); }
+      } catch (e) { failed.push(no(a)); if (!bank && bankRefusal(e)) bank = e; }
     }
     setBusy(null);
     const done = t("clock.setAllDone", { ok: packs.length - failed.length, of: packs.length });
-    setNote({ text: failed.length ? `${done} ${t("clock.setAllFailed", { list: failed.join(", ") })}` : done, error: failed.length > 0 });
+    const why = bank ? ` ${errorText(bank, t)}` : "";
+    setNote({ text: failed.length ? `${done} ${t("clock.setAllFailed", { list: failed.join(", ") })}${why}` : done, error: failed.length > 0 });
   };
 
   const diff = readDiff(read);

@@ -445,8 +445,14 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
         }
         _ => None,
     };
-    let identity = Some(bank::IdentityView::of(&id, address, &serials.bms));
-    Ok(SerialRead { serials, board, identity })
+    let view = bank::IdentityView::of(&id, address, &serials.bms);
+    // a read outside the sidebar (Parameters → Serial numbers) puts the pack on the sidebar line as well
+    if view.kind == "unconfirmed" {
+        if let Some(app) = state.app.get() {
+            let _ = app.emit("bank-unconfirmed", &view);
+        }
+    }
+    Ok(SerialRead { serials, board, identity: Some(view) })
 }
 
 /// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
