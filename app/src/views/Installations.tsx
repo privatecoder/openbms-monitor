@@ -11,6 +11,7 @@ import type { Maint } from "../maintStore";
 import { reloadSettings } from "../installData";
 import { useCellDb } from "../cells/store";
 import { cellName } from "./CellAssign";
+import { ExportRow, ImportPanel } from "./InstallationTransfer";
 
 const input = "h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -50,6 +51,7 @@ export function Installations({ maint, connected, onParameters }: {
             </label>
           )}
         </div>
+        <ImportPanel onDone={async () => { reloadSettings(); await maint.loadLists(); }} />
         {maint.loaded && !list.length && <p className="text-muted">{t("inst.none")}</p>}
         <div className="space-y-3">
           {list.map((i) => (
@@ -190,6 +192,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
               <InfoIcon id="topic.installations" />
             </div>
           )}
+          {view && <ExportRow inst={inst} recorded={view.recorded} />}
           {view && <p className="text-sm text-muted">{view.recorded ? t("inst.recorded", { count: view.recorded, from: date(view.recorded_from ?? 0), to: date(view.recorded_to ?? 0) }) : t("inst.notRecorded")}</p>}
           {view && <Places places={view.places} logDir={view.log_dir} onParameters={() => onParameters(inst.id)} />}
         </div>

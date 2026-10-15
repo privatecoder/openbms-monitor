@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+mod transfer;
+pub use transfer::{ImportRow, InstallationData, Into as ImportInto, LogPlan};
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS installations(id TEXT PRIMARY KEY, name TEXT NOT NULL, control TEXT, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS installation_endpoints(endpoint TEXT PRIMARY KEY, installation TEXT NOT NULL);
@@ -29,7 +32,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -76,6 +79,16 @@ fn moved_data(db: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// 3: since when a board counts as the current one at its place, in this computer's time: set by a live read here
+/// (or by an import into a place without a board). Imported boards of a place that has one get NULL, so another
+/// computer's clock never decides which board is current. Existing rows: their last sighting (all local so far).
+fn board_currency(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "ALTER TABLE boards ADD COLUMN current_at INTEGER;
+         UPDATE boards SET current_at = last_seen;",
+    )
+}
+
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
     db.pragma_update(None, "user_version", n as i64)
 }
@@ -97,8 +110,9 @@ static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 
 /// Whether a site key is an installation id (`new_id`), also of one deleted since: never an old endpoint text.
 pub fn looks_like_id(key: &str) -> bool {
+    // `inst-<time>-<pid>-<n>` now; versions before 2026-10-13 made `inst-<time>-<pid>`
     let parts: Vec<&str> = key.split('-').collect();
-    parts.len() == 4 && parts[0] == "inst" && parts[1..].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_hexdigit()))
+    (3..=4).contains(&parts.len()) && parts[0] == "inst" && parts[1..].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn new_id(now: i64) -> String {
@@ -407,6 +421,8 @@ impl Store {
                 "DELETE FROM layout WHERE installation = ?1",
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
+                // its completed imports (an open one refused the delete): the same files can restore it later
+                "DELETE FROM import_status WHERE installation = ?1",
                 // the files stay; without their installation they are listed as „ohne Anlage“
                 "UPDATE logs SET installation = NULL WHERE installation = ?1",
                 "DELETE FROM installations WHERE id = ?1",
@@ -424,7 +440,7 @@ impl Store {
         for ep in &inst.endpoints {
             pending |= !self.pending_on(ep)?.is_empty();
         }
-        if pending || self.marker_last_on(id)? {
+        if pending || self.marker_last_on(id)? || self.import_open_for(id)? {
             return Err("installation-busy".into());
         }
         Ok(())
@@ -611,7 +627,10 @@ impl Store {
     pub fn boards(&self, inst: &str, address: u8) -> Result<Vec<Board>, String> {
         let mut stmt = self
             .db
-            .prepare("SELECT id, bms_serial, battery_serial, first_seen, last_seen FROM boards WHERE installation = ?1 AND address = ?2 ORDER BY id DESC")
+            .prepare(
+                "SELECT id, bms_serial, battery_serial, first_seen, last_seen FROM boards WHERE installation = ?1 AND address = ?2
+                 ORDER BY current_at IS NULL, current_at DESC, id DESC",
+            )
             .map_err(e)?;
         let rows = stmt
             .query_map(params![inst, address], |r| {
@@ -626,7 +645,8 @@ impl Store {
             .collect()
     }
 
-    /// The newest board at a place: the one the place's data belongs to until another String 2 is read there.
+    /// The current board at a place (made current last, in this computer's time): the one the place's data belongs to
+    /// until another String 2 is read there.
     pub fn current_board(&self, inst: &str, address: u8) -> Result<Option<Board>, String> {
         Ok(self.boards(inst, address)?.into_iter().next())
     }
@@ -651,19 +671,35 @@ impl Store {
                 if b.bms_serial != serial {
                     self.rename_board(&b, serial, now)?;
                 }
-                self.db.execute("UPDATE boards SET last_seen = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
+                self.db.execute("UPDATE boards SET last_seen = ?2, current_at = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
                 if let Some(bat) = battery {
                     self.db.execute("UPDATE boards SET battery_serial = ?2 WHERE id = ?1", params![b.id, bat]).map_err(e)?;
                 }
                 Ok(BoardSeen::Same)
             }
             previous => {
-                self.db
-                    .execute(
-                        "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-                        params![inst, address, serial, battery.flatten(), now],
-                    )
-                    .map_err(e)?;
+                // a board known at this place before (an earlier one, or one imported from another computer) becomes
+                // current again; else a new row
+                let known = self.boards(inst, address)?.into_iter().find(|b| b.bms_serial == serial || b.aliases.iter().any(|a| a == serial));
+                match known {
+                    Some(b) => {
+                        if b.bms_serial != serial {
+                            self.rename_board(&b, serial, now)?;
+                        }
+                        self.db.execute("UPDATE boards SET last_seen = ?2, current_at = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
+                        if let Some(bat) = battery {
+                            self.db.execute("UPDATE boards SET battery_serial = ?2 WHERE id = ?1", params![b.id, bat]).map_err(e)?;
+                        }
+                    }
+                    None => {
+                        self.db
+                            .execute(
+                                "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen, current_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)",
+                                params![inst, address, serial, battery.flatten(), now],
+                            )
+                            .map_err(e)?;
+                    }
+                }
                 Ok(previous.map_or(BoardSeen::New, |b| BoardSeen::Other { previous: b.bms_serial }))
             }
         }
@@ -894,6 +930,10 @@ impl Store {
         }
         self.atomic(|s| {
             let (src, dst) = (s.installation(source)?, s.installation(target)?);
+            // an unfinished import resumes into its stored target: neither side may change under it
+            if s.import_open_for(source)? || s.import_open_for(target)? {
+                return Err("installation-busy".into());
+            }
             let kept = s.add_settings(target, &s.settings(source)?)?;
             let mut moved = serde_json::Map::new();
             for table in ["boards", "param_snapshots", "logs", "import_status"] {
@@ -1201,13 +1241,13 @@ mod tests {
         assert_eq!((a.endpoints.clone(), a.master_serial.as_deref(), a.archived), (vec!["serial:/dev/p".to_string()], Some("SN-1"), false));
         assert_eq!(s.all_pending().unwrap().iter().map(|p| p.pack).collect::<Vec<_>>(), vec![3]);
         // a copy before each step; the first holds the file as it was
-        assert_eq!(crate::migrate::backups(&path), vec!["maintenance.sqlite.bak-1".to_string(), "maintenance.sqlite.bak-2".to_string()]);
+        assert_eq!(crate::migrate::backups(&path), (1..=MIGRATIONS.len()).map(|n| format!("maintenance.sqlite.bak-{n}")).collect::<Vec<_>>());
         let bak = Connection::open(path.with_file_name("maintenance.sqlite.bak-1")).unwrap();
         assert!(bak.prepare("SELECT archived FROM installations").is_err());
         assert_eq!(bak.query_row("SELECT COUNT(*) FROM bootloader_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         drop(s);
         let s = Store::open(&path).unwrap();
-        assert_eq!(crate::migrate::backups(&path).len(), 2, "nothing left to migrate");
+        assert_eq!(crate::migrate::backups(&path).len(), MIGRATIONS.len(), "nothing left to migrate");
         assert_eq!(s.all_pending().unwrap().len(), 1);
     }
 

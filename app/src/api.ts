@@ -8,6 +8,22 @@ export type Bus = "pack" | "can";
 /** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
 export type OtherBus = { answered: number | null; noise: boolean; intra: boolean; pack_at_9600: boolean };
 
+export type Exported = { path: string; export_id: string; logs: number; logs_missing: number; recording: boolean; bytes: number };
+export type Named = { id: string; name: string };
+/** where an import goes (see the import dialog) */
+export type ImportInto = { kind: "same" } | { kind: "merge-anyway" } | { kind: "new"; copy: boolean } | { kind: "merge"; id: string };
+export type ImportPreview = {
+  export_id: string; installation: string; name: string; created: number; master_serial: string | null; archived: boolean;
+  places: number; boards: number; snapshots: number; logs: number; recording_bytes: number | null;
+  same: Named | null; master_differs: boolean; master_matches: Named[]; completed: number | null; open_into: Named | null;
+};
+export type ImportApplied = {
+  target: string; target_name: string; recording_rows: number; recording_events: number; logs_copied: number; already: boolean;
+  report: { boards_added?: number; snapshots_added?: number; logs_added?: number; logs_missing?: number;
+    not_taken?: { cell_types?: Record<string, string>; groups?: string | null; pairs?: string | null; diagnosis?: string | null }; master_serial_not_taken?: string | null };
+};
+export type OpenImport = { export_id: string; installation: string; name: string; started: number };
+
 export type Endpoint = { kind: "serial"; path: string; bus: Bus } | { kind: "tcp"; addr: string; bus: Bus };
 export type Severity = "info" | "warning" | "protection" | "fault";
 export type LimitState = "normal" | "below_limit" | "above_limit" | { other: number };
@@ -299,6 +315,14 @@ const tauriApi = {
   /** refused "installation-busy" (open work) or "installation-connected"; deletes its recording too, log files stay */
   installationDelete: (installation: string) => invoke<void>("installation_delete", { installation }),
   installationSnapshots: (installation: string) => invoke<SnapshotParams[]>("installation_snapshots", { installation }),
+  /** the installation's ZIP (boards, settings, parameter states, logs; the recording only when asked) */
+  installationExport: (installation: string, path: string, recording: boolean) => invoke<Exported>("installation_export", { installation, path, recording }),
+  /** unpacks and checks a ZIP; writes nothing to the databases */
+  installationImportInspect: (path: string) => invoke<ImportPreview>("installation_import_inspect", { path }),
+  installationImportApply: (exportId: string, into: ImportInto) => invoke<ImportApplied>("installation_import_apply", { exportId, into }),
+  installationImportsOpen: () => invoke<OpenImport[]>("installation_imports_open"),
+  installationImportDiscard: (exportId: string) => invoke<void>("installation_import_discard", { exportId }),
+  installationImportAbandon: (exportId: string) => invoke<void>("installation_import_abandon", { exportId }),
   /** firmware logs of no installation (full paths), newest first */
   logsUnassigned: () => invoke<string[]>("logs_unassigned"),
   /** the master's new serial number becomes the stored one */
@@ -475,6 +499,12 @@ function demoApi(): typeof tauriApi {
     installationRename: async () => { throw new Error("desktop app only"); },
     installationDelete: async () => { throw new Error("desktop app only"); },
     installationSnapshots: async () => [],
+    installationExport: async () => { throw new Error("desktop app only"); },
+    installationImportInspect: async () => { throw new Error("desktop app only"); },
+    installationImportApply: async () => { throw new Error("desktop app only"); },
+    installationImportsOpen: async () => [],
+    installationImportDiscard: async () => {},
+    installationImportAbandon: async () => {},
     logsUnassigned: async () => [],
     maintAdoptMasterSerial: async () => { throw new Error("desktop app only"); },
     maintAlerts: async () => ({ markers: [], pending: [] }),
