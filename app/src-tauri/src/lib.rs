@@ -7,6 +7,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod bms_memory;
+mod bundle;
 mod firmware;
 mod history;
 mod installations;
