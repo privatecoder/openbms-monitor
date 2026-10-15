@@ -80,9 +80,35 @@ export function packBusy(e: unknown): { address: number; action: string } | null
   return o.kind === "pack-busy" && typeof o.address === "number" && typeof o.action === "string" ? { address: o.address, action: o.action } : null;
 }
 
-/** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, the texts for a silent pack and a
- *  changed connection, else as it came. */
+/** A write refused before anything was sent because the pack's bank is not confirmed or could not be checked
+ *  (backend `bank.rs`); null for any other error. */
+export type BankRefusal = { state: "unconfirmed" | "failed"; address: number; why?: "new" | "moved" | "foreign"; installation?: { id: string; name: string } | null; error?: string };
+export function bankRefusal(e: unknown): BankRefusal | null {
+  let v: unknown = e;
+  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  if (!v || typeof v !== "object") return null;
+  const o = v as { kind?: unknown; state?: unknown; address?: unknown };
+  return o.kind === "bank" && (o.state === "unconfirmed" || o.state === "failed") && typeof o.address === "number" ? (v as BankRefusal) : null;
+}
+
+/** The text of a bank refusal: what the pack is and where to confirm it; always says that nothing was written. */
+export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unknown>) => string): string {
+  const pack = String(b.address).padStart(2, "0");
+  if (b.state === "failed") return b.error === "no-answer" ? t("bank.refused.silent", { pack }) : t("bank.refused.failed", { pack, err: b.error ?? "" });
+  if (b.why === "foreign") return t("bank.refused.foreign", { pack, name: b.installation?.name ?? "" });
+  return t(b.why === "moved" ? "bank.refused.moved" : "bank.refused.new", { pack });
+}
+
+/** The text of a failed write: a bank refusal as it is (it says that nothing was written), any other error through
+ *  `wrap` (e.g. „Nicht geschrieben: …“). */
+export const writeError = (e: unknown, t: (k: string, o?: Record<string, unknown>) => string, wrap: (err: string) => string) =>
+  bankRefusal(e) ? errorText(e, t) : wrap(errorText(e, t));
+
+/** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, the texts for a silent pack, a
+ *  changed connection and a bank refusal, else as it came. */
 export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>) => string): string {
+  const bank = bankRefusal(e);
+  if (bank) return bankText(bank, t);
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
   const b = packBusy(e);

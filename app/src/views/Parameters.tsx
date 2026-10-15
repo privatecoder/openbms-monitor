@@ -10,6 +10,7 @@ import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, export
 import { blockers, changes, fromRaw, notTaken, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX } from "../paramWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { SerialLine } from "../components/SerialWrite";
+import { useUnchecked } from "../bank";
 import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
 import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } from "../cells/paramCheck";
@@ -17,7 +18,7 @@ import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
-import { errorText, packBusy } from "../control";
+import { errorText, packBusy, writeError } from "../control";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -85,6 +86,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [edit, setEdit] = useState<Edit | null>(null);
   const [full, setFull] = useState<Full>(null);
   const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
+  // packs a write went to without a serial to check the bank with (this connection)
+  const unchecked = useUnchecked();
   const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading && !edit && !writing.params && !writing.ctl;
   // another installation or a new connection: what was read no longer belongs to the packs on the bus
   useEffect(() => {
@@ -234,7 +237,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         } else say({ text: t("pw.unread", { err: r.read_error ?? "" }), error: true });
         if (!restore) setEdit(null);
       }
-    } catch (e) { say({ text: t("pw.error", { err: errorText(e, t) }), error: true }); }
+    } catch (e) { say({ text: writeError(e, t, (err) => t("pw.error", { err })), error: true }); }
     finally { busyFor("params")(false); }
   };
 
@@ -304,6 +307,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
             : t("par.packBus")}
         </p>
         {storedNote && <p className="text-sm text-muted">{storedNote}</p>}
+        {chosen !== null && unchecked.has(chosen) && <p className="flex items-center gap-1.5 text-sm text-discharge">{t("bank.unchecked", { pack: packNo(chosen) })}<InfoIcon id="topic.installations" /></p>}
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} canWrite={writable} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
