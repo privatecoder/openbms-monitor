@@ -34,7 +34,7 @@ export function Installations({ maint, connected, onParameters }: {
   const list = maint.installations.filter((i) => archived || !i.archived);
 
   return (
-    <div className="view-in mx-auto max-w-5xl space-y-6">
+    <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
         <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight">
           <Building2 className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("inst.title")}<InfoIcon id="topic.installations" />

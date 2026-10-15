@@ -23,7 +23,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const balanced = new Set(balancedCells(st?.balancing, cells.length));
 
   return (
-    <div className="view-in mx-auto max-w-6xl space-y-8">
+    <div className="view-in mx-auto max-w-7xl space-y-8">
       <Button variant="ghost" size="sm" className="-ml-3" onClick={onBack}><ArrowLeft className="h-4 w-4" />{t("dash.back")}</Button>
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
