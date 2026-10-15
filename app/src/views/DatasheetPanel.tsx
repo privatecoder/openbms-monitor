@@ -15,10 +15,10 @@ const tone: Record<Level, string> = { ok: "text-ok", near: "text-discharge", ove
 const icon = { ok: CircleCheck, near: CircleAlert, over: OctagonAlert };
 
 /** The pack's live values against the datasheet of its assigned cell type. */
-export function DatasheetPanel({ p, site, packs }: { p: PackEntry; site: string; packs: Record<number, PackEntry> }) {
+export function DatasheetPanel({ p, scope, packs }: { p: PackEntry; scope: string | null; packs: Record<number, PackEntry> }) {
   const { t } = useTranslation();
   const db = useCellDb();
-  const { assigned } = useAssignments(site);
+  const { assigned } = useAssignments(scope);
   const [editing, setEditing] = useState(false);
   const a = assigned[p.address];
   const cell = a ? db.entries.find((e) => e.cell.id === a.cell)?.cell : undefined;
@@ -65,7 +65,7 @@ export function DatasheetPanel({ p, site, packs }: { p: PackEntry; site: string;
             })}
           </div>
         )}
-      <CellAssignSheet open={editing} onOpenChange={setEditing} site={site} packs={packs} preselect={[p.address]} />
+      <CellAssignSheet open={editing} onOpenChange={setEditing} scope={scope} packs={packs} preselect={[p.address]} />
     </Panel>
   );
 }

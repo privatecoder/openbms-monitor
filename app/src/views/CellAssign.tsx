@@ -30,13 +30,13 @@ export function packRanges(packs: number[]): string {
 }
 
 /** Assign a cell model from the database to packs (all, by group or single), stored per installation. */
-export function CellAssignSheet({ open, onOpenChange, site, packs, preselect }: {
-  open: boolean; onOpenChange: (o: boolean) => void; site: string; packs: Record<number, PackEntry>; preselect?: number[];
+export function CellAssignSheet({ open, onOpenChange, scope, packs, preselect }: {
+  open: boolean; onOpenChange: (o: boolean) => void; scope: string | null; packs: Record<number, PackEntry>; preselect?: number[];
 }) {
   const { t } = useTranslation();
   const db = useCellDb();
-  const { groups } = useGroups(site);
-  const { assigned, assign } = useAssignments(site);
+  const { groups } = useGroups(scope);
+  const { assigned, assign } = useAssignments(scope);
   const present = Object.keys(packs).map(Number).sort((a, b) => a - b);
   const [cellId, setCellId] = useState("");
   const [parallel, setParallel] = useState(1);

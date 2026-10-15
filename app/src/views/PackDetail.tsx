@@ -11,7 +11,7 @@ import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { DatasheetPanel } from "./DatasheetPanel";
 
-export function PackDetail({ p, bus, multi, onBack, site, packs }: { p: PackEntry; bus: Bus | null; multi: boolean; onBack: () => void; site: string; packs: Record<number, PackEntry> }) {
+export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEntry; bus: Bus | null; multi: boolean; onBack: () => void; scope: string | null; packs: Record<number, PackEntry> }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
@@ -111,7 +111,7 @@ export function PackDetail({ p, bus, multi, onBack, site, packs }: { p: PackEntr
             </Panel>
           </div>
 
-          <DatasheetPanel p={p} site={site} packs={packs} />
+          <DatasheetPanel p={p} scope={scope} packs={packs} />
         </>
       )}
     </div>

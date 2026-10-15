@@ -4,18 +4,18 @@ import { busLine, masterLine } from "./maint";
 import type { MasterView } from "./api";
 
 // the sources that use maintenance texts, as text (vite's raw import)
-const sources = import.meta.glob(["./views/PackBusPanel.tsx", "./views/MaintBanner.tsx", "./views/MaintSetup.tsx", "./views/Firmware.tsx", "./views/NameDialog.tsx", "./maint.ts", "./maintStore.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const sources = import.meta.glob(["./views/PackBusPanel.tsx", "./views/MaintBanner.tsx", "./views/MaintSetup.tsx", "./views/Firmware.tsx", "./views/NameDialog.tsx", "./views/Installations.tsx", "./views/Sidebar.tsx", "./maint.ts", "./maintStore.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 // every refusal key the backend can send
-const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "release-master-first-unread", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation", "installation-busy"];
+const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "release-master-first-unread", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation", "installation-busy", "installation-connected", "merge-self", "history-preparing"];
 const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
 
 describe("maintenance texts", () => {
   it("every literal key the panel, banner, setup and firmware view use exists in German and English", () => {
     const used = new Set<string>();
-    for (const text of Object.values(sources)) for (const m of text.matchAll(/["`]((?:maint|fw|conn)\.[A-Za-z0-9.-]+)["`]/g)) used.add(m[1]);
+    for (const text of Object.values(sources)) for (const m of text.matchAll(/["`]((?:maint|fw|conn|inst)\.[A-Za-z0-9.-]+)["`]/g)) used.add(m[1]);
     // localStorage keys, not texts
-    for (const k of ["maint.installation", "maint.enabled"]) used.delete(k);
+    for (const k of ["maint.installation", "maint.enabled", "conn.kind", "conn.target", "conn.bus", "conn.packs"]) used.delete(k);
     expect(used.size).toBeGreaterThan(40);
     for (const lng of ["de", "en"]) for (const k of used) expect(i18n.exists(k, { lng }) || i18n.exists(`${k}_other`, { lng }), `${lng} ${k}`).toBe(true);
   });
@@ -25,6 +25,8 @@ describe("maintenance texts", () => {
       ...["match", "stored", "unchecked"].flatMap((b) => [`maint.bank.${b}`, `maint.bank.flash.${b}`]),
       ...["connection", "unsupported", "no-answer", "rejected", "timeout", "busy", "store", "text", "other-bank", "bootloader-pending"].map((k) => `maint.err.${k}`),
       ...["live", "scan", "halt", "release", "flash", "other"].map((a) => `conn.busyAction.${a}`),
+      ...["ok", "failed", "pending", "open"].map((r) => `inst.flash.${r}`),
+      ...["read", "written", "refused"].map((k) => `par.kind.${k}`),
     ];
     for (const lng of ["de", "en"]) for (const k of dynamic) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });

@@ -126,6 +126,37 @@ pub struct Connection {
     pub gap: Duration,
     /// A TCP read of 0 bytes means the gateway closed the connection; on serial ports it does not.
     tcp: bool,
+    /// What arrived during ASCII exchanges since the last `reset_rx`; tells a silent bus from a wrong baud rate.
+    rx: RxStats,
+}
+
+/// Received bytes, valid frames and intra-pack frames (master polling its slaves) of ASCII exchanges.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RxStats {
+    pub bytes: usize,
+    pub frames: usize,
+    pub intra: usize,
+}
+
+/// Result of a reachability check: the first address that answered 0x51, and what else was heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    pub answered: Option<u8>,
+    /// bytes arrived, but no valid frame: typical for a wrong baud rate
+    pub noise: bool,
+    /// a master polled its slaves (CID2 0x5A) on this bus
+    pub intra: bool,
+}
+
+/// The addresses to check: the given ones first, then the rest of 0..=15.
+pub fn probe_order(first: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for a in first.iter().copied().chain(0..=15) {
+        if a <= 15 && !out.contains(&a) {
+            out.push(a);
+        }
+    }
+    out
 }
 
 impl Connection {
@@ -143,7 +174,7 @@ impl Connection {
                 Box::new(s)
             }
         };
-        Ok(Self { port, timeout, gap: Duration::from_millis(100), tcp })
+        Ok(Self { port, timeout, gap: Duration::from_millis(100), tcp, rx: RxStats::default() })
     }
 
     fn read_until<F: Fn(&[u8]) -> bool>(&mut self, done: F) -> Result<Vec<u8>> {
@@ -155,6 +186,7 @@ impl Connection {
                 Ok(0) if self.tcp => return Err(Error::Closed),
                 Ok(0) => {}
                 Ok(n) => {
+                    self.rx.bytes += n;
                     out.extend_from_slice(&buf[..n]);
                     if done(&out) {
                         return Ok(out);
@@ -181,7 +213,14 @@ impl Connection {
             if let Some(end) = pending.iter().position(|b| *b == b'\r') {
                 let line: Vec<u8> = pending.drain(..=end).collect();
                 let start = line.iter().position(|b| *b == b'~').unwrap_or(0);
-                match frame::parse(&line[start..]) {
+                let parsed = frame::parse(&line[start..]);
+                if let Ok(f) = &parsed {
+                    self.rx.frames += 1;
+                    if f.rtn == 0x5A && request.get(7..9) != Some(b"5A") {
+                        self.rx.intra += 1;
+                    }
+                }
+                match parsed {
                     Ok(f) if f.address == address && !(f.rtn == 0x5A && f.info.is_empty()) => {
                         if f.rtn == 0x5A && request.get(7..9) != Some(b"5A") {
                             continue; // intra-pack answer of a slave to the master, not ours
@@ -351,6 +390,29 @@ impl Connection {
     }
 
     /// Find packs by asking every address 0..=15 for its device info.
+    /// Reachability: 0x51 to each address with a short timeout, stop at the first answer. Read-only.
+    pub fn probe(&mut self, addresses: impl IntoIterator<Item = u8>) -> Probe {
+        let saved = self.timeout;
+        self.timeout = Duration::from_millis(300);
+        self.rx = RxStats::default();
+        // any frame from that address proves it is reachable, also a refusal or an answer this version formats differently
+        let answered = addresses.into_iter().find(|a| match DeviceInfo::request(*a) {
+            Ok(r) => matches!(self.ascii(&r, *a), Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(_)))),
+            Err(_) => false,
+        });
+        self.timeout = saved;
+        Probe { answered, noise: answered.is_none() && self.rx.bytes > 0 && self.rx.frames == 0, intra: self.rx.intra > 0 }
+    }
+
+    /// The pack answers 0x47 (parameters): UART0 (RS485-1/2) knows it, UART1 (CAN socket) does not. Read-only.
+    pub fn answers_parameters(&mut self, address: u8) -> bool {
+        let saved = self.timeout;
+        self.timeout = Duration::from_millis(600);
+        let ok = self.parameters(address).is_ok();
+        self.timeout = saved;
+        ok
+    }
+
     pub fn scan(&mut self, addresses: impl IntoIterator<Item = u8>) -> Vec<(u8, DeviceInfo)> {
         let saved = self.timeout;
         self.timeout = Duration::from_millis(600);
@@ -433,7 +495,7 @@ mod tests {
 
     fn scripted(script: Vec<(Vec<u8>, Vec<u8>)>) -> Connection {
         let port = Box::new(Scripted { script, out: Vec::new() });
-        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false }
+        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default() }
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.
@@ -531,6 +593,39 @@ mod tests {
         c.set_can_protocol(1, 3).unwrap();
         // 7 is refused before anything is sent
         assert!(matches!(c.set_can_protocol(1, 7), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+    }
+
+    #[test]
+    fn probe_order_puts_the_polled_addresses_first() {
+        assert_eq!(probe_order(&[]), (0..=15).collect::<Vec<u8>>());
+        let o = probe_order(&[2, 0, 2, 20]);
+        assert_eq!(&o[..3], &[2, 0, 1]);
+        assert_eq!(o.len(), 16);
+    }
+
+    #[test]
+    fn probe_stops_at_the_first_answer() {
+        let mut c = scripted(vec![
+            (DeviceInfo::request(11).unwrap(), answer(11, 0, &[])),
+            (DeviceInfo::request(12).unwrap(), answer(12, 0, &[])),
+        ]);
+        let p = c.probe(probe_order(&[0]));
+        assert_eq!(p, Probe { answered: Some(11), noise: false, intra: false });
+        // a refusal is an answer as well
+        let mut c = scripted(vec![(DeviceInfo::request(3).unwrap(), answer(3, 0x04, &[]))]);
+        assert_eq!(c.probe([3]).answered, Some(3));
+    }
+
+    #[test]
+    fn probe_tells_noise_and_master_polling_from_silence() {
+        let mut c = scripted(vec![]);
+        assert_eq!(c.probe([0]), Probe { answered: None, noise: false, intra: false });
+        // a wrong baud rate: bytes, but no frame
+        let mut c = scripted(vec![(DeviceInfo::request(0).unwrap(), vec![0xF0, 0x0F, 0x80, 0x00, 0xFE])]);
+        assert_eq!(c.probe([0]), Probe { answered: None, noise: true, intra: false });
+        // a master polling its slaves (CID2 0x5A), nobody answering the app
+        let mut c = scripted(vec![(DeviceInfo::request(0).unwrap(), answer(1, 0x5A, b"\x01"))]);
+        assert_eq!(c.probe([0]), Probe { answered: None, noise: false, intra: true });
     }
 
     #[test]

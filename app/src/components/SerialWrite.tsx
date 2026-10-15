@@ -48,7 +48,7 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
       } }));
       if (res === "done") setInput((i) => ({ ...i, [which]: "" }));
     } catch (e) {
-      if (current.current === a) setNote((n) => ({ ...n, [which]: { text: refusal(e) ? t("snw.refused") : t("snw.error", { err: String(e) }), error: true } }));
+      if (current.current === a) setNote((n) => ({ ...n, [which]: { text: refusal(e) ? t("snw.refused") : String(e).startsWith("pre-read") ? t("snw.preRead") : t("snw.error", { err: String(e) }), error: true } }));
     } finally { setBusy(null); }
   };
 

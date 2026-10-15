@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react";
+import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
 import { busLine, endpointKey, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, releaseFirst, showDone, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { MaintSetup, PackKindSelect } from "./MaintSetup";
+import { MaintSetup } from "./MaintSetup";
 
 const select = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 const toneClass: Record<Tone, string> = { ok: "text-ok", warn: "text-discharge", muted: "text-muted", alarm: "text-alarm" };
@@ -20,11 +20,10 @@ function ActButton({ spinning, children, className, ...props }: Parameters<typeo
 /** The pack bus panel (design: simple flash flow): one screen with a live status line, „Bus ruhig machen“ while the
  *  bus is not quiet, the packs that answer with one „Flashen“ each, and „Fertig“. No steps to tick: the backend
  *  re-checks a quiet bus and the target right before each flash. */
-export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction }: {
+export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction }: {
   maint: Maint;
-  /** the RS485-1/2 port: the installation's, or chosen here without one ("" = none) */
+  /** the RS485-1/2 port of the installation ("" = none) */
   port: string;
-  setPort: (p: string) => void;
   ports: string[];
   onPortsChanged: () => void;
   imagePicker: ReactNode;
@@ -52,7 +51,7 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
   const [flashed, setFlashed] = useState(false);
   // after a flash the master polls again (DIP back or released): the maintenance is over
   const [back, setBack] = useState(false);
-  const [setup, setSetup] = useState<"edit" | "new" | null>(null);
+  const [setup, setSetup] = useState(false);
 
   // the live loop reads the newest values through refs
   const args = useRef({ installation: inst?.id ?? null, port, running, action });
@@ -138,41 +137,31 @@ export function PackBusPanel({ maint, port, setPort, ports, onPortsChanged, imag
     ...pendingHere.filter((p) => !scan?.packs.some(([a]) => a === p.pack)).map((p) => [p.pack, null] as [number, DeviceInfo | null]),
   ].sort((x, y) => x[0] - y[0]);
 
+  // flashing belongs to an installation: without one the panel only says so
+  if (!inst) return (
+    <section className="space-y-2 rounded-md border border-line p-4 text-sm">
+      <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /></h2>
+      <p className="text-discharge">{t("maint.panel.noInstallation")}</p>
+    </section>
+  );
+
   return (
     <section className="space-y-4 rounded-md border border-line p-4 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /></h2>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2">{t("maint.picker.label")}
-            <select className={select} value={inst?.id ?? ""} disabled={running || busy} onChange={(e) => { const v = e.target.value; if (v === "__new__") setSetup("new"); else { setSetup(null); void maint.switchTo(v || null); } }}>
-              <option value="">{t("maint.picker.none")}</option>
-              {maint.installations.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
-              <option value="__new__">{t("maint.picker.new")}</option>
-            </select>
-          </label>
-          {inst && <Button variant="secondary" size="sm" disabled={running || busy} onClick={() => setSetup(setup === "edit" ? null : "edit")}>{t("maint.panel.setup")}</Button>}
+          <span className="font-medium">{inst.name}</span>
+          <Button variant="secondary" size="sm" disabled={running || busy} onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
         </div>
       </div>
       {setup && (
-        <MaintSetup key={setup === "edit" ? inst?.id : "new"} installation={setup === "edit" ? inst : null} installations={maint.installations} disabled={running || busy}
-          onSaved={(i) => { setSetup(null); onPortsChanged(); void maint.switchTo(i.id); }}
-          onDeleted={(i) => { setSetup(null); void maint.forget(i.id); }} onCancel={() => setSetup(null)} />
+        <MaintSetup key={inst.id} installation={inst} disabled={running || busy}
+          onSaved={() => { setSetup(false); onPortsChanged(); void maint.loadLists(); }} onCancel={() => setSetup(false)} />
       )}
 
-      {/* the RS485-1/2 port: from the installation, or chosen here */}
-      {inst ? (
-        packIsCanAdapter(inst) ? <p className="text-discharge">{t("maint.panel.canAdapter")}</p>
-          : <p>{port ? t("maint.panel.port", { port: ports.includes(port) ? port : `${port} (${t("maint.panel.notPlugged")})` }) : t("maint.panel.noPort")}</p>
-      ) : (
-        <label className="flex flex-wrap items-center gap-2">{t("maint.setup.rs485")}
-          <PackKindSelect disabled={running || busy} />
-          <select className={select} value={port} disabled={running || busy} onChange={(e) => setPort(e.target.value)}>
-            <option value="">{t("fw.choosePort")}</option>
-            {ports.map((p) => <option key={p}>{p}</option>)}
-          </select>
-          <Button variant="ghost" size="icon" disabled={running} onClick={onPortsChanged} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
-        </label>
-      )}
+      {/* the RS485-1/2 port of the installation */}
+      {packIsCanAdapter(inst) ? <p className="text-discharge">{t("maint.panel.canAdapter")}</p>
+        : <p>{port ? t("maint.panel.port", { port: ports.includes(port) ? port : `${port} (${t("maint.panel.notPlugged")})` }) : t("maint.panel.noPort")}</p>}
 
       {port && <p className="text-muted">{t("maint.panel.monitorStops")}</p>}
 

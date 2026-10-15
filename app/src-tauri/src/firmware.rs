@@ -126,9 +126,14 @@ pub fn utc_stamp(unix_s: u64) -> String {
     format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}Z", secs / 3600, secs / 60 % 60, secs % 60)
 }
 
-pub fn log_name(unix_s: u64, address: u8, what: &str) -> String {
-    let what: String = what.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
-    format!("{}_pack{address}_{what}.log", utc_stamp(unix_s))
+/// `<UTC>_<installation>_pack<addr>_<what>.log`; without an installation (a check on a port of none) the name of
+/// earlier versions, `<UTC>_pack<addr>_<what>.log`.
+pub fn log_name(unix_s: u64, installation: Option<&str>, address: u8, what: &str) -> String {
+    let clean = |s: &str| -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect() };
+    match installation {
+        Some(i) => format!("{}_{}_pack{address}_{}.log", utc_stamp(unix_s), clean(i), clean(what)),
+        None => format!("{}_pack{address}_{}.log", utc_stamp(unix_s), clean(what)),
+    }
 }
 
 /// Parse and authorize an image: allowlisted vendor releases, or any image that passes the strict
@@ -177,17 +182,24 @@ fn read_image(path: &str, allow_custom: bool, l: Lang) -> Result<(ehex::Image, I
     image_info(&bytes, allow_custom).map_err(|e| e.text(l))
 }
 
-fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("firmware-logs"))
 }
 
-fn new_log(app: &AppHandle, address: u8, what: &str) -> Result<(File, PathBuf), String> {
+/// A new log file, indexed for its installation (`logs`); the index row's id for its result.
+fn new_log(app: &AppHandle, state: &AppState, installation: Option<&str>, address: u8, kind: &str, release: Option<&str>) -> Result<(File, PathBuf, Option<i64>), String> {
     let dir = logs_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let path = dir.join(log_name(now, address, what));
+    let name = log_name(now, installation, address, release.unwrap_or(kind));
+    let path = dir.join(&name);
     let file = OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((file, path))
+    let id = installation.and_then(|i| {
+        maint::with_store(state, |s| s.add_log(Some(i), Some(address), kind, release, &name, crate::history::now_ms()))
+            .map_err(|e| eprintln!("log index: {e:?}"))
+            .ok()
+    });
+    Ok((file, path, id))
 }
 
 fn open_port(port: &str, l: Lang) -> Result<Connection, String> {
@@ -203,7 +215,7 @@ pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String
 /// Stops the monitor, then checks the target on the pack bus without resetting it. A pack that answers is no
 /// longer pending in its bootloader.
 #[tauri::command]
-pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String) -> Result<DeviceInfo, String> {
+pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String, installation: Option<String>) -> Result<DeviceInfo, String> {
     let l = self::lang(&lang);
     let _port_slot = reserve_port_wait(&state.port_busy)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
@@ -212,7 +224,7 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     }
     stop_monitor(&state)?;
     let mut link = open_port(&port, l)?;
-    let (mut log, _) = new_log(&app, address, "inspect")?;
+    let (mut log, _, _) = new_log(&app, &state, installation.as_deref(), address, "inspect", None)?;
     let info = session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))?;
     let key = endpoint_key(false, &port);
     let _ = maint::with_store(&state, |s| s.clear_answered(&key, &[address], crate::history::now_ms()));
@@ -220,13 +232,14 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
 }
 
 /// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
-/// of this pack bus endpoint pending in its bootloader, a patched master with its marker on is released before a
-/// non-maintenance image (C'), and with an installation the master's serial number (right bank). Quiet bus and
-/// the target's 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals
-/// reach the UI as a JSON string of `MaintError`.
+/// of this pack bus endpoint pending in its bootloader, and with `checks` (the installation's own RS485-1/2 port) a
+/// patched master with its marker on is released before a non-maintenance image (C') and the master's serial number
+/// matches (right bank). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an
+/// installation; its log is named and indexed with it on the installation's own port (`checks`), else „ohne Anlage“.
+/// Flashes on its own thread and returns at once. Refusals reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>) -> Result<FlashStarted, String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: String, checks: bool) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -243,7 +256,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
     let key = endpoint_key(false, &port);
     maint::with_store(&state, |s| s.pending_on(&key)).and_then(|p| maint::pending_refusal(&p, address)).map_err(to_text)?;
-    let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
+    let owner = maint::installation(&state, &installation).map_err(to_text)?;
+    let inst = checks.then_some(owner);
     if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
         let master = maint::read_master(&state, i).unwrap_or(Master::Unknown);
         let kind = maint_kind(info.kind);
@@ -272,11 +286,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         },
         None => "none",
     };
-    let (mut log, log_path) = new_log(&app, address, &info.release)?;
+    let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind
     let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, crate::history::now_ms())).map_err(to_text)?;
-    maint::event(&state, &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
+    maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
     let store = state.maint.clone();
     std::thread::spawn(move || {
         let mut last = None;
@@ -297,7 +311,12 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
             Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
         };
-        maint::event(&app.state::<AppState>(), &format!("flash done address={address} ok={} stage={:?} error={:?}", done.ok, done.stage, done.error));
+        let state = app.state::<AppState>();
+        maint::event(&state, Some(&installation), &format!("flash done address={address} ok={} stage={:?} error={:?}", done.ok, done.stage, done.error));
+        if let Some(id) = log_id {
+            let result = if done.ok { "ok" } else if done.pending { "pending" } else { "failed" };
+            let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));
+        }
         drop(slot);
         drop(port_slot);
         let _ = app.emit("firmware-done", done);
@@ -345,9 +364,11 @@ mod tests {
     #[test]
     fn log_name_is_a_plain_file_name() {
         // 2026-01-02 03:04:05 UTC
-        let name = log_name(1_767_323_045, 7, "16.06.05 SP80");
+        let name = log_name(1_767_323_045, None, 7, "16.06.05 SP80");
         assert_eq!(name, "20260102-030405Z_pack7_16.06.05_SP80.log");
         assert!(!name.contains(['/', '\\', ':', ' ']));
+        // with its installation, whose id cannot leave the folder either
+        assert_eq!(log_name(1_767_323_045, Some("inst-1a/../x"), 0, "inspect"), "20260102-030405Z_inst-1a_.._x_pack0_inspect.log");
     }
 
     #[test]

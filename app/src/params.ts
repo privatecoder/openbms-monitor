@@ -88,10 +88,11 @@ export const GROUPS: { id: string; indices: number[] }[] = [
   { id: "pack", indices: [65, 83, 84, 85, 86, 82] },
 ];
 
-/** One column of the comparison: a pack read over the bus or an opened export. */
+/** One column of the comparison: a pack read over the bus, an opened export, or the stored state of a place (the
+ *  newest block the app kept for the installation). */
 export interface Source {
   id: string;
-  kind: "pack" | "file";
+  kind: "pack" | "file" | "stored";
   /** pack columns: the address the parameters were read from */
   address?: number;
   label: string;
@@ -109,7 +110,17 @@ export interface Source {
   previous?: Parameters | null;
   /** after a write: values and switch bytes the read-back does not show as sent */
   notTaken?: { params: Set<number>; switches: Set<number> };
+  /** stored columns: when and how the block was kept, and whether it is of the place's current board */
+  stored?: { at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null };
 }
+
+/** The stored state of a place as a column (compare, datasheet check and XML save; never edited). */
+export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null }): Source => ({
+  id: `stored-${s.address}`, kind: "stored", address: s.address, label: String(s.address).padStart(2, "0"),
+  device: s.parameters?.device_name, values: s.parameters?.parameters.map((x) => x.value), switches: s.parameters?.function_switches,
+  read: s.parameters ?? undefined, error: s.parameters ? undefined : "unreadable",
+  stored: { at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial },
+});
 
 /** A pack column; `address` is the address asked, not byte 0 of the answer, so a write goes where the column says. */
 export const fromPack = (p: Parameters, address = p.address): Source => ({
