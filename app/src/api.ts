@@ -188,7 +188,9 @@ export interface InstallationOverview {
   recorded: number; recorded_from: number | null; recorded_to: number | null; log_dir: string | null;
 }
 /** The newest stored parameter block of a place, parsed (null: not readable). */
-export interface SnapshotParams { address: number; at: number; kind: StoredSnapshot["kind"]; board: StoredSnapshot["board"]; bms_serial: string | null; parameters: Parameters | null }
+export interface SnapshotParams { address: number; at: number; kind: StoredSnapshot["kind"]; board: StoredSnapshot["board"]; bms_serial: string | null; parameters: Parameters | null;
+  /** a read after a refused write whose switches differ from the stored ones then: maybe live in RAM only */
+  switches_unconfirmed?: boolean }
 /** The old settings of one site key, raw text as found in the browser storage. */
 export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: string; diag?: string }
 /** The master as read over the CAN socket bus (0x64/03, after RTN 05 0x64/02). */
