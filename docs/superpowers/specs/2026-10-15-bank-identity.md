@@ -41,7 +41,8 @@ A board is known by its BMS serial (String 2, 0xA4, `boards.bms_serial` plus `al
 - Parameter snapshots: a parameter read checks 0xA4 first (like the writes) and keeps its snapshot only for a known or unchecked board; the values still go to the UI. `board_written` after the app's own serial write is recorded also on a foreign connection, since its target was checked just before. A write's check keeps String 1 of the serial read for the later confirmation.
 - Failed checks name a reason code (`no-answer`, `connection`, `store`, `no-installation`), worded by the UI; a silent pack's text keeps the hint about a polling master.
 - CAN hint: the master's battery serial names another installation only when exactly one installation carries it (any address), that one is not I, and it carries it at address 0.
-- Connection state queries about another generation find nothing and change nothing; only a new note or connect starts a generation.
+- Connection state: only `connect` starts a generation; notes and queries about another one change and find nothing. A pending endpoint link that could not be stored is kept and tried again at the next decision.
+- The sidebar's waiting texts („Aufzeichnung wartet auf die Prüfung der Anlage“, „Die Aufzeichnung startet nach der Bestätigung“) come from the backend's decision (`historyStatus().held_reason`: pending / confirm / foreign), which also learns from writes' checks and parameter reads. The sidebar asks a failed serial read once more at the end of its loop before reporting the reads done.
 - The write result carries `unchecked` (`{value, unchecked}`); the UI's API wrapper hands on the value and shows „Anlage nicht geprüft (Platine ohne Seriennummer)“ in the Parameters view for that pack.
 - A restart reads 0xA4 before its 0x51 pre-check: a silent pack is now refused as „Anlage nicht geprüft: Pack antwortet nicht“ instead of „nicht erreichbar“.
 

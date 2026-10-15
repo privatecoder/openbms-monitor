@@ -161,7 +161,9 @@ export interface HistorySettings {
   keep_minutes_days: number;
 }
 /** `held`: connected, but recording waits until the bank is checked (right bank before writing) */
-export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; held?: boolean; error: string | null }
+export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; held?: boolean;
+  /** why it waits: no read decided yet, only boards this installation does not know yet (until „Übernehmen“), a pack of another installation */
+  held_reason?: "pending" | "confirm" | "foreign" | null; error: string | null }
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
 export interface PackCols { current: Col; soc: Col; voltage: Col; cell_max: Col; cell_min: Col; delta: Col; temp_max: Col; temp_min: Col }

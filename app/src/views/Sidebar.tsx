@@ -133,17 +133,22 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     try { await readEach(addresses, gen); } finally { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); }
   };
   const readEach = async (addresses: number[], gen: number) => {
-    // a pack busy with another action (a write, the parameter read) is asked again at the end, at most three times
-    const queue = addresses.map((a) => ({ a, tries: 0 }));
+    // a pack busy with another action (a write, the parameter read) is asked again at the end, at most three times; a
+    // failed read once more at the end (reads that collided would otherwise keep the recorder waiting)
+    const queue = addresses.map((a) => ({ a, tries: 0, again: false }));
     for (let q = queue.shift(); q; q = queue.shift()) {
       const { a } = q;
       if (gen !== serialGen.current) return;
       let busyNow = false;
       const s = await api.serialNumbers(a).catch((e) => { busyNow = !!packBusy(e); return null; });
       if (busyNow && q.tries < 3) {
-        queue.push({ a, tries: q.tries + 1 });
+        queue.push({ ...q, tries: q.tries + 1 });
         await new Promise((r) => setTimeout(r, 1000));
         continue;
+      }
+      if ((!s || s.identity?.kind === "failed") && !q.again) {
+        queue.push({ ...q, again: true });
+        if (!s) continue;
       }
       if (s && gen === serialGen.current) {
         onSerials(a, s);
@@ -463,7 +468,6 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <div className="space-y-1 pt-1">
               <p className="text-sm text-discharge">
                 {t("bank.new", { count: line.packs.length, packs: packList(line.packs), name: instName })}
-                {!ids.some((v) => v.kind === "known") && ` ${t("bank.afterConfirm")}`}
               </p>
               <Button variant="secondary" size="sm" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
             </div>
@@ -475,7 +479,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             </p>
           )}
           {bankError && <p className="text-sm text-alarm">{bankError}</p>}
-          {connected && recStatus?.held && line?.kind !== "new" && <p className="text-xs text-muted">{t("rec.held")}</p>}
+          {/* from the backend's decision (it also learns from writes' checks and parameter reads) */}
+          {connected && recStatus?.held && <p className="text-xs text-muted">{recStatus.held_reason === "confirm" ? t("bank.afterConfirm") : t("rec.held")}</p>}
           {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
           {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
         </div>

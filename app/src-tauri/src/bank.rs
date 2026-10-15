@@ -173,8 +173,8 @@ pub enum Verdict {
     Pending,
 }
 
-/// What one connection (link generation) has learned about its packs. Only `note` and `begin` start a new generation;
-/// queries about another one find nothing.
+/// What one connection (link generation) has learned about its packs. Only `begin` starts a generation; notes and
+/// queries about another one change and find nothing.
 #[derive(Default)]
 pub(crate) struct BankState {
     gen: u64,
@@ -187,12 +187,6 @@ pub(crate) struct BankState {
 }
 
 impl BankState {
-    fn reset_to(&mut self, gen: u64) {
-        if self.gen != gen {
-            *self = BankState { gen, ..Default::default() };
-        }
-    }
-
     fn current(&self, gen: u64) -> Option<&Self> {
         (self.gen == gen).then_some(self)
     }
@@ -241,10 +235,12 @@ pub(crate) fn begin(state: &AppState, gen: u64, pack_bus: bool, link: Option<Pen
     }
 }
 
+/// What a pack showed on connection `gen`; ignored for any other than the one `begin` started.
 fn note(state: &AppState, gen: u64, address: u8, seen: Seen) {
     if let Ok(mut b) = state.bank.lock() {
-        b.reset_to(gen);
-        b.note(address, seen);
+        if b.gen == gen {
+            b.note(address, seen);
+        }
     }
 }
 
@@ -273,7 +269,12 @@ fn settle(state: &AppState, link: &Link) {
         return;
     }
     if let Ok(mut h) = state.history.lock() {
-        h.hold(v != Verdict::Record);
+        h.hold_for(match v {
+            Verdict::Record => None,
+            Verdict::Foreign => Some("foreign"),
+            Verdict::Confirm => Some("confirm"),
+            Verdict::Pending => Some("pending"),
+        });
     }
     if let (Some(p), Some(inst)) = (pending, link.installation.as_deref()) {
         match crate::maint::with_store(state, |s| {
@@ -286,7 +287,15 @@ fn settle(state: &AppState, link: &Link) {
                 }
             }
             Ok(_) => {}
-            Err(e) => eprintln!("link: {e:?}"),
+            Err(e) => {
+                // kept for the next settle (the next read, check or confirmation)
+                eprintln!("link: {e:?}");
+                if let Ok(mut b) = state.bank.lock() {
+                    if b.gen == link.gen && b.link.is_none() {
+                        b.link = Some(p);
+                    }
+                }
+            }
         }
     }
 }
@@ -619,7 +628,11 @@ mod tests {
         let state = AppState::default();
         crate::new_link(&state, Some("a".into()));
         let gen = link_now(&state).gen;
+        begin(&state, gen, true, None);
         note(&state, gen, 2, held(Why::Foreign, NONE));
+        // a note for another connection neither lands nor resets this one
+        note(&state, gen + 1, 3, held(Why::Foreign, NONE));
+        assert!(!unconfirmed(&state, gen + 1, 3) && !unconfirmed(&state, gen, 3));
         assert!(!foreign(&state, gen + 1) && !unconfirmed(&state, gen - 1, 2));
         assert!(foreign(&state, gen) && unconfirmed(&state, gen, 2), "still there");
     }
@@ -696,10 +709,29 @@ mod tests {
         assert_eq!(check_target(&state, &old, 2).err().unwrap(), LINK_CHANGED);
     }
 
+    #[test]
+    fn a_link_that_could_not_be_stored_is_tried_again() {
+        let s = Store::open(&temp("relink")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap().id;
+        s.board_seen(&a, 1, &set("SYN-A1"), &NONE, 1).unwrap();
+        // no store at first: the link fails and stays pending
+        let state = AppState::default();
+        crate::new_link(&state, Some(a.clone()));
+        let link = link_now(&state);
+        begin(&state, link.gen, true, Some(PendingLink { key: "tcp:gw:4196".into(), control: crate::maint_store::ControlEndpoint::Tcp { addr: "gw:4196".into() } }));
+        after_read(&state, &link, 1, &Identity::Known, &set("SYN-A1"), &NONE);
+        assert!(state.bank.lock().unwrap().link.is_some());
+        *state.maint.lock().unwrap() = Some(s);
+        after_read(&state, &link, 1, &Identity::Known, &set("SYN-A1"), &NONE);
+        assert!(state.bank.lock().unwrap().link.is_none());
+        assert_eq!(crate::maint::with_store(&state, |s| s.installation(&a)).unwrap().endpoints, vec!["tcp:gw:4196".to_string()]);
+    }
+
     fn state_with(store: Store, inst: &str) -> AppState {
         let state = AppState::default();
         *state.maint.lock().unwrap() = Some(store);
         crate::new_link(&state, Some(inst.into()));
+        begin(&state, link_now(&state).gen, false, None);
         state
     }
 
@@ -719,6 +751,7 @@ mod tests {
         assert_eq!(crate::for_link(&state, &link, "test", |_, _| Ok(1)), None);
         // a reconnect starts clean
         crate::new_link(&state, Some(a.clone()));
+        begin(&state, link_now(&state).gen, false, None);
         assert!(!foreign(&state, link_now(&state).gen));
         // confirming on the old connection is refused
         assert!(confirm(&state, &b, &[2]).is_err());
