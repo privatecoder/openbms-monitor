@@ -16,6 +16,8 @@ import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } 
 import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
+import { PackControlSection } from "../components/PackControl";
+import { errorText } from "../control";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -70,12 +72,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [onlyDiff, setOnlyDiff] = useState(false);
   const [saved, setSaved] = useState<{ path: string } | { error: string } | null>(null);
   const file = useRef<HTMLInputElement>(null);
-  // one pack for the clock, the CAN protocol and the calibration
+  // one pack for the clock, the CAN protocol, the calibration and the control
   const [chosen, setChosen] = usePackChoice(packs);
   // „Nur ansehen“ writes nothing to a pack
   const writable = connected && (isDemo || (bus === "pack" && !!installation));
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
-  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false });
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, ctl: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
   const lockedBut = (k: keyof typeof writing) => Object.entries(writing).some(([o, b]) => o !== k && b);
 
@@ -142,6 +144,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       setSources((s) => s.map((x) => (x.id === next.id ? next : x)));
     }
     setReading(null);
+  };
+
+  /** After a restart: the pack's column, if shown, is read again (a refused write's live switches are gone then). */
+  const rereadPack = (address: number) => {
+    if (!sources.some((x) => x.id === `pack-${address}`)) return;
+    api.parameters(address).then((p) => { replace(fromPack(p, address)); seen(address, p); }, () => {});
   };
 
   const open = async (files: FileList | null) => {
@@ -220,7 +228,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         } else say({ text: t("pw.unread", { err: r.read_error ?? "" }), error: true });
         if (!restore) setEdit(null);
       }
-    } catch (e) { say({ text: t("pw.error", { err: String(e) }), error: true }); }
+    } catch (e) { say({ text: t("pw.error", { err: errorText(e, t) }), error: true }); }
     finally { busyFor("params")(false); }
   };
 
@@ -294,6 +302,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
+        <PackControlSection address={chosen} usable={writable} locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}

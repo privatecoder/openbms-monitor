@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Crosshair, Network, RefreshCw } from "lucide-react";
 import { api, type DeviceInfo, type PackLive } from "../api";
 import { CAN_PROTOCOLS, cellMv, cellStats, centiAmps, currentAllowed, flagAfter, notCalibrated, parseNumber, protocolOf, protocolSetResult, refusal, MIN_CURRENT_A, NOT_CALIBRATED_BIT, type Calibration, type FlagAfter } from "../calibration";
+import { errorText } from "../control";
 import { InfoIcon, helpTitle } from "../help";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -64,7 +65,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
         error: res === "mismatch",
       });
     } catch (e) {
-      if (current.current === a) setNote({ text: refusal(e) ? t("can.refused") : t("can.error", { err: String(e) }), error: true });
+      if (current.current === a) setNote({ text: refusal(e) ? t("can.refused") : t("can.error", { err: errorText(e, t) }), error: true });
     } finally { setBusy(false); }
   };
 
@@ -151,7 +152,7 @@ export function CalibrationSection({ address, usable, locked, onBusy }: WritePro
     } catch (e) {
       if (current.current !== a) return;
       const r = refusal(e);
-      const text = r === "refused" ? t("cal.refused", { cond: t(`cal.cond.${k}`) }) : r === "invalid" ? t("cal.invalid") : t("cal.error", { err: String(e) });
+      const text = r === "refused" ? t("cal.refused", { cond: t(`cal.cond.${k}`) }) : r === "invalid" ? t("cal.invalid") : t("cal.error", { err: errorText(e, t) });
       setOutcome((o) => ({ ...o, [k]: { ok: false, text } }));
     } finally { setBusy(null); }
   };

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Hash, RefreshCw } from "lucide-react";
 import { api, type SerialNumbers } from "../api";
 import { refusal } from "../calibration";
+import { errorText } from "../control";
 import { InfoIcon } from "../help";
 import { serialInputOk, serialSetResult, serialText } from "../serial";
 import { Button } from "./ui/button";
@@ -48,7 +49,7 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
       } }));
       if (res === "done") setInput((i) => ({ ...i, [which]: "" }));
     } catch (e) {
-      if (current.current === a) setNote((n) => ({ ...n, [which]: { text: refusal(e) ? t("snw.refused") : String(e).startsWith("pre-read") ? t("snw.preRead") : t("snw.error", { err: String(e) }), error: true } }));
+      if (current.current === a) setNote((n) => ({ ...n, [which]: { text: refusal(e) ? t("snw.refused") : String(e).startsWith("pre-read") ? t("snw.preRead") : t("snw.error", { err: errorText(e, t) }), error: true } }));
     } finally { setBusy(null); }
   };
 
