@@ -201,7 +201,7 @@ const resources = {
         setting: "Stelle Uhr …", settingAll: "Stelle Pack {{pack}} ({{n}} von {{of}}) …", setAllDone: "Uhr von {{ok}} von {{of}} Packs gestellt.", setAllFailed: "Nicht gestellt: {{list}}",
         reading: "Lese Uhr …", readError: "Uhr nicht lesbar: {{err}}", setError: "Uhr nicht gestellt: {{err}}",
         hint: "Gesendet wird die Ortszeit dieses PCs; das BMS speichert sie ohne Zeitzone.",
-        canBus: "Die BMS-Uhr ist nur über RS485-1/2 lesbar. Die CAN-Buchse kennt den Befehl nicht.",
+        canBus: "Die BMS-Uhr ist nur über RS485-1/2 lesbar. Die CAN-Buchse kennt den Befehl nicht.", needConnection: "Die BMS-Uhr lässt sich nur mit Verbindung über RS485-1/2 lesen und stellen.",
         pointer: "Uhr stellen unter „Parameter“ (Wartungsfunktionen).",
       },
       can: {
@@ -664,7 +664,7 @@ const resources = {
         setting: "Setting clock …", settingAll: "Setting pack {{pack}} ({{n}} of {{of}}) …", setAllDone: "Clock set on {{ok}} of {{of}} packs.", setAllFailed: "Not set: {{list}}",
         reading: "Reading clock …", readError: "Clock not readable: {{err}}", setError: "Clock not set: {{err}}",
         hint: "This PC's local time is sent; the BMS stores it without a time zone.",
-        canBus: "The BMS clock can be read on RS485-1/2 only. The CAN socket does not know the command.",
+        canBus: "The BMS clock can be read on RS485-1/2 only. The CAN socket does not know the command.", needConnection: "The BMS clock can be read and set only while connected via RS485-1/2.",
         pointer: "Set the clock under “Parameters” (maintenance functions).",
       },
       can: {

@@ -106,7 +106,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
           </select>
         )}
         {!usable ? (
-          <span className={cn(bus === "can" && connected ? "text-discharge" : "text-muted")}>{bus === "can" && connected ? t("clock.canBus") : t("par.needConnection")}</span>
+          <span className={cn(bus === "can" && connected ? "text-discharge" : "text-muted")}>{bus === "can" && connected ? t("clock.canBus") : t("clock.needConnection")}</span>
         ) : read === null ? (
           <span className="text-muted">{t("clock.reading")}</span>
         ) : "error" in read ? (
