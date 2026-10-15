@@ -88,7 +88,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   useEffect(() => {
     if (keptLink === link) return;
     // another installation: its read and stored columns go (they describe its packs); opened exports stay
-    if (keptLink.split("|")[0] !== site) setSources((s) => s.filter((x) => x.kind === "file"));
+    if (keptLink.split("|")[0] !== site) { setSources((s) => s.filter((x) => x.kind === "file")); setStoredNote(null); }
     keptLink = link;
     setSources(unlink); setEdit(null); setNote(null);
   }, [link]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -101,7 +101,11 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     try {
       const rows = await api.installationSnapshots(installation.id);
       setSources((s) => [...s.filter((x) => x.kind !== "stored"), ...rows.map(fromStored)]);
-      if (!rows.length) setStoredNote(t("par.storedNone"));
+      // said also when the columns were there already, so a click visibly did something
+      const newest = rows.reduce((m, r) => Math.max(m, r.at), 0);
+      setStoredNote(rows.length
+        ? t("par.storedLoaded", { count: rows.length, at: new Date(newest).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })
+        : t("par.storedNone"));
     } catch (e) { setStoredNote(String(e)); }
   };
   // from the installations view, or nothing shown yet without a connection
@@ -509,7 +513,7 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
       {c.stored && (
         <div className={cn("text-xs whitespace-nowrap", c.stored.board === "current" ? "text-muted" : "text-discharge")}
           title={c.stored.board === "previous" ? t("par.previousBoard", { serial: c.stored.serial ?? "" }) : c.stored.board === "unclear" ? t("par.boardUnclear") : undefined}>
-          {new Date(c.stored.at).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" })} · {t(`par.kind.${c.stored.kind}`)}
+          {t("par.storedAt", { at: new Date(c.stored.at).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })} · {t(`par.kind.${c.stored.kind}`)}
           {c.stored.board === "previous" ? ` · ${t("par.previousBoardShort")}` : c.stored.board === "unclear" ? ` · ${t("par.boardUnclearShort")}` : ""}
         </div>
       )}
