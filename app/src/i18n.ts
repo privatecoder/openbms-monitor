@@ -338,10 +338,10 @@ const resources = {
         },
         clear: {
           button: "Historie und Zähler löschen …", title: "Historie und Zähler löschen?", confirm: "Löschen",
-          what: "Pack {{pack}}: {{cycles}} Zyklen, {{charged}} geladen, {{discharged}} entladen, bis zu 500 Einträge der internen Historie werden gelöscht.",
+          what: "Pack {{pack}}: {{cycles}}, {{charged}} geladen, {{discharged}} entladen, bis zu 500 Einträge der internen Historie werden gelöscht.",
           whatUnread: "Pack {{pack}}: Zyklen, Energiezähler und bis zu 500 Einträge der internen Historie werden gelöscht.",
           text: "Das lässt sich nicht rückgängig machen. Die Zähler gehören zu den Zellen: Löschen passt, wenn die Platine an andere Zellen kommt oder einzeln weitergegeben wird.",
-          done: "Gelöscht. Das Pack zählt jetzt {{cycles}} Zyklen.",
+          done: "Gelöscht. Das Pack zählt jetzt {{cycles}}.",
         },
       },
       bmsh: {
@@ -901,10 +901,10 @@ const resources = {
         },
         clear: {
           button: "Clear history and counters …", title: "Clear history and counters?", confirm: "Clear",
-          what: "Pack {{pack}}: {{cycles}} cycles, {{charged}} charged, {{discharged}} discharged, up to 500 entries of the internal history are cleared.",
+          what: "Pack {{pack}}: {{cycles}}, {{charged}} charged, {{discharged}} discharged, up to 500 entries of the internal history are cleared.",
           whatUnread: "Pack {{pack}}: cycles, energy counters and up to 500 entries of the internal history are cleared.",
           text: "This cannot be undone. The counters belong to the cells: clearing fits when the board goes to other cells or is passed on by itself.",
-          done: "Cleared. The pack now counts {{cycles}} cycles.",
+          done: "Cleared. The pack now counts {{cycles}}.",
         },
       },
       bmsh: {
