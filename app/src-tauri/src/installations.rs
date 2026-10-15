@@ -458,6 +458,8 @@ mod tests {
         // merged into the user's installation: everything there, the old one gone, a repeat does nothing
         let merged = h.lock().unwrap().merge_site(&legacy.id, &mine.id).unwrap();
         assert!(looks_like_id(&legacy.id) && !looks_like_id("gw:4196") && !looks_like_id("inst-x"));
+        // the id form of earlier versions (an installation exported from them must import)
+        assert!(looks_like_id("inst-1a0f00c0ffe-1b2c") && !looks_like_id("inst-1a0f") && !looks_like_id("inst-1a-2b-3c-4d"));
         assert_eq!(merged.pack, 1);
         store.merge(&legacy.id, &mine.id, serde_json::to_value(&merged).unwrap(), 2000).unwrap();
         assert_eq!(store.installations().unwrap().len(), 1);

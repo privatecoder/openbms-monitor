@@ -595,6 +595,19 @@ mod tests {
     }
 
     #[test]
+    fn an_installation_of_an_earlier_version_imports() {
+        let (src, id) = source();
+        let mut data = src.export_data(&id).unwrap();
+        data.id = "inst-1a0f00c0ffe-1b2c".into();
+        let dst = store();
+        let h = hashes();
+        let st = dst.import_maint(&data, "e1", "m", &Into::New { copy: false }, &plan(&h, &|_| None), 200).unwrap();
+        assert_eq!(st.target, "inst-1a0f00c0ffe-1b2c");
+        data.id = "192.168.1.10:4196".into();
+        assert!(dst.import_maint(&data, "e2", "m", &Into::New { copy: false }, &plan(&h, &|_| None), 200).unwrap_err().starts_with("bundle-manifest"));
+    }
+
+    #[test]
     fn log_names_must_be_plain_and_in_the_bundle() {
         let (src, id) = source();
         let mut data = src.export_data(&id).unwrap();
