@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod bank;
 mod bms_memory;
 mod bundle;
 mod control;
@@ -45,6 +46,8 @@ struct AppState {
     link: Arc<Mutex<Link>>,
     /// Reserved packs and installations under a structural operation; see `control.rs`.
     ops: control::Ops,
+    /// The unconfirmed packs of the connection (right bank before writing); see `bank.rs`.
+    bank: Mutex<bank::BankState>,
 }
 
 /// The installation a connection belongs to. `gen` counts connects and disconnects: an answer that arrives after one is
@@ -68,8 +71,18 @@ pub(crate) fn new_link(state: &AppState, installation: Option<String>) {
 }
 
 /// Store something for the installation of the connection an answer came on (`before`, taken before the exchange):
-/// only while that connection is still the current one. A failure is logged; it must not fail the exchange.
+/// only while that connection is still the current one, and not while a pack of another installation is unconfirmed
+/// on it (`bank.rs`). A failure is logged; it must not fail the exchange.
 pub(crate) fn for_link<T>(state: &AppState, before: &Link, what: &str, f: impl FnOnce(&maint_store::Store, &str) -> Result<T, String>) -> Option<T> {
+    if bank::foreign(state, before.gen) {
+        return None;
+    }
+    for_link_checked(state, before, what, f)
+}
+
+/// `for_link` also on a connection with a foreign pack: for a pack whose identity the caller has just checked (the
+/// app's own serial write to a known board).
+pub(crate) fn for_link_checked<T>(state: &AppState, before: &Link, what: &str, f: impl FnOnce(&maint_store::Store, &str) -> Result<T, String>) -> Option<T> {
     let inst = before.installation.as_deref()?;
     if link_now(state).gen != before.gen {
         return None;
@@ -138,7 +151,7 @@ pub(crate) fn lock(m: &Mutex<Option<Connection>>) -> Result<std::sync::MutexGuar
     m.lock().map_err(|e| e.to_string())
 }
 
-const FLASHING: &str = "a firmware update is running";
+pub(crate) const FLASHING: &str = "a firmware update is running";
 
 /// The refusal of `connect` while another operation holds the port, as JSON for the UI (`portBusy` in maint.ts):
 /// `{"kind":"busy","action":…}` names the running maintenance action, "flash" for a firmware update, or null
@@ -182,7 +195,7 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
 }
 
 /// The refusal of a step whose connection changed since its action began, as JSON for the UI (`errorText`).
-const LINK_CHANGED: &str = r#"{"kind":"link-changed"}"#;
+pub(crate) const LINK_CHANGED: &str = r#"{"kind":"link-changed"}"#;
 
 /// One exchange of an action of several steps: refused once the connection changed since the action began (`at`). The
 /// check runs under the connection lock, and a reconnect counts up the generation before it puts in a new connection,
@@ -282,6 +295,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     new_link(&state, installation.clone());
     if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
         h.connected(id, if can { "can" } else { "pack" });
+        // RS485-1/2: nothing is recorded until a serial read shows no pack of another installation (`bank.rs`)
+        h.hold(!can);
     }
     Ok(Connected { linked, answered })
 }
@@ -390,16 +405,18 @@ async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry,
 }
 
 /// A serial number read and what it says about the board at that place of the connection's installation (None:
-/// „Nur ansehen“, or not stored).
+/// „Nur ansehen“, or not stored), and its identity against the installation (None: „Nur ansehen“).
 #[derive(Serialize)]
 struct SerialRead {
     #[serde(flatten)]
     serials: SerialNumbers,
     board: Option<maint_store::BoardSeen>,
+    identity: Option<bank::IdentityView>,
 }
 
 /// Battery and BMS serial number of one pack, as far as the connected bus shows them (RS485-1/2: both; CAN socket
-/// bus: the master's battery serial number only, slaves are not asked). Every read is a board seen at its place.
+/// bus: the master's battery serial number only, slaves are not asked). The read is classified first (`bank.rs`): only
+/// a board known at this place is recorded as seen there; an unconfirmed one waits for `bank_confirm`.
 #[tauri::command]
 async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<SerialRead, String> {
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
@@ -408,8 +425,28 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
     let _guard = control::reserve_pack_wait(&state, address, "serial_read")?;
     let before = link_now(&state);
     let serials = with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))?;
-    let board = for_link(&state, &before, "board", |s, inst| s.board_seen(inst, address, &serials.bms, &serials.battery, history::now_ms()));
-    Ok(SerialRead { serials, board })
+    let Some(inst) = before.installation.clone() else { return Ok(SerialRead { serials, board: None, identity: None }) };
+    if link_now(&state).gen != before.gen {
+        return Err(LINK_CHANGED.into());
+    }
+    if bus == Bus::CanSocketBus {
+        // no String 2 here: the master's battery serial of another installation is a hint only, nothing is held
+        let other = if address == 0 { maint::with_store(&state, |s| bank::can_hint(s, &inst, &serials.battery)).ok().flatten() } else { None };
+        let identity = other.map(|o| bank::IdentityView {
+            kind: "unconfirmed", address, serial: None, why: Some(bank::Why::Foreign), installation: Some(o), hint: true,
+        });
+        return Ok(SerialRead { serials, board: None, identity });
+    }
+    let id = maint::with_store(&state, |s| bank::identity(s, &inst, address, &serials.bms)).unwrap_or(bank::Identity::Failed);
+    bank::after_read(&state, &before, address, &id, &serials.bms, &serials.battery);
+    let board = match id {
+        bank::Identity::Known | bank::Identity::Unchecked => {
+            for_link(&state, &before, "board", |s, inst| s.board_seen(inst, address, &serials.bms, &serials.battery, history::now_ms()))
+        }
+        _ => None,
+    };
+    let identity = Some(bank::IdentityView::of(&id, address, &serials.bms));
+    Ok(SerialRead { serials, board, identity })
 }
 
 /// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
@@ -767,7 +804,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

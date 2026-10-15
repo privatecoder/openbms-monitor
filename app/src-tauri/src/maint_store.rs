@@ -203,8 +203,17 @@ pub enum BoardSeen {
     Unclear,
 }
 
+/// A place a serial number is known at (`Store::serial_places`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SerialPlace {
+    pub installation: String,
+    pub address: u8,
+    pub name: String,
+    pub archived: bool,
+}
+
 /// Only a real String 2 identifies a board: not empty, not the placeholder, read completely.
-fn real(v: &SerialValue) -> Option<&str> {
+pub fn real(v: &SerialValue) -> Option<&str> {
     match v {
         SerialValue::Set { value, truncated: false } => Some(value),
         _ => None,
@@ -786,6 +795,42 @@ impl Store {
         let i = self.installation(inst)?;
         self.save_installation(&Installation { name: name.into(), ..i })?;
         self.installation(inst)
+    }
+
+    /// Every place a BMS serial (String 2) is known at, over all installations, archived ones included: boards (also
+    /// under a serial the app wrote over) and, at address 0, the stored master serial. Active installations first.
+    pub fn serial_places(&self, serial: &str) -> Result<Vec<SerialPlace>, String> {
+        self.places(
+            "SELECT installation, address FROM boards WHERE bms_serial = ?1
+             UNION SELECT b.installation, b.address FROM serial_alias a JOIN boards b ON b.id = a.board WHERE a.serial = ?1
+             UNION SELECT installation, 0 FROM master_serial WHERE serial = ?1",
+            serial,
+        )
+    }
+
+    /// The installations whose board at address 0 has this battery serial (String 1); `prefix`: only the first
+    /// characters were readable (Modbus on the CAN socket), a stored value that starts with them counts.
+    pub fn master_battery_places(&self, battery: &str, prefix: bool) -> Result<Vec<SerialPlace>, String> {
+        let sql = if prefix {
+            "SELECT installation, address FROM boards WHERE address = 0 AND battery_serial IS NOT NULL AND substr(battery_serial, 1, length(?1)) = ?1"
+        } else {
+            "SELECT installation, address FROM boards WHERE address = 0 AND battery_serial = ?1"
+        };
+        self.places(sql, battery)
+    }
+
+    fn places(&self, select: &str, value: &str) -> Result<Vec<SerialPlace>, String> {
+        let sql = format!(
+            "SELECT DISTINCT p.installation, p.address, i.name, i.archived, i.created, i.rowid FROM ({select}) p JOIN installations i ON i.id = p.installation
+             ORDER BY i.archived, i.created, i.rowid, p.address"
+        );
+        let mut stmt = self.db.prepare(&sql).map_err(e)?;
+        let rows = stmt
+            .query_map([value], |r| Ok(SerialPlace { installation: r.get(0)?, address: r.get(1)?, name: r.get(2)?, archived: r.get(3)? }))
+            .map_err(e)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(e)?;
+        Ok(rows)
     }
 
     /// Keep a parameter block of a place with the String 2 of its newest board (None: no board identified yet).
