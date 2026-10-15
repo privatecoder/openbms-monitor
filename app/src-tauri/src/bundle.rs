@@ -19,9 +19,21 @@ pub const RECORDING: &str = "recording.jsonl";
 pub struct Limits {
     pub per_file: u64,
     pub total: u64,
+    /// `manifest.json` and `installation.json` are parsed in memory
+    pub metadata: u64,
+    pub entries: usize,
 }
 
-pub const LIMITS: Limits = Limits { per_file: 2 << 30, total: 4 << 30 };
+pub const LIMITS: Limits = Limits { per_file: 2 << 30, total: 4 << 30, metadata: 64 << 20, entries: 10_000 };
+
+/// Refuse a path that is a symlink (a reused unpack folder, a `.part` target): a link there could lead the
+/// allowed relative names out of the folder.
+pub fn no_symlink(p: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => Err(format!("bundle-symlink: {}", p.display())),
+        _ => Ok(()),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileEntry {
@@ -110,7 +122,12 @@ impl Writer {
 pub fn unpack_checked(zip_path: &Path, dir: &Path, limits: Limits) -> Result<Manifest, String> {
     let f = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(f).map_err(|e| format!("bundle-unreadable: {e}"))?;
+    if zip.len() > limits.entries {
+        return Err("bundle-too-large".into());
+    }
+    no_symlink(dir)?;
     std::fs::create_dir_all(dir.join("logs")).map_err(|e| e.to_string())?;
+    no_symlink(&dir.join("logs"))?;
     let mut total = 0u64;
     let mut seen: BTreeMap<String, FileEntry> = BTreeMap::new();
     for i in 0..zip.len() {
@@ -123,7 +140,9 @@ pub fn unpack_checked(zip_path: &Path, dir: &Path, limits: Limits) -> Result<Man
         if seen.contains_key(&name) {
             return Err(format!("bundle-entry: {name} twice"));
         }
+        let cap = if name == MANIFEST || name == INSTALLATION { limits.metadata.min(limits.per_file) } else { limits.per_file };
         let out_path = dir.join(&name);
+        no_symlink(&out_path)?;
         let mut out = File::create(&out_path).map_err(|e| e.to_string())?;
         let mut hash = Sha256::new();
         let mut size = 0u64;
@@ -135,7 +154,7 @@ pub fn unpack_checked(zip_path: &Path, dir: &Path, limits: Limits) -> Result<Man
             }
             size += n as u64;
             total += n as u64;
-            if size > limits.per_file || total > limits.total {
+            if size > cap || total > limits.total {
                 return Err("bundle-too-large".into());
             }
             hash.update(&buf[..n]);
@@ -176,12 +195,15 @@ fn check(m: &Manifest, seen: &BTreeMap<String, FileEntry>) -> Result<(), String>
 
 /// Re-check an already unpacked bundle (an interrupted import is resumed from it).
 pub fn recheck(dir: &Path) -> Result<Manifest, String> {
+    no_symlink(dir)?;
+    no_symlink(&dir.join("logs"))?;
     let m: Manifest = serde_json::from_slice(&std::fs::read(dir.join(MANIFEST)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let mut seen = BTreeMap::new();
     for name in m.files.keys() {
         if !allowed_entry(name) {
             return Err(format!("bundle-entry: {name}"));
         }
+        no_symlink(&dir.join(name))?;
         let mut f = File::open(dir.join(name)).map_err(|_| format!("bundle-missing: {name}"))?;
         let mut hash = Sha256::new();
         let size = std::io::copy(&mut f, &mut hash).map_err(|e| e.to_string())?;
@@ -295,9 +317,23 @@ mod tests {
         let big = vec![0u8; 5000];
         let m = manifest_for(&[(INSTALLATION, &big)]);
         let p = raw(&d, &[(INSTALLATION, &big), (MANIFEST, &m)]);
-        let small = Limits { per_file: 4096, total: 1 << 20 };
+        let small = Limits { per_file: 4096, ..LIMITS };
         assert_eq!(unpack_checked(&p, &d.join("o"), small).unwrap_err(), "bundle-too-large");
-        let tight = Limits { per_file: 1 << 20, total: 4096 };
+        let tight = Limits { total: 4096, ..LIMITS };
         assert_eq!(unpack_checked(&p, &d.join("o2"), tight).unwrap_err(), "bundle-too-large");
+        // metadata has its own, smaller cap
+        let meta = Limits { metadata: 4096, ..LIMITS };
+        assert_eq!(unpack_checked(&p, &d.join("o3"), meta).unwrap_err(), "bundle-too-large");
+        let few = Limits { entries: 1, ..LIMITS };
+        assert_eq!(unpack_checked(&p, &d.join("o4"), few).unwrap_err(), "bundle-too-large");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_unpack_folder_is_refused() {
+        let d = tmp("link");
+        std::fs::create_dir_all(d.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(d.join("elsewhere"), d.join("out")).unwrap();
+        assert!(unpack_checked(&good(&d), &d.join("out"), LIMITS).unwrap_err().starts_with("bundle-symlink"));
     }
 }
