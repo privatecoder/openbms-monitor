@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod bms_memory;
 mod bundle;
+mod control;
 mod installation_bundle;
 mod firmware;
 mod history;
@@ -41,7 +42,9 @@ struct AppState {
     /// Asks the running history read to stop after the current frame.
     memory_cancel: Arc<AtomicBool>,
     /// The installation of the monitor connection (None: „Nur ansehen“ or not connected).
-    link: Mutex<Link>,
+    link: Arc<Mutex<Link>>,
+    /// Reserved packs and installations under a structural operation; see `control.rs`.
+    ops: control::Ops,
 }
 
 /// The installation a connection belongs to. `gen` counts connects and disconnects: an answer that arrives after one is
@@ -145,12 +148,12 @@ fn port_busy_error(action: Option<&str>) -> String {
 }
 
 /// What holds the port now, for `port_busy_error`.
-fn current_action(state: &AppState) -> Option<&'static str> {
+pub(crate) fn current_action(state: &AppState) -> Option<&'static str> {
     let maint = state.maint_action.lock().ok().and_then(|a| *a);
     maint.or_else(|| state.flashing.load(Ordering::SeqCst).then_some("flash"))
 }
 
-struct PortSlot(Arc<AtomicBool>);
+pub(crate) struct PortSlot(Arc<AtomicBool>);
 
 impl Drop for PortSlot {
     fn drop(&mut self) {
@@ -164,23 +167,9 @@ fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
         .map(|_| PortSlot(flag.clone()))
 }
 
-/// For a user action: waits until a running background exchange (the panel's 2-s live status) frees the port.
-fn reserve_port_wait(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
-    let until = std::time::Instant::now() + PORT_WAIT;
-    loop {
-        if let Some(slot) = reserve_port(flag) {
-            return Some(slot);
-        }
-        if std::time::Instant::now() >= until {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// Longer than one live status (listen plus master read) and one pack scan (15 silent addresses at 600 ms plus the
 /// installation check): a user action pressed during a scan waits for it instead of failing with "busy".
-const PORT_WAIT: Duration = Duration::from_secs(15);
+pub(crate) const PORT_WAIT: Duration = Duration::from_secs(15);
 
 /// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
 fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
@@ -188,6 +177,24 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
         return Err(FLASHING.into());
     }
     let mut guard = lock(conn)?;
+    let c = guard.as_mut().ok_or("not connected")?;
+    f(c).map_err(|e| e.to_string())
+}
+
+/// The refusal of a step whose connection changed since its action began, as JSON for the UI (`errorText`).
+const LINK_CHANGED: &str = r#"{"kind":"link-changed"}"#;
+
+/// One exchange of an action of several steps: refused once the connection changed since the action began (`at`). The
+/// check runs under the connection lock, and a reconnect counts up the generation before it puts in a new connection,
+/// so no step can reach another bank's pack.
+pub(crate) fn with_link<T>(conn: &Shared, flashing: &AtomicBool, links: &Mutex<Link>, at: &Link, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
+    if flashing.load(Ordering::SeqCst) {
+        return Err(FLASHING.into());
+    }
+    let mut guard = lock(conn)?;
+    if links.lock().map(|l| l.gen).ok() != Some(at.gen) {
+        return Err(LINK_CHANGED.into());
+    }
     let c = guard.as_mut().ok_or("not connected")?;
     f(c).map_err(|e| e.to_string())
 }
@@ -225,10 +232,15 @@ fn no_answer_error(p: &openbms_transport::Probe) -> String {
 /// for this whole connection.
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation: Option<String>, addresses: Option<Vec<u8>>) -> Result<Connected, String> {
-    let _port_slot = reserve_port(&state.port_busy).ok_or_else(|| port_busy_error(current_action(&state)))?;
+    // not while an action runs on a pack: it would continue on the new connection ("pack": the UI waits and retries)
+    let _port_slot = control::reserve_bus(&state)
+        .ok_or_else(|| port_busy_error(current_action(&state).or(control::any_pack_action(&state.ops).map(|_| "pack"))))?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
     }
+    // a merge, delete, export or import of this installation runs to its end first
+    let ids: Vec<&str> = installation.as_deref().into_iter().collect();
+    let _inst = control::reserve_installations(&state.ops, &ids, "connect").map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
     if let Some(id) = &installation {
         maint::with_store(&state, |s| s.installation(id)).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
     }
@@ -287,7 +299,7 @@ struct OtherBus {
 /// Open the USB port at the other bus's baud rate, ask like `connect` does, close it again. Read-only.
 #[tauri::command]
 async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, addresses: Option<Vec<u8>>) -> Result<OtherBus, String> {
-    let _port_slot = reserve_port(&state.port_busy).ok_or_else(|| port_busy_error(current_action(&state)))?;
+    let _port_slot = control::reserve_bus(&state).ok_or_else(|| port_busy_error(current_action(&state).or(control::any_pack_action(&state.ops).map(|_| "pack"))))?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
     }
@@ -326,8 +338,15 @@ pub(crate) fn stop_monitor_and_tell(state: &AppState, app: &AppHandle) -> Result
     Ok(())
 }
 
+/// Async, so the window never waits: a running pack action (a restart watch up to 15 s) ends first, a history read is
+/// asked to stop. After 20 s the monitor stops anyway; the action's next step then finds the connection changed.
 #[tauri::command]
-fn disconnect(state: State<AppState>) -> Result<(), String> {
+async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
+    let _pending = control::begin_disconnect(&state.ops);
+    state.memory_cancel.store(true, Ordering::SeqCst);
+    let ops = state.ops.clone();
+    // waiting blocks: off the async runtime
+    tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, Duration::from_secs(20))).await.map_err(|e| e.to_string())?;
     stop_monitor(&state)
 }
 
@@ -345,8 +364,13 @@ async fn system_once(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
     if *state.bus.lock().map_err(|e| e.to_string())? != Some(Bus::CanSocketBus) {
         return Err("system values exist only on the CAN socket bus".into());
     }
+    let before = link_now(&state);
     let r = with_conn(&state.conn, &state.flashing, |c| c.system_values());
     let ok = r.is_ok();
+    // an answer of a connection replaced meanwhile is not shown
+    if link_now(&state).gen != before.gen {
+        return Err("the connection changed".into());
+    }
     let _ = app.emit("system", SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() });
     if ok { Ok(()) } else { Err("no system values".into()) }
 }
@@ -379,6 +403,9 @@ struct SerialRead {
 #[tauri::command]
 async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<SerialRead, String> {
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
+    // read and `board_seen` together: between the 0xA5 of a serial write and its `board_written` a read would take
+    // the new String 2 for another board
+    let _guard = control::reserve_pack_wait(&state, address, "serial_read")?;
     let before = link_now(&state);
     let serials = with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))?;
     let board = for_link(&state, &before, "board", |s, inst| s.board_seen(inst, address, &serials.bms, &serials.battery, history::now_ms()));
@@ -392,9 +419,17 @@ async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameter
     if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
         return Err("parameters can only be read on RS485-1/2".into());
     }
-    let before = link_now(&state);
+    read_parameters_reserved(&state, address)
+}
+
+/// 0x47 and its snapshot under the pack's reservation: a write of the same pack keeps it until its own `written`
+/// snapshot and read-back, so a read in between cannot store the new block as `read` before it (the write's previous
+/// state would then be the written block).
+fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters, String> {
+    let _guard = control::reserve_pack_wait(state, address, "read")?;
+    let before = link_now(state);
     let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
-    bms_memory::snapshot(&state, &before, address, history::SnapshotKind::Read, &p.block);
+    bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
     Ok(p)
 }
 
@@ -417,6 +452,9 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     let flashing = state.flashing.clone();
     let rec = state.history.clone();
     let paused = state.memory_busy.clone();
+    let (ops, links, gen) = (state.ops.clone(), state.link.clone(), link_now(&state).gen);
+    // answers of a connection replaced meanwhile are neither recorded nor shown
+    let current = move || links.lock().map(|l| l.gen == gen).unwrap_or(false);
     std::thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             // a BMS history read has the bus to itself
@@ -427,6 +465,9 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
             let started = std::time::Instant::now();
             if bus == Bus::CanSocketBus {
                 let r = with_conn(&conn, &flashing, |c| c.system_values());
+                if !current() {
+                    break;
+                }
                 let update = SystemUpdate { values: r.as_ref().ok().cloned(), error: r.err() };
                 if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
                     rec.system(history::now_ms(), &v);
@@ -436,6 +477,10 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
             for &address in &addresses {
                 if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) {
                     break;
+                }
+                // a restarting pack is watched by its own action; asking it now would only wait for timeouts
+                if control::pack_action(&ops, address) == Some("restart") {
+                    continue;
                 }
                 let telemetry = with_conn(&conn, &flashing, |c| c.telemetry(address));
                 let status = with_conn(&conn, &flashing, |c| c.status(address));
@@ -450,6 +495,10 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                         // tell the UI right away instead of letting it wait for its data timeout
                         let _ = app.emit("link-lost", error.clone().unwrap_or_default());
                     }
+                    running.store(false, Ordering::SeqCst);
+                    break;
+                }
+                if !current() {
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
@@ -718,7 +767,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
@@ -744,6 +793,29 @@ mod port_reservation_tests {
         assert!(reserve_port(&busy).is_none());
         drop(slot);
         assert!(reserve_port(&busy).is_some());
+    }
+
+    #[test]
+    fn a_parameter_read_waits_for_a_write_of_the_same_pack() {
+        let state = AppState::default();
+        let write = control::reserve_pack(&state, 2, "params").unwrap();
+        let e = read_parameters_reserved(&state, 2).unwrap_err();
+        assert!(e.contains("pack-busy") && e.contains("params"), "{e}");
+        // another pack is not held up (it fails here only for the missing connection)
+        assert_eq!(read_parameters_reserved(&state, 3).unwrap_err(), "not connected");
+        drop(write);
+        assert_eq!(read_parameters_reserved(&state, 2).unwrap_err(), "not connected");
+    }
+
+    #[test]
+    fn no_step_runs_on_a_connection_changed_since_the_action_began() {
+        let state = AppState::default();
+        let at = link_now(&state);
+        let step = |at: &Link| with_link(&state.conn, &state.flashing, &state.link, at, |_| Ok(()));
+        assert_eq!(step(&at).unwrap_err(), "not connected");
+        new_link(&state, Some("other".into()));
+        assert_eq!(step(&at).unwrap_err(), LINK_CHANGED);
+        assert_eq!(step(&link_now(&state)).unwrap_err(), "not connected");
     }
 
     #[test]

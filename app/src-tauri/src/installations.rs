@@ -215,6 +215,8 @@ pub async fn installation_merge(state: State<'_, AppState>, source: String, targ
     if source == target {
         return Err(maint::refused("merge-self"));
     }
+    // no connect, delete, export or import of either one meanwhile
+    let _held = crate::control::reserve_installations(&state.ops, &[&source, &target], "merge")?;
     // answers of the running connection would still arrive for the source
     if crate::link_now(&state).installation.as_deref() == Some(source.as_str()) {
         return Err(maint::refused("installation-connected"));
@@ -251,6 +253,7 @@ pub async fn installation_rename(state: State<'_, AppState>, installation: Strin
 /// Anlage“).
 #[tauri::command]
 pub async fn installation_delete(state: State<'_, AppState>, installation: String) -> Result<(), MaintError> {
+    let _held = crate::control::reserve_installations(&state.ops, &[&installation], "delete")?;
     if crate::link_now(&state).installation.as_deref() == Some(installation.as_str()) {
         return Err(maint::refused("installation-connected"));
     }
@@ -276,6 +279,7 @@ pub struct SnapshotView {
     board: &'static str,
     bms_serial: Option<String>,
     parameters: Option<Parameters>,
+    switches_unconfirmed: bool,
 }
 
 #[tauri::command]
@@ -283,7 +287,7 @@ pub async fn installation_snapshots(state: State<'_, AppState>, installation: St
     let rows = with_store(&state, |s| s.latest_snapshots(&installation))?;
     Ok(rows
         .into_iter()
-        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok() })
+        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok(), switches_unconfirmed: x.switches_unconfirmed })
         .collect())
 }
 
@@ -312,6 +316,8 @@ fn imports_dir(app: &AppHandle) -> Result<std::path::PathBuf, MaintError> {
 /// Write an installation's bundle (ZIP) to the file the user picked; the recording only when asked.
 #[tauri::command]
 pub async fn installation_export(app: AppHandle, state: State<'_, AppState>, installation: String, path: String, recording: bool) -> Result<crate::installation_bundle::Exported, MaintError> {
+    // a merge or delete meanwhile would leave a complete-looking but partial backup
+    let held = crate::control::reserve_installations(&state.ops, &[&installation], "export")?;
     let store = state.maint.clone();
     let db = {
         let h = state.history.lock().map_err(text)?;
@@ -326,6 +332,7 @@ pub async fn installation_export(app: AppHandle, state: State<'_, AppState>, ins
     }
     let logs = crate::firmware::logs_dir(&app).map_err(text)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _held = held;
         crate::installation_bundle::export(&store, db.as_deref(), &logs, &installation, std::path::Path::new(&path), recording, history::now_ms())
     })
     .await
@@ -350,7 +357,12 @@ pub async fn installation_import_apply(app: AppHandle, state: State<'_, AppState
     let (store, hist) = (state.maint.clone(), state.history.clone());
     let imports = imports_dir(&app)?;
     let logs = crate::firmware::logs_dir(&app).map_err(text)?;
-    tauri::async_runtime::spawn_blocking(move || crate::installation_bundle::apply(&store, &hist, &imports, &logs, &export_id, &into))
+    // its target is decided inside: all installations wait
+    let held = crate::control::reserve_installations(&state.ops, &[crate::control::ALL], "import")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _held = held;
+        crate::installation_bundle::apply(&store, &hist, &imports, &logs, &export_id, &into)
+    })
         .await
         .map_err(text)?
         .map_err(bundle_error)

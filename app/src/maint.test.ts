@@ -86,6 +86,8 @@ describe("backend errors", () => {
   it("a busy port names the running operation", () => {
     expect(portBusy('{"kind":"busy","action":"live"}')).toEqual({ action: "live" });
     expect(portBusy("nope")).toBeNull();
+    expect(portBusy('{"kind":"refused","reason":"installation-in-use"}')).toEqual({ action: "installation" });
+    expect(portBusy('{"kind":"refused","reason":"name-taken"}')).toBeNull();
     expect(busyMessage("live", false, tr)).toBe('conn.busyWait {"what":"conn.busyAction.live"}');
     expect(busyMessage("check", true, tr)).toBe('conn.busyGaveUp {"what":"conn.busyAction.other"}');
     const w = { token: 1, current: 1, locked: false, auto: false, firmwareOpen: false, now: 0, until: 10 };

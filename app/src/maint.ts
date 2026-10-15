@@ -127,11 +127,16 @@ export function otherBank(e: unknown): string | null {
 }
 
 /** The backend's refusal of `connect` while another operation holds the port: `{kind: "busy", action}` with the
- *  running maintenance operation ("live", "scan", "halt", "release", "flash"; null when it has none). Else null. */
+ *  running maintenance operation ("live", "scan", "halt", "release", "flash", "pack" for an action on a pack; null
+ *  when it has none), and the refusal "installation-in-use" as "installation". Else null. */
 export function portBusy(e: unknown): { action: string | null } | null {
   let v: unknown = e;
   if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
-  if (!v || typeof v !== "object" || (v as { kind?: unknown }).kind !== "busy") return null;
+  if (!v || typeof v !== "object") return null;
+  // a merge, delete, export or import of the installation: waited for like a busy port
+  const r = v as { kind?: unknown; reason?: unknown };
+  if (r.kind === "refused" && r.reason === "installation-in-use") return { action: "installation" };
+  if (r.kind !== "busy") return null;
   const a = (v as { action?: unknown }).action;
   return { action: typeof a === "string" ? a : null };
 }
@@ -144,10 +149,11 @@ export function busyWaitStep(w: { token: number; current: number; locked: boolea
   return w.now >= w.until ? "give-up" : "wait";
 }
 
-const BUSY_ACTIONS = ["live", "scan", "halt", "release", "flash"];
+const BUSY_ACTIONS = ["live", "scan", "halt", "release", "flash", "pack"];
 
 /** "Port busy: the pack bus is being watched." and what happens next: waiting for it, or given up after the wait. */
 export function busyMessage(action: string | null, gaveUp: boolean, t: T): string {
+  if (action === "installation") return t(gaveUp ? "conn.installationGaveUp" : "conn.installationWait", { what: t("maint.err.refused.installation-in-use") });
   const what = t(`conn.busyAction.${action && BUSY_ACTIONS.includes(action) ? action : "other"}`);
   return t(gaveUp ? "conn.busyGaveUp" : "conn.busyWait", { what });
 }

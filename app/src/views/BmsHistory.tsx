@@ -4,6 +4,7 @@ import { Download, History as HistoryIcon, X } from "lucide-react";
 import { api, isDemo, type BmsHistoryRead, type Bus } from "../api";
 import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, noteProgress, startHistoryRead, summary, type HistoryRun } from "../bmsMemory";
 import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
+import { errorText } from "../control";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { SevIcon } from "../components/widgets";
@@ -74,7 +75,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const count = result?.records.length ?? 0;
   const endText = !result ? null
     : result.end === "empty" ? (count ? t("bmsh.end.emptyAfter", { count }) : t("bmsh.end.empty"))
-    : result.end === "error" ? t("bmsh.end.error", { count, err: result.error ?? "" })
+    : result.end === "error" ? t("bmsh.end.error", { count, err: errorText(result.error ?? "", t) })
     : t(`bmsh.end.${result.end}`, { count });
   const rows = result ? [...result.records].reverse() : [];
 
