@@ -105,6 +105,8 @@ pub struct Preview {
     pub name: String,
     pub created: i64,
     pub master_serial: Option<String>,
+    /// archived at the exporting computer: it comes in archived
+    pub archived: bool,
     pub places: usize,
     pub boards: usize,
     pub snapshots: usize,
@@ -133,6 +135,7 @@ fn manifest_sha(dir: &Path) -> Result<String, String> {
 pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Result<Preview, String> {
     std::fs::create_dir_all(imports).map_err(|e| e.to_string())?;
     bundle::no_symlink(imports)?;
+    clean_stale(store, imports)?;
     let tmp = imports.join(format!("tmp-{}", new_export_id(history::now_ms())));
     let unpacked = bundle::unpack_checked(zip, &tmp, bundle::LIMITS);
     let m: Manifest = match unpacked {
@@ -163,6 +166,10 @@ pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Res
             return Err(err);
         }
     };
+    // imported before: nothing to keep unpacked
+    if row.as_ref().is_some_and(|r| r.completed.is_some()) {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     store_do(store, |s| {
         let same = s.installation(&data.id).ok();
         let master_differs = matches!((&same.as_ref().and_then(|i| i.master_serial.clone()), &data.master_serial), (Some(a), Some(b)) if a != b);
@@ -181,6 +188,7 @@ pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Res
             name: data.name.clone(),
             created: m.created,
             master_serial: data.master_serial.clone(),
+            archived: data.archived,
             places: places.len(),
             boards: data.boards.len(),
             snapshots: data.snapshots.len(),
@@ -195,9 +203,42 @@ pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Res
     })
 }
 
+/// Unpacked folders that belong to no unfinished import (a cancelled preview, a crash before the store step):
+/// removed, so they do not pile up in the app data.
+fn clean_stale(store: &Shared<Option<Store>>, imports: &Path) -> Result<(), String> {
+    let open: std::collections::HashSet<String> = store_do(store, |s| s.open_imports())?.into_iter().map(|r| r.export_id).collect();
+    for entry in std::fs::read_dir(imports).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !open.contains(&name) {
+            let p = entry.path();
+            // a link is removed as a link, never followed
+            let _ = if entry.file_type().is_ok_and(|t| t.is_dir()) { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
+    Ok(())
+}
+
+/// The preview was closed without importing: its unpacked folder goes (unless an unfinished import needs it).
+pub fn discard(store: &Shared<Option<Store>>, imports: &Path, export_id: &str) -> Result<(), String> {
+    if store_do(store, |s| s.import_row(export_id))?.is_some_and(|r| r.completed.is_none()) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_dir_all(bundle::unpack_dir(imports, export_id)?);
+    Ok(())
+}
+
+/// Give up an unfinished import (it cannot complete, e.g. its folder is gone): the target is free again; what the
+/// store step added stays.
+pub fn abandon(store: &Shared<Option<Store>>, imports: &Path, export_id: &str) -> Result<(), String> {
+    store_do(store, |s| s.abandon_import(export_id))?;
+    let _ = std::fs::remove_dir_all(bundle::unpack_dir(imports, export_id)?);
+    Ok(())
+}
+
 #[derive(Serialize, Debug)]
 pub struct Applied {
     pub target: String,
+    pub target_name: String,
     pub report: serde_json::Value,
     pub recording_rows: u64,
     pub recording_events: u64,
@@ -214,14 +255,17 @@ pub fn apply(store: &Shared<Option<Store>>, history: &Shared<History>, imports: 
             if let Ok(dir) = bundle::unpack_dir(imports, export_id) {
                 let _ = std::fs::remove_dir_all(dir);
             }
-            return Ok(Applied { target: r.installation, report: r.state.report, recording_rows: 0, recording_events: 0, logs_copied: 0, already: true });
+            let target_name = store_do(store, |s| Ok(s.installation(&r.installation).map(|i| i.name).unwrap_or_default()))?;
+            return Ok(Applied { target: r.installation, target_name, report: r.state.report, recording_rows: 0, recording_events: 0, logs_copied: 0, already: true });
         }
-    }
-    if !history.lock().map_err(|e| e.to_string())?.ready() {
-        return Err("history-preparing".into());
     }
     let dir = bundle::unpack_dir(imports, export_id)?;
     let m = bundle::recheck(&dir)?;
+    // only a recording needs the history database
+    let has_recording = m.files.contains_key(RECORDING) || m.files.contains_key(EVENTS);
+    if has_recording && !history.lock().map_err(|e| e.to_string())?.ready() {
+        return Err("history-preparing".into());
+    }
     if m.export_id != export_id {
         return Err("import-conflict".into());
     }
@@ -269,7 +313,8 @@ pub fn apply(store: &Shared<Option<Store>>, history: &Shared<History>, imports: 
     }
     store_do(store, |s| s.complete_import(export_id, history::now_ms()))?;
     let _ = std::fs::remove_dir_all(&dir);
-    Ok(Applied { target: state.target, report: state.report, recording_rows: rows, recording_events: events, logs_copied: copied, already: false })
+    let target_name = store_do(store, |s| Ok(s.installation(&state.target).map(|i| i.name).unwrap_or_default()))?;
+    Ok(Applied { target: state.target, target_name, report: state.report, recording_rows: rows, recording_events: events, logs_copied: copied, already: false })
 }
 
 /// Unfinished imports with their target's name (the installations view offers „Fortsetzen“).
@@ -361,6 +406,61 @@ mod tests {
         assert_eq!(r.target, id);
         assert!(open_imports(&b.store).unwrap().is_empty());
         assert_eq!(store_do(&b.store, |s| s.installations()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_deleted_installation_can_be_restored_from_its_file() {
+        let a = env("da");
+        let id = seeded(&a);
+        let zip = a.dir.join("out.zip");
+        export(&a.store, None, &a.logs, &id, &zip, false, 1000).unwrap();
+        let p = inspect(&a.store, &a.imports, &zip).unwrap();
+        apply(&a.store, &a.history, &a.imports, &a.logs, &p.export_id, &ImportInto::Same).unwrap();
+        a.history.lock().unwrap().clear(Some(&id)).unwrap();
+        store_do(&a.store, |s| s.delete_installation(&id)).unwrap();
+        let p = inspect(&a.store, &a.imports, &zip).unwrap();
+        assert!(p.completed.is_none());
+        let r = apply(&a.store, &a.history, &a.imports, &a.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
+        assert_eq!((r.target.as_str(), r.target_name.as_str(), r.already), (id.as_str(), "Bank", false));
+    }
+
+    #[test]
+    fn an_import_that_cannot_complete_can_be_given_up() {
+        let a = env("ga");
+        let id = seeded(&a);
+        let zip = a.dir.join("out.zip");
+        export(&a.store, None, &a.logs, &id, &zip, false, 1000).unwrap();
+        let b = env("gb");
+        let p = inspect(&b.store, &b.imports, &zip).unwrap();
+        let dir = b.imports.join(&p.export_id);
+        let data = read_data(&dir).unwrap();
+        store_do(&b.store, |s| s.import_maint(&data, &p.export_id, &manifest_sha(&dir).unwrap(), &ImportInto::New { copy: false }, &LogPlan { bundle_hash: &BTreeMap::from([("f_pack0.log".to_string(), "x".to_string())]), disk: &|_| None }, 5)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::Same).unwrap_err().starts_with("bundle-missing"));
+        assert_eq!(store_do(&b.store, |s| s.delete_installation(&id)).unwrap_err(), "installation-busy");
+        abandon(&b.store, &b.imports, &p.export_id).unwrap();
+        store_do(&b.store, |s| s.delete_installation(&id)).unwrap();
+    }
+
+    #[test]
+    fn previews_leave_no_unpacked_copies_behind() {
+        let a = env("ca");
+        let id = seeded(&a);
+        let zip = a.dir.join("out.zip");
+        export(&a.store, None, &a.logs, &id, &zip, false, 1000).unwrap();
+        let b = env("cb");
+        let p = inspect(&b.store, &b.imports, &zip).unwrap();
+        discard(&b.store, &b.imports, &p.export_id).unwrap();
+        assert_eq!(std::fs::read_dir(&b.imports).unwrap().count(), 0);
+        // a crash after a preview: the next preview cleans up
+        std::fs::create_dir_all(b.imports.join("exp-stale")).unwrap();
+        let p = inspect(&b.store, &b.imports, &zip).unwrap();
+        let left: Vec<String> = std::fs::read_dir(&b.imports).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+        assert_eq!(left, vec![p.export_id.clone()]);
+        apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
+        // already imported: the preview keeps nothing
+        inspect(&b.store, &b.imports, &zip).unwrap();
+        assert_eq!(std::fs::read_dir(&b.imports).unwrap().count(), 0);
     }
 
     #[test]

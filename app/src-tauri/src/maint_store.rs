@@ -420,6 +420,8 @@ impl Store {
                 "DELETE FROM layout WHERE installation = ?1",
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
+                // its completed imports (an open one refused the delete): the same files can restore it later
+                "DELETE FROM import_status WHERE installation = ?1",
                 // the files stay; without their installation they are listed as „ohne Anlage“
                 "UPDATE logs SET installation = NULL WHERE installation = ?1",
                 "DELETE FROM installations WHERE id = ?1",

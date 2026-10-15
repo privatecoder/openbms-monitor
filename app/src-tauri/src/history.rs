@@ -463,9 +463,11 @@ impl History {
                 for table in ["site_packs", "sessions", "sites"] {
                     db.execute(&format!("DELETE FROM {table} WHERE site = ?1"), [s]).map_err(e)?;
                 }
+                // a deleted installation's bundles can be imported again (a restore)
+                db.execute("DELETE FROM meta WHERE key LIKE 'import:%' AND value = ?1", [s]).map_err(e)?;
             }
             None => db
-                .execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites;")
+                .execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites; DELETE FROM meta WHERE key LIKE 'import:%';")
                 .map_err(e)?,
         }
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e)
@@ -529,6 +531,7 @@ impl History {
         if !used {
             for table in ["sites", "sessions", "site_packs", "param_snapshots"] {
                 tx.execute(&format!("UPDATE {table} SET site = ?2 WHERE site = ?1"), params![old, new]).map_err(e2s)?;
+                tx.execute("UPDATE meta SET value = ?2 WHERE key LIKE 'import:%' AND value = ?1", params![old, new]).map_err(e2s)?;
             }
         } else {
             let new_id = site_id(&tx, new).map_err(e2s)?;
@@ -1421,7 +1424,8 @@ pub fn import_bundle(db: &mut Connection, values: Option<&Path>, events: Option<
         return Ok(ImportStats::default());
     }
     let stats = import_into(&tx, values, events, site)?;
-    tx.execute("INSERT INTO meta(key, value) VALUES(?1, ?2)", params![key, now_ms().to_string()]).map_err(e2s)?;
+    // the value is the site: deleting or merging the installation's recording takes the marker along
+    tx.execute("INSERT INTO meta(key, value) VALUES(?1, ?2)", params![key, site]).map_err(e2s)?;
     tx.commit().map_err(e2s)?;
     Ok(stats)
 }

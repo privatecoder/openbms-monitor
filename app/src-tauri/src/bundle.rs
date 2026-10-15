@@ -126,6 +126,15 @@ pub fn unpack_checked(zip_path: &Path, dir: &Path, limits: Limits) -> Result<Man
     if zip.len() > limits.entries {
         return Err("bundle-too-large".into());
     }
+    // room for what the entries declare (the real sizes are counted while extracting), with a margin
+    let declared: u64 = (0..zip.len()).filter_map(|i| zip.by_index_raw(i).ok().map(|e| e.size())).sum();
+    if declared > limits.total {
+        return Err("bundle-too-large".into());
+    }
+    let parent = dir.parent().unwrap_or(dir);
+    if crate::migrate::free_space(parent).is_some_and(|free| free < declared.saturating_add(64 << 20)) {
+        return Err("disk-full".into());
+    }
     no_symlink(dir)?;
     std::fs::create_dir_all(dir.join("logs")).map_err(|e| e.to_string())?;
     no_symlink(&dir.join("logs"))?;
@@ -198,7 +207,8 @@ fn check(m: &Manifest, seen: &BTreeMap<String, FileEntry>) -> Result<(), String>
 pub fn recheck(dir: &Path) -> Result<Manifest, String> {
     no_symlink(dir)?;
     no_symlink(&dir.join("logs"))?;
-    let m: Manifest = serde_json::from_slice(&std::fs::read(dir.join(MANIFEST)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let raw = std::fs::read(dir.join(MANIFEST)).map_err(|_| format!("bundle-missing: {MANIFEST}"))?;
+    let m: Manifest = serde_json::from_slice(&raw).map_err(|e| format!("bundle-manifest: {e}"))?;
     let mut seen = BTreeMap::new();
     for name in m.files.keys() {
         if !allowed_entry(name) {
@@ -207,7 +217,7 @@ pub fn recheck(dir: &Path) -> Result<Manifest, String> {
         no_symlink(&dir.join(name))?;
         let mut f = File::open(dir.join(name)).map_err(|_| format!("bundle-missing: {name}"))?;
         let mut hash = Sha256::new();
-        let size = std::io::copy(&mut f, &mut hash).map_err(|e| e.to_string())?;
+        let size = std::io::copy(&mut f, &mut hash).map_err(|_| format!("bundle-missing: {name}"))?;
         seen.insert(name.clone(), FileEntry { size, sha256: hex(&hash.finalize()) });
     }
     seen.insert(MANIFEST.into(), FileEntry { size: 0, sha256: String::new() });

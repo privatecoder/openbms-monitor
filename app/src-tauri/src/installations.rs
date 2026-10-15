@@ -220,6 +220,10 @@ pub async fn installation_merge(state: State<'_, AppState>, source: String, targ
         return Err(maint::refused("installation-connected"));
     }
     with_store(&state, |s| s.installation(&source).and(s.installation(&target))).map_err(maint::store_refusal)?;
+    // an unfinished import resumes into its target: checked before the recording moves, so it is never split
+    if with_store(&state, |s| Ok(s.import_open_for(&source)? || s.import_open_for(&target)?))? {
+        return Err(maint::refused("installation-busy"));
+    }
     let merged = {
         let mut h = state.history.lock().map_err(text)?;
         h.merge_site(&source, &target).map_err(text)?;
@@ -289,6 +293,9 @@ fn bundle_error(err: String) -> MaintError {
         "bundle-unreadable", "bundle-entry", "bundle-too-large", "bundle-no-manifest", "bundle-manifest", "bundle-format", "bundle-checksum",
         "bundle-missing", "bundle-symlink", "import-conflict", "import-master-differs", "import-id-exists",
     ];
+    if err == "disk-full" {
+        return maint::refused("disk-full");
+    }
     let key = err.split(':').next().unwrap_or_default();
     if KEYS.contains(&key) || ["unknown-installation", "installation-busy", "history-preparing"].contains(&key) {
         maint::refused(key)
@@ -306,7 +313,17 @@ fn imports_dir(app: &AppHandle) -> Result<std::path::PathBuf, MaintError> {
 #[tauri::command]
 pub async fn installation_export(app: AppHandle, state: State<'_, AppState>, installation: String, path: String, recording: bool) -> Result<crate::installation_bundle::Exported, MaintError> {
     let store = state.maint.clone();
-    let db = state.history.lock().map_err(text)?.path();
+    let db = {
+        let h = state.history.lock().map_err(text)?;
+        // asked for the recording but it cannot be read now: said, not silently left out
+        if recording && !h.ready() {
+            return Err(maint::refused("history-preparing"));
+        }
+        h.path()
+    };
+    if recording && db.is_none() {
+        return Err(maint::refused("history-preparing"));
+    }
     let logs = crate::firmware::logs_dir(&app).map_err(text)?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::installation_bundle::export(&store, db.as_deref(), &logs, &installation, std::path::Path::new(&path), recording, history::now_ms())
@@ -337,6 +354,18 @@ pub async fn installation_import_apply(app: AppHandle, state: State<'_, AppState
         .await
         .map_err(text)?
         .map_err(bundle_error)
+}
+
+/// The import dialog was closed: its unpacked copy goes.
+#[tauri::command]
+pub async fn installation_import_discard(app: AppHandle, state: State<'_, AppState>, export_id: String) -> Result<(), MaintError> {
+    crate::installation_bundle::discard(&state.maint, &imports_dir(&app)?, &export_id).map_err(bundle_error)
+}
+
+/// Give up an unfinished import that cannot complete; its target is free again.
+#[tauri::command]
+pub async fn installation_import_abandon(app: AppHandle, state: State<'_, AppState>, export_id: String) -> Result<(), MaintError> {
+    crate::installation_bundle::abandon(&state.maint, &imports_dir(&app)?, &export_id).map_err(bundle_error)
 }
 
 #[derive(Serialize)]

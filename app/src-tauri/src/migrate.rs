@@ -88,7 +88,7 @@ fn enough_space(path: &Path) -> Result<(), String> {
 /// Bytes available to this user on the disk of `dir`; None where it cannot be asked (the copy then fails with
 /// the disk's own error and leaves no partial file).
 #[cfg(unix)]
-fn free_space(dir: &Path) -> Option<u64> {
+pub(crate) fn free_space(dir: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
     // SAFETY: a valid C string and a zeroed struct the call fills
@@ -101,7 +101,7 @@ fn free_space(dir: &Path) -> Option<u64> {
 }
 
 #[cfg(not(unix))]
-fn free_space(_dir: &Path) -> Option<u64> {
+pub(crate) fn free_space(_dir: &Path) -> Option<u64> {
     None
 }
 
