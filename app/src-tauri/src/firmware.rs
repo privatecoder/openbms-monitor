@@ -3,7 +3,7 @@
 //! The flash runs on its own thread and reports progress as events.
 
 use crate::maint_store::endpoint_key;
-use crate::{maint, reserve_port_wait, reveal, stop_monitor, AppState};
+use crate::{maint, reveal, stop_monitor, AppState};
 use openbms_flash::maint::policy::{self, Master};
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
@@ -217,7 +217,7 @@ pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String
 #[tauri::command]
 pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String, installation: Option<String>) -> Result<DeviceInfo, String> {
     let l = self::lang(&lang);
-    let _port_slot = reserve_port_wait(&state.port_busy)
+    let _port_slot = crate::control::reserve_bus_wait(&state)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(l.pick("Ein Firmware-Update läuft", "a firmware update is running").into());
@@ -250,7 +250,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     if !confirmation_ok(address, info.custom, &confirmation) {
         return Err(openbms_flash::Error::Cancelled.text(l));
     }
-    let port_slot = reserve_port_wait(&state.port_busy)
+    let port_slot = crate::control::reserve_bus_wait(&state)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     let _action = maint::begin_action(&state, "flash");
     let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();

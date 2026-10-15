@@ -1,11 +1,11 @@
 //! Maintenance of a bank (design: docs/superpowers/specs/2026-10-13-simple-flash-flow.md): the live status of
 //! the pack bus and the master, the pack list, the master's marker (`start`/`stop` over the CAN socket bus), the
 //! right-bank check and the packs that may hang in their bootloader. All bus operations hold the one operation
-//! lock (`port_busy`); a control exchange on the endpoint of the main connection runs through that connection,
+//! lock (`port_busy`, through `control::reserve_bus`: only while no pack action runs); a control exchange on the endpoint of the main connection runs through that connection,
 //! so no endpoint is opened twice.
 
 use crate::maint_store::{endpoint_key, ControlEndpoint, Installation, MarkerOn, Pending, Store};
-use crate::{lock, reserve_port, reserve_port_wait, AppState, EndpointArg};
+use crate::{lock, AppState, EndpointArg};
 use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError};
 use openbms_flash::maint::policy::Master;
 use openbms_flash::maint::{bus, SystemClock};
@@ -503,7 +503,7 @@ pub async fn maint_live(app: AppHandle, state: State<'_, AppState>, installation
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
-    let _op = reserve_port(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _op = crate::control::reserve_bus(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "live");
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let (bus, polled, bus_error) = if port.is_empty() {
@@ -556,7 +556,7 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
-    let _op = reserve_port_wait(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _op = crate::control::reserve_bus_wait(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &port)?;
@@ -603,7 +603,7 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> 
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
-    let _op = reserve_port_wait(&state.port_busy).ok_or(MaintError::Busy)?;
+    let _op = crate::control::reserve_bus_wait(state).ok_or(MaintError::Busy)?;
     let _a = begin_action(state, if action == Action::Start { "halt" } else { "release" });
     let inst = self::installation(state, installation)?;
     let m = read_master(state, &inst)?;
