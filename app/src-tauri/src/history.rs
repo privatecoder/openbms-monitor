@@ -463,9 +463,11 @@ impl History {
                 for table in ["site_packs", "sessions", "sites"] {
                     db.execute(&format!("DELETE FROM {table} WHERE site = ?1"), [s]).map_err(e)?;
                 }
+                // a deleted installation's bundles can be imported again (a restore)
+                db.execute("DELETE FROM meta WHERE key LIKE 'import:%' AND value = ?1", [s]).map_err(e)?;
             }
             None => db
-                .execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites;")
+                .execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites; DELETE FROM meta WHERE key LIKE 'import:%';")
                 .map_err(e)?,
         }
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e)
@@ -529,6 +531,7 @@ impl History {
         if !used {
             for table in ["sites", "sessions", "site_packs", "param_snapshots"] {
                 tx.execute(&format!("UPDATE {table} SET site = ?2 WHERE site = ?1"), params![old, new]).map_err(e2s)?;
+                tx.execute("UPDATE meta SET value = ?2 WHERE key LIKE 'import:%' AND value = ?1", params![old, new]).map_err(e2s)?;
             }
         } else {
             let new_id = site_id(&tx, new).map_err(e2s)?;
@@ -619,6 +622,12 @@ impl History {
     #[cfg(test)]
     pub fn site(&self) -> Option<&str> {
         self.link.as_ref().map(|l| l.0.as_str())
+    }
+
+    /// The recording of an installation bundle, once per export id (see `import_bundle`).
+    pub fn import_bundle(&mut self, values: Option<&Path>, events: Option<&Path>, site: &str, export_id: &str) -> Result<ImportStats, String> {
+        let db = self.db.as_mut().ok_or("history database not open")?;
+        import_bundle(db, values, events, site, export_id)
     }
 
     /// Import a JSON Lines recording (the format of earlier versions and of the export) as its own session.
@@ -1391,24 +1400,77 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
 #[derive(Serialize, Default, Debug)]
 pub struct ImportStats {
     pub rows: u64,
+    pub events: u64,
     pub skipped: u64,
     pub from: Option<i64>,
     pub to: Option<i64>,
 }
 
 fn import(db: &mut Connection, file: &Path, site: &str) -> Result<ImportStats, String> {
-    let io = |e: std::io::Error| format!("{}: {e}", file.display());
-    let reader = std::io::BufReader::new(std::fs::File::open(file).map_err(io)?);
-    let name = file.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let tx = db.transaction().map_err(e2s)?;
-    let site_key = site_id(&tx, site).map_err(e2s)?;
+    let stats = import_into(&tx, Some(file), None, site)?;
+    tx.commit().map_err(e2s)?;
+    Ok(stats)
+}
+
+/// The recording of an installation bundle (values, events) under its export id: in one transaction with a marker
+/// `meta('import:<export_id>')`, so a second call (after a crash before the import status was saved) adds nothing.
+/// Events are matched by (site, pack, key, start); a known one gets a missing or later end.
+pub fn import_bundle(db: &mut Connection, values: Option<&Path>, events: Option<&Path>, site: &str, export_id: &str) -> Result<ImportStats, String> {
+    let key = format!("import:{export_id}");
+    let tx = db.transaction().map_err(e2s)?;
+    let done: Option<String> = tx.query_row("SELECT value FROM meta WHERE key = ?1", [&key], |r| r.get(0)).optional().map_err(e2s)?;
+    if done.is_some() {
+        return Ok(ImportStats::default());
+    }
+    let stats = import_into(&tx, values, events, site)?;
+    // the value is the site: deleting or merging the installation's recording takes the marker along
+    tx.execute("INSERT INTO meta(key, value) VALUES(?1, ?2)", params![key, site]).map_err(e2s)?;
+    tx.commit().map_err(e2s)?;
+    Ok(stats)
+}
+
+/// Write all events of a site as JSON Lines (pack, key, severity, start, end).
+pub fn export_events(db: &Connection, site: &str, out: &Path) -> Result<u64, String> {
+    let io = |e: std::io::Error| format!("{}: {e}", out.display());
+    let mut w = std::io::BufWriter::new(std::fs::File::create(out).map_err(io)?);
+    let mut stmt = db
+        .prepare("SELECT e.pack, e.key, e.severity, e.start, e.end FROM events e JOIN sessions s ON s.id = e.session WHERE s.site = ?1 ORDER BY e.start, e.id")
+        .map_err(e2s)?;
+    let mut rows = stmt.query([site]).map_err(e2s)?;
+    let mut n = 0;
+    while let Some(r) = rows.next().map_err(e2s)? {
+        let v = json!({ "pack": r.get::<_, i64>(0).map_err(e2s)?, "key": r.get::<_, String>(1).map_err(e2s)?, "severity": r.get::<_, String>(2).map_err(e2s)?,
+            "start": r.get::<_, i64>(3).map_err(e2s)?, "end": r.get::<_, Option<i64>>(4).map_err(e2s)? });
+        writeln!(w, "{v}").map_err(io)?;
+        n += 1;
+    }
+    w.flush().map_err(io)?;
+    Ok(n)
+}
+
+/// The packs a site has data of (for an export of everything).
+pub fn site_packs(db: &Connection, site: &str) -> Result<Vec<u8>, String> {
+    let mut stmt = db.prepare("SELECT pack FROM site_packs WHERE site = ?1 ORDER BY pack").map_err(e2s)?;
+    let rows = stmt.query_map([site], |r| r.get(0)).map_err(e2s)?.collect::<rusqlite::Result<Vec<u8>>>().map_err(e2s);
+    rows
+}
+
+fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&Path>, site: &str) -> Result<ImportStats, String> {
+    let name = file.and_then(|f| f.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let site_key = site_id(tx, site).map_err(e2s)?;
     tx.execute("INSERT INTO sessions(site, bus, source) VALUES(?1, '', ?2)", params![site, name]).map_err(e2s)?;
     let session = tx.last_insert_rowid();
     let mut stats = ImportStats::default();
     let mut open = OpenEvents::new();
     let mut seen_packs = HashSet::new();
     let mut last_t = 0;
-    for line in reader.lines() {
+    let lines: Box<dyn Iterator<Item = std::io::Result<String>>> = match file {
+        Some(f) => Box::new(std::io::BufReader::new(std::fs::File::open(f).map_err(|e| format!("{}: {e}", f.display()))?).lines()),
+        None => Box::new(std::iter::empty()),
+    };
+    let io = |e: std::io::Error| format!("{name}: {e}");
+    for line in lines {
         let line = line.map_err(io)?;
         if line.trim().is_empty() {
             continue;
@@ -1426,14 +1488,14 @@ fn import(db: &mut Connection, file: &Path, site: &str) -> Result<ImportStats, S
             false
         } else if v["pack"].is_object() {
             let a = v["pack"]["address"].as_u64().unwrap_or(0) as u8;
-            track_events(&tx, &mut open, session, t, a, &v["pack"]).map_err(e2s)?;
-            let w = insert_pack(&tx, site_key, session, t, a, &v["pack"], true).map_err(e2s)?;
+            track_events(tx, &mut open, session, t, a, &v["pack"]).map_err(e2s)?;
+            let w = insert_pack(tx, site_key, session, t, a, &v["pack"], true).map_err(e2s)?;
             if w {
                 seen_packs.insert(a);
             }
             w
         } else if v["system"].is_object() {
-            insert_system(&tx, site_key, session, t, &v["system"], true).map_err(e2s)?
+            insert_system(tx, site_key, session, t, &v["system"], true).map_err(e2s)?
         } else {
             stats.skipped += 1;
             false
@@ -1445,15 +1507,49 @@ fn import(db: &mut Connection, file: &Path, site: &str) -> Result<ImportStats, S
         }
         last_t = last_t.max(t);
     }
-    close_events(&tx, &mut open, last_t);
+    close_events(tx, &mut open, last_t);
+    let mut events_added = 0;
+    if let Some(ev) = events {
+        let io = |e: std::io::Error| format!("{}: {e}", ev.display());
+        for line in std::io::BufReader::new(std::fs::File::open(ev).map_err(io)?).lines() {
+            let line = line.map_err(io)?;
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let (Some(pack), Some(key), Some(sev), Some(start)) = (v["pack"].as_i64(), v["key"].as_str(), v["severity"].as_str(), v["start"].as_i64()) else { continue };
+            let end = v["end"].as_i64();
+            let known: Option<(i64, Option<i64>)> = tx
+                .query_row(
+                    "SELECT e.id, e.end FROM events e JOIN sessions s ON s.id = e.session WHERE s.site = ?1 AND e.pack = ?2 AND e.key = ?3 AND e.start = ?4",
+                    params![site, pack, key, start],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(e2s)?;
+            match known {
+                // an event still open there or here: the end known now, or the later confirmed one
+                Some((id, have)) => {
+                    if let Some(end) = end.filter(|e| have.is_none_or(|h| *e > h)) {
+                        tx.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, end]).map_err(e2s)?;
+                    }
+                }
+                None => {
+                    tx.execute(
+                        "INSERT INTO events(session, pack, key, severity, start, end) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![session, pack, key, sev, start, end],
+                    )
+                    .map_err(e2s)?;
+                    events_added += 1;
+                }
+            }
+        }
+    }
     tx.execute("UPDATE sessions SET first = ?2, last = ?3 WHERE id = ?1", params![session, stats.from, stats.to]).map_err(e2s)?;
     for a in seen_packs {
         tx.execute("INSERT OR IGNORE INTO site_packs(site, pack) VALUES(?1, ?2)", params![site, a]).map_err(e2s)?;
     }
-    if stats.rows == 0 {
+    if stats.rows == 0 && events_added == 0 {
         tx.execute("DELETE FROM sessions WHERE id = ?1", [session]).map_err(e2s)?;
     }
-    tx.commit().map_err(e2s)?;
+    stats.events = events_added;
     Ok(stats)
 }
 
@@ -1488,6 +1584,33 @@ mod tests {
     /// A parameter block of an earlier version, as it kept them (hex per site).
     fn old_snapshot(path: &Path, site: &str, pack: u8, t: i64, kind: &str, block: &str) {
         Connection::open(path).unwrap().execute("INSERT INTO param_snapshots(site, pack, t, kind, block) VALUES(?1, ?2, ?3, ?4, ?5)", params![site, pack, t, kind, block]).unwrap();
+    }
+
+    #[test]
+    fn a_bundle_recording_is_imported_once_and_completes_open_events() {
+        let (path, mut h) = temp_db("bundle");
+        let dir = path.parent().unwrap();
+        let values = dir.join("v.jsonl");
+        std::fs::write(&values, format!("{}\n", json!({ "t": 1000, "pack": pack_update(1, 1.0, &[3.3, 3.31], &[]) }))).unwrap();
+        let open = dir.join("e1.jsonl");
+        std::fs::write(&open, "{\"pack\":1,\"key\":\"alarm.x\",\"severity\":\"alarm\",\"start\":900,\"end\":null}\n").unwrap();
+        let st = h.import_bundle(Some(&values), Some(&open), "inst-a", "exp-1").unwrap();
+        assert_eq!((st.rows, st.events), (1, 1));
+        // the same export again (crash before the import status was saved): nothing
+        let st = h.import_bundle(Some(&values), Some(&open), "inst-a", "exp-1").unwrap();
+        assert_eq!((st.rows, st.events), (0, 0));
+        // a later export where the event has ended: the end is filled in, no second event
+        let closed = dir.join("e2.jsonl");
+        std::fs::write(&closed, "{\"pack\":1,\"key\":\"alarm.x\",\"severity\":\"alarm\",\"start\":900,\"end\":1500}\n").unwrap();
+        let st = h.import_bundle(Some(&values), Some(&closed), "inst-a", "exp-2").unwrap();
+        assert_eq!(st.events, 0);
+        let db = Connection::open(&path).unwrap();
+        let ends: Vec<Option<i64>> = db.prepare("SELECT end FROM events").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(ends, vec![Some(1500)]);
+        // and the events go out again
+        let out = dir.join("out.jsonl");
+        assert_eq!(export_events(&db, "inst-a", &out).unwrap(), 1);
+        assert_eq!(site_packs(&db, "inst-a").unwrap(), vec![1]);
     }
 
     #[test]
