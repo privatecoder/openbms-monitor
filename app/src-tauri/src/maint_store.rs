@@ -579,14 +579,18 @@ fn switches_of(block: &[u8]) -> Option<&[u8]> {
     block.get(151..159)
 }
 
-/// `read` (newest first, `older` after it, same board only): it follows a refused write with no write in between, and
-/// its switches differ from the read right before the refusal (the stored state then; unknown counts as differing).
+/// `read` (newest first, `older` after it, same board only): it follows a refused write with no write in between, it
+/// shows the refused block's switches, and they differ from the read right before the refusal (the stored state then;
+/// unknown counts as differing). Once a restart brought back the stored switches, or they changed otherwise, no flag.
 fn switches_unconfirmed(read: &StoredSnapshot, older: &[StoredSnapshot]) -> bool {
     let mut same = older.iter().filter(|x| x.bms_serial == read.bms_serial);
     while let Some(x) = same.next() {
         match x.kind.as_str() {
             "written" => return false,
             "refused" => {
+                if switches_of(&x.block) != switches_of(&read.block) {
+                    return false;
+                }
                 let stored = same.find(|y| y.kind == "read");
                 return stored.is_none_or(|y| switches_of(&y.block) != switches_of(&read.block));
             }
@@ -1485,6 +1489,9 @@ mod tests {
         assert!(flag());
         // after a restart the stored switches are back
         snap(14, SnapshotKind::Read, 1);
+        assert!(!flag());
+        // switches neither refused nor stored (changed by another tool): no flag either
+        snap(141, SnapshotKind::Read, 9);
         assert!(!flag());
         // a successful write in between clears it
         snap(15, SnapshotKind::Refused, 6);
