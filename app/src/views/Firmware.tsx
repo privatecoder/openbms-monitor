@@ -27,8 +27,6 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const [ports, setPorts] = useState<string[]>([]);
-  // the port chosen in the panel without an installation
-  const [ownPort, setOwnPort] = useState("");
   // the single pack tab's own port, independent of the installation (starts with the panel's)
   const [manualPort, setManualPort] = useState<string | null>(null);
   const [address, setAddress] = useState(0);
@@ -70,8 +68,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inst = maint.current;
-  // with an installation the RS485-1/2 port is the one of its setup
-  const port = inst ? packPortOf(inst) ?? "" : ownPort;
+  // the RS485-1/2 port of the installation's setup; flashing needs an installation (its log and checks)
+  const port = inst ? packPortOf(inst) ?? "" : "";
   const mPort = manualPort ?? port;
   useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [mPort, address, image?.sha256]);
   // the master read belongs to the port it came from
@@ -106,15 +104,15 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   /** Start a flash (panel or manual): refusals are thrown back as the backend sent them. */
-  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, installation: string | null) => {
-    if (!path || !image) return;
+  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, checks: boolean) => {
+    if (!path || !image || !inst) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
     onUserAction();
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, installation);
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, inst.id, checks);
       setFlashed({ address: a, image, checked: from, bank: r.bank });
       // the pending record is written now
       void maint.loadLists();
@@ -128,7 +126,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     onUserAction(); setBusy(true); setError(null); setInspectError(null); setTarget(null); setCheckedFor(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
-    try { setTarget(await api.firmwareInspect(mPort, address, lang)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
+    try { setTarget(await api.firmwareInspect(mPort, address, lang, mPort === port ? inst?.id ?? null : null)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
     catch (e) { setInspectError(String(e)); }
     finally { setBusy(false); }
   };
@@ -142,7 +140,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     const confirmation = typed;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setTyped(""); setTarget(null); setCheckedFor(null);
-    try { await startFlash(mPort, address, confirmation, targetVersion, samePort ? inst?.id ?? null : null); }
+    try { await startFlash(mPort, address, confirmation, targetVersion, samePort); }
     catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
   };
 
@@ -185,9 +183,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ))}
       </div>
 
-      {tab === "bus" && <PackBusPanel maint={maint} port={port} setPort={setOwnPort} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
+      {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, inst?.id ?? null)} onMaster={setMaster} />}
+        onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, true)} onMaster={setMaster} />}
 
       {/* one pack by hand: address, check, typed confirmation; the same checks in the backend. No live status here:
           the master's full version is the panel's last read */}
@@ -226,7 +224,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
         </label>
         {release && <p className="text-sm text-discharge">{t("maint.packs.cPrime")}</p>}
-        <Button variant="primary" disabled={!s.start} onClick={manualStart}>{t("fw.start")}</Button>
+        {!inst && <p className="text-sm text-discharge">{t("maint.panel.noInstallation")}</p>}
+        <Button variant="primary" disabled={!s.start || !inst} onClick={manualStart}>{t("fw.start")}</Button>
         {error && (
           <div className="space-y-1 text-sm text-alarm">
             <p>{error.text}</p>

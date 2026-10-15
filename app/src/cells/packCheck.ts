@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import type { Telemetry } from "../api";
+import { useSettings } from "../installData";
 import { allowedChargeRate, effectiveChargeRange, toAmps } from "./rules";
 import type { Cell } from "./types";
 
@@ -7,35 +7,19 @@ import type { Cell } from "./types";
 export interface Assignment { cell: string; parallel: number }
 export type Assignments = Record<number, Assignment>;
 
-const keyFor = (site: string) => `cellTypes:${site}`;
-
-function read(site: string): Assignments {
-  try {
-    const raw = JSON.parse(localStorage.getItem(keyFor(site)) ?? "{}") as Record<string, Assignment>;
-    return Object.fromEntries(Object.entries(raw).filter(([, a]) => a && typeof a.cell === "string" && a.parallel >= 1).map(([k, a]) => [Number(k), a]));
-  } catch { return {}; }
+/** Stored cell types (address → assignment) as far as they are well-formed. */
+export function parseAssignments(raw: Record<string, unknown>): Assignments {
+  return Object.fromEntries(Object.entries(raw).filter(([k, a]) => /^\d+$/.test(k) && !!a && typeof (a as Assignment).cell === "string" && (a as Assignment).parallel >= 1)
+    .map(([k, a]) => [Number(k), a as Assignment]));
 }
 
-/** Cell types of the packs, stored per installation (gateway or port) like the groups. */
-export function useAssignments(site: string) {
-  const [assigned, setAssigned] = useState<Assignments>(() => read(site));
-  useEffect(() => setAssigned(read(site)), [site]);
-  // other components of the same site (dashboard, pack detail) follow a change at once
-  useEffect(() => {
-    const f = (e: Event) => (e as CustomEvent<string>).detail === site && setAssigned(read(site));
-    window.addEventListener("cell-assignments", f);
-    return () => window.removeEventListener("cell-assignments", f);
-  }, [site]);
-  const save = (next: Assignments) => {
-    setAssigned(next);
-    try { localStorage.setItem(keyFor(site), JSON.stringify(next)); } catch { /* preview without storage */ }
-    window.dispatchEvent(new CustomEvent("cell-assignments", { detail: site }));
-  };
-  /** Assign `a` to the packs, or remove their assignment with null. */
+/** Cell types of the packs, stored per place of the installation (`scope`) like the groups. */
+export function useAssignments(scope: string | null) {
+  const { settings, saveCellTypes } = useSettings(scope);
+  const assigned = parseAssignments(settings.cell_types);
+  /** Assign `a` to the packs, or remove their assignment with null; only these places change. */
   const assign = (packs: number[], a: Assignment | null) => {
-    const next = { ...assigned };
-    for (const p of packs) if (a) next[p] = a; else delete next[p];
-    save(next);
+    saveCellTypes(Object.fromEntries(packs.map((p) => [p, a])));
   };
   return { assigned, assign };
 }

@@ -20,15 +20,15 @@ import { cn, fmt } from "../lib/utils";
 // Pack (with messages), SOC, voltage, current, temperature, cycles, spread, deviation strip.
 const ROW = "grid grid-cols-[8rem_7.5rem_5.5rem_5.5rem_5.5rem_4rem_4.5rem_minmax(9rem,1fr)] items-center gap-x-6 whitespace-nowrap";
 
-export function Dashboard({ packs, system, site, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; site: string; onOpen: (a: number) => void }) {
+export function Dashboard({ packs, system, scope, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; scope: string | null; onOpen: (a: number) => void }) {
   const { t } = useTranslation();
-  const { groups, save } = useGroups(site);
-  const { pairs, save: savePairs } = usePairs(site);
+  const { groups, save } = useGroups(scope);
+  const { pairs, save: savePairs } = usePairs(scope);
   const [editing, setEditing] = useState(false);
   const [cellTypes, setCellTypes] = useState(false);
   const [menu, setMenu] = useState(false);
   const db = useCellDb();
-  const { assigned } = useAssignments(site);
+  const { assigned } = useAssignments(scope);
   const list = Object.values(packs).sort((a, b) => a.address - b.address);
   const live = list.filter((p) => p.telemetry);
   const allCells = live.flatMap((p) => p.telemetry!.cell_voltages);
@@ -155,7 +155,7 @@ export function Dashboard({ packs, system, site, onOpen }: { packs: Record<numbe
           </Popover>
         </div>
         <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} pairs={validPairs(pairs, list.map((p) => p.address))} />
-        <CellAssignSheet open={cellTypes} onOpenChange={setCellTypes} site={site} packs={packs} />
+        <CellAssignSheet open={cellTypes} onOpenChange={setCellTypes} scope={scope} packs={packs} />
         <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} pairs={pairs} onSavePairs={savePairs} />
       </section>
     </div>

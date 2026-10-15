@@ -1,28 +1,19 @@
-import { useEffect, useState } from "react";
+import { useSettings } from "./installData";
 
 export interface Group { name: string; packs: number[] }
 
-const keyFor = (site: string) => `groups:${site}`;
+/** Stored groups as far as they are well-formed. */
+export const parseGroups = (v: unknown): Group[] =>
+  Array.isArray(v) ? v.filter((g): g is Group => !!g && typeof g.name === "string" && Array.isArray(g.packs) && g.packs.every((a: unknown) => typeof a === "number")) : [];
 
-function read(site: string): Group[] {
+/** User-defined pack groups (e.g. towers), stored per installation (`scope`; null: „Nur ansehen“, this session only). */
+export function useGroups(scope: string | null) {
+  const { settings, save } = useSettings(scope);
+  let groups = parseGroups(settings.groups);
   // Browser preview: ?groups=4 pre-fills groups of four packs.
   const demo = Number(new URLSearchParams(location.search).get("groups"));
-  try {
-    const stored = JSON.parse(localStorage.getItem(keyFor(site)) ?? "[]") as Group[];
-    if (stored.length || !demo) return stored;
-  } catch { if (!demo) return []; }
-  return splitEvenly(Array.from({ length: 16 }, (_, i) => i), demo, "Turm");
-}
-
-/** User-defined pack groups (e.g. towers), stored per installation (gateway or port). */
-export function useGroups(site: string) {
-  const [groups, setGroups] = useState<Group[]>(() => read(site));
-  useEffect(() => setGroups(read(site)), [site]);
-  const save = (g: Group[]) => {
-    setGroups(g);
-    try { localStorage.setItem(keyFor(site), JSON.stringify(g)); } catch { /* preview without storage */ }
-  };
-  return { groups, save };
+  if (!groups.length && demo) groups = splitEvenly(Array.from({ length: 16 }, (_, i) => i), demo, "Turm");
+  return { groups, save: (g: Group[]) => save("groups", g) };
 }
 
 /** Split packs into consecutive groups of `size`, named with `label n`. */

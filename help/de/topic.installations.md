@@ -1,0 +1,13 @@
+---
+title: Anlagen
+short: Alles, was die App über eine Batterie weiß, gehört zu einer Anlage. Die Ansicht Anlagen listet sie mit ihren Packs.
+related: topic.connection, topic.history, topic.params, topic.maintenance
+---
+- **Was dazugehört:** die Aufzeichnung, die erkannten Platinen je Adresse, Zelltyp je Pack, Gruppen und Paare, die Diagnose, die Parameterstände und die Update-Protokolle. Benutzer-Zellmodelle bleiben für alle Anlagen gemeinsam.
+- **Wählen:** in der Seitenleiste vor dem Verbinden (siehe Verbindung). Ohne Verbindung bestimmt die gewählte Anlage, was Verlauf und Parameter zeigen; die Übersicht zeigt immer den tatsächlich verbundenen Bus.
+- **Platinen:** Jede gelesene BMS-Seriennummer (String 2) ordnet die App der Adresse zu. Liest sie dort eine andere, meldet sie „Andere Platine an Adresse 07?“ und führt die alte als „vorherige Platine“; deren Parameterstände gelten nicht mehr als aktueller Stand. Leer, Platzhalter oder keine Antwort: „ungeklärt“, es wird nichts behauptet. Schreibt die App String 2 selbst, bleibt es dieselbe Platine. Der Zelltyp gehört zur Adresse, denn die Zellen bleiben beim Platinentausch.
+- **Übernommen:** Daten früherer Versionen waren nach dem Anschluss (Gateway-Adresse oder Port) abgelegt. Jeder solche Anschluss wird einmal zu einer eigenen Anlage mit seinem Namen, markiert „übernommen“, auch wenn der Anschluss schon zu einer Anlage gehört: derselbe Adapter kann an zwei Batterien gehangen haben, und vermischte Daten lassen sich hinterher nicht trennen. Gehört der Anschluss genau einer Anlage, bietet die Karte „Mit Anlage X zusammenführen“ an.
+- **Zusammenführen:** fügt hinzu, überschreibt nie. Was die Ziel-Anlage schon eingestellt hat (Zelltyp eines Packs, Gruppen, Paare, Diagnose), bleibt; die Werte der anderen stehen im Protokoll der Übernahme. Zwei Aufzeichnungszeilen desselben Packs zur selben Zeit: die des Ziels bleibt, die andere wird gezählt. Die zusammengeführte Anlage verschwindet danach.
+- **Archivieren:** behält alles, die Anlage wird nur nicht mehr angeboten und nie von selbst gewählt. „Zurückholen“ macht das rückgängig.
+- **Löschen:** nur ohne offene Arbeit (kein Marker an, kein Pack im Bootloader) und nicht, solange die App mit ihr verbunden ist. Vorher zeigt die App, was weg ist (Aufzeichnung, Platinen, Parameterstände, Zelltypen, Gruppen, Diagnose). Update-Protokolle bleiben als Dateien und stehen dann unter „Protokolle ohne Anlage“, wie alle Protokolle aus der Zeit vor den Anlagen; die App ordnet sie nicht durch Raten zu.
+- **Pack-Tabelle:** je Adresse die jetzige Platine (und die vorherige nach einem Tausch), der Zelltyp, der letzte Parameterstand (Klick öffnet ihn unter Parameter) und das letzte Update mit Image, Ergebnis und Protokoll.

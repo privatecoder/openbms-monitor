@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
+import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type DeviceInfo, type Endpoint, type SerialNumbers } from "../api";
+import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
-import { busyMessage, busyWaitStep, portBusy } from "../maint";
+import { busyMessage, busyWaitStep, pickable, portBusy, preselect } from "../maint";
 import { RecordingEntry } from "./Recording";
 import { readMark } from "../bmsMemory";
+import { BAUD, explain, firstLine, noAnswer, otherBus, padAddress, partialLine } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -17,18 +19,23 @@ class Cancelled extends Error {}
 const BUSY_POLL_MS = 500;
 const BUSY_WAIT_MS = 30_000;
 
-const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge";
+const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-60";
+// the select's entry that opens the name dialog
+const NEW = "__new__";
 
-export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onDisconnected, view, setView, site, packs, locked, maintenance, setMaintenance, onEndpoint }: {
+export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onBoard, onDisconnected, view, setView, maint, packs, locked, maintenance, setMaintenance }: {
   connected: boolean;
   /** the app stopped the monitor itself for a maintenance step (not lost, not closed by the user) */
   paused: boolean;
-  site: string;
+  /** the chosen installation (null: „Nur ansehen“) and the list */
+  maint: Maint;
   packs: number[];
   lastUpdate: number;
-  onConnected: (found: [number, DeviceInfo | undefined][], site: string, bus: Bus) => void;
+  onConnected: (found: [number, DeviceInfo | undefined][], bus: Bus) => void;
   onDevices: (found: [number, DeviceInfo][]) => void;
   onSerials: (address: number, serials: SerialNumbers) => void;
+  /** a serial read found another board at a place than it had */
+  onBoard: (n: { address: number; serial: string; previous: string }) => void;
   /** `lost`: the link died or timed out; false: closed by the user */
   onDisconnected: (lost: boolean) => void;
   view: string;
@@ -38,7 +45,6 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   userActions: number;
   maintenance: boolean;
   setMaintenance: (v: boolean) => void;
-  onEndpoint: (endpoint: Endpoint) => void;
 }) {
   const { t, i18n } = useTranslation();
   const [kind, setKind] = useState<"tcp" | "serial">(() => (localStorage.getItem("conn.kind") as "tcp" | "serial") ?? "tcp");
@@ -60,6 +66,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [ports, setPorts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // the last connect found no pack: the message is an error; `offer`: the other bus answered, one click switches
+  const [failed, setFailed] = useState(false);
+  const [offer, setOffer] = useState<Bus | null>(null);
   // lost: no data for CONN_TIMEOUT_MS; then the connection is dropped and retried every RECONNECT_MS
   const [lost, setLost] = useState(false);
   const [since, setSince] = useState(0);
@@ -80,8 +89,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [waiting, setWaiting] = useState(false);
   const stopWaiting = () => { waitToken.current += 1; };
   useEffect(stopWaiting, [target, kind, bus, packCount, userActions]);
+  useEffect(() => { setOffer(null); }, [target, kind, bus]);
   useEffect(() => stopWaiting, []);
-  const connectWhenFree = async (ep: Endpoint, auto: boolean) => {
+  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<{ linked: boolean; answered: number }> => {
     const token = ++waitToken.current;
     const until = Date.now() + BUSY_WAIT_MS;
     let action: string | null = null;
@@ -93,7 +103,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           if (step === "stop") throw new Cancelled();
           if (step === "give-up") throw new Error(busyMessage(action, true, t));
         }
-        try { await api.connect(ep); return; } catch (e) {
+        try { return await api.connect(ep, installation, check); } catch (e) {
           const b = portBusy(e);
           if (!b) throw e;
           action = b.action;
@@ -113,7 +123,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     for (const a of addresses) {
       if (gen !== serialGen.current) return;
       const s = await api.serialNumbers(a).catch(() => null);
-      if (s && gen === serialGen.current) onSerials(a, s);
+      if (s && gen === serialGen.current) {
+        onSerials(a, s);
+        if (s.board?.kind === "other" && s.bms.kind === "set") onBoard({ address: a, serial: s.bms.value, previous: s.board.previous });
+      }
     }
   };
 
@@ -123,24 +136,33 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     return () => { un.then((f) => f()); };
   }, []);
 
-  const connect = async (retry = false) => {
+  // the installation of the connection: chosen at a manual connect, reused by every automatic reconnect
+  const connInst = useRef<string | null>(null);
+  // `useBus`: the bus offered after a failed check (the select is set as well)
+  const connect = async (retry = false, useBus: Bus = bus) => {
     serialGen.current += 1;
-    setBusy(true); if (!retry) { setMsg(null); setLost(false); }
+    if (!retry) connInst.current = maint.installation;
+    const bus = useBus;
+    setBusy(true); setFailed(false); setOffer(null); if (!retry) { setMsg(null); setLost(false); }
     setLastTry(Date.now());
     try {
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       localStorage.setItem("conn.packs", String(packCount));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
-      await connectWhenFree(ep, retry);
-      void onEndpoint(ep);
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+      // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
+      const { linked, answered } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
+      const linkedNote = linked ? t("conn.linked", { name: maint.current?.name ?? "" }) : "";
+      if (linked) void maint.loadLists();
+      const answeredNote = t("conn.answered", { addr: padAddress(answered), bus: t(`conn.busName.${bus}`) });
       // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
       let addrs: number[] | null = null;
       let note = "";
       if (bus === "can") {
         // the master answers Modbus at once: show its system values before anything slower
         const sys = await api.systemOnce().then(() => true, () => false);
-        if (sys) { onConnected([], target, bus); setSince(Date.now()); setLost(false); }
+        if (sys) { onConnected([], bus); setSince(Date.now()); setLost(false); }
         const m = await api.maintStatus().catch(() => null);
         if (m && !m.marker) { addrs = range(m.effective_slaves + 1); note = t("conn.fromMaster", { count: addrs.length }); }
         else if (m?.marker) note = t("conn.maintActive");
@@ -148,22 +170,26 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       if (!addrs && packCount > 0) { addrs = range(packCount); note = t("conn.fixed", { count: packCount }); }
       if (addrs) {
         // start polling at once; name and firmware version follow from a short device query
-        onConnected(addrs.map((a) => [a, undefined]), target, bus);
+        onConnected(addrs.map((a) => [a, undefined]), bus);
         setSince(Date.now()); setLost(false);
-        setMsg(note);
+        const base = [linkedNote, answeredNote, note].filter(Boolean).join(" ");
+        setMsg(base);
         await api.startPolling(addrs, 2000);
-        // serial numbers only of the packs that answered the device query; no answer at all: likely the wrong port or bus
+        // serial numbers only of the packs that answered the device query; gaps are named
         const gen = serialGen.current;
         api.scan(addrs).then((found) => {
-          if (!found.length && gen === serialGen.current) setMsg(t("conn.noAnswer"));
+          if (gen === serialGen.current) {
+            const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
+            if (gaps) setMsg(`${base} ${gaps}`);
+          }
           onDevices(found); void readSerials(found.map(([a]) => a));
         }).catch(() => {});
         return;
       }
       const found = await api.scan();
       if (retry && !found.length && bus !== "can") throw new Error(t("conn.none"));
-      setMsg([note, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
-      onConnected(found, target, bus);
+      setMsg([linkedNote, answeredNote, note, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
+      onConnected(found, bus);
       setSince(Date.now()); setLost(false);
       // on the CAN socket bus the system values are polled even if no pack answered
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
@@ -172,7 +198,19 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       // a cancelled wait never opened the port: nothing to close, no error
       if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
       if (retry) await api.disconnect().catch(() => {});
-      const err = e instanceof Error ? e.message : String(e);
+      const n = noAnswer(e);
+      if (n && !retry) {
+        // nothing answered: the port is closed. A USB port is asked once more at the other baud rate
+        setFailed(true);
+        if (kind === "serial") {
+          setMsg(t("conn.check.probing", { baud: BAUD[otherBus(bus)] }));
+          const probe = await api.probeOtherBus(target, bus, Array.from({ length: packCount }, (_, i) => i)).catch(() => null);
+          if (probe) { const r = explain(bus, n, probe, t); setMsg(r.text); setOffer(r.offer); }
+          else setMsg(`${firstLine(bus, n, t)} ${t("conn.check.hintSerial")}`);
+        } else setMsg(explain(bus, n, null, t).text);
+        return;
+      }
+      const err = n ? firstLine(bus, n, t) : e instanceof Error ? e.message : String(e);
       setMsg(retry ? t("conn.retryFailed", { err }) : err);
     } finally { setBusy(false); }
   };
@@ -181,6 +219,15 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const disconnect = async () => { stopWaiting(); serialGen.current += 1; await api.disconnect(); onDisconnected(false); setMsg(null); setLost(false); };
+  // another installation chosen anywhere (installations view, banner, new installation): this connection ends first
+  const live = useRef(false);
+  live.current = connected || lost;
+  const disconnectRef = useRef(disconnect);
+  disconnectRef.current = disconnect;
+  useEffect(() => {
+    maint.beforeSwitch.current = async () => { if (live.current) await disconnectRef.current().catch(() => {}); };
+    return () => { maint.beforeSwitch.current = null; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
@@ -212,11 +259,33 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     return () => { un.then((f) => f()); };
   }, []);
 
+  // A gateway (TCP) linked to exactly one active installation chooses it; several: the current one if it is among
+  // them, else a hint to pick. A serial port never changes the choice. Only a new address asks again, so an explicit
+  // choice afterwards (also „Nur ansehen“) stays.
+  const [pickHint, setPickHint] = useState(false);
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (isDemo || kind !== "tcp" || connected || lost || busy || !target.trim()) { setPickHint(false); return; }
+    if (!maint.loaded || asked.current === target.trim().toLowerCase()) return;
+    const timer = setTimeout(() => {
+      asked.current = target.trim().toLowerCase();
+      api.maintInstallationsOf({ kind: "tcp", addr: target, bus }, true).then((known) => {
+        const d = preselect(maint.installation, known);
+        setPickHint(d.do === "pick");
+        if (d.do === "use") void maint.switchTo(d.id);
+      }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [kind, target, connected, lost, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port).
   useEffect(() => {
-    if (lost && !busy && !connected && !locked && view !== "firmware" && now - lastTry >= RECONNECT_MS) connect(true);
+    // never for another installation than the connection's
+    if (lost && !busy && !connected && !locked && view !== "firmware" && maint.installation === connInst.current && now - lastTry >= RECONNECT_MS) connect(true);
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
+
+  const fixed = connected || lost || busy || locked;
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
@@ -226,7 +295,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       </div>
       {/* navigation scrolls if it ever gets long; connection and settings stay fixed at the bottom */}
       <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 pb-4">
-        {[["dashboard", LayoutDashboard], ["history", ChartLine], ["cells", Database],
+        {[["dashboard", LayoutDashboard], ["history", ChartLine], ["cells", Database], ["installations", Building2],
           ...(maintenance ? [["diag", Gauge], ["params", SlidersHorizontal], ["firmware", Cpu]] : [])].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
@@ -248,49 +317,71 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             {connected ? t("conn.connected") : lost ? t("conn.lostShort") : paused ? t("conn.paused") : t("conn.offline")}
           </span>
         </div>
+        {/* the installation first: everything stored belongs to it. It and the connection fields are fixed while
+            connected (also while lost and retrying): a change takes effect only with the next connect, so until then
+            the fields would show something else than the running connection. To change them: disconnect. */}
+        {!isDemo && (
+          <div className="space-y-1">
+            <span className="flex items-center gap-1.5 text-sm text-muted">{t("conn.installation")}<InfoIcon id="topic.installations" /></span>
+            <select className={input} value={maint.installation ?? ""} disabled={fixed} aria-label={t("conn.installation")}
+              onChange={(e) => { const v = e.target.value; if (v === NEW) maint.setNaming(true); else void maint.switchTo(v || null); }}>
+              {maint.installation && !maint.installations.some((i) => i.id === maint.installation) && <option value={maint.installation}>…</option>}
+              {pickable(maint.installations, maint.installation).map((i) => <option key={i.id} value={i.id}>{i.name}{i.archived ? ` (${t("inst.archived")})` : ""}</option>)}
+              <option value={NEW}>{t("maint.picker.new")}</option>
+              <option value="">{t("conn.viewOnly")}</option>
+            </select>
+            {!maint.installation && <p className="text-xs text-muted">{t("conn.viewOnlyHint")}</p>}
+            {pickHint && <p className="text-xs text-discharge">{t("conn.pickHint")}</p>}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-1 rounded-md bg-sunken p-1">
           {([["tcp", Network], ["serial", Usb]] as const).map(([k, I]) => (
-            <button key={k} onClick={() => setKind(k)}
-              className={cn("flex items-center justify-center gap-1.5 rounded py-1.5 text-sm", kind === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
+            <button key={k} onClick={() => setKind(k)} disabled={fixed}
+              className={cn("flex items-center justify-center gap-1.5 rounded py-1.5 text-sm disabled:opacity-60", kind === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink disabled:hover:text-muted")}>
               <I className="h-3.5 w-3.5" />{t(`conn.${k}`)}
             </button>
           ))}
         </div>
         {kind === "tcp" ? (
-          <input className={input} value={target} onChange={(e) => setTarget(e.target.value)} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
+          <input className={input} value={target} disabled={fixed} onChange={(e) => setTarget(e.target.value)} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
         ) : (
           <div className="flex items-center gap-1">
-            <select className={input} value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
+            <select className={input} value={target} disabled={fixed} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
               <option value="">{t("conn.port")}</option>
               {ports.map((p) => <option key={p}>{p}</option>)}
             </select>
-            <Button variant="ghost" size="icon" className="shrink-0" onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" className="shrink-0" disabled={fixed} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
           </div>
         )}
         <label className="block">
           <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
-          <select className={input} value={bus} onChange={(e) => setBus(e.target.value as Bus)}>
+          <select className={input} value={bus} disabled={fixed} onChange={(e) => setBus(e.target.value as Bus)}>
             <option value="can">{t("conn.busCan")}</option>
             <option value="pack">{t("conn.busPack")}</option>
           </select>
         </label>
         <label className="flex items-center justify-between gap-3 text-sm text-muted">
           {t("conn.packs")}
-          <select className={cn(input, "w-28")} value={packCount} onChange={(e) => setPackCount(Number(e.target.value))}>
+          <select className={cn(input, "w-28")} value={packCount} disabled={fixed} onChange={(e) => setPackCount(Number(e.target.value))}>
             <option value={0}>{t("conn.packsAuto")}</option>
             {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>
-            {busy ? (packCount > 0 ? t("conn.starting") : t("conn.scanning")) : connected ? t("conn.reconnect") : t("conn.connect")}
+            {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {waiting && <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>}
           {(connected || lost) && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
-          {msg && <p title={msg} className={cn("line-clamp-2 break-words text-sm", lost ? "text-alarm" : "text-muted")}>{msg}</p>}
+          {msg && <p title={msg} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{msg}</p>}
+          {offer && !busy && !connected && (
+            <Button variant="secondary" size="sm" className="mt-1" disabled={locked} onClick={() => { setBus(offer); void connect(false, offer); }}>
+              {t("conn.check.switch", { bus: t(`conn.busName.${offer}`) })}
+            </Button>
+          )}
           {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
           {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
         </div>
@@ -303,7 +394,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         <Button variant="ghost" size="icon" onClick={() => setDark(!dark)} aria-label="Theme">
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>
-        <RecordingEntry site={site} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
+        <RecordingEntry scope={maint.installation} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
         {/* maintenance functions: an icon toggle, highlighted while on; the label is the tooltip */}
         <Button variant="ghost" size="icon" onClick={() => setMaintenance(!maintenance)} disabled={locked}
           aria-pressed={maintenance} aria-label={t("maintToggle")} title={t("maintToggle")}

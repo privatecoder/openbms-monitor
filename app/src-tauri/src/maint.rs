@@ -20,7 +20,7 @@ use tauri::{AppHandle, Emitter, State};
 /// The maintenance event log (`firmware-logs/maint-events.log`): what the live status saw whenever it changes,
 /// and every halt, release and flash with its result. For bench work and for finding out afterwards who
 /// changed the marker.
-pub fn event(state: &AppState, line: &str) {
+pub fn event(state: &AppState, installation: Option<&str>, line: &str) {
     use std::io::Write;
     let Some(app) = state.app.get() else { return };
     let Ok(dir) = tauri::Manager::path(app).app_data_dir().map(|d| d.join("firmware-logs")) else { return };
@@ -28,8 +28,13 @@ pub fn event(state: &AppState, line: &str) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let stamp = format!("{}.{:03}", crate::firmware::utc_stamp(now.as_secs()), now.subsec_millis());
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("maint-events.log")) {
-        let _ = writeln!(f, "{stamp} {line}");
+        let _ = writeln!(f, "{}", event_line(&stamp, installation, line));
     }
+}
+
+/// One line of the event log: time, installation id („-“ without one), what happened.
+pub fn event_line(stamp: &str, installation: Option<&str>, line: &str) -> String {
+    format!("{stamp} inst={} {line}", installation.unwrap_or("-"))
 }
 
 /// One line for a master read: kind, version, marker word, effective slaves.
@@ -89,9 +94,9 @@ pub fn with_store_arc<T>(store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Stor
 }
 
 /// A store refusal (name) reaches the UI as a refusal key, anything else as a store error.
-fn store_refusal(e: MaintError) -> MaintError {
+pub fn store_refusal(e: MaintError) -> MaintError {
     match e {
-        MaintError::Store { message } if ["name-required", "name-taken", "unknown-installation", "installation-busy"].contains(&message.as_str()) => refused(&message),
+        MaintError::Store { message } if ["name-required", "name-taken", "unknown-installation", "installation-busy", "merge-self", "installation-connected"].contains(&message.as_str()) => refused(&message),
         other => other,
     }
 }
@@ -172,6 +177,7 @@ fn drop_dead_main(state: &AppState, error: &str) {
     if let Ok(mut m) = state.main.lock() {
         *m = None;
     }
+    crate::new_link(state, None);
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }
@@ -448,11 +454,6 @@ pub async fn maint_create_installation(state: State<'_, AppState>, name: String,
     with_store(&state, |s| s.create_installation(&name, control, endpoints)).map_err(store_refusal)
 }
 
-#[tauri::command]
-pub async fn maint_delete_installation(state: State<'_, AppState>, installation: String) -> Result<(), MaintError> {
-    with_store(&state, |s| s.delete_installation(&installation)).map_err(store_refusal)
-}
-
 /// „Diese Anlage hat einen neuen Master“: the serial number the master now reports becomes the stored one.
 #[tauri::command]
 pub async fn maint_adopt_master_serial(state: State<'_, AppState>, installation: String, serial: String) -> Result<Installation, MaintError> {
@@ -528,9 +529,10 @@ pub async fn maint_live(app: AppHandle, state: State<'_, AppState>, installation
         master.as_ref().map(master_text).unwrap_or_else(|| "master=-".into()),
         master_error.as_ref().map(|e| format!(" master_error={}", serde_json::to_string(e).unwrap_or_default())).unwrap_or_default());
     if let Ok(mut last) = LAST_LIVE.lock() {
-        if *last != line {
-            event(&state, &line);
-            *last = line;
+        let key = format!("{installation:?} {line}");
+        if *last != key {
+            event(&state, installation.as_deref(), &line);
+            *last = key;
         }
     }
     Ok(LiveStatus { bus, polled, bus_error, master, master_error })
@@ -585,11 +587,11 @@ static LAST_LIVE: Mutex<String> = Mutex::new(String::new());
 
 fn marker_action(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
     let name = if action == Action::Start { "halt" } else { "release" };
-    event(state, &format!("{name} pressed"));
+    event(state, Some(installation), &format!("{name} pressed"));
     let r = marker_action_inner(state, installation, action);
     match &r {
-        Ok(m) => event(state, &format!("{name} done {}", master_text(m))),
-        Err(e) => event(state, &format!("{name} failed {}", serde_json::to_string(e).unwrap_or_default())),
+        Ok(m) => event(state, Some(installation), &format!("{name} done {}", master_text(m))),
+        Err(e) => event(state, Some(installation), &format!("{name} failed {}", serde_json::to_string(e).unwrap_or_default())),
     }
     if let Ok(mut last) = LAST_LIVE.lock() {
         last.clear();
@@ -627,6 +629,12 @@ mod tests {
 
     fn pending(pack: u8) -> Pending {
         Pending { id: 1, endpoint: "serial:/dev/p".into(), pack, release: "16.06.13".into(), since: 0 }
+    }
+
+    #[test]
+    fn every_event_line_names_its_installation() {
+        assert_eq!(event_line("20260102-030405Z.123", Some("inst-1"), "halt pressed"), "20260102-030405Z.123 inst=inst-1 halt pressed");
+        assert_eq!(event_line("t", None, "live bus=quiet"), "t inst=- live bus=quiet");
     }
 
     #[test]
