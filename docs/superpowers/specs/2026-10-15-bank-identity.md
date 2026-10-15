@@ -1,6 +1,6 @@
 # Right bank before writing
 
-Status: r1 draft, 2026-10-15.
+Status: r2, 2026-10-15 (r1 reviewed: `.orch/reviewer-codex-6-sol-bank-identity-r1.md` in the knowledge base).
 
 ## Why
 
@@ -8,32 +8,35 @@ Status: r1 draft, 2026-10-15.
 
 The flash path already compares the master's BMS serial (0xA4 at address 0) with the installation (`maint::check_bank`). That does not help here: on RS485-1/2 a master with slaves never answers, and the CAN socket shows no BMS serial at all.
 
-## Identity
+## Identity (r2, after review `.orch/reviewer-codex-6-sol-bank-identity-r1.md`)
 
-A board is known by its BMS serial (String 2, 0xA4, `boards.bms_serial` plus `aliases`). Placeholder and empty values (`EMU110110S-XXXX…`, nothing set) identify nothing. For a pack at address X read with BMS serial S, against installation I:
+A board is known by its BMS serial (String 2, 0xA4, `boards.bms_serial` plus `aliases`; at address 0 also `master_serial`). Placeholder and empty values identify nothing. A pack at address X read with BMS serial S, against installation I, is one of:
 
-- **match:** S is I's current board at X, or an earlier board of I at X (it becomes current again, as today).
-- **first:** I has no board at X and S is unknown to every installation: a new place, recorded as today.
-- **swap:** I has a different current board at X and S is unknown to every installation: a board swap, recorded as today, with the existing notice.
-- **foreign:** S is a board (any address) of another installation and not of I. Archived installations count.
-- **unchecked:** no real S (placeholder, empty, no answer, CAN socket bus).
+- **known:** S is a board of I at X (current or earlier; an earlier one becomes current as today), or at X = 0 S equals `I.master_serial`.
+- **unconfirmed:** everything else with a real S. Its kind decides only the text:
+  - *new:* S unknown to every installation (a new place, a swap, or a new installation's first connect),
+  - *moved:* S is a board of I at another address (DIP changed),
+  - *foreign:* S is a board or the master serial of another installation, archived ones included.
+  A board that is known at X in I and also elsewhere (e.g. after importing a copy of an installation) counts as known (ruling: copies must not block; the harm needs two banks with the same written serial).
+- **unchecked:** a valid answer with an empty or placeholder S. Writes go ahead with the note „Anlage nicht geprüft (Platine ohne Seriennummer)“.
+- **failed:** no answer, invalid answer, I/O or store error. Writes are refused („Anlage nicht geprüft: … Nichts geschrieben.“); this never counts as unchecked.
 
-## Design
+## Design (r2)
 
-1. **Serial read after connecting** (`serial_numbers`, the sidebar reads every pack): classify before `board_seen`. A **foreign** pack is not recorded (`board_seen` not called), and the read returns `identity: {kind: "foreign", installation: {id, name}}`. The sidebar then shows one red line for the connection: „Pack 02 gehört zur Anlage „B“. Ist hier eine andere Bank angeschlossen?“ with „Trennen“ and „Mit Anlage „B“ verbinden“ (disconnect, choose B, connect). Recording keeps running (it is only reading, and the user decides), but every write to that connection is refused (point 2). A **swap** is recorded as today and returned as `identity: {kind: "swap"}`.
-2. **Before every write to a pack** (all commands under the pack reservation that send to the pack: parameters, clock, CAN protocol, calibration, serial, the five control commands; not the history read): inside the reservation and the same link, read 0xA4 of the target pack (one frame) and classify.
-   - **foreign** → refuse `{"kind":"bank","state":"foreign","address":X,"installation":{…}}`: „An Adresse 02 hängt ein Pack der Anlage „B“. Nichts geschrieben.“
-   - **swap not yet confirmed on this connection** → refuse `{"kind":"bank","state":"swap","address":X,"serial":S}`: „An Adresse 02 hängt eine Platine, die diese Anlage noch nicht kennt (S). Gehört sie zu dieser Anlage?“ with „Ja, Platine gehört dazu“ (records the confirmation for this connection generation and address, then the user repeats the action). One confirmation per pack and connection, not per write.
-   - **match, first, unchecked** → write. Unchecked shows a muted note under the result: „Anlage nicht geprüft (Platine ohne Seriennummer)“.
-   - A serial write (0xA5) itself changes S: its check uses S before the write; the app's own new value is recorded by `board_written` as today.
-3. **CAN socket bus:** writes do not exist there. The master's battery serial (Modbus, first 22 characters) is compared with the battery serials of the installation's boards at address 0 and of other installations: equal to another installation's and none of I's → the same red line as in point 1 (hint only; battery serials can be changed and are informational).
-4. A connection with a foreign pack keeps `foreign` until disconnect; the sidebar line stays.
+1. **Nothing is recorded for an unconfirmed board until the user confirms it.** `serial_numbers` classifies before `board_seen` and calls it only for *known* boards (and `unchecked` as today: it records nothing). It returns `identity: {kind, address, serial, installation?}`.
+2. **One line in the sidebar per connection** lists the unconfirmed packs after the serial read, with one button:
+   - only *new*/*moved*: „Diese Anlage kennt die Platinen an 00, 03 noch nicht (neu bzw. umgesteckt). Gehören sie zu „I“?“ → „Ja, übernehmen“ records them with `board_seen` (moved ones as today's board at the new place, history kept);
+   - any *foreign*: red, „Pack 02 gehört zur Anlage „B“. Ist hier eine andere Bank angeschlossen?“ → „Trennen“, „Mit „B“ verbinden“, and smaller „Trotzdem zu „I“ übernehmen“ (a board really moved from B, also archived: recorded in I, B keeps its history).
+   One confirmation covers all listed packs of this connection (a new installation with 12 packs is one click, not twelve).
+3. **Before every write** (parameters, clock, CAN protocol, calibration, serial, the five control commands): inside the reservation and `with_link`, **first** read 0xA4 of the target pack, before any other frame or snapshot of that action (in `write_parameters` before the fresh 0x47). known/unchecked → go on; unconfirmed → refuse `{"kind":"bank","state":"unconfirmed","address":X,"why":"new|moved|foreign",…}` with the text pointing to the sidebar line; failed → refuse. A serial write checks S before its 0xA5; its own new value is recorded by `board_written` as today.
+4. **Foreign connection:** while a *foreign* pack is unconfirmed, the connection records nothing under I: the recorder session is not started or is stopped for this link, parameter reads store no snapshots, `maint::read_master` stores no marker state. Data read before the serial read finished (first polls) is dropped (the recorder starts only after the serial read of the first pack, or keeps its first rows pending until the identity is decided — implementer's choice, the simpler one). Confirming the takeover or reconnecting with the right installation lifts it.
+5. **CAN socket bus:** no writes there. The master's battery serial (Modbus) equal to another installation's address-0 battery serial and none of I's → the same red line (hint only); recording continues.
 
 ## Out of scope
 
 Proving the bank when every pack has a placeholder serial (the app cannot tell banks apart then; the help says so and suggests setting serials, which the app can do).
 
-## Questions for review
+## Review r1 questions (answered, kept for reference)
 
 1. Is the per-write 0xA4 read sound under the reservation and `with_link`, or can it read another pack than the one written (address echo, gateway)?
 2. `foreign` across archived installations: harmful when a board really moved from an archived bank to this one (refusal until the user deletes or merges)? Is the swap confirmation the better path there?
