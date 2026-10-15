@@ -285,6 +285,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
+  const fixed = connected || lost || busy || locked;
+
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
       <div className="flex shrink-0 items-center gap-2.5 px-5 pb-4 pt-6">
@@ -315,11 +317,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             {connected ? t("conn.connected") : lost ? t("conn.lostShort") : paused ? t("conn.paused") : t("conn.offline")}
           </span>
         </div>
-        {/* the installation first: everything stored belongs to it; fixed while connected */}
+        {/* the installation first: everything stored belongs to it. It and the connection fields are fixed while
+            connected (also while lost and retrying): a change takes effect only with the next connect, so until then
+            the fields would show something else than the running connection. To change them: disconnect. */}
         {!isDemo && (
           <div className="space-y-1">
             <span className="flex items-center gap-1.5 text-sm text-muted">{t("conn.installation")}<InfoIcon id="topic.installations" /></span>
-            <select className={input} value={maint.installation ?? ""} disabled={connected || lost || busy || locked} aria-label={t("conn.installation")}
+            <select className={input} value={maint.installation ?? ""} disabled={fixed} aria-label={t("conn.installation")}
               onChange={(e) => { const v = e.target.value; if (v === NEW) maint.setNaming(true); else void maint.switchTo(v || null); }}>
               {maint.installation && !maint.installations.some((i) => i.id === maint.installation) && <option value={maint.installation}>…</option>}
               {pickable(maint.installations, maint.installation).map((i) => <option key={i.id} value={i.id}>{i.name}{i.archived ? ` (${t("inst.archived")})` : ""}</option>)}
@@ -332,33 +336,33 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         )}
         <div className="grid grid-cols-2 gap-1 rounded-md bg-sunken p-1">
           {([["tcp", Network], ["serial", Usb]] as const).map(([k, I]) => (
-            <button key={k} onClick={() => setKind(k)}
-              className={cn("flex items-center justify-center gap-1.5 rounded py-1.5 text-sm", kind === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
+            <button key={k} onClick={() => setKind(k)} disabled={fixed}
+              className={cn("flex items-center justify-center gap-1.5 rounded py-1.5 text-sm disabled:opacity-60", kind === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink disabled:hover:text-muted")}>
               <I className="h-3.5 w-3.5" />{t(`conn.${k}`)}
             </button>
           ))}
         </div>
         {kind === "tcp" ? (
-          <input className={input} value={target} onChange={(e) => setTarget(e.target.value)} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
+          <input className={input} value={target} disabled={fixed} onChange={(e) => setTarget(e.target.value)} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
         ) : (
           <div className="flex items-center gap-1">
-            <select className={input} value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
+            <select className={input} value={target} disabled={fixed} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
               <option value="">{t("conn.port")}</option>
               {ports.map((p) => <option key={p}>{p}</option>)}
             </select>
-            <Button variant="ghost" size="icon" className="shrink-0" onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" className="shrink-0" disabled={fixed} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
           </div>
         )}
         <label className="block">
           <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
-          <select className={input} value={bus} onChange={(e) => setBus(e.target.value as Bus)}>
+          <select className={input} value={bus} disabled={fixed} onChange={(e) => setBus(e.target.value as Bus)}>
             <option value="can">{t("conn.busCan")}</option>
             <option value="pack">{t("conn.busPack")}</option>
           </select>
         </label>
         <label className="flex items-center justify-between gap-3 text-sm text-muted">
           {t("conn.packs")}
-          <select className={cn(input, "w-28")} value={packCount} onChange={(e) => setPackCount(Number(e.target.value))}>
+          <select className={cn(input, "w-28")} value={packCount} disabled={fixed} onChange={(e) => setPackCount(Number(e.target.value))}>
             <option value={0}>{t("conn.packsAuto")}</option>
             {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
