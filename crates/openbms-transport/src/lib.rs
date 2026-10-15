@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{calibration, frame, memory, modbus, params, serial, BmsTime, Calibration, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{calibration, control, frame, memory, modbus, params, serial, BmsTime, Calibration, Comeback, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -308,6 +308,66 @@ impl Connection {
         Ok(())
     }
 
+    /// Restart the pack (0x45 type 6; RS485-1/2 only). The board resets before it can answer, so a missing answer is
+    /// the expected outcome and waits only 300 ms; RTN 00 counts as well. Returns when the request was sent, the start
+    /// of the silence `await_comeback` measures.
+    pub fn restart(&mut self, address: u8) -> Result<Instant> {
+        let request = control::restart_request(address)?;
+        let saved = self.timeout;
+        self.timeout = Duration::from_millis(300);
+        let sent = Instant::now();
+        let r = self.ascii(&request, address);
+        self.timeout = saved;
+        match r {
+            Ok(_) | Err(Error::Timeout(_)) => Ok(sent),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Switch the pack on or off (0x45 type 4). „Off“ blocks only the discharge MOSFET, from the next 1-s evaluation.
+    pub fn on_off(&mut self, address: u8, on: bool) -> Result<()> {
+        self.ascii(&control::on_off_request(address, on)?, address)?;
+        Ok(())
+    }
+
+    /// Force the heater for one hour or stop it (0x45 type 3).
+    pub fn heater(&mut self, address: u8, on: bool) -> Result<()> {
+        self.ascii(&control::heater_request(address, on)?, address)?;
+        Ok(())
+    }
+
+    /// Clear the pack's history, energy counters and cycle count (0x45 type 5). Not reversible.
+    pub fn clear(&mut self, address: u8) -> Result<()> {
+        self.ascii(&control::clear_request(address)?, address)?;
+        Ok(())
+    }
+
+    /// Set the remaining capacity in 10 mAh (0x49 index 59). RTN 06: larger than the full capacity.
+    pub fn set_remaining(&mut self, address: u8, raw: u16) -> Result<()> {
+        self.ascii(&control::set_remaining_request(address, raw)?, address)?;
+        Ok(())
+    }
+
+    /// Whether the pack answers 0x51 within 300 ms; any frame from it counts, also a refusal. Only a broken link is
+    /// an error.
+    pub fn answers(&mut self, address: u8) -> Result<bool> {
+        let request = DeviceInfo::request(address)?;
+        let saved = self.timeout;
+        self.timeout = Duration::from_millis(300);
+        let r = self.ascii(&request, address);
+        self.timeout = saved;
+        match r {
+            Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(_))) => Ok(true),
+            Err(Error::Timeout(_) | Error::Proto(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// After `restart`: 0x51 back to back until the pack answers after a silence, or `limit` after `sent` is over.
+    pub fn await_comeback(&mut self, address: u8, sent: Instant, limit: Duration) -> Result<Comeback> {
+        watch_comeback(sent, limit, || self.answers(address))
+    }
+
     /// One record of the internal history (0x4B; RS485-1/2 only): the oldest with `next = false`, else the one
     /// after the last read. `None`: no records; the flag marks the last record.
     pub fn history_record(&mut self, address: u8, next: bool) -> Result<Option<(HistoryRecord, bool)>> {
@@ -420,6 +480,24 @@ impl Connection {
         self.timeout = saved;
         found
     }
+}
+
+/// The restart watch: `answered` is one 0x51 try. A silence followed by an answer is a comeback, counted from `sent`;
+/// answers throughout or silence to the end of `limit` say the restart was not seen.
+pub fn watch_comeback(sent: Instant, limit: Duration, mut answered: impl FnMut() -> Result<bool>) -> Result<Comeback> {
+    let mut missed = false;
+    let mut any = false;
+    while sent.elapsed() < limit {
+        if answered()? {
+            if missed {
+                return Ok(Comeback::Back { after_ms: sent.elapsed().as_millis() as u64 });
+            }
+            any = true;
+        } else {
+            missed = true;
+        }
+    }
+    Ok(if any && !missed { Comeback::NoInterruption } else { Comeback::NoAnswer })
 }
 
 /// Raw byte access for tools that speak another framing on the same bus (the bootloader).
@@ -593,6 +671,49 @@ mod tests {
         c.set_can_protocol(1, 3).unwrap();
         // 7 is refused before anything is sent
         assert!(matches!(c.set_can_protocol(1, 7), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+    }
+
+    #[test]
+    fn pack_control() {
+        let mut c = scripted(vec![
+            (control::restart_request(2).unwrap(), answer(2, 0x04, &[])),
+            (control::on_off_request(1, false).unwrap(), answer(1, 0, &[])),
+            (control::heater_request(1, true).unwrap(), answer(1, 0, &[])),
+            (control::clear_request(1).unwrap(), answer(1, 0, &[])),
+            (control::set_remaining_request(1, 30000).unwrap(), answer(1, 0x06, &[])),
+            (control::set_remaining_request(1, 14000).unwrap(), answer(1, 0, &[])),
+            (DeviceInfo::request(1).unwrap(), answer(1, 0, &[])),
+            (DeviceInfo::request(3).unwrap(), answer(3, 0x04, &[])),
+        ]);
+        // silence is what a restart looks like; a refusal is still an error
+        let started = Instant::now();
+        let sent = c.restart(1).unwrap();
+        assert!(sent >= started && sent.elapsed() < Duration::from_millis(1000));
+        assert!(matches!(c.restart(2), Err(Error::Proto(openbms_proto::Error::Rtn(0x04)))));
+        c.on_off(1, false).unwrap();
+        c.heater(1, true).unwrap();
+        c.clear(1).unwrap();
+        assert!(matches!(c.set_remaining(1, 30000), Err(Error::Proto(openbms_proto::Error::Rtn(0x06)))));
+        c.set_remaining(1, 14000).unwrap();
+        assert!(c.answers(1).unwrap());
+        assert!(c.answers(3).unwrap());
+        assert!(!c.answers(4).unwrap());
+    }
+
+    #[test]
+    fn comeback_needs_a_silence_then_an_answer() {
+        let limit = Duration::from_secs(5);
+        let mut tries = [false, false, true].into_iter();
+        let r = watch_comeback(Instant::now() - Duration::from_millis(500), limit, || Ok(tries.next().unwrap())).unwrap();
+        assert!(matches!(r, Comeback::Back { after_ms } if after_ms >= 500));
+        // answered throughout, silent to the end, answered and then silent
+        let short = Duration::from_millis(30);
+        assert_eq!(watch_comeback(Instant::now(), short, || Ok(true)).unwrap(), Comeback::NoInterruption);
+        assert_eq!(watch_comeback(Instant::now(), short, || Ok(false)).unwrap(), Comeback::NoAnswer);
+        let mut n = 0;
+        assert_eq!(watch_comeback(Instant::now(), short, || { n += 1; Ok(n < 3) }).unwrap(), Comeback::NoAnswer);
+        // a broken link ends the watch
+        assert!(watch_comeback(Instant::now(), limit, || Err(Error::Closed)).is_err());
     }
 
     #[test]
