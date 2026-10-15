@@ -304,7 +304,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
         h.connected(id, if can { "can" } else { "pack" });
         // RS485-1/2: nothing is recorded until a serial read shows no pack of another installation (`bank.rs`)
-        h.hold(!can);
+        h.hold_for((!can).then_some("pending"));
     }
     Ok(Connected { linked, answered, gen })
 }

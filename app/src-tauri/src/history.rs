@@ -180,6 +180,8 @@ pub struct Status {
     pub preparing: bool,
     /// connected, but waiting until the bank is decided (`bank.rs`): nothing is recorded meanwhile
     pub held: bool,
+    /// why: "pending" (no read decided yet), "confirm" (only boards this installation does not know yet), "foreign"
+    pub held_reason: Option<&'static str>,
     pub error: Option<String>,
 }
 
@@ -196,6 +198,7 @@ pub struct History {
     /// the connection's bank is not decided yet, or a pack of another installation is unconfirmed: nothing is
     /// recorded (see `bank.rs`)
     held: bool,
+    held_reason: Option<&'static str>,
     /// the file is being created or migrated (`prepare`), not open yet
     preparing: bool,
     last: HashMap<u8, i64>,
@@ -320,6 +323,7 @@ impl History {
             rows: self.rows,
             preparing: self.preparing,
             held: self.settings.enabled && self.link.is_some() && self.held,
+            held_reason: if self.settings.enabled && self.link.is_some() && self.held { self.held_reason } else { None },
             error: self.error.clone(),
         }
     }
@@ -344,17 +348,25 @@ impl History {
         self.end_session(now_ms());
         self.link = Some((site.to_string(), bus.to_string()));
         self.held = false;
+        self.held_reason = None;
     }
 
     pub fn disconnected(&mut self) {
         self.end_session(now_ms());
         self.link = None;
         self.held = false;
+        self.held_reason = None;
     }
 
     #[cfg(test)]
     pub fn is_held(&self) -> bool {
         self.held
+    }
+
+    /// `hold` with its reason for the UI (None: record).
+    pub fn hold_for(&mut self, reason: Option<&'static str>) {
+        self.hold(reason.is_some());
+        self.held_reason = reason;
     }
 
     /// Hold (or resume) recording for the current connection. Rows that arrive while held are dropped, not kept for
@@ -1726,6 +1738,8 @@ mod tests {
         assert_eq!(h.status().rows, 1);
         let s = sites(&reader(&path).unwrap()).unwrap();
         assert_eq!((s[0].from, s[0].to), (Some(2_000), Some(2_000)));
+        h.hold_for(Some("confirm"));
+        assert_eq!((h.status().held, h.status().held_reason), (true, Some("confirm")));
         // a new connection starts unheld
         h.connected("inst-a", "can");
         assert!(h.status().active);
