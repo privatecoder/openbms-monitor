@@ -26,7 +26,7 @@ let kept: Source[] = [];
 let keptLink = "";
 // refusals whose switches are still live, per site and address (see Refused); they outlive a view switch
 const keptRefused = new Map<string, Refused>();
-/** Pack columns of another site or connection: values stay, nothing to edit or undo from. */
+/** Pack columns of another connection to the same installation: values stay, nothing to edit or undo from. */
 const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
 // the datasheet chosen for the check; null = follow the packs' cell type
 let keptRef: Assignment | "none" | null = null;
@@ -59,8 +59,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const link = `${site}|${connected}`;
   const [sources, setSourcesState] = useState<Source[]>(() => {
     if (keptLink !== link) {
-      // another installation: its stored columns go as well
-      if (keptLink.split("|")[0] !== site) kept = kept.filter((x) => x.kind !== "stored");
+      // another installation: its read and stored columns go (they describe its packs); opened exports stay
+      if (keptLink.split("|")[0] !== site) kept = kept.filter((x) => x.kind === "file");
       kept = unlink(kept); keptLink = link;
     }
     return kept;
@@ -87,8 +87,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // another installation or a new connection: what was read no longer belongs to the packs on the bus
   useEffect(() => {
     if (keptLink === link) return;
-    // another installation: its stored columns go as well
-    if (keptLink.split("|")[0] !== site) setSources((s) => s.filter((x) => x.kind !== "stored"));
+    // another installation: its read and stored columns go (they describe its packs); opened exports stay
+    if (keptLink.split("|")[0] !== site) setSources((s) => s.filter((x) => x.kind === "file"));
     keptLink = link;
     setSources(unlink); setEdit(null); setNote(null);
   }, [link]); // eslint-disable-line react-hooks/exhaustive-deps
