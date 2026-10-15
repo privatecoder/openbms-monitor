@@ -342,8 +342,11 @@ pub(crate) fn stop_monitor_and_tell(state: &AppState, app: &AppHandle) -> Result
 /// asked to stop. After 20 s the monitor stops anyway; the action's next step then finds the connection changed.
 #[tauri::command]
 async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
+    let _pending = control::begin_disconnect(&state.ops);
     state.memory_cancel.store(true, Ordering::SeqCst);
-    control::wait_packs_idle(&state.ops, Duration::from_secs(20));
+    let ops = state.ops.clone();
+    // waiting blocks: off the async runtime
+    tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, Duration::from_secs(20))).await.map_err(|e| e.to_string())?;
     stop_monitor(&state)
 }
 

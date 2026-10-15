@@ -28,7 +28,7 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
     setRead(null);
     if (address === null || !usable) return;
     let alive = true;
-    api.serialNumbers(address).then((r) => alive && setRead(r), (e) => alive && setRead({ error: String(e) }));
+    api.serialNumbers(address).then((r) => alive && setRead(r), (e) => alive && setRead({ error: errorText(e, t) }));
     return () => { alive = false; };
   }, [address, usable, reload]);
   if (!usable || address === null) return null;
