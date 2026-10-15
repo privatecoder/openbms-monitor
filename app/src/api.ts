@@ -5,6 +5,9 @@ import { CAN_PROTOCOLS, type Calibration } from "./calibration";
 import { fromRaw, isSigned, toRaw, violations, type Wire } from "./paramWrite";
 
 export type Bus = "pack" | "can";
+/** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
+export type OtherBus = { answered: number | null; noise: boolean; intra: boolean; pack_at_9600: boolean };
+
 export type Endpoint = { kind: "serial"; path: string; bus: Bus } | { kind: "tcp"; addr: string; bus: Bus };
 export type Severity = "info" | "warning" | "protection" | "fault";
 export type LimitState = "normal" | "below_limit" | "above_limit" | { other: number };
@@ -203,7 +206,13 @@ const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 const tauriApi = {
   listPorts: () => invoke<string[]>("list_ports"),
   /** `installation` null: „Nur ansehen“ (nothing stored, no writes). `linked`: the endpoint was linked to it just now. */
-  connect: (endpoint: Endpoint, installation: string | null) => invoke<{ linked: boolean }>("connect", { endpoint, installation }),
+  /** opens the port and checks that a pack answers (`addresses` first, then the rest of 0..15); no answer: error
+   *  JSON `{ code: "no-answer", noise, intra }`, the port is closed again */
+  connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
+    invoke<{ linked: boolean; answered: number }>("connect", { endpoint, installation, addresses: addresses ?? null }),
+  /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
+  probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
+    invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
   disconnect: () => invoke<void>("disconnect"),
   /** without addresses: search 0..15; with addresses: only read their device info */
   scan: (addresses?: number[]) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null }),
@@ -330,7 +339,8 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => ({ linked: false }),
+    connect: async () => ({ linked: false, answered: 0 }),
+    probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     disconnect: async () => { clearInterval(timer); },
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
       .map((s) => [s.address, demoProtocol.has(s.address) ? { ...s.device, can_protocol: demoProtocol.get(s.address)! } : s.device] as [number, DeviceInfo]),

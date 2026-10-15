@@ -1,6 +1,6 @@
 # Check the connection when connecting
 
-Status: draft r1, 2026-10-15.
+Status: r2, 2026-10-15 (r1 reviewed: `.orch/reviewer-codex-6-sol-connect-check-r1.md` in the knowledge base).
 
 ## Why
 
@@ -35,3 +35,10 @@ Automatic reconnects (lost connection) keep today's path without the check of th
 ## Harm check
 
 Only reads (0x51, Modbus read) are sent, also at the other baud rate. Nothing is linked or recorded for a connection that did not answer (today a wrong port gets linked to the installation).
+
+## Review r1 (taken over)
+
+- **Reachability is checked on all addresses 0..15** (the ones to be polled first, stop at the first answer), not only on the fixed count: a lone slave at DIP 11 with „1 Pack“ is reachable. The fixed count is used only for polling. No broadcast `FF` (several packs would answer at once).
+- **The other-baud probe names the baud rate, not the socket.** Firmware 16.04.06 `_9600` runs RS485-1/2 at 9600 baud. An answer at 9600 is told apart with one read-only 0x47 at the answering address: answered → RS485-1/2 at 9600 baud (old firmware), no one-click switch (the app's pack bus runs at 19200); not answered → CAN socket, one-click switch offered. An answer at 19200 is RS485-1/2 (the CAN socket never runs at 19200).
+- **„No answer“ is a state, not a proof of a wrong port.** A master with a configured slave count > 0 polls its slaves and never answers 0x51 on RS485-1/2, even when no slave answers; intra-pack traffic (0x5A) seen during the check is reported as „Am Bus fragt ein Master seine Slaves ab, aber kein Pack antwortet“. A pack in the bootloader or within ~5 s after a restart does not answer either; the message names these. The firmware view stays reachable without a monitor connection (it is today).
+- The check itself occupies the bus for up to 16 × 300 ms; on a pack bus with a polling master this may cost a few poll rounds (no lasting effect). An external updater running on the same bus at the same time can be disturbed by any transmission; the app's own flashing holds the port and is not affected.

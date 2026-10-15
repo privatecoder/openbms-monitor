@@ -199,13 +199,30 @@ fn list_ports() -> Vec<String> {
 #[derive(Serialize)]
 struct Connected {
     linked: bool,
+    /// the first pack address that answered the check (Modbus answer of the master on the CAN socket: 0)
+    answered: u8,
+}
+
+/// Ask once whether anything answers: on the CAN socket the master's Modbus values first, then 0x51 of 0..=15
+/// (the addresses to be polled first), stop at the first answer. Read-only.
+fn check_link(conn: &mut Connection, bus: Bus, first: &[u8]) -> Result<u8, openbms_transport::Probe> {
+    if bus == Bus::CanSocketBus && conn.system_values().is_ok() {
+        return Ok(0);
+    }
+    let p = conn.probe(openbms_transport::probe_order(first));
+    p.answered.ok_or(p)
+}
+
+/// The error of a connect whose check found no pack: JSON, so the UI can explain it.
+fn no_answer_error(p: &openbms_transport::Probe) -> String {
+    serde_json::json!({ "code": "no-answer", "noise": p.noise, "intra": p.intra }).to_string()
 }
 
 /// Open the monitor connection for an installation (None: „Nur ansehen“, nothing is stored). The endpoint is linked to
 /// the installation after the port opened and before the first recorded row; recorder and stores use the installation
 /// for this whole connection.
 #[tauri::command]
-async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation: Option<String>) -> Result<Connected, String> {
+async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation: Option<String>, addresses: Option<Vec<u8>>) -> Result<Connected, String> {
     let _port_slot = reserve_port(&state.port_busy).ok_or_else(|| port_busy_error(current_action(&state)))?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
@@ -229,7 +246,10 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }
-    let conn = Connection::open(&ep).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(&ep).map_err(|e| e.to_string())?;
+    // nothing answers (wrong port, bus or baud rate, pack off or in the bootloader): the port is closed again,
+    // nothing is linked or recorded
+    let answered = check_link(&mut conn, bus, &addresses.unwrap_or_default()).map_err(|p| no_answer_error(&p))?;
     {
         // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
         let mut slot = lock(&state.conn)?;
@@ -249,7 +269,35 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
         h.connected(id, if can { "can" } else { "pack" });
     }
-    Ok(Connected { linked })
+    Ok(Connected { linked, answered })
+}
+
+/// What answered at the other bus's baud rate on a USB port whose connect check found nothing.
+#[derive(Serialize)]
+struct OtherBus {
+    answered: Option<u8>,
+    noise: bool,
+    intra: bool,
+    /// the answer at 9600 baud came from RS485-1/2 (it knows 0x47): old firmware 16.04.06 `_9600`, not the CAN socket
+    pack_at_9600: bool,
+}
+
+/// Open the USB port at the other bus's baud rate, ask like `connect` does, close it again. Read-only.
+#[tauri::command]
+async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, addresses: Option<Vec<u8>>) -> Result<OtherBus, String> {
+    let _port_slot = reserve_port(&state.port_busy).ok_or_else(|| port_busy_error(current_action(&state)))?;
+    if state.flashing.load(Ordering::SeqCst) {
+        return Err(FLASHING.into());
+    }
+    let other = match Bus::from(bus) {
+        Bus::PackBus => Bus::CanSocketBus,
+        Bus::CanSocketBus => Bus::PackBus,
+    };
+    let mut conn = Connection::open(&Endpoint::Serial { path, baud: other.baud() }).map_err(|e| e.to_string())?;
+    Ok(match check_link(&mut conn, other, &addresses.unwrap_or_default()) {
+        Ok(a) => OtherBus { answered: Some(a), noise: false, intra: false, pack_at_9600: other == Bus::CanSocketBus && conn.answers_parameters(a) },
+        Err(p) => OtherBus { answered: None, noise: p.noise, intra: p.intra, pack_at_9600: false },
+    })
 }
 
 /// Stop polling and drop the monitor's connection (also before a firmware update takes the port).
@@ -667,7 +715,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
