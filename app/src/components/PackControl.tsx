@@ -40,6 +40,8 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const [p79Read, setP79] = useState<number | null>(null);
   const [busy, setBusy] = useState<Action | null>(null);
   const [note, setNote] = useState<Note>(null);
+  // where the result line shows: under the control that started the action
+  const [noteFor, setNoteFor] = useState<Action | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [ah, setAh] = useState("");
   const gen = useRef(0);
@@ -100,7 +102,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   /** One action on pack `a`; a reply after a switch of pack, installation or connection is dropped. */
   const run = async (k: Action, a: number, f: (lk: string) => Promise<Note>) => {
     const lk = linkNow.current;
-    setBusy(k); setNote(null);
+    setBusy(k); setNote(null); setNoteFor(k);
     try { const n = await f(lk); if (same(a, lk)) setNote(n); }
     catch (e) { if (same(a, lk)) setNote(failed(e, k === "remaining" ? t("ctl.remaining.refused") : undefined)); }
     finally { setBusy(null); }
@@ -181,6 +183,8 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const blockers = st && !dischargeFree(st) ? blockingAlarms(st, "discharge") : [];
   const chargeBlockers = st && !chargeFree(st) ? blockingAlarms(st, "charge") : [];
 
+  const noteLine = note && <p className={note.tone === "ok" ? "text-ok" : note.tone === "warn" ? "text-discharge" : "text-alarm"}>{note.text}</p>;
+
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
       <div className="flex items-center gap-1.5">
@@ -193,20 +197,22 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
       </div>
       {open && (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 tabular-nums">
+          <div className="space-y-1 tabular-nums">
             {live === null ? <span className="text-muted">{t("ctl.reading")}</span>
               : "error" in live ? <span className="text-alarm">{t("ctl.readError", { err: live.error })}</span>
               : <>
-                <span>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span></span>
-                <span>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</span>
-                <span>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</span>
-                <span>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</span>
-                <span>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</span>
-                <span>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</span>
-              </>}
+                <div>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span></div>
+                <div>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</div>
+                <div>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</div>
+                <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}</div>
+                <div>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</div>
+                </>}
+            <div className="flex items-center gap-x-3">
+              {live !== null && !("error" in live) && <span>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</span>}
             <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={disabled || live === null} onClick={() => void reload(address)}
               aria-label={t("ctl.reload")} title={t("ctl.reload")}><RefreshCw className={cn("h-4 w-4", reading && "animate-spin")} /></Button>
             {readAt && <span className="text-muted">{t("ctl.state.at", { time: readAt.toLocaleTimeString(lang) })}</span>}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -218,7 +224,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
               {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
             </Button>
           </div>
-          {note && <p className={note.tone === "ok" ? "text-ok" : note.tone === "warn" ? "text-discharge" : "text-alarm"}>{note.text}</p>}
+          {noteFor !== "remaining" && noteFor !== "clear" && noteLine}
           <p className="max-w-3xl text-muted">{t("ctl.heater.hint")}</p>
 
           <div className="space-y-1">
@@ -234,11 +240,13 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
             </div>
             {under === true && <p className="text-discharge">{t("ctl.remaining.under", { p: nf(0).format(p79!) })}</p>}
             {under === null && soc !== null && <p className="text-muted">{t("ctl.remaining.underUnknown")}</p>}
+            {noteFor === "remaining" && noteLine}
             <p className="max-w-3xl text-muted">{t("ctl.remaining.hint")}</p>
           </div>
 
-          <div>
-            <Button size="sm" variant="ghost" disabled={disabled} onClick={() => void askClear(address)}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
+          <div className="space-y-1">
+            <Button size="sm" className="text-alarm" disabled={disabled} onClick={() => void askClear(address)}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
+            {noteFor === "clear" && noteLine}
           </div>
         </div>
       )}
