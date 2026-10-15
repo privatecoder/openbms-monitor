@@ -61,7 +61,7 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
   const mOhm = (v: number | undefined) => (v === undefined ? "–" : fmt(v, 1, "mΩ"));
 
   return (
-    <div className="view-in mx-auto max-w-6xl space-y-6">
+    <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
         <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight"><Gauge className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("diag.title")}<InfoIcon id="topic.diagnosis" /></h1>
         <p className="mt-1 max-w-3xl text-muted">{t("diag.intro")}</p>
