@@ -344,7 +344,7 @@ const resources = {
           under: "Unter {{p}} % sperrt das BMS das Entladen.", underUnknown: "Unter der SOC-Schutzgrenze (Parameter 79) sperrt das BMS das Entladen.",
           hint: "Bleibt erst gespeichert, wenn das BMS seinen Stand sichert (z. B. nach 5 % SOC-Änderung); ein Neustart vorher stellt den alten Wert wieder her.",
           refused: "Das BMS hat den Wert abgelehnt (größer als die Vollkapazität).",
-          taken: "Angenommen; die Anzeige folgt nach dem nächsten Sekundentakt …", done: "Restkapazität gesetzt: SOC jetzt {{soc}} %, {{ah}} Ah.",
+          taken: "Angenommen; die Anzeige folgt nach dem nächsten Sekundentakt …", done: "Restkapazität gesetzt: SOC jetzt {{soc}} %, {{ah}} Ah.", replaced: "Vom BMS angenommen, aber gleich wieder ersetzt: SOC jetzt {{soc}} %, {{ah}} Ah ({{reason}}).", replacedUnknown: "die SOC-Regeln des BMS",
         },
         clear: {
           button: "Historie und Zähler löschen …", title: "Historie und Zähler löschen?", confirm: "Löschen",
@@ -917,7 +917,7 @@ const resources = {
           under: "Below {{p}} % the BMS blocks discharging.", underUnknown: "Below the SOC protection limit (parameter 79) the BMS blocks discharging.",
           hint: "Stays stored only once the BMS saves its state (e.g. after a 5 % SOC change); a restart before that brings back the old value.",
           refused: "The BMS refused the value (larger than the full capacity).",
-          taken: "Accepted; the display follows after the next one-second cycle …", done: "Remaining capacity set: SOC now {{soc}} %, {{ah}} Ah.",
+          taken: "Accepted; the display follows after the next one-second cycle …", done: "Remaining capacity set: SOC now {{soc}} %, {{ah}} Ah.", replaced: "Accepted by the BMS but replaced right away: SOC now {{soc}} %, {{ah}} Ah ({{reason}}).", replacedUnknown: "the BMS's SOC rules",
         },
         clear: {
           button: "Clear history and counters …", title: "Clear history and counters?", confirm: "Clear",

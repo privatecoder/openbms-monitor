@@ -153,10 +153,17 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
     setNote({ text: t("ctl.remaining.taken"), tone: "ok" });
     // 0x42 shows the new value only after the next 1-s evaluation
     await wait(1500);
-    const l = await reload(a);
     if (same(a, lk)) setAh("");
-    return l ? { text: t("ctl.remaining.done", { soc: nf(1).format(l.telemetry.soc), ah: nf(2).format(l.telemetry.remaining_capacity_ah) }), tone: "ok" }
-      : { text: t("ctl.sentUnread"), tone: "warn" };
+    const l = await reload(a);
+    if (!l) return { text: t("ctl.sentUnread"), tone: "warn" };
+    const shown = { soc: nf(1).format(l.telemetry.soc), ah: nf(2).format(l.telemetry.remaining_capacity_ah) };
+    // the SOC logic goes on from the value (current, full/empty rules): more than 1 % of full away means it was replaced
+    const full = l.telemetry.full_capacity_ah;
+    if (Math.abs(l.telemetry.remaining_capacity_ah * 100 - raw) > Math.max(100, full)) {
+      const why = offReasons(l.status);
+      return { text: t("ctl.remaining.replaced", { ...shown, reason: why.length ? names(why) : t("ctl.remaining.replacedUnknown") }), tone: "warn" };
+    }
+    return { text: t("ctl.remaining.done", shown), tone: "ok" };
   });
 
   const clear = (a: number) => run("clear", a, async () => {
