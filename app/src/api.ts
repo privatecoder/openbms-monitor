@@ -175,6 +175,20 @@ export interface Series {
   from: number; to: number; step: number; x: number[];
   packs: Record<string, PackCols>; system: SystemCols | null; cells: Col[]; events: HistoryEvent[];
 }
+/** Health report (`health.rs`): per pack and local day spread (mV, all rows and at rest), last cycle count, warmest cell. */
+export interface PackDay {
+  day: number; rows: number; spread_p50: number | null; spread_p95: number | null;
+  rest_rows: number; rest_p50: number | null; rest_p95: number | null; cycles: number | null; temp_max: number | null;
+}
+export interface PackReport { pack: number; days: PackDay[]; cycles_per_30d: number | null; cycle_resets: number }
+/** Per pair and day: matched samples under load, the plus pack's share (%); `judged`: without the samples equalizing explains. */
+export interface PairDay {
+  day: number; samples: number; share: number | null; equalizing: number;
+  judged: number; judged_minutes: number; judged_share: number | null; marked: boolean;
+}
+export interface PairReport { plus: number; minus: number; days: PairDay[] }
+/** `spread_from`: first row with spread data in the period; `raw_from`: first raw row (pair figures start there). */
+export interface HealthReport { from: number; to: number; packs: PackReport[]; pairs: PairReport[]; spread_from: number | null; raw_from: number | null }
 export interface ExportStats { rows: number; files: string[] }
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
@@ -291,6 +305,8 @@ const tauriApi = {
   historySites: () => invoke<SiteSpan[]>("history_sites"),
   historySeries: (site: string, from: number, to: number, packs: number[], cellsPack: number | null, maxPoints: number) =>
     invoke<Series>("history_series", { site, from, to, packs, cellsPack, maxPoints }),
+  healthReport: (site: string, from: number, to: number, pairs: { plus: number; minus: number }[]) =>
+    invoke<HealthReport>("health_report", { site, from, to, pairs }),
   historyExport: (site: string, from: number, to: number, packs: number[], format: "jsonl" | "csv", path: string) =>
     invoke<ExportStats>("history_export", { site, from, to, packs, format, path }),
   historyImport: (path: string, site: string) => invoke<ImportStats>("history_import", { path, site }),
@@ -476,6 +492,7 @@ function demoApi(): typeof tauriApi {
       return [{ site: "demo:4196", from: now - 86_400_000, to: now, packs: c.packs.map((p) => p.address), has_system: true }];
     },
     historySeries: async (_site, from, to, packs, cellsPack, maxPoints) => demoSeries(from, to, packs, cellsPack, maxPoints),
+    healthReport: async (_site, from, to, pairs) => demoReport(from, to, (await load()).packs.map((p) => p.address), pairs),
     historyExport: async () => { throw new Error("preview"); },
     historyImport: async () => { throw new Error("preview"); },
     historyClear: async () => {},
@@ -666,6 +683,32 @@ let demoHistory: HistoryStatus = {
   settings: { enabled: false, packs: [], system: true, interval_s: 0, keep_full_days: 30, keep_minutes_days: 0 },
   active: false, path: "~/Library/Application Support/io.github.privatecoder.openbms-monitor/history.sqlite", bytes: 48_300_000, rows: 0, error: null,
 };
+
+/** Preview: a synthetic health report; pack 05's rest spread rises, pack 08 counts cycles faster, pair 00/01 is uneven. */
+function demoReport(from: number, to: number, packs: number[], pairs: { plus: number; minus: number }[]): HealthReport {
+  const start = new Date(Math.max(from, to - 90 * 86_400_000)); start.setHours(0, 0, 0, 0);
+  const days: number[] = [];
+  for (const d = new Date(start); d.getTime() < to; d.setDate(d.getDate() + 1)) days.push(d.getTime());
+  const wobble = (a: number, i: number) => Math.round(Math.sin(a * 1.7 + i * 0.9) * 2);
+  return {
+    from: days[0] ?? from, to, spread_from: days[0] ?? null, raw_from: days[Math.max(0, days.length - 30)] ?? null,
+    packs: packs.map((a) => ({
+      pack: a, cycle_resets: 0, cycles_per_30d: a === 8 ? 16.8 : 12 + (a % 3) * 0.4,
+      days: days.map((day, i) => {
+        const rest = 7 + (a % 3) + wobble(a, i) + (a === 5 ? Math.round(i * 0.35) : 0);
+        return { day, rows: 17_000, spread_p50: rest + 6, spread_p95: rest + 22, rest_rows: 6_000, rest_p50: rest, rest_p95: rest + 3,
+          cycles: Math.round(140 + i * (a === 8 ? 0.56 : 0.4)), temp_max: 24 + (a % 4) + wobble(a, i) / 2 };
+      }),
+    })),
+    pairs: pairs.map(({ plus, minus }) => ({
+      plus, minus,
+      days: days.slice(-30).map((day, i) => {
+        const share = plus === 0 ? 57 + wobble(plus, i) / 2 : 50 + wobble(plus, i) / 2;
+        return { day, samples: 900, share, equalizing: 60, judged: 840, judged_minutes: 140, judged_share: share, marked: Math.abs(share - 50) > 5 };
+      }),
+    })),
+  };
+}
 
 /** Preview: a day of a 12-pack bank (charging by day, discharging at night), pack 01 with a weak share. */
 function demoSeries(from: number, to: number, packs: number[], cellsPack: number | null, maxPoints: number): Series {
