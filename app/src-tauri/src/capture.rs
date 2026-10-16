@@ -385,6 +385,13 @@ fn row_of(line: &Line, last: &mut HashMap<u64, Req>, l: Lang) -> (&'static str, 
         Kind::Timeout { waited_ms, address } => {
             let mut row = empty(format!("{waited_ms} ms"), format!("{} {address:02X}", l.pick("keine Antwort von", "no answer from")));
             row.address = format!("{address:02X}");
+            // name the request that went unanswered
+            if let Some(Req::Ascii { address: a, cid2, info0, info1 }) = last.get(&line.conn).copied() {
+                if a == *address {
+                    row.command = format!("{cid2:02X}");
+                    row.meaning = format!("{} {} {}", row.meaning, l.pick("auf", "to"), command_name(cid2, info0, info1, l));
+                }
+            }
             ("Timeout", row)
         }
         Kind::Error(text) => (l.pick("Fehler", "Error"), empty(clean(text), String::new())),
@@ -461,7 +468,7 @@ mod tests {
         assert_eq!(cols(&lines[7])[7], "Restkapazität setzen (0x49)");
         assert_eq!(cols(&lines[8])[7], "RTN 06: Wert abgelehnt; Antwort auf Restkapazität setzen (0x49)");
         let to = cols(&lines[10]);
-        assert_eq!((to[3], to[4], to[6], to[7]), ("Timeout", "04", "1500 ms", "keine Antwort von 04"));
+        assert_eq!((to[3], to[4], to[5], to[6], to[7]), ("Timeout", "04", "51", "1500 ms", "keine Antwort von 04 auf Geräteinfo lesen (0x51)"));
         let dropped = cols(&lines[11]);
         assert_eq!((dropped[3], dropped[4], dropped[7]), ("RX verworfen", "04", "vor der Anfrage verworfen (kam zu spät); Antwort auf Geräteinfo lesen (0x51), 0 Byte INFO"));
     }
