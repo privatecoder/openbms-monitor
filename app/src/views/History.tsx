@@ -11,6 +11,8 @@ import { cn, fmt } from "../lib/utils";
 import { Chart, useDark, type Line } from "../history/Chart";
 import { exportName, packColor, shares } from "../history/data";
 import { BmsHistory } from "./BmsHistory";
+import { HealthReport } from "./HealthReport";
+import { neighbourPairs, usePairs, validPairs } from "../pairs";
 
 const no = (a: number) => String(a).padStart(2, "0");
 const HOUR = 3_600_000;
@@ -35,14 +37,14 @@ type Span = { preset: number | "all" } | { from: number; to: number };
 // kept while the app runs, so switching views keeps the choice
 let keptSpan: Span = { preset: 24 };
 let keptMetrics: Metric[] = ["current", "soc", "delta", "sysCurrent"];
-let keptTab: "app" | "bms" = "app";
+let keptTab: "app" | "report" | "bms" = "app";
 
-/** Two tabs: the app's own recording of the chosen installation (charts from the database, with export and import) and
- *  the history the BMS keeps itself (read on demand over RS485-1/2). */
+/** Three tabs: the app's own recording of the chosen installation (charts from the database, with export and import), the
+ *  health report from it and the history the BMS keeps itself (read on demand over RS485-1/2). */
 export function History({ installation, connected, bus, packs: livePacks }: { installation: Installation | null; connected: boolean; bus: Bus | null; packs: number[] }) {
   const { t, i18n } = useTranslation();
   const [tab, setTabState] = useState(keptTab);
-  const setTab = (v: "app" | "bms") => { keptTab = v; setTabState(v); };
+  const setTab = (v: "app" | "report" | "bms") => { keptTab = v; setTabState(v); };
   const lang = i18n.language;
   const dark = useDark();
   const [sites, setSites] = useState<SiteSpan[] | null>(null);
@@ -66,6 +68,12 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
 
   const info = sites?.find((s) => s.site === site);
   const packs = useMemo(() => info?.packs ?? [], [info]);
+  // the installation's pairs for the report; the preview pairs neighbours
+  const { pairs: storedPairs } = usePairs(installation?.id ?? null);
+  const reportPairs = useMemo(() => {
+    const v = validPairs(storedPairs, packs);
+    return isDemo && !v.length ? neighbourPairs(packs) : v;
+  }, [storedPairs, packs]);
   useEffect(() => { if (cellPack === null || !packs.includes(cellPack)) setCellPack(packs[0] ?? null); }, [packs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // spans relative to now follow the clock: refresh every 30 s
@@ -173,13 +181,17 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
       </header>
 
       <div className="flex rounded-md bg-sunken p-0.5 text-sm" role="group">
-        {(["app", "bms"] as const).map((k) => (
+        {(["app", "report", "bms"] as const).map((k) => (
           <button key={k} aria-pressed={tab === k} onClick={() => setTab(k)}
             className={cn("flex-1 rounded px-2 py-1", tab === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>{t(`hist.tab.${k}`)}</button>
         ))}
       </div>
 
-      {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} /> : <>
+      {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} />
+        : tab === "report" ? (site && info ? <HealthReport site={site} name={installation?.name ?? site} siteFrom={info.from} pairs={reportPairs} />
+          : sites && <div className="flex max-w-lg flex-col gap-3 py-10 text-lg text-muted">
+            <ChartLine className="h-8 w-8" strokeWidth={1.5} aria-hidden />{site ? t("hist.empty") : t("hist.chooseInstallation")}
+          </div>) : <>
       <Panel className="space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <span className="font-medium">{isDemo ? site : installation?.name ?? t("hist.noInstallation")}</span>

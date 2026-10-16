@@ -1,7 +1,7 @@
 ---
 title: Verlauf
 short: Zeigt die aufgezeichneten Werte als Diagramme über die Zeit, mit Export und Import.
-related: topic.recording, value.share, topic.bmsHistory
+related: topic.recording, value.share, topic.healthReport, topic.bmsHistory
 ---
 - **Anlage und Zeitraum:** Der Verlauf zeigt die in der Seitenleiste gewählte Anlage, auch ohne Verbindung. Zeiträume bis jetzt (1 h bis 30 Tage) aktualisieren sich alle 30 s; „Alles“ zeigt die ganze Aufzeichnung.
 - **Diagramme je Pack:** Strom, Stromanteil, SOC, Pack-Spannung, höchste und niedrigste Zelle, Zelldifferenz, wärmste und kälteste Zelle. Jeder Pack hat überall dieselbe Farbe; über die Pack-Knöpfe blendest du einzelne aus.
@@ -12,3 +12,4 @@ related: topic.recording, value.share, topic.bmsHistory
 - **Meldungen:** Unter den Diagrammen stehen die Meldungen im Zeitraum mit Beginn und Ende. Ein Klick auf die Zeit vergrößert die Diagramme auf diesen Moment.
 - **Exportieren:** der gezeigte Zeitraum und die eingeblendeten Packs, als CSV (eine Zeile je Pack und Zeitpunkt mit allen Zellen; die Masterwerte in einer zweiten Datei) oder als JSON Lines (das frühere Aufzeichnungsformat, zum Weitergeben und Wiedereinlesen). Zeiten in UTC.
 - **Importieren:** JSON-Lines-Aufzeichnungen früherer Versionen oder Exporte, für die gezeigte Anlage. Bereits vorhandene Zeitpunkte werden nicht überschrieben, doppeltes Importieren schadet also nicht.
+- **Bericht:** der Reiter „Bericht“ wertet die Aufzeichnung über Tage und Wochen aus (siehe Gesundheitsbericht).
