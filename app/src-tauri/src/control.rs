@@ -12,6 +12,7 @@
 //! Besides, each step of a pack action runs through `with_link`: once the connection changed since the action began, no
 //! further frame is sent.
 
+use crate::bank::{check_target, Written};
 use crate::bms_memory::{bound, pack_bus_only, refusable, refusal_error};
 use crate::maint::{refused, MaintError};
 use crate::{current_action, reserve_port, with_link, AppState, Link, PortSlot};
@@ -226,21 +227,25 @@ fn command<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Resu
     }
 }
 
-/// Run one control frame on the pack the action reserved, on the connection it began on.
-fn control_frame(state: &AppState, link: &Link, address: u8, action: &'static str, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<(), String> {
+/// Run one control frame on the pack the action reserved, on the connection it began on, after the right-bank check.
+fn control_frame(state: &AppState, link: &Link, address: u8, action: &'static str, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<Written<()>, String> {
     let _guard = reserve_pack_wait(state, address, action)?;
-    with_link(&state.conn, &state.flashing, &state.link, link, |c| command(f(c)))?
+    let checked = check_target(state, link, address)?;
+    with_link(&state.conn, &state.flashing, &state.link, link, |c| command(f(c)))??;
+    Ok(Written { value: (), unchecked: checked.unchecked })
 }
 
 /// Restart one pack (0x45 type 6): 0x51 first (a polling master never answers on RS485-1/2), the restart, then 0x51
 /// back to back for up to 15 s. One frame per lock: the bus stays usable, polling skips this pack meanwhile.
 #[tauri::command]
-pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Restart, String> {
+pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<Restart>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let guard = reserve_pack_wait(&state, address, "restart")?;
+    // the right bank before the 0x51: a silent pack is refused there already
+    let unchecked = check_target(&state, &link, address)?.unchecked;
     let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
-    tauri::async_runtime::spawn_blocking(move || {
+    let value = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         if !with_link(&conn, &flashing, &links, &link, |c| c.answers(address))? {
             return Ok(Restart::NotReachable);
@@ -248,15 +253,16 @@ pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation:
         let sent = with_link(&conn, &flashing, &links, &link, |c| refusable(c.restart(address)))?.map_err(refusal_error)?;
         // from here the restart is out: a failure only means its comeback is unknown
         let watch = openbms_transport::watch_comeback(sent, COMEBACK_LIMIT, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)));
-        Ok(watch.map(Restart::from).unwrap_or_else(|error| Restart::SentLinkLost { error }))
+        Ok::<_, String>(watch.map(Restart::from).unwrap_or_else(|error| Restart::SentLinkLost { error }))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    Ok(Written { value, unchecked })
 }
 
 /// Switch one pack on or off (0x45 type 4). The UI reads the status again 2 s later.
 #[tauri::command]
-pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<(), String> {
+pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<Written<()>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     control_frame(&state, &link, address, "on_off", |c| c.on_off(address, on))
@@ -264,7 +270,7 @@ pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: 
 
 /// Force the heater for one hour, or stop it (0x45 type 3).
 #[tauri::command]
-pub async fn pack_heater(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<(), String> {
+pub async fn pack_heater(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<Written<()>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     control_frame(&state, &link, address, "heater", |c| c.heater(address, on))
@@ -272,7 +278,7 @@ pub async fn pack_heater(state: State<'_, AppState>, address: u8, installation: 
 
 /// Clear the pack's history, energy counters and cycle count (0x45 type 5).
 #[tauri::command]
-pub async fn pack_clear_history(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<(), String> {
+pub async fn pack_clear_history(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<()>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     control_frame(&state, &link, address, "clear", |c| c.clear(address))
@@ -280,7 +286,7 @@ pub async fn pack_clear_history(state: State<'_, AppState>, address: u8, install
 
 /// Set the remaining capacity, `raw` in 10 mAh (0x49 index 59); RTN 06 when it exceeds the full capacity.
 #[tauri::command]
-pub async fn pack_set_remaining(state: State<'_, AppState>, address: u8, installation: Option<String>, raw: u16) -> Result<(), String> {
+pub async fn pack_set_remaining(state: State<'_, AppState>, address: u8, installation: Option<String>, raw: u16) -> Result<Written<()>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     control_frame(&state, &link, address, "remaining", |c| c.set_remaining(address, raw))

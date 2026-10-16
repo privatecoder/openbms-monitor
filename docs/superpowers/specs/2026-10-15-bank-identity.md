@@ -1,6 +1,6 @@
 # Right bank before writing
 
-Status: r2, 2026-10-15 (r1 reviewed: `.orch/reviewer-codex-6-sol-bank-identity-r1.md` in the knowledge base).
+Status: r2 implemented (branch feat/bank-identity), 2026-10-15 (r1 reviewed: `.orch/reviewer-codex-6-sol-bank-identity-r1.md` in the knowledge base).
 
 ## Why
 
@@ -31,6 +31,20 @@ A board is known by its BMS serial (String 2, 0xA4, `boards.bms_serial` plus `al
 3. **Before every write** (parameters, clock, CAN protocol, calibration, serial, the five control commands): inside the reservation and `with_link`, **first** read 0xA4 of the target pack, before any other frame or snapshot of that action (in `write_parameters` before the fresh 0x47). known/unchecked → go on; unconfirmed → refuse `{"kind":"bank","state":"unconfirmed","address":X,"why":"new|moved|foreign",…}` with the text pointing to the sidebar line; failed → refuse. A serial write checks S before its 0xA5; its own new value is recorded by `board_written` as today.
 4. **Foreign connection:** while a *foreign* pack is unconfirmed, the connection records nothing under I: the recorder session is not started or is stopped for this link, parameter reads store no snapshots, `maint::read_master` stores no marker state. Data read before the serial read finished (first polls) is dropped (the recorder starts only after the serial read of the first pack, or keeps its first rows pending until the identity is decided — implementer's choice, the simpler one). Confirming the takeover or reconnecting with the right installation lifts it.
 5. **CAN socket bus:** no writes there. The master's battery serial (Modbus) equal to another installation's address-0 battery serial and none of I's → the same red line (hint only); recording continues.
+6. **Setting serials (added during implementation):**
+   - When the serial read after connecting finds packs whose String 2 is empty or a placeholder (*unchecked*), the sidebar shows one muted line per connection: „Packs ohne Seriennummer (00, 02): die App kann nicht prüfen, ob hier die richtige Bank hängt. Seriennummern setzen unter Parameter → Seriennummern.“ with a link that opens the Parameters view. The help (installations, where boards and serials are explained) says that serials identify the bank, that self-built packs or missing factory values should get one, and suggests setting the battery serial (String 1) too: it is the only serial the CAN socket shows (master only, Modbus, first 22 characters, firmware ≥ 16.06.11).
+   - Parameters → Serial numbers: when String 2 is set and String 1 is empty, a placeholder or another value, the battery row offers „BMS-Nummer übernehmen“, which fills the battery field with String 2 (the user still clicks „Schreiben“; nothing is written automatically). A value longer than the field (30 characters) is cut with a note; one longer than 22 characters gets the note that the CAN socket shows only the first 22.
+
+## Implementation notes
+
+- Recorder and endpoint link (points 1, 4; review r2 of the implementation): on RS485-1/2 the recorder starts *held* at connect and the endpoint is linked to the installation only once the bank is decided (`link_connection` deferred; on a foreign connection never). The verdict per connection: a foreign pack holds; a known pack records; when every pack decided so far is unconfirmed (no known pack, e.g. an adapter moved to a bank never seen, or a new installation) it holds until „Ja, übernehmen“ (the sidebar line says „Aufzeichnung startet nach der Bestätigung“); packs without a serial record; a failed read decides nothing and does not undo an earlier decision, but once the UI's serial reads of the connection ended (`bank_reads_done(gen)`, also with no pack found or all reads failed) the connection records as before. Rows polled while held are dropped, not kept pending; rows recorded before a later foreign find stay. While held, the Recording view and the sidebar say „Aufzeichnung wartet auf die Prüfung der Anlage“. On the CAN socket nothing is held and the endpoint is linked at connect.
+- Parameter snapshots: a parameter read checks 0xA4 first (like the writes) and keeps its snapshot only for a known or unchecked board; the values still go to the UI. `board_written` after the app's own serial write is recorded also on a foreign connection, since its target was checked just before. A write's check keeps String 1 of the serial read for the later confirmation.
+- Failed checks name a reason code (`no-answer`, `connection`, `store`, `no-installation`), worded by the UI; a silent pack's text keeps the hint about a polling master.
+- CAN hint: the master's battery serial names another installation only when exactly one installation carries it (any address), that one is not I, and it carries it at address 0.
+- Connection state: only `connect` starts a generation; notes and queries about another one change and find nothing. A pending endpoint link that could not be stored is kept and tried again at the next decision.
+- The sidebar's waiting texts („Aufzeichnung wartet auf die Prüfung der Anlage“, „Die Aufzeichnung startet nach der Bestätigung“) come from the backend's decision (`historyStatus().held_reason`: pending / confirm / foreign), which also learns from writes' checks and parameter reads. The sidebar asks a failed serial read once more at the end of its loop before reporting the reads done.
+- The write result carries `unchecked` (`{value, unchecked}`); the UI's API wrapper hands on the value and shows „Anlage nicht geprüft (Platine ohne Seriennummer)“ in the Parameters view for that pack.
+- A restart reads 0xA4 before its 0x51 pre-check: a silent pack is now refused as „Anlage nicht geprüft: Pack antwortet nicht“ instead of „nicht erreichbar“.
 
 ## Out of scope
 

@@ -6,10 +6,11 @@
 //! other exchange; meanwhile `memory_busy` pauses polling, so the bus serves the read alone. Between two frames a
 //! disconnect, a reconnect or a flash can still take the connection; the read then stops with that error.
 
+use crate::bank::{check_target, Written};
 use crate::history::{now_ms, SnapshotKind};
 use crate::control::reserve_pack_wait;
 use crate::maint_store::Installation;
-use crate::{for_link, link_now, with_conn, with_link, AppState, Link, PortSlot};
+use crate::{for_link, for_link_checked, link_now, with_conn, with_link, AppState, Link, PortSlot};
 use openbms_proto::serial::Which;
 use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Parameters, Refusal, SerialValue, Status, Telemetry, Values};
 use openbms_transport::Bus;
@@ -115,14 +116,16 @@ pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTim
 
 /// Set the clock to `time` (the PC's local time, chosen by the UI) and read it back.
 #[tauri::command]
-pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<BmsTime, String> {
+pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<Written<BmsTime>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "clock")?;
-    with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
+    let checked = check_target(&state, &link, address)?;
+    let value = with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
         c.set_clock(address, time)?;
         c.clock(address)
-    })
+    })?;
+    Ok(Written { value, unchecked: checked.unchecked })
 }
 
 /// A write the BMS answered with RTN 06/04, as JSON for the UI (`refusal` in calibration.ts):
@@ -157,11 +160,13 @@ pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLi
 
 /// One calibration step (0xA0). The UI reads the live values again afterwards.
 #[tauri::command]
-pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<(), String> {
+pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<Written<()>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "calibration")?;
-    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)
+    let checked = check_target(&state, &link, address)?;
+    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)?;
+    Ok(Written { value: (), unchecked: checked.unchecked })
 }
 
 /// Result of a protocol set the BMS accepted: the device info read back, or why that read failed.
@@ -183,17 +188,23 @@ impl CanProtocolSet {
 /// Set the CAN inverter protocol (0xA6, 1..=6) and read the device info (0x51) back for its new name. Once the BMS
 /// has accepted, a failed read-back is still a success (the protocol is set), with `read_error`.
 #[tauri::command]
-pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<CanProtocolSet, String> {
+pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<Written<CanProtocolSet>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "can")?;
+    let checked = check_target(&state, &link, address)?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
-    Ok(CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.device_info(address))))
+    let value = CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.device_info(address)));
+    Ok(Written { value, unchecked: checked.unchecked })
 }
 
 /// Keep a parameter block for the place in the connection's installation (`before`: the link when the exchange
-/// began). Nothing with „Nur ansehen“; a failure must not fail the exchange with the pack.
+/// began). Nothing with „Nur ansehen“, nothing for a pack whose board is not confirmed (`bank.rs`); a failure must not
+/// fail the exchange with the pack.
 pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8]) {
+    if crate::bank::unconfirmed(state, before.gen, address) {
+        return;
+    }
     for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot(inst, address, kind, block, now_ms()));
 }
 
@@ -222,12 +233,19 @@ pub enum ParamWrite {
 /// the edit started from) on top of it, send, read back. `restore` sends `edited` as it is on top of the fresh read
 /// (the stored block after a refusal); the rebase would take the live switches for a change of the pack.
 #[tauri::command]
-pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
+pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool) -> Result<Written<ParamWrite>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
     let _guard = reserve_pack_wait(&state, address, "params")?;
-    let fresh = read_parameters(&state, &link, address)?;
+    // the right bank before anything else, also before the fresh 0x47 and its snapshot
+    let checked = check_target(&state, &link, address)?;
+    let value = write_checked(&state, &link, address, base, edited, restore)?;
+    Ok(Written { value, unchecked: checked.unchecked })
+}
+
+fn write_checked(state: &AppState, link: &Link, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
+    let fresh = read_parameters(state, link, address)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
         return Err(format!("the pack at address {address} answered with address {}", fresh.address));
@@ -239,12 +257,12 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
         }
     };
     let block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
-    if let Err(refusal) = with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.write_parameters(address, &block)))? {
-        snapshot(&state, &link, address, SnapshotKind::Refused, &block);
+    if let Err(refusal) = with_link(&state.conn, &state.flashing, &state.link, link, |c| refusable(c.write_parameters(address, &block)))? {
+        snapshot(state, link, address, SnapshotKind::Refused, &block);
         return Ok(ParamWrite::Refused { refusal, stored: fresh });
     }
-    snapshot(&state, &link, address, SnapshotKind::Written, &block);
-    Ok(match read_parameters(&state, &link, address) {
+    snapshot(state, link, address, SnapshotKind::Written, &block);
+    Ok(match read_parameters(state, link, address) {
         Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None },
         Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e) },
     })
@@ -290,17 +308,20 @@ pub struct SerialSet {
 /// installation of this endpoint that stored the old value gets the new one. Device and database are not updated
 /// atomically; a crash in between shows as a bank mismatch, which „Seriennummer übernehmen“ resolves.
 #[tauri::command]
-pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<SerialSet, String> {
+pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<Written<SerialSet>, String> {
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "serial")?;
+    // the right bank first (a silent pack is refused there); its String 2 read is the value before the write
+    let checked = check_target(&state, &link, address)?;
+    let unchecked = checked.unchecked;
     let master = which == Which::Bms && address == 0;
     // String 2 before the write: whether the board keeps its identity under the new serial depends on it. Unread, the
     // app's own write could not be told from a board swap: no write then.
     let old = if which == Which::Bms {
-        match with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.serial(address, which)) {
-            Ok(SerialValue::NoAnswer | SerialValue::Unavailable) | Err(_) => return Err(PRE_READ.into()),
-            Ok(v) => Some(v),
+        match checked.read {
+            SerialValue::NoAnswer | SerialValue::Unavailable => return Err(PRE_READ.into()),
+            v => Some(v),
         }
     } else {
         None
@@ -310,7 +331,8 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
     // the app's own String 2 write: the board keeps its identity under the new serial
     if let (Which::Bms, Ok(new)) = (which, &read) {
         let before = old.clone().unwrap_or(SerialValue::NoAnswer);
-        for_link(&state, &link, "board", |s, inst| s.board_written(inst, address, &before, new, now_ms()));
+        // the board was checked just before: recorded also while another pack of the connection is foreign
+        for_link_checked(&state, &link, "board", |s, inst| s.board_written(inst, address, &before, new, now_ms()));
     }
     let mut master_updated = vec![];
     let mut master_unchecked = master && (old.is_none() || read.is_err());
@@ -334,10 +356,11 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
             }
         }
     }
-    Ok(match read {
+    let value = match read {
         Ok(v) => SerialSet { value: Some(v), read_error: None, master_updated, master_unchecked },
         Err(e) => SerialSet { value: None, read_error: Some(e), master_updated, master_unchecked },
-    })
+    };
+    Ok(Written { value, unchecked })
 }
 
 /// Read the whole history of one pack; progress arrives as "bms-history-progress" events. One read at a time.
