@@ -375,6 +375,13 @@ fn row_of(line: &Line, last: &mut HashMap<u64, Req>, l: Lang) -> (&'static str, 
             ("TX", row)
         }
         Kind::Rx => ("RX", decode_rx(&line.bytes, last.get(&line.conn).copied(), l)),
+        Kind::Dropped => {
+            // read against the request before it: usually its late answer
+            let mut row = decode_rx(&line.bytes, last.get(&line.conn).copied(), l);
+            let why = l.pick("vor der Anfrage verworfen (kam zu spät)", "dropped before the request (came late)");
+            row.meaning = if row.meaning.is_empty() { why.into() } else { format!("{why}; {}", row.meaning) };
+            (l.pick("RX verworfen", "RX dropped"), row)
+        }
         Kind::Timeout { waited_ms, address } => {
             let mut row = empty(format!("{waited_ms} ms"), format!("{} {address:02X}", l.pick("keine Antwort von", "no answer from")));
             row.address = format!("{address:02X}");
@@ -440,9 +447,10 @@ mod tests {
             entry(1, Kind::Rx, &answer(3, 0x06, &[]), 450),
             entry(1, Kind::Tx, &openbms_proto::DeviceInfo::request(4).unwrap(), 1000),
             entry(1, Kind::Timeout { waited_ms: 1500, address: 4 }, &[], 2500),
+            entry(1, Kind::Dropped, &answer(4, 0, &[]), 2600),
         ], 1, Lang::De);
         assert_eq!(lines[0], "# OpenBMS Monitor 0.1.0 – Mitschnitt");
-        assert_eq!(lines[1], "# Start 2026-01-02 12:00:00.012 (Ortszeit, UTC+2), Ende 2026-01-02 12:00:02.500, 7 Einträge, 1 Timeout");
+        assert_eq!(lines[1], "# Start 2026-01-02 12:00:00.012 (Ortszeit, UTC+2), Ende 2026-01-02 12:00:02.600, 8 Einträge, 1 Timeout");
         assert_eq!(lines[2], "# Verbindungen: USB /dev/cu.test · RS485-1/2");
         assert_eq!(cols(&lines[3])[0], "Zeit");
         let tx = cols(&lines[4]);
@@ -454,6 +462,8 @@ mod tests {
         assert_eq!(cols(&lines[8])[7], "RTN 06: Wert abgelehnt; Antwort auf Restkapazität setzen (0x49)");
         let to = cols(&lines[10]);
         assert_eq!((to[3], to[4], to[6], to[7]), ("Timeout", "04", "1500 ms", "keine Antwort von 04"));
+        let dropped = cols(&lines[11]);
+        assert_eq!((dropped[3], dropped[4], dropped[7]), ("RX verworfen", "04", "vor der Anfrage verworfen (kam zu spät); Antwort auf Geräteinfo lesen (0x51), 0 Byte INFO"));
     }
 
     #[test]

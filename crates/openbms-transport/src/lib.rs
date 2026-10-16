@@ -93,23 +93,29 @@ pub enum Endpoint {
 }
 
 trait Port: Read + Write + Send {
-    fn clear_input(&mut self) -> std::io::Result<()>;
+    /// Drop what was received so far. Bytes read in user space to drop them (TCP) go to `dropped` when given.
+    fn clear_input(&mut self, dropped: Option<&mut Vec<u8>>) -> std::io::Result<()>;
 }
 
 impl Port for Box<dyn serialport::SerialPort> {
-    fn clear_input(&mut self) -> std::io::Result<()> {
+    // the driver drops them unseen
+    fn clear_input(&mut self, _dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
         self.clear(serialport::ClearBuffer::Input).map_err(std::io::Error::other)
     }
 }
 
 impl Port for TcpStream {
-    fn clear_input(&mut self) -> std::io::Result<()> {
+    fn clear_input(&mut self, mut dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
         self.set_nonblocking(true)?;
         let mut buf = [0u8; 256];
         loop {
             match self.read(&mut buf) {
                 Ok(0) => break,
-                Ok(_) => continue,
+                Ok(n) => {
+                    if let Some(d) = dropped.as_deref_mut() {
+                        d.extend_from_slice(&buf[..n]);
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) => {
                     self.set_nonblocking(false)?;
@@ -206,6 +212,17 @@ impl Connection {
         }
     }
 
+    /// Drop what was received before a request; on TCP a late answer read to drop it shows up in the capture.
+    fn drop_input(&mut self) -> std::io::Result<()> {
+        if !self.tap.sink.is_running() {
+            return self.port.clear_input(None);
+        }
+        let mut dropped = Vec::new();
+        let r = self.port.clear_input(Some(&mut dropped));
+        self.tap.dropped(&dropped);
+        r
+    }
+
     /// `write_all` that shows up in the capture.
     fn send(&mut self, data: &[u8]) -> Result<()> {
         self.tap.tx(data);
@@ -244,7 +261,7 @@ impl Connection {
     }
 
     fn ascii_exchange(&mut self, request: &[u8], address: u8) -> Result<Frame> {
-        self.port.clear_input()?;
+        self.drop_input()?;
         self.send(request)?;
         let deadline = Instant::now() + self.timeout;
         let mut pending = Vec::new();
@@ -421,7 +438,7 @@ impl Connection {
     /// Modbus FC03/04 read (master only, CAN socket bus).
     pub fn modbus_read(&mut self, function: u8, start: u16, count: u16) -> Result<Vec<u16>> {
         let request = modbus::read_request(function, start, count);
-        let raw = self.port.clear_input().map_err(Error::from).and_then(|_| self.send(&request)).and_then(|_| {
+        let raw = self.drop_input().map_err(Error::from).and_then(|_| self.send(&request)).and_then(|_| {
             let want = modbus::response_len(count);
             self.read_until(|b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0))
         });
@@ -560,7 +577,7 @@ pub fn watch_comeback<E>(sent: Instant, limit: Duration, mut answered: impl FnMu
 impl Connection {
     /// Drop everything received so far.
     pub fn clear_input(&mut self) -> Result<()> {
-        Ok(self.port.clear_input()?)
+        Ok(self.drop_input()?)
     }
 
     /// Write and wait until the bytes have left the computer (serial: transmitted; TCP: handed to the socket).
@@ -626,8 +643,12 @@ mod tests {
         }
     }
 
+    // behaves like a TCP gateway: what is dropped was read
     impl Port for Scripted {
-        fn clear_input(&mut self) -> std::io::Result<()> {
+        fn clear_input(&mut self, dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            if let Some(d) = dropped {
+                d.extend_from_slice(&self.out);
+            }
             self.out.clear();
             Ok(())
         }
@@ -881,6 +902,29 @@ mod tests {
         assert_eq!(es.last().unwrap().kind, capture::Kind::Timeout { waited_ms: 50, address: 3 });
         assert!(es.iter().all(|e| &*e.label == "USB /dev/test · RS485-1/2"));
         assert_eq!(sink.status().timeouts, 1);
+    }
+
+    #[test]
+    fn a_late_answer_dropped_before_the_next_request_is_captured_as_dropped() {
+        let sink: &'static capture::Capture = Box::leak(Box::new(capture::Capture::new()));
+        sink.start();
+        let first = DeviceInfo::request(1).unwrap();
+        let late = answer(1, 0, &[]);
+        // the answer to the first request is still in the input when the next request goes out
+        let mut c = scripted_into(vec![(first.clone(), late.clone())], sink);
+        c.write_raw(&first).unwrap();
+        let before = sink.status().entries;
+        assert!(matches!(c.device_info(2), Err(Error::Timeout(_))));
+        let es = sink.snapshot().entries;
+        let kinds: Vec<capture::Kind> = es[before..].iter().map(|e| e.kind.clone()).collect();
+        assert_eq!(kinds, vec![capture::Kind::Dropped, capture::Kind::Tx, capture::Kind::Timeout { waited_ms: 50, address: 2 }]);
+        assert_eq!(es[before].bytes, late);
+        // not recorded while the capture is off
+        sink.stop();
+        c.write_raw(&first).unwrap();
+        let n = sink.status().entries;
+        let _ = c.device_info(2);
+        assert_eq!(sink.status().entries, n);
     }
 
     #[test]
