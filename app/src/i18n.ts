@@ -429,6 +429,20 @@ const resources = {
         switchGroup: { 0: "Funktionsschalter {{g}}: Fehler", 1: "Funktionsschalter {{g}}: Spannungs-Meldungen", 2: "Funktionsschalter {{g}}: Zelltemperatur-Meldungen", 3: "Funktionsschalter {{g}}: Umgebung, MOSFET, Heizung",
           4: "Funktionsschalter {{g}}: Strom-Meldungen", 5: "Funktionsschalter {{g}}: Sonstige Meldungen", 6: "Funktionsschalter {{g}}: Balancing und Laden", 7: "Funktionsschalter {{g}}: System" },
       },
+      notify: {
+        title: "Mitteilungen", enable: "Mitteilungen dieser Anlage", enableHint: "Meldet Schutz und Fehler, stumme Packs, hohe Zellspreizung in Ruhe und eine verlorene Verbindung, solange die App läuft. Das System fragt beim ersten Mal nach der Erlaubnis.",
+        spread: "Zellspreizung in Ruhe über", lost: "Verbindung verloren nach", mv: "mV", min: "min",
+        canOff: "Für diese Verbindung aus: Bank nicht geprüft (CAN-Buchse).", canOffHint: "An der CAN-Buchse prüft die App die Bank über die Batterie-Seriennummer des Masters; sie muss der gespeicherten dieser Anlage entsprechen.",
+        needInstallation: "Nur mit einer gewählten Anlage („Nur ansehen“ meldet nichts).",
+        test: "Test-Mitteilung senden", testSent: "Gesendet. Erscheint nichts, die Mitteilungen der App in den Systemeinstellungen erlauben.", testFailed: "Nicht gesendet: {{err}}",
+        msg: {
+          title: "OpenBMS Monitor: {{name}}",
+          alarm_one: "Pack {{packs}}: {{alarm}}", alarm_other: "{{alarm}} an Pack {{packs}}",
+          silent_one: "Pack {{packs}} antwortet nicht mehr", silent_other: "Packs {{packs}} antworten nicht mehr",
+          spread_one: "Pack {{packs}}: Zellspreizung in Ruhe {{mv}} mV (Schwelle {{limit}} mV)", spread_other: "Zellspreizung in Ruhe über {{limit}} mV an Pack {{packs}}",
+          lost: "Seit {{min}} min keine Daten: Verbindung verloren", test: "Test-Mitteilung: Mitteilungen funktionieren.",
+        },
+      },
       rec: {
         title: "Aufzeichnung", off: "aus", onShort: "läuft", waiting: "an", held: "Aufzeichnung wartet auf die Prüfung der Anlage", heldShort: "wartet auf die Prüfung der Anlage",
         intro: "Speichert die abgefragten Werte in der Verlaufs-Datenbank der App, solange sie verbunden ist. Ansehen und exportieren unter Verlauf.",
@@ -1080,6 +1094,20 @@ const resources = {
           tempBoard: "Ambient and MOSFET", heating: "Heating", current: "Current", capacity: "Capacity and SOC", balancing: "Balancing", activation: "Charge activation and standby", pack: "Pack" },
         switchGroup: { 0: "Function switches {{g}}: faults", 1: "Function switches {{g}}: voltage messages", 2: "Function switches {{g}}: cell temperature messages", 3: "Function switches {{g}}: ambient, MOSFET, heating",
           4: "Function switches {{g}}: current messages", 5: "Function switches {{g}}: other messages", 6: "Function switches {{g}}: balancing and charging", 7: "Function switches {{g}}: system" },
+      },
+      notify: {
+        title: "Notifications", enable: "Notifications for this installation", enableHint: "Reports protection and faults, silent packs, a high cell spread at rest and a lost connection while the app runs. The system asks for permission the first time.",
+        spread: "Cell spread at rest above", lost: "Connection lost after", mv: "mV", min: "min",
+        canOff: "Off for this connection: bank not checked (CAN socket).", canOffHint: "On the CAN socket the app checks the bank by the master's battery serial; it must match the one stored for this installation.",
+        needInstallation: "Only with an installation chosen (“View only” reports nothing).",
+        test: "Send test notification", testSent: "Sent. If nothing appears, allow the app's notifications in the system settings.", testFailed: "Not sent: {{err}}",
+        msg: {
+          title: "OpenBMS Monitor: {{name}}",
+          alarm_one: "Pack {{packs}}: {{alarm}}", alarm_other: "{{alarm}} on packs {{packs}}",
+          silent_one: "Pack {{packs}} stopped answering", silent_other: "Packs {{packs}} stopped answering",
+          spread_one: "Pack {{packs}}: cell spread at rest {{mv}} mV (threshold {{limit}} mV)", spread_other: "Cell spread at rest above {{limit}} mV on packs {{packs}}",
+          lost: "No data for {{min}} min: connection lost", test: "Test notification: notifications work.",
+        },
       },
       rec: {
         title: "Recording", off: "off", onShort: "recording", waiting: "on", held: "Recording waits for the installation check", heldShort: "waits for the installation check",

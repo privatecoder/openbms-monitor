@@ -1,7 +1,7 @@
 ---
 title: Recording
 short: Stores the polled values in the app's history database while it is connected. Off by default.
-related: topic.history, topic.connection
+related: topic.history, topic.connection, topic.notifications
 ---
 - **Record while connected:** once switched on, the setting survives restarts. The app then records with every connection without you starting anything.
 - **What:** all packs or a selection, plus the master's system values on the CAN socket. Messages are always stored with start and end.

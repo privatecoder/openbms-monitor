@@ -12,12 +12,13 @@ import { Diagnosis } from "./views/Diagnosis";
 import { ParametersView, showStoredParameters } from "./views/Parameters";
 import { History } from "./views/History";
 import { Installations } from "./views/Installations";
-import { HelpProvider } from "./help";
+import { HelpProvider, helpTitle } from "./help";
 import { useLiveData } from "./store";
 import { useMaint } from "./maintStore";
 import { api, isDemo, type Bus } from "./api";
 import { defaultName, type Monitor } from "./maint";
 import i18n from "./i18n";
+import { notifyTexts } from "./notifications";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
@@ -30,6 +31,10 @@ type BoardNotice = { address: number; serial: string; previous: string };
 export default function App() {
   const { t } = useTranslation();
   const live = useLiveData();
+  // the backend words its notifications in the UI's language
+  useEffect(() => {
+    if (!isDemo) void api.notifyTexts(notifyTexts(t, (id) => helpTitle(id, i18n.language))).catch(() => {});
+  }, [i18n.language]); // eslint-disable-line react-hooks/exhaustive-deps
   const maint = useMaint();
   // the installation drives everything stored (null: „Nur ansehen“); it cannot change while connected
   const scope = maint.installation;

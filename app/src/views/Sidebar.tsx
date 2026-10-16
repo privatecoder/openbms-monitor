@@ -239,7 +239,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     } catch (e) {
       // a cancelled wait never opened the port: nothing to close, no error
       if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
-      if (retry) await api.disconnect().catch(() => {});
+      if (retry) await api.disconnect(true).catch(() => {});
       const n = noAnswer(e);
       if (n && !retry) {
         // nothing answered: the port is closed. A USB port is asked once more at the other baud rate
@@ -284,7 +284,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     setMsg(text);
     setLastTry(Date.now());
     onDisconnected(true);
-    api.disconnect().catch(() => {});
+    api.disconnect(true).catch(() => {});
   };
 
   // The clock starts whenever the app counts as connected, also if this component was mounted afterwards

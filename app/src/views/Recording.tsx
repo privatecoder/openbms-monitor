@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChartLine, FolderOpen } from "lucide-react";
-import { api, isDemo, type HistorySettings, type HistoryStatus } from "../api";
+import { api, isDemo, type HistorySettings, type HistoryStatus, type NotifyStatus } from "../api";
 import { Sheet, SheetContent } from "../components/ui/sheet";
 import { Button } from "../components/ui/button";
 import { PackPicker, Segmented, Switch, packSections } from "../components/PackPicker";
@@ -9,6 +9,8 @@ import { useGroups } from "../groups";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { settingsSync } from "../history/settingsSync";
+import { useSettings } from "../installData";
+import { LOST_RANGE, SPREAD_RANGE, notifySettings, type NotifySettings } from "../notifications";
 
 const INTERVALS = [0, 60, 300] as const;
 const FULL_DAYS = [7, 30, 90, 365] as const;
@@ -170,8 +172,69 @@ function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable
             </div>
             <p className="text-sm text-muted">{t("rec.keepHint", { year: size(minutesPerYear) })}</p>
           </section>
+
+          <NotifySection scope={scope} />
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+const input = "h-8 w-20 rounded-md border border-line bg-surface px-2 text-right text-sm tabular-nums text-ink outline-none focus:border-charge";
+
+/** Notifications of the chosen installation (stored with its settings; the backend decides from the poll answers). */
+function NotifySection({ scope }: { scope: string | null }) {
+  const { t } = useTranslation();
+  const { settings, loaded, save } = useSettings(scope);
+  const n = notifySettings(settings.notifications);
+  const [status, setStatus] = useState<NotifyStatus | null>(null);
+  const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const tick = () => api.notifyStatus().then((s) => alive && setStatus(s), () => {});
+    tick();
+    const id = window.setInterval(tick, 3000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+  const usable = !!scope && loaded;
+  const set = (next: Partial<NotifySettings>) => save("notifications", { ...n, ...next });
+  const number = (value: number, range: readonly [number, number], key: "spread_mv" | "lost_minutes", label: string, unit: string) => (
+    <label className="flex items-center justify-between gap-2 text-sm">
+      <span className="text-muted">{label}</span>
+      <span className="flex items-center gap-1.5">
+        {/* applied when left, so typing a number does not store every keystroke */}
+        <input key={`${scope}-${value}`} type="number" min={range[0]} max={range[1]} defaultValue={value} disabled={!usable || !n.enabled} aria-label={label} className={input}
+          onBlur={(e) => { const v = notifySettings({ [key]: Number(e.target.value) })[key]; e.target.value = String(v); if (v !== value) set({ [key]: v }); }} />
+        <span className="w-7 text-muted">{unit}</span>
+      </span>
+    </label>
+  );
+  const test = () => {
+    setNote(null);
+    api.notifyTest(scope).then(() => setNote({ text: t("notify.testSent"), failed: false }), (e) => setNote({ text: t("notify.testFailed", { err: String(e) }), failed: true }));
+  };
+  return (
+    <section className="space-y-3">
+      <h3 className="flex items-center gap-1.5 font-medium">{t("notify.title")}<InfoIcon id="topic.notifications" /></h3>
+      <label className={cn("flex items-start gap-3 rounded-md border border-line p-3 text-sm", !usable && "opacity-50")}>
+        <Switch checked={n.enabled} disabled={!usable} onChange={(v) => set({ enabled: v })} />
+        <span>
+          <span className="block font-medium">{t("notify.enable")}</span>
+          <span className="text-muted">{t("notify.enableHint")}</span>
+        </span>
+      </label>
+      {number(n.spread_mv, SPREAD_RANGE, "spread_mv", t("notify.spread"), t("notify.mv"))}
+      {number(n.lost_minutes, LOST_RANGE, "lost_minutes", t("notify.lost"), t("notify.min"))}
+      {!scope && <p className="text-sm text-muted">{t("notify.needInstallation")}</p>}
+      {n.enabled && scope && status?.installation === scope && status.can_unchecked && (
+        <p className="text-sm text-discharge" title={t("notify.canOffHint")}>{t("notify.canOff")}</p>
+      )}
+      {!isDemo && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={test}>{t("notify.test")}</Button>
+          {note && <span className={cn("text-sm", note.failed ? "text-alarm" : "text-muted")}>{note.text}</span>}
+        </div>
+      )}
+    </section>
   );
 }
