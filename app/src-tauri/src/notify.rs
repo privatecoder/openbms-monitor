@@ -2,7 +2,7 @@
 //!
 //! The poll thread hands every answer of its connection (link generation) to `Notifier::answer` and calls `flush` after
 //! each round; a ticker calls `tick` for the lost connection. The UI's merged live state (which keeps old values after
-//! a failed poll) is never used. An answer counts only for a confirmed pack (`bank::notify_allowed`: on RS485-1/2 a
+//! a failed poll) is never used. An answer counts only for a confirmed pack (`bank::notify_check`: on RS485-1/2 a
 //! board known here, on the CAN socket a master whose battery serial matches the installation's); an unconfirmed one
 //! forgets what was known about the pack and only shows the link alive.
 //!
@@ -110,6 +110,20 @@ pub struct Note {
     pub minutes: Option<u32>,
 }
 
+/// What the bank check says about a pack's answers on this connection (`bank::notify_check`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    /// a board known here (RS485-1/2), or the installation's master on the CAN socket: the answer counts
+    Confirmed,
+    /// not decided yet (serial not read, unchecked, another pack foreign, CAN master not matched): it does not count,
+    /// what was notified about the pack is kept
+    Waiting,
+    /// new, moved or foreign board at this place: what was known about the pack is forgotten
+    Unconfirmed,
+}
+
+/// A pack's state. `alarms` and `spread_fired` (what was notified and not cleared since) live for the installation, so
+/// a reconnect does not repeat a lasting alarm; the rest for one link generation.
 #[derive(Default, Debug)]
 struct Pack {
     answered: bool,
@@ -121,8 +135,8 @@ struct Pack {
     spread_fired: bool,
 }
 
-/// The state of one connection's notifications; per-pack state lives for one link generation, the rate limit and the
-/// lost watch for the installation (a reconnect after a lost link keeps them).
+/// The state of one connection's notifications; the rate limit, the lost watch and what was notified per pack live for
+/// the installation (a reconnect keeps them), the rest of a pack's state for one link generation.
 #[derive(Default, Debug)]
 pub struct Notifier {
     gen: u64,
@@ -134,6 +148,8 @@ pub struct Notifier {
     sent: HashMap<(Trigger, Option<u8>), i64>,
     /// the connection is wanted (not closed by the user or a maintenance step)
     armed: bool,
+    /// between `begin` and `end`: a late answer of a poll exchange still running after `end` counts no more
+    open: bool,
     /// the last answer once a confirmed one came, for the lost connection
     last_data: Option<i64>,
     lost_sent: bool,
@@ -146,20 +162,24 @@ impl Notifier {
             self.sent.clear();
             self.last_data = None;
             self.lost_sent = false;
+            self.packs.clear();
         }
         self.armed = installation.is_some();
+        self.open = true;
         self.gen = gen;
         self.installation = installation;
         self.name = name;
         self.settings = settings;
-        self.packs.clear();
+        for p in self.packs.values_mut() {
+            *p = Pack { alarms: std::mem::take(&mut p.alarms), spread_fired: p.spread_fired, ..Default::default() };
+        }
         self.pending.clear();
     }
 
     /// The connection ended. `lost`: the link died and the UI reconnects, the lost watch goes on; else (closed by the
     /// user, taken by a maintenance step) nothing is watched any more.
     pub fn end(&mut self, lost: bool) {
-        self.packs.clear();
+        self.open = false;
         self.pending.clear();
         if !lost {
             self.armed = false;
@@ -179,13 +199,15 @@ impl Notifier {
         }
     }
 
-    /// One poll of `address` on connection `gen`; `confirmed`: its bank verdict allows notifications.
-    pub fn answer(&mut self, gen: u64, address: u8, now: i64, confirmed: bool, reading: Option<&Reading>) {
-        if gen != self.gen || self.installation.is_none() {
+    /// One poll of `address` on connection `gen`; `check`: what its bank verdict says.
+    pub fn answer(&mut self, gen: u64, address: u8, now: i64, check: Check, reading: Option<&Reading>) {
+        if gen != self.gen || !self.open || self.installation.is_none() {
             return;
         }
-        if !confirmed {
-            self.packs.remove(&address);
+        if check != Check::Confirmed {
+            if check == Check::Unconfirmed {
+                self.packs.remove(&address);
+            }
             // the link is alive (a pack waiting for its check, the CAN master being read again): no lost connection
             if reading.is_some() && self.last_data.is_some() {
                 self.last_data = Some(now);
@@ -360,6 +382,9 @@ mod tests {
     use super::*;
 
     const MIN: i64 = 60_000;
+    const C: Check = Check::Confirmed;
+    const U: Check = Check::Unconfirmed;
+    const W: Check = Check::Waiting;
     const OV: &str = "alarm.ev2.b1";
 
     fn on() -> Settings {
@@ -391,17 +416,17 @@ mod tests {
     #[test]
     fn an_alarm_fires_once_per_start_until_it_cleared() {
         let mut n = watching(1);
-        n.answer(1, 3, 0, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(0)), vec![(ov(), vec![3])]);
         // still active: nothing more
-        n.answer(1, 3, MIN, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, MIN, C, Some(&alarm(&[OV])));
         assert!(n.flush(MIN).is_empty());
         // a status not read changes nothing
-        n.answer(1, 3, 2 * MIN, true, Some(&Reading { alarms: None, ..idle(10.0) }));
+        n.answer(1, 3, 2 * MIN, C, Some(&Reading { alarms: None, ..idle(10.0) }));
         assert!(n.flush(2 * MIN).is_empty());
         // cleared and back after the rate limit: fires again
-        n.answer(1, 3, 3 * MIN, true, Some(&alarm(&[])));
-        n.answer(1, 3, 11 * MIN, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, 3 * MIN, C, Some(&alarm(&[])));
+        n.answer(1, 3, 11 * MIN, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(11 * MIN)), vec![(ov(), vec![3])]);
     }
 
@@ -418,21 +443,21 @@ mod tests {
         let mut n = watching(1);
         // never answered on this connection: no notice
         for t in 0..5 {
-            n.answer(1, 5, t, true, None);
+            n.answer(1, 5, t, C, None);
         }
         assert!(n.flush(5).is_empty());
-        n.answer(1, 5, 10, true, Some(&idle(10.0)));
-        n.answer(1, 5, 20, true, None);
-        n.answer(1, 5, 30, true, None);
+        n.answer(1, 5, 10, C, Some(&idle(10.0)));
+        n.answer(1, 5, 20, C, None);
+        n.answer(1, 5, 30, C, None);
         assert!(n.flush(30).is_empty());
-        n.answer(1, 5, 40, true, None);
+        n.answer(1, 5, 40, C, None);
         assert_eq!(triggers(&n.flush(40)), vec![(Trigger::Silent, vec![5])]);
-        n.answer(1, 5, 50, true, None);
+        n.answer(1, 5, 50, C, None);
         assert!(n.flush(50).is_empty(), "once");
         // answered again, silent again after the rate limit: fires again
-        n.answer(1, 5, 11 * MIN, true, Some(&idle(10.0)));
+        n.answer(1, 5, 11 * MIN, C, Some(&idle(10.0)));
         for t in 1..=3 {
-            n.answer(1, 5, 11 * MIN + t, true, None);
+            n.answer(1, 5, 11 * MIN + t, C, None);
         }
         assert_eq!(triggers(&n.flush(11 * MIN + 3)), vec![(Trigger::Silent, vec![5])]);
     }
@@ -441,7 +466,7 @@ mod tests {
     fn the_rest_spread_fires_after_five_minutes_and_rearms_below_the_hysteresis() {
         let mut n = watching(1);
         let poll = |n: &mut Notifier, t: i64, r: Reading| {
-            n.answer(1, 2, t, true, Some(&r));
+            n.answer(1, 2, t, C, Some(&r));
             n.flush(t)
         };
         // the first rest sample after load does not count (the one before was not at rest)
@@ -466,13 +491,13 @@ mod tests {
     #[test]
     fn load_restarts_the_five_minutes() {
         let mut n = watching(1);
-        n.answer(1, 2, 0, true, Some(&idle(60.0)));
-        n.answer(1, 2, MIN, true, Some(&idle(60.0)));
-        n.answer(1, 2, 4 * MIN, true, Some(&Reading { current: Some(25.0), ..idle(90.0) }));
-        n.answer(1, 2, 5 * MIN, true, Some(&idle(60.0)));
-        n.answer(1, 2, 6 * MIN, true, Some(&idle(60.0)));
+        n.answer(1, 2, 0, C, Some(&idle(60.0)));
+        n.answer(1, 2, MIN, C, Some(&idle(60.0)));
+        n.answer(1, 2, 4 * MIN, C, Some(&Reading { current: Some(25.0), ..idle(90.0) }));
+        n.answer(1, 2, 5 * MIN, C, Some(&idle(60.0)));
+        n.answer(1, 2, 6 * MIN, C, Some(&idle(60.0)));
         assert!(n.flush(6 * MIN).is_empty());
-        n.answer(1, 2, 11 * MIN, true, Some(&idle(60.0)));
+        n.answer(1, 2, 11 * MIN, C, Some(&idle(60.0)));
         assert_eq!(triggers(&n.flush(11 * MIN)), vec![(Trigger::Spread, vec![2])]);
     }
 
@@ -480,7 +505,7 @@ mod tests {
     fn the_lost_connection_fires_after_the_set_minutes_once_until_data_comes() {
         let mut n = watching(1);
         assert_eq!(n.tick(60 * MIN), None, "no data yet: nothing was lost");
-        n.answer(1, 0, 0, true, Some(&idle(10.0)));
+        n.answer(1, 0, 0, C, Some(&idle(10.0)));
         assert_eq!(n.tick(4 * MIN), None);
         let note = n.tick(5 * MIN).unwrap();
         assert_eq!((note.trigger, note.minutes), (Trigger::Lost, Some(5)));
@@ -488,10 +513,10 @@ mod tests {
         // the UI reconnects (a new generation of the same installation): the watch goes on
         n.end(true);
         n.begin(2, Some("inst-a".into()), "A".into(), on());
-        n.answer(2, 0, 20 * MIN, true, Some(&idle(10.0)));
+        n.answer(2, 0, 20 * MIN, C, Some(&idle(10.0)));
         assert!(n.tick(25 * MIN).is_some(), "data came, lost again");
         // closed by the user: nothing is watched
-        n.answer(2, 0, 30 * MIN, true, Some(&idle(10.0)));
+        n.answer(2, 0, 30 * MIN, C, Some(&idle(10.0)));
         n.end(false);
         assert_eq!(n.tick(90 * MIN), None);
     }
@@ -499,7 +524,7 @@ mod tests {
     #[test]
     fn a_history_read_is_no_lost_connection() {
         let mut n = watching(1);
-        n.answer(1, 0, 0, true, Some(&idle(10.0)));
+        n.answer(1, 0, 0, C, Some(&idle(10.0)));
         n.touch(4 * MIN);
         assert_eq!(n.tick(6 * MIN), None);
         assert!(n.tick(9 * MIN).is_some());
@@ -508,23 +533,23 @@ mod tests {
     #[test]
     fn at_most_one_notice_per_pack_and_trigger_in_ten_minutes() {
         let mut n = watching(1);
-        n.answer(1, 3, 0, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
         assert_eq!(n.flush(0).len(), 1);
-        n.answer(1, 3, MIN, true, Some(&alarm(&[])));
-        n.answer(1, 3, 2 * MIN, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, MIN, C, Some(&alarm(&[])));
+        n.answer(1, 3, 2 * MIN, C, Some(&alarm(&[OV])));
         assert!(n.flush(2 * MIN).is_empty(), "the same pack and alarm within ten minutes");
         // another alarm of the same pack, and the same alarm of another pack, are their own
-        n.answer(1, 3, 3 * MIN, true, Some(&alarm(&[OV, "alarm.ev2.b5"])));
-        n.answer(1, 4, 3 * MIN, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, 3 * MIN, C, Some(&alarm(&[OV, "alarm.ev2.b5"])));
+        n.answer(1, 4, 3 * MIN, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(3 * MIN)), vec![(ov(), vec![4]), (Trigger::Alarm { id: "alarm.ev2.b5".into() }, vec![3])]);
     }
 
     #[test]
     fn several_packs_in_one_round_are_one_notice() {
         let mut n = watching(1);
-        n.answer(1, 4, 0, true, Some(&alarm(&[OV])));
-        n.answer(1, 3, 0, true, Some(&alarm(&[OV])));
-        n.answer(1, 7, 0, true, Some(&alarm(&[])));
+        n.answer(1, 4, 0, C, Some(&alarm(&[OV])));
+        n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
+        n.answer(1, 7, 0, C, Some(&alarm(&[])));
         let notes = n.flush(0);
         assert_eq!(triggers(&notes), vec![(ov(), vec![3, 4])]);
         let texts = Texts { alarms: HashMap::from([(OV.to_string(), "Cell overvoltage protection".to_string())]), ..Default::default() };
@@ -534,20 +559,20 @@ mod tests {
     #[test]
     fn nothing_fires_for_an_unconfirmed_or_unchecked_pack() {
         let mut n = watching(1);
-        n.answer(1, 3, 0, false, Some(&alarm(&[OV])));
-        n.answer(1, 3, 0, false, Some(&idle(10.0)));
+        n.answer(1, 3, 0, U, Some(&alarm(&[OV])));
+        n.answer(1, 3, 0, U, Some(&idle(10.0)));
         for t in 1..5 {
-            n.answer(1, 3, t, false, None);
+            n.answer(1, 3, t, U, None);
         }
         assert!(n.flush(5).is_empty());
         assert_eq!(n.tick(60 * MIN), None, "no confirmed data: no lost connection either");
         // once watched, an unconfirmed answer still shows the link alive
-        n.answer(1, 0, 61 * MIN, true, Some(&idle(10.0)));
-        n.answer(1, 3, 65 * MIN, false, Some(&idle(10.0)));
+        n.answer(1, 0, 61 * MIN, C, Some(&idle(10.0)));
+        n.answer(1, 3, 65 * MIN, U, Some(&idle(10.0)));
         assert_eq!(n.tick(69 * MIN), None);
         assert!(n.tick(70 * MIN).is_some());
         // confirmed later: a fresh start for the pack
-        n.answer(1, 3, 71 * MIN, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, 71 * MIN, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(71 * MIN)), vec![(ov(), vec![3])]);
     }
 
@@ -568,34 +593,76 @@ mod tests {
     #[test]
     fn a_new_generation_starts_clean_and_old_answers_are_ignored() {
         let mut n = watching(1);
-        n.answer(1, 3, 0, true, Some(&alarm(&[OV])));
-        n.answer(1, 5, 0, true, Some(&idle(10.0)));
-        n.answer(1, 5, 1, true, None);
-        n.answer(1, 5, 2, true, None);
+        n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
+        n.answer(1, 5, 0, C, Some(&idle(10.0)));
+        n.answer(1, 5, 1, C, None);
+        n.answer(1, 5, 2, C, None);
         n.begin(2, Some("inst-a".into()), "A".into(), on());
         assert!(n.flush(2).is_empty(), "pending of the old connection dropped");
         // an answer of the old connection changes nothing; the silent count starts again
-        n.answer(1, 5, 3, true, None);
-        n.answer(2, 5, 4, true, None);
+        n.answer(1, 5, 3, C, None);
+        n.answer(2, 5, 4, C, None);
         assert!(n.flush(4).is_empty(), "pack 5 has not answered on this connection");
         // another installation: the rate limit starts again as well
         n.begin(3, Some("inst-b".into()), "B".into(), on());
-        n.answer(3, 3, 5, true, Some(&alarm(&[OV])));
+        n.answer(3, 3, 5, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(5)), vec![(ov(), vec![3])]);
         // „Nur ansehen“: nothing
         n.begin(4, None, String::new(), on());
-        n.answer(4, 3, 6, true, Some(&alarm(&["alarm.ev2.b5"])));
+        n.answer(4, 3, 6, C, Some(&alarm(&["alarm.ev2.b5"])));
         assert!(n.flush(6).is_empty());
+    }
+
+    #[test]
+    fn a_reconnect_does_not_repeat_a_lasting_alarm_or_spread() {
+        let mut n = watching(1);
+        n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
+        n.answer(1, 2, 0, C, Some(&idle(60.0)));
+        n.answer(1, 2, MIN, C, Some(&idle(60.0)));
+        n.answer(1, 2, 6 * MIN, C, Some(&idle(60.0)));
+        assert_eq!(triggers(&n.flush(6 * MIN)), vec![(ov(), vec![3]), (Trigger::Spread, vec![2])]);
+        // the link died and came back long after the rate limit: the packs wait for their check first, then count
+        n.end(true);
+        n.begin(2, Some("inst-a".into()), "A".into(), on());
+        n.answer(2, 3, 20 * MIN, W, Some(&alarm(&[OV])));
+        n.answer(2, 3, 21 * MIN, C, Some(&alarm(&[OV])));
+        for t in 20..=30 {
+            n.answer(2, 2, t * MIN, C, Some(&idle(60.0)));
+        }
+        assert!(n.flush(30 * MIN).is_empty(), "the same alarm and spread as before the reconnect");
+        // cleared and active again: a notice
+        n.answer(2, 3, 31 * MIN, C, Some(&alarm(&[])));
+        n.answer(2, 3, 32 * MIN, C, Some(&alarm(&[OV])));
+        assert_eq!(triggers(&n.flush(32 * MIN)), vec![(ov(), vec![3])]);
+        // another board at the place forgets what was notified for it
+        n.answer(2, 3, 50 * MIN, U, Some(&alarm(&[OV])));
+        n.answer(2, 3, 51 * MIN, C, Some(&alarm(&[OV])));
+        assert_eq!(triggers(&n.flush(51 * MIN)), vec![(ov(), vec![3])]);
+    }
+
+    #[test]
+    fn a_late_answer_after_the_end_is_ignored() {
+        let mut n = watching(1);
+        n.answer(1, 0, 0, C, Some(&idle(10.0)));
+        n.end(true);
+        // the poll exchange still running when the link was dropped
+        n.answer(1, 0, 4 * MIN, C, Some(&idle(10.0)));
+        assert!(n.tick(5 * MIN).is_some(), "lost counted from the last answer before the end");
+        n.end(false);
+        n.answer(1, 0, 6 * MIN, C, Some(&idle(10.0)));
+        // connected again much later: nothing lost before this connection answered
+        n.begin(2, Some("inst-a".into()), "A".into(), on());
+        assert_eq!(n.tick(60 * MIN), None);
     }
 
     #[test]
     fn switched_off_nothing_is_sent_and_nothing_later() {
         let mut n = Notifier::default();
         n.begin(1, Some("inst-a".into()), "A".into(), Settings::default());
-        n.answer(1, 3, 0, true, Some(&alarm(&[OV])));
+        n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
         assert!(n.flush(0).is_empty());
         n.set_settings("inst-other", on());
-        n.answer(1, 0, 0, true, Some(&idle(10.0)));
+        n.answer(1, 0, 0, C, Some(&idle(10.0)));
         assert_eq!(n.tick(30 * MIN), None);
         n.set_settings("inst-a", on());
         assert!(n.flush(MIN).is_empty(), "the alarm that started while off is not sent later");

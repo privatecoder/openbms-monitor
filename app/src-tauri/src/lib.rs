@@ -1,4 +1,4 @@
-use openbms_proto::{DeviceInfo, MaintStatus, Parameters, SerialNumbers, Status, SystemValues, Telemetry};
+use openbms_proto::{DeviceInfo, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use openbms_transport::{list_serial_ports, Bus, Connection, Endpoint};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -458,10 +458,8 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
     if bus == Bus::CanSocketBus {
         // no String 2 here: the master's battery serial of another installation is a hint only, nothing is held
         let other = if address == 0 { maint::with_store(&state, |s| bank::can_hint(s, &inst, &serials.battery)).ok().flatten() } else { None };
-        // notifications run on this connection only with the installation's own master
         if address == 0 {
-            let stored = maint::with_store(&state, |s| Ok(s.current_board(&inst, 0)?.and_then(|b| b.battery_serial))).ok().flatten();
-            bank::can_master_read(&state, before.gen, notify::master_matches(stored.as_deref(), &serials.battery));
+            can_master_check(&state, before.gen, &inst, &serials.battery);
         }
         let identity = other.map(|o| bank::IdentityView {
             kind: "unconfirmed", address, serial: None, why: Some(bank::Why::Foreign), installation: Some(o), hint: true,
@@ -512,6 +510,16 @@ fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters,
     Ok(p)
 }
 
+/// Notifications on the CAN socket run only with the installation's own master: compare its battery serial with the one
+/// stored for address 0. No answer decides nothing (the poll thread asks again).
+fn can_master_check(state: &AppState, gen: u64, inst: &str, battery: &SerialValue) {
+    if *battery == SerialValue::NoAnswer {
+        return;
+    }
+    let stored = maint::with_store(state, |s| Ok(s.current_board(inst, 0)?.and_then(|b| b.battery_serial))).ok().flatten();
+    bank::can_master_read(state, gen, notify::master_matches(stored.as_deref(), battery));
+}
+
 /// Poll the given packs in a loop and emit "pack" (and on the CAN socket bus "system") events.
 #[tauri::command]
 fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, interval_ms: u64) -> Result<(), String> {
@@ -536,6 +544,9 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     let current = move || links.lock().map(|l| l.gen == gen).unwrap_or(false);
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
+        // CAN socket: the master's battery serial until it answers (the UI reads it once after connecting), every
+        // 1, 2, 4 … 32 rounds
+        let (mut round, mut master_at, mut master_every) = (0u32, 0u32, 1u32);
         while running.load(Ordering::SeqCst) {
             // a BMS history read has the bus to itself
             if paused.load(Ordering::SeqCst) {
@@ -553,6 +564,21 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     rec.system(history::now_ms(), &v);
                 }
                 let _ = app.emit("system", update);
+                round += 1;
+                let inst = link_now(&state).installation.filter(|_| round >= master_at && control::pack_action(&ops, 0).is_none() && bank::can_master_unread(&state, gen));
+                if let Some(inst) = inst {
+                    let r = with_conn(&conn, &flashing, |c| c.serial_numbers(bus, 0));
+                    if !current() {
+                        break;
+                    }
+                    match r {
+                        Ok(s) if s.battery != SerialValue::NoAnswer => can_master_check(&state, gen, &inst, &s.battery),
+                        _ => {
+                            master_at = round + master_every;
+                            master_every = (master_every * 2).min(32);
+                        }
+                    }
+                }
             }
             for &address in &addresses {
                 if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) {

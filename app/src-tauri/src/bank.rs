@@ -21,6 +21,7 @@
 //! hint (`can_hint`).
 
 use crate::maint_store::{real, SerialPlace, Store};
+use crate::notify::Check;
 use crate::{link_now, with_link, AppState, Link, FLASHING, LINK_CHANGED};
 use openbms_proto::SerialValue;
 use serde::Serialize;
@@ -184,8 +185,9 @@ pub(crate) struct BankState {
     /// RS485-1/2: the recorder and the endpoint link follow the verdict; the CAN socket records from the start
     pack_bus: bool,
     link: Option<PendingLink>,
-    /// CAN socket: the master's battery serial read after connecting equals the installation's (`notify.rs`)
-    can_master: bool,
+    /// CAN socket: the master's battery serial read after connecting equals the installation's (`notify.rs`); None:
+    /// not read yet
+    can_master: Option<bool>,
 }
 
 impl BankState {
@@ -257,26 +259,44 @@ pub(crate) fn unconfirmed(state: &AppState, gen: u64, address: u8) -> bool {
 }
 
 /// Whether answers of `address` on connection `gen` may raise a notification: on RS485-1/2 only a pack whose board is
-/// known here, and none while a pack of another installation is open; on the CAN socket (no per-pack check) every
-/// pack once the master's battery serial matched the installation's.
-pub(crate) fn notify_allowed(state: &AppState, gen: u64, address: u8) -> bool {
-    state.bank.lock().is_ok_and(|b| {
-        b.current(gen).is_some_and(|b| if b.pack_bus { !b.foreign() && matches!(b.packs.get(&address), Some(Seen::Known)) } else { b.can_master })
-    })
+/// known here, and none while a pack of another installation is open (an unconfirmed board forgets what was notified
+/// for its place); on the CAN socket (no per-pack check) every pack once the master's battery serial matched the
+/// installation's.
+pub(crate) fn notify_check(state: &AppState, gen: u64, address: u8) -> Check {
+    let Ok(b) = state.bank.lock() else { return Check::Waiting };
+    match b.current(gen) {
+        Some(b) if b.pack_bus => match b.packs.get(&address) {
+            Some(Seen::Unconfirmed(_)) => Check::Unconfirmed,
+            Some(Seen::Known) if !b.foreign() => Check::Confirmed,
+            _ => Check::Waiting,
+        },
+        Some(b) if b.can_master == Some(true) => Check::Confirmed,
+        _ => Check::Waiting,
+    }
 }
 
 /// The master's battery serial read on the CAN socket connection `gen` matched the installation's or not.
 pub(crate) fn can_master_read(state: &AppState, gen: u64, matched: bool) {
     if let Ok(mut b) = state.bank.lock() {
         if b.gen == gen && !b.pack_bus {
-            b.can_master = matched;
+            b.can_master = Some(matched);
         }
     }
 }
 
+/// Connection `gen` is on the CAN socket and its master's battery serial has not been read yet (the poll thread asks).
+pub(crate) fn can_master_unread(state: &AppState, gen: u64) -> bool {
+    state.bank.lock().is_ok_and(|b| b.current(gen).is_some_and(|b| !b.pack_bus && b.can_master.is_none()))
+}
+
 /// Connection `gen` is on the CAN socket and its master has not matched (yet): notifications are off for it.
 pub(crate) fn can_unchecked(state: &AppState, gen: u64) -> bool {
-    state.bank.lock().is_ok_and(|b| b.current(gen).is_some_and(|b| !b.pack_bus && !b.can_master))
+    state.bank.lock().is_ok_and(|b| b.current(gen).is_some_and(|b| !b.pack_bus && b.can_master != Some(true)))
+}
+
+/// Connection `gen` is on RS485-1/2 and no pack is confirmed for notifications (yet).
+pub(crate) fn none_confirmed(state: &AppState, gen: u64) -> bool {
+    state.bank.lock().is_ok_and(|b| b.current(gen).is_some_and(|b| b.pack_bus && (b.foreign() || !b.packs.values().any(|s| matches!(s, Seen::Known)))))
 }
 
 /// Apply the verdict of `link`'s connection: the recorder waits unless it may record; the first `Record` links the
@@ -720,21 +740,25 @@ mod tests {
         note(&state, gen, 1, Seen::Known);
         note(&state, gen, 2, Seen::Unchecked);
         note(&state, gen, 3, held(Why::New, NONE));
-        assert!(notify_allowed(&state, gen, 1));
-        assert!(!notify_allowed(&state, gen, 2) && !notify_allowed(&state, gen, 3) && !notify_allowed(&state, gen, 4));
-        assert!(!notify_allowed(&state, gen + 1, 1), "another connection");
-        // a pack of another installation open: none at all
+        let check = |a| notify_check(&state, gen, a);
+        assert_eq!((check(1), check(2), check(3), check(4)), (Check::Confirmed, Check::Waiting, Check::Unconfirmed, Check::Waiting));
+        assert_eq!(notify_check(&state, gen + 1, 1), Check::Waiting, "another connection");
+        assert!(!none_confirmed(&state, gen));
+        // a pack of another installation open: none counts, the others keep what was notified
         note(&state, gen, 5, held(Why::Foreign, NONE));
-        assert!(!notify_allowed(&state, gen, 1));
+        assert_eq!((notify_check(&state, gen, 1), notify_check(&state, gen, 5)), (Check::Waiting, Check::Unconfirmed));
+        assert!(none_confirmed(&state, gen));
         // CAN socket: all or nothing, by the master's battery serial
         begin(&state, gen, false, None);
-        assert!(!notify_allowed(&state, gen, 0) && can_unchecked(&state, gen));
+        assert!(notify_check(&state, gen, 0) == Check::Waiting && can_unchecked(&state, gen) && can_master_unread(&state, gen));
+        assert!(!none_confirmed(&state, gen), "RS485-1/2 only");
         can_master_read(&state, gen + 1, true);
-        assert!(!notify_allowed(&state, gen, 0), "a read of another connection");
+        assert_eq!(notify_check(&state, gen, 0), Check::Waiting, "a read of another connection");
         can_master_read(&state, gen, true);
-        assert!(notify_allowed(&state, gen, 0) && notify_allowed(&state, gen, 7) && !can_unchecked(&state, gen));
+        assert_eq!((notify_check(&state, gen, 0), notify_check(&state, gen, 7)), (Check::Confirmed, Check::Confirmed));
+        assert!(!can_unchecked(&state, gen) && !can_master_unread(&state, gen));
         can_master_read(&state, gen, false);
-        assert!(!notify_allowed(&state, gen, 0));
+        assert!(notify_check(&state, gen, 0) == Check::Waiting && !can_master_unread(&state, gen), "answered: not asked again");
     }
 
     #[test]

@@ -240,7 +240,10 @@ pub async fn installation_merge(state: State<'_, AppState>, source: String, targ
         // also what an interrupted earlier attempt moved
         h.merged(&source, &target).map_err(text)?
     };
-    with_store(&state, |s| s.merge(&source, &target, serde_json::to_value(&merged).unwrap_or_default(), history::now_ms())).map_err(maint::store_refusal)
+    let done = with_store(&state, |s| s.merge(&source, &target, serde_json::to_value(&merged).unwrap_or_default(), history::now_ms())).map_err(maint::store_refusal)?;
+    // the target may be connected and have taken the source's notification settings
+    crate::notifications::reload(&state, &target);
+    Ok(done)
 }
 
 #[tauri::command]
@@ -367,13 +370,18 @@ pub async fn installation_import_apply(app: AppHandle, state: State<'_, AppState
     let logs = crate::firmware::logs_dir(&app).map_err(text)?;
     // its target is decided inside: all installations wait
     let held = crate::control::reserve_installations(&state.ops, &[crate::control::ALL], "import")?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
         let _held = held;
         crate::installation_bundle::apply(&store, &hist, &imports, &logs, &export_id, &into)
     })
         .await
         .map_err(text)?
-        .map_err(bundle_error)
+        .map_err(bundle_error)?;
+    // an import into the connected installation may have brought notification settings
+    if let Some(inst) = crate::link_now(&state).installation {
+        crate::notifications::reload(&state, &inst);
+    }
+    Ok(applied)
 }
 
 /// The import dialog was closed: its unpacked copy goes.
