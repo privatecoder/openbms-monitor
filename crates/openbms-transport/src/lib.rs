@@ -654,19 +654,20 @@ mod tests {
         }
     }
 
-    /// A master polling its slave: an intra-pack line every `every` reads (each read waits 10 ms), never our answer.
+    /// A master polling its slave: an intra-pack line every `period` (reads wait 10 ms each), never our answer.
     struct Polling {
-        every: u32,
-        reads: u32,
+        start: Instant,
+        period: Duration,
+        sent: u32,
     }
 
     impl Read for Polling {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             std::thread::sleep(Duration::from_millis(10));
-            self.reads += 1;
-            if !self.reads.is_multiple_of(self.every) {
+            if self.start.elapsed() < self.period * (self.sent + 1) {
                 return Err(std::io::ErrorKind::TimedOut.into());
             }
+            self.sent += 1;
             let line = b"~2001465A0000FD9D\r";
             buf[..line.len()].copy_from_slice(line);
             Ok(line.len())
@@ -690,7 +691,7 @@ mod tests {
 
     #[test]
     fn foreign_lines_do_not_extend_the_timeout() {
-        let port = Box::new(Polling { every: 30, reads: 0 });
+        let port = Box::new(Polling { start: Instant::now(), period: Duration::from_millis(300), sent: 0 });
         let sink = Box::leak(Box::new(capture::Capture::new()));
         let mut c = Connection { port, timeout: Duration::from_millis(400), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) };
         let t = Instant::now();
