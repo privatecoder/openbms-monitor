@@ -195,7 +195,9 @@ pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installati
     let key = control.key();
     let mut guard = lock(&state.conn).map_err(|m| MaintError::Connection { message: m })?;
     let open = |f: &mut dyn FnMut(&mut Connection) -> Result<T, E>| -> Result<Result<T, E>, MaintError> {
-        let mut c = Connection::open(&control_endpoint(control)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+        let ep = control_endpoint(control);
+        let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+        c.set_label(crate::capture::label(&ep, Bus::CanSocketBus));
         Ok(f(&mut c))
     };
     match route_with(main.as_ref(), &key, guard.is_some()) {
@@ -322,7 +324,10 @@ pub fn open_pack_for(state: &AppState, app: &AppHandle, port: &str) -> Result<Co
     if must_stop_monitor(main.as_ref(), &endpoint_key(false, port)) {
         crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
     }
-    Connection::open(&Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD }).map_err(|e| MaintError::Connection { message: e.to_string() })
+    let ep = Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD };
+    let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    c.set_label(crate::capture::label(&ep, Bus::PackBus));
+    Ok(c)
 }
 
 /// "quiet" (no byte), "polling" (the master polls slaves) or "traffic" (bytes, but no poll of the master).
