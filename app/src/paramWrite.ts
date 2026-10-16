@@ -149,3 +149,44 @@ export function blockers(base: Raws, raws: Raws, badInput: number[], seriesUnloc
 export const sameBlock = (a: Parameters, b: Parameters) =>
   a.parameters.length === b.parameters.length && a.parameters.every((x, i) => x.raw === b.parameters[i].raw)
   && a.function_switches.every((s, g) => s === b.function_switches[g]);
+
+/** What an edit changes, to write onto other packs: the parameters set to new raws, and per switch byte the bits
+ *  touched (`mask`) with their new state (`bits`). Everything else stays each pack's own. */
+export interface ParamChange { params: Map<number, number>; mask: number[]; bits: number[] }
+
+/** The change of an edit against the read it started from (the source pack's base). */
+export function changeOf(base: Raws, raws: Raws, baseSwitches: number[], switches: number[]): ParamChange {
+  const params = new Map<number, number>();
+  raws.forEach((r, i) => { if (r !== base[i]) params.set(i, r); });
+  const mask = switches.map((s, g) => (s ^ baseSwitches[g]) & 0xff);
+  return { params, mask, bits: switches.map((s, g) => s & mask[g]) };
+}
+
+/** A pack's own read with exactly the change on top: byte 0, P65 and every untouched value or bit stay its own. */
+export function applyChange(c: ParamChange, raws: Raws, switches: number[]): { raws: Raws; switches: number[] } {
+  return {
+    raws: raws.map((r, i) => c.params.get(i) ?? r),
+    switches: switches.map((s, g) => (s & ~c.mask[g] & 0xff) | c.bits[g]),
+  };
+}
+
+/** One further pack of a multi-pack write: its read (`base`), the change applied to it, and what the single write
+ *  would say about that (changes left after applying, blockers). No changes left: nothing to write there. */
+export interface TargetPlan { address: number; base: Raws; baseSwitches: number[]; raws: Raws; switches: number[]; changes: Change[]; blockers: Blocker[] }
+
+export function planTarget(c: ParamChange, address: number, base: Raws, baseSwitches: number[], seriesUnlocked: boolean): TargetPlan {
+  const { raws, switches } = applyChange(c, base, baseSwitches);
+  return { address, base, baseSwitches, raws, switches, changes: changes(base, raws, baseSwitches, switches), blockers: blockers(base, raws, [], seriesUnlocked) };
+}
+
+/** Which packs of a run get their learned full capacity reset to P58, and for which that is unknown. `full`: the
+ *  learned full capacity per address, null when it could not be read (a missing address counts as unknown, too). */
+export function capacityEffects(packs: { address: number; raws: Raws }[], full: Map<number, number | null>): { resets: number[]; unknown: number[] } {
+  const resets: number[] = [], unknown: number[] = [];
+  for (const p of packs) {
+    const f = full.get(p.address);
+    if (f === null || f === undefined) unknown.push(p.address);
+    else if (capacityResets(f, p.raws[RATED_INDEX])) resets.push(p.address);
+  }
+  return { resets, unknown };
+}
