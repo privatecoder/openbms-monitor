@@ -10,6 +10,7 @@ import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { settingsSync } from "../history/settingsSync";
 import { useSettings } from "../installData";
+import { errorKey } from "../maint";
 import { LOST_RANGE, SPREAD_RANGE, notifySettings, type NotifySettings } from "../notifications";
 
 const INTERVALS = [0, 60, 300] as const;
@@ -197,7 +198,13 @@ function NotifySection({ scope }: { scope: string | null }) {
     return () => { alive = false; window.clearInterval(id); };
   }, []);
   const usable = !!scope && loaded;
-  const set = (next: Partial<NotifySettings>) => save("notifications", { ...n, ...next });
+  const set = (next: Partial<NotifySettings>) => {
+    void save("notifications", { ...n, ...next }).then((e) => {
+      if (e === null) return;
+      const k = errorKey(e);
+      setNote({ text: t("notify.saveFailed", { err: t(k.key, k.params) }), failed: true });
+    });
+  };
   const number = (value: number, range: readonly [number, number], key: "spread_mv" | "lost_minutes", label: string, unit: string) => (
     <label className="flex items-center justify-between gap-2 text-sm">
       <span className="text-muted">{label}</span>
@@ -227,7 +234,12 @@ function NotifySection({ scope }: { scope: string | null }) {
       {number(n.lost_minutes, LOST_RANGE, "lost_minutes", t("notify.lost"), t("notify.min"))}
       {!scope && <p className="text-sm text-muted">{t("notify.needInstallation")}</p>}
       {n.enabled && scope && status?.installation === scope && status.can_unchecked && (
-        <p className="text-sm text-discharge" title={t("notify.canOffHint")}>{t("notify.canOff")}</p>
+        <p className="text-sm text-discharge" title={t("notify.canOffHint")}>
+          {t("notify.canOff")}{status.can_no_serial && <span className="block text-muted">{t("notify.canNoSerial")}</span>}
+        </p>
+      )}
+      {n.enabled && scope && status?.installation === scope && status.none_confirmed && (
+        <p className="text-sm text-discharge">{t("notify.packsWaiting")}</p>
       )}
       {!isDemo && (
         <div className="flex flex-wrap items-center gap-3">

@@ -434,6 +434,9 @@ const resources = {
         spread: "Zellspreizung in Ruhe über", lost: "Verbindung verloren nach", mv: "mV", min: "min",
         canOff: "Für diese Verbindung aus: Bank nicht geprüft (CAN-Buchse).", canOffHint: "An der CAN-Buchse prüft die App die Bank über die Batterie-Seriennummer des Masters; sie muss der gespeicherten dieser Anlage entsprechen.",
         needInstallation: "Nur mit einer gewählten Anlage („Nur ansehen“ meldet nichts).",
+        canNoSerial: "Für diese Anlage ist keine Batterie-Seriennummer des Masters gespeichert. Einmal über RS485-1/2 mit dieser Anlage verbinden: Die App liest die Seriennummern und speichert sie mit der Platine des Masters (Adresse 0), ein neuer Master wird dabei übernommen.",
+        packsWaiting: "Noch kein Pack dieser Anlage bestätigt: Mitteilungen beginnen, sobald die Packs übernommen sind (Packs ohne Seriennummer melden nichts).",
+        saveFailed: "Nicht gespeichert: {{err}}",
         test: "Test-Mitteilung senden", testSent: "Gesendet. Erscheint nichts, die Mitteilungen der App in den Systemeinstellungen erlauben.", testFailed: "Nicht gesendet: {{err}}",
         msg: {
           title: "OpenBMS Monitor: {{name}}",
@@ -1100,6 +1103,9 @@ const resources = {
         spread: "Cell spread at rest above", lost: "Connection lost after", mv: "mV", min: "min",
         canOff: "Off for this connection: bank not checked (CAN socket).", canOffHint: "On the CAN socket the app checks the bank by the master's battery serial; it must match the one stored for this installation.",
         needInstallation: "Only with an installation chosen (“View only” reports nothing).",
+        canNoSerial: "No master battery serial is stored for this installation. Connect once over RS485-1/2 with this installation: the app reads the serial numbers and stores them with the master's board (address 0); a new master is adopted on the way.",
+        packsWaiting: "No pack of this installation confirmed yet: notifications start once the packs are adopted (packs without a serial number report nothing).",
+        saveFailed: "Not saved: {{err}}",
         test: "Send test notification", testSent: "Sent. If nothing appears, allow the app's notifications in the system settings.", testFailed: "Not sent: {{err}}",
         msg: {
           title: "OpenBMS Monitor: {{name}}",
