@@ -21,6 +21,8 @@ pub const MAX_ENTRY: usize = 4096;
 pub enum Kind {
     Tx,
     Rx,
+    /// received, but read only to be dropped before the next request (TCP: a late answer)
+    Dropped,
     /// an `ascii`/`modbus_read` exchange ended without its answer: the waited time and the address asked
     Timeout { waited_ms: u64, address: u8 },
     /// I/O error or gateway closed
@@ -212,6 +214,18 @@ impl Tap {
             self.skipped.1 += bytes.len();
         } else {
             self.sink.record(self.id, &self.label, Kind::Rx, bytes);
+        }
+    }
+
+    /// Bytes `clear_input` read to drop them (TCP).
+    pub fn dropped(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if self.paused {
+            self.skipped.1 += bytes.len();
+        } else {
+            self.sink.record(self.id, &self.label, Kind::Dropped, bytes);
         }
     }
 
@@ -434,6 +448,24 @@ mod tests {
             (1, 20, b""),
         ]);
         assert_eq!(ls[6].kind, Kind::Timeout { waited_ms: 1500, address: 0 });
+    }
+
+    #[test]
+    fn dropped_bytes_stay_apart_from_the_next_answer() {
+        let es = vec![
+            entry(1, Kind::Rx, b"~2001", 0),
+            entry(1, Kind::Dropped, b"460000FDAE\r", 5),
+            entry(1, Kind::Tx, b"~20024651\r", 6),
+            entry(1, Kind::Rx, b"~2002\r", 9),
+        ];
+        let ls = lines(&es);
+        let view: Vec<(&Kind, &[u8])> = ls.iter().map(|l| (&l.kind, l.bytes.as_slice())).collect();
+        assert_eq!(view, vec![
+            (&Kind::Rx, &b"~2001"[..]),
+            (&Kind::Dropped, b"460000FDAE\r"),
+            (&Kind::Tx, b"~20024651\r"),
+            (&Kind::Rx, b"~2002\r"),
+        ]);
     }
 
     #[test]
