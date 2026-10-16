@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkPairs, gapTrend, neighbourPairs, validPairs, windowMean } from "./pairs";
+import { checkPairs, equalizes, gapTrend, neighbourPairs, validPairs, windowMean } from "./pairs";
+import vectors from "./equalize.vectors.json";
 
 describe("pairs", () => {
   it("builds neighbour pairs and drops invalid ones", () => {
@@ -73,5 +74,12 @@ describe("gapTrend", () => {
   });
   it("says nothing before the current has varied enough", () => {
     expect(gapTrend(Array.from({ length: 30 }, (_, k) => ({ i: 5 + (k % 10), g: 0.04 })))).toBeUndefined();
+  });
+});
+
+describe("equalizes", () => {
+  // the same vectors test the backend's copy of the rule (health.rs)
+  it.each(vectors)("$case", ({ total, mine, other, equalizes: want }) => {
+    expect(equalizes(total, mine, other)).toBe(want);
   });
 });

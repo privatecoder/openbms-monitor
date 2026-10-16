@@ -1,0 +1,9 @@
+[
+  { "case": "discharging: the emptier pack gives less", "total": -26, "mine": 67.6, "other": 74.4, "equalizes": true },
+  { "case": "charging: the emptier pack taking less is not explained", "total": 26, "mine": 67.6, "other": 74.4, "equalizes": false },
+  { "case": "charging: the fuller pack takes less", "total": 26, "mine": 74.4, "other": 67.6, "equalizes": true },
+  { "case": "discharging: the fuller pack giving less is not explained", "total": -26, "mine": 74.4, "other": 67.6, "equalizes": false },
+  { "case": "a difference of exactly EQUALIZE_SOC counts", "total": -26, "mine": 67, "other": 70, "equalizes": true },
+  { "case": "a smaller difference does not", "total": -26, "mine": 68, "other": 70, "equalizes": false },
+  { "case": "no current, no direction", "total": 0, "mine": 60, "other": 70, "equalizes": false }
+]
