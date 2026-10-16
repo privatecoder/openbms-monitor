@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RULES, blockers, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations } from "./paramWrite";
+import { RULES, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations } from "./paramWrite";
 import { KEYS, UNITS, type Parameters } from "./params";
 
 /** A synthetic, plausible configuration (display values, P0..P86). */
@@ -223,5 +223,62 @@ describe("pending refusal", () => {
     expect(sameBlock(p(3650, 0x1f), p(3650, 0x1f))).toBe(true);
     expect(sameBlock(p(3650, 0x1f), p(3650, 0x1e))).toBe(false);
     expect(sameBlock(p(3650, 0x1f), p(3651, 0x1f))).toBe(false);
+  });
+});
+
+describe("one change onto several packs", () => {
+  const sw = [0x0f, 0, 0x80, 0, 0, 0, 0, 0x01];
+  it("takes only the parameters and switch bits that differ from the source read", () => {
+    const base = good(), raws = set({ 26: toRaw(26, 0), 0: 3500 });
+    const c = changeOf(base, raws, sw, [0x0d, 0, 0x81, 0, 0, 0, 0, 0x01]);
+    expect([...c.params.entries()]).toEqual([[0, 3500], [26, 2731]]);
+    expect(c.mask).toEqual([0x02, 0, 0x01, 0, 0, 0, 0, 0]);
+    expect(c.bits).toEqual([0x00, 0, 0x01, 0, 0, 0, 0, 0]);
+  });
+
+  it("applies it onto a pack with other values: untouched values and bits stay that pack's own", () => {
+    const c = changeOf(good(), set({ 26: 2731 }), sw, [0x0d, 0, 0x80, 0, 0, 0, 0, 0x01]);
+    const other = set({ 26: 2631, 30: 2600, 58: 30000, 65: 15 });
+    const r = applyChange(c, other, [0xf2, 0x33, 0x00, 0, 0, 0, 0, 0x00]);
+    expect(r.raws[26]).toBe(2731);
+    expect(r.raws.filter((x, i) => x !== other[i]).length).toBe(1);
+    expect(r.raws[30]).toBe(2600);
+    expect(r.raws[58]).toBe(30000);
+    expect(r.raws[65]).toBe(15);
+    // bit 1 of byte 0 off as in the edit, the target's other bits as they were
+    expect(r.switches).toEqual([0xf0, 0x33, 0x00, 0, 0, 0, 0, 0x00]);
+  });
+
+  it("an empty change leaves the pack as read", () => {
+    const c = changeOf(good(), good(), sw, sw);
+    expect(applyChange(c, set({ 1: 3300 }), [1, 2, 3, 4, 5, 6, 7, 8])).toEqual({ raws: set({ 1: 3300 }), switches: [1, 2, 3, 4, 5, 6, 7, 8] });
+  });
+
+  it("checks each target on its own values", () => {
+    // P1 (cell high recovery) to 3.50 V: fine where P0 is 3.55 V, breaks „P1 ≤ P0“ where P0 is 3.45 V
+    const c = changeOf(good(), set({ 1: 3500 }), sw, sw);
+    const high = planTarget(c, 1, set({ 0: 3550 }), sw, false);
+    expect(high.blockers).toEqual([]);
+    expect(high.changes).toEqual([{ kind: "param", index: 1, from: 3350, to: 3500 }]);
+    expect(planTarget(c, 2, good(), sw, false).blockers).toEqual([{ kind: "rule", v: { index: 1, op: "le", other: 0 } }]);
+  });
+
+  it("a target that already has the change has nothing left to write", () => {
+    const c = changeOf(good(), set({ 26: 2731 }), sw, [0x0e, 0, 0x80, 0, 0, 0, 0, 0x01]);
+    const p = planTarget(c, 3, set({ 26: 2731 }), [0x0e, 0, 0x80, 0, 0, 0, 0, 0x01], false);
+    expect(p.changes).toEqual([]);
+    expect(p.blockers).toEqual([]);
+  });
+
+  it("a changed P65 stays blocked on every target until unlocked", () => {
+    const c = changeOf(good(), set({ 65: 15 }), sw, sw);
+    expect(planTarget(c, 1, good(), sw, false).blockers).toEqual([{ kind: "series" }]);
+    expect(planTarget(c, 1, good(), sw, true).blockers).toEqual([]);
+  });
+
+  it("names the packs whose learned full capacity a write resets, and those it cannot tell", () => {
+    const packs = [{ address: 0, raws: set({ 58: 28000 }) }, { address: 1, raws: set({ 58: 28000 }) }, { address: 2, raws: set({ 58: 28000 }) }, { address: 3, raws: set({ 58: 28000 }) }];
+    const full = new Map<number, number | null>([[0, 279.5], [1, 265], [2, null]]);
+    expect(capacityEffects(packs, full)).toEqual({ resets: [1], unknown: [2, 3] });
   });
 });
