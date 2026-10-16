@@ -248,7 +248,11 @@ fn decode_rx(bytes: &[u8], req: Option<Req>, l: Lang) -> Row {
         return row;
     }
     let Some(start) = bytes.iter().position(|b| *b == b'~') else {
-        row.meaning = l.pick("kein gültiger Frame", "not a valid frame").into();
+        // before the first request of a connection: usually the tail of an answer that began before the start
+        row.meaning = match req {
+            None => l.pick("kein gültiger Frame (vermutlich Rest einer Antwort von vor dem Start)", "not a valid frame (likely the tail of an answer from before the start)"),
+            Some(_) => l.pick("kein gültiger Frame", "not a valid frame"),
+        }.into();
         return row;
     };
     let f = match frame::parse(&bytes[start..]) {
@@ -491,10 +495,11 @@ mod tests {
             entry(1, Kind::Rx, &bad, 70),
             entry(1, Kind::Rx, b"\xF0\x0F\r", 80),
             entry(1, Kind::Tx, &openbms_proto::control::restart_request(1).unwrap(), 90),
+            entry(1, Kind::Rx, b"\xF0\x0F\r", 92),
             entry(1, Kind::Skipped { sent: 12_345, received: 678 }, &[], 95),
             entry(1, Kind::Error("I/O: broken pipe".into()), &[], 99),
         ], 0, Lang::En);
-        assert_eq!(lines[1], "# Start 2026-01-02 12:00:00.000 (local time, UTC+2), end 2026-01-02 12:00:00.099, 10 entries, 0 timeouts");
+        assert_eq!(lines[1], "# Start 2026-01-02 12:00:00.000 (local time, UTC+2), end 2026-01-02 12:00:00.099, 11 entries, 0 timeouts");
         assert_eq!(lines[2], "# Connections: TCP 192.0.2.10:4196 · CAN-Buchse; USB /dev/cu.test · RS485-1/2");
         let tx = cols(&lines[4]);
         assert_eq!((tx[4], tx[5], tx[6], tx[7]), ("01", "03", "01 03 10 00 00 15 80 C5", "Modbus 03 read: start 0x1000, 21 registers"));
@@ -504,10 +509,11 @@ mod tests {
         assert_eq!(cols(&lines[7])[7], "intra-pack: answer of pack 02, 32 bytes INFO");
         assert_eq!(cols(&lines[8])[7], "checksum wrong");
         assert_eq!(cols(&lines[9])[6], "F0 0F 0D");
-        assert_eq!(cols(&lines[9])[7], "not a valid frame");
+        assert_eq!(cols(&lines[9])[7], "not a valid frame (likely the tail of an answer from before the start)");
         assert_eq!(cols(&lines[10])[7], "pack control: restart (0x45 type 6)");
-        assert_eq!(cols(&lines[11])[7], "bootloader traffic left out (12,345 bytes sent, 678 received)");
-        assert_eq!((cols(&lines[12])[3], cols(&lines[12])[6]), ("Error", "I/O: broken pipe"));
+        assert_eq!(cols(&lines[11])[7], "not a valid frame");
+        assert_eq!(cols(&lines[12])[7], "bootloader traffic left out (12,345 bytes sent, 678 received)");
+        assert_eq!((cols(&lines[13])[3], cols(&lines[13])[6]), ("Error", "I/O: broken pipe"));
         assert!(lines.iter().skip(3).all(|l| cols(l).len() == 8));
     }
 
