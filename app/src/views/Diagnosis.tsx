@@ -9,6 +9,7 @@ import { MIN_CURRENT_A, REST_CURRENT_A, flagHigh } from "../diag/calc";
 import { checkPairs, usePairs, validPairs } from "../pairs";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
+import { FrameCapture } from "../components/FrameCapture";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 
@@ -196,6 +197,10 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
           <p className="mt-2 text-xs text-muted">{t("diag.historyNote")}</p>
         </Panel>
       )}
+
+      <Panel className="p-5">
+        <FrameCapture />
+      </Panel>
     </div>
   );
 }
