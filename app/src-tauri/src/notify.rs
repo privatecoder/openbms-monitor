@@ -4,12 +4,12 @@
 //! each round; a ticker calls `tick` for the lost connection. The UI's merged live state (which keeps old values after
 //! a failed poll) is never used. An answer counts only for a confirmed pack (`bank::notify_allowed`: on RS485-1/2 a
 //! board known here, on the CAN socket a master whose battery serial matches the installation's); an unconfirmed one
-//! forgets what was known about the pack.
+//! forgets what was known about the pack and only shows the link alive.
 //!
 //! Triggers: a protection or fault alarm starts (again only after it cleared); a pack that answered misses
 //! `SILENT_POLLS` polls in a row (again only after it answered); the rest cell spread stays above the threshold for
-//! `SPREAD_HOLD_MS` (re-armed below threshold − `SPREAD_REARM_MV`); no confirmed answer for the set minutes while the
-//! connection is wanted. At most one notification per pack and trigger (each alarm its own) per `RATE_MS`; what fires
+//! `SPREAD_HOLD_MS` (re-armed below threshold − `SPREAD_REARM_MV`); no answer for the set minutes while the connection
+//! is wanted. At most one notification per pack and trigger (each alarm its own) per `RATE_MS`; what fires
 //! in one round is joined per trigger. This module decides; `send` words it (`Texts`, from the UI) and shows it.
 
 use openbms_proto::status::{ActiveAlarm, Severity};
@@ -134,7 +134,7 @@ pub struct Notifier {
     sent: HashMap<(Trigger, Option<u8>), i64>,
     /// the connection is wanted (not closed by the user or a maintenance step)
     armed: bool,
-    /// the last confirmed answer, for the lost connection
+    /// the last answer once a confirmed one came, for the lost connection
     last_data: Option<i64>,
     lost_sent: bool,
 }
@@ -186,6 +186,11 @@ impl Notifier {
         }
         if !confirmed {
             self.packs.remove(&address);
+            // the link is alive (a pack waiting for its check, the CAN master being read again): no lost connection
+            if reading.is_some() && self.last_data.is_some() {
+                self.last_data = Some(now);
+                self.lost_sent = false;
+            }
             return;
         }
         let p = self.packs.entry(address).or_default();
@@ -258,8 +263,8 @@ impl Notifier {
         out
     }
 
-    /// The lost connection: no confirmed answer for the set minutes while the connection is wanted; once until data
-    /// comes again.
+    /// The lost connection: no answer for the set minutes (watched from the first confirmed one) while the connection
+    /// is wanted; once until data comes again.
     pub fn tick(&mut self, now: i64) -> Option<Note> {
         if !self.armed || !self.settings.enabled || self.lost_sent {
             return None;
@@ -536,9 +541,14 @@ mod tests {
         }
         assert!(n.flush(5).is_empty());
         assert_eq!(n.tick(60 * MIN), None, "no confirmed data: no lost connection either");
+        // once watched, an unconfirmed answer still shows the link alive
+        n.answer(1, 0, 61 * MIN, true, Some(&idle(10.0)));
+        n.answer(1, 3, 65 * MIN, false, Some(&idle(10.0)));
+        assert_eq!(n.tick(69 * MIN), None);
+        assert!(n.tick(70 * MIN).is_some());
         // confirmed later: a fresh start for the pack
-        n.answer(1, 3, 10, true, Some(&alarm(&[OV])));
-        assert_eq!(triggers(&n.flush(10)), vec![(ov(), vec![3])]);
+        n.answer(1, 3, 71 * MIN, true, Some(&alarm(&[OV])));
+        assert_eq!(triggers(&n.flush(71 * MIN)), vec![(ov(), vec![3])]);
     }
 
     #[test]
