@@ -87,6 +87,11 @@ describe("installations: an address book", () => {
     expect(saveOffer(stored, "can", "tcp", "192.0.2.11:4196")).toBe(true);
     expect(saveOffer(stored, "pack", "serial", "/dev/p")).toBe(false);
     expect(saveOffer(stored, "pack", "tcp", "192.0.2.12:4196")).toBe(true);
+    // the CAN socket's adapter set up as RS485-1/2 counts as stored: another port is offered, not linked
+    const oneAdapter = { ...inst, endpoints: ["serial:/dev/a"] };
+    expect(storedPort(oneAdapter, "pack")).toEqual({ kind: "serial", target: "/dev/a" });
+    expect(saveOffer(oneAdapter, "pack", "serial", "/dev/a")).toBe(false);
+    expect(saveOffer(oneAdapter, "pack", "serial", "/dev/p")).toBe(true);
     // nothing stored: the connect fills it (CAN socket) or the decided bank does (RS485-1/2)
     expect(saveOffer({ ...inst, control: null, endpoints: [] }, "can", "tcp", "192.0.2.11:4196")).toBe(false);
     expect(saveOffer({ ...inst, control: null, endpoints: [] }, "pack", "serial", "/dev/p")).toBe(false);
