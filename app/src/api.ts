@@ -208,8 +208,9 @@ export interface Installation { id: string; name: string; endpoints: string[]; c
 /** Settings an installation owns (JSON each, null: none). */
 export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown }
 export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications";
-/** The connection's installation and whether notifications are off for it (CAN socket, master not the installation's). */
-export interface NotifyStatus { installation: string | null; can_unchecked: boolean }
+/** The connection's installation and why notifications are off for it: CAN socket with the master not matched
+ *  (`can_no_serial`: none stored for address 0 to compare), RS485-1/2 with no pack confirmed yet. */
+export interface NotifyStatus { installation: string | null; can_unchecked: boolean; can_no_serial: boolean; none_confirmed: boolean }
 export interface Board { id: number; bms_serial: string; battery_serial: string | null; first_seen: number; last_seen: number; aliases: string[] }
 /** board: "current" (the newest board at the place), "previous" (another board, swapped since), "unclear". */
 export interface StoredSnapshot { id: number; address: number; bms_serial: string | null; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear" }
@@ -615,7 +616,7 @@ function demoApi(): typeof tauriApi {
     captureExport: async () => { throw new Error("desktop app only"); },
     notifyTexts: async () => {},
     notifyTest: async () => { throw new Error("desktop app only"); },
-    notifyStatus: async () => ({ installation: null, can_unchecked: false }),
+    notifyStatus: async () => ({ installation: null, can_unchecked: false, can_no_serial: false, none_confirmed: false }),
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },

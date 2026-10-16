@@ -33,13 +33,24 @@ export function useSettings(scope: string | null) {
   useEffect(() => { load(scope); }, [scope]);
   const k = keyOf(scope);
   const loaded = cache.has(k);
-  /** A setting edited as a whole (groups, pairs, diagnosis, notifications). Not before the stored ones are loaded. */
-  const save = (key: Exclude<SettingKey, "cell_types">, value: unknown) => {
+  /** A setting edited as a whole (groups, pairs, diagnosis, notifications). Not before the stored ones are loaded.
+   *  Resolves to null, or to the backend's error (`errorKey`) after the setting was put back as stored. */
+  const save = async (key: Exclude<SettingKey, "cell_types">, value: unknown): Promise<unknown> => {
     const cur = cache.get(k);
-    if (!cur) return;
+    if (!cur) return null;
     cache.set(k, { ...cur, [key]: value });
     changed();
-    if (stored(scope)) api.setInstallationSetting(scope, key, value).catch((e) => console.error(`setting ${key}:`, e));
+    if (!stored(scope)) return null;
+    try {
+      await api.setInstallationSetting(scope, key, value);
+      return null;
+    } catch (e) {
+      console.error(`setting ${key}:`, e);
+      // put back unless a later change replaced it meanwhile
+      const now = cache.get(k);
+      if (now && now[key] === value) { cache.set(k, { ...now, [key]: cur[key] }); changed(); }
+      return e ?? "error";
+    }
   };
   /** The cell types of some places (null removes one); the other places keep theirs. Not before loaded. */
   const saveCellTypes = (changes: Record<number, unknown>) => {
