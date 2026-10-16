@@ -233,7 +233,7 @@ const resources = {
       clock: {
         title: "BMS-Uhr", bms: "BMS {{time}}", pc: "PC {{time}}", ok: "BMS-Uhr stimmt (Abweichung unter 2 s)",
         ahead: "BMS-Uhr geht {{d}} vor", behind: "BMS-Uhr geht {{d}} nach", set: "Uhr stellen: {{time}} ({{zone}})", setAll: "Alle Packs stellen",
-        setting: "Stelle Uhr …", settingAll: "Stelle Pack {{pack}} ({{n}} von {{of}}) …", setAllDone: "Uhr von {{ok}} von {{of}} Packs gestellt.", setAllFailed: "Nicht gestellt: {{list}}",
+        setting: "Stelle Uhr …", settingAll: "Stelle Pack {{pack}} ({{n}} von {{of}}) …", setAllDone: "Uhr von {{ok}} von {{of}} Packs gestellt.", setAllFailed: "Nicht gestellt: {{list}}", setAllStopped: "Abgebrochen, weil Anlage oder Verbindung gewechselt haben: Uhr von {{ok}} von {{of}} Packs gestellt.",
         reading: "Lese Uhr …", readError: "Uhr nicht lesbar: {{err}}", setError: "Uhr nicht gestellt: {{err}}",
         hint: "Gesendet wird die Ortszeit dieses PCs; das BMS speichert sie ohne Zeitzone.",
         canBus: "Die BMS-Uhr ist nur über RS485-1/2 lesbar. Die CAN-Buchse kennt den Befehl nicht.", needConnection: "Die BMS-Uhr lässt sich nur mit Verbindung über RS485-1/2 lesen und stellen.",
@@ -841,7 +841,7 @@ const resources = {
       clock: {
         title: "BMS clock", bms: "BMS {{time}}", pc: "PC {{time}}", ok: "BMS clock is right (off by less than 2 s)",
         ahead: "BMS clock is {{d}} fast", behind: "BMS clock is {{d}} slow", set: "Set clock: {{time}} ({{zone}})", setAll: "Set all packs",
-        setting: "Setting clock …", settingAll: "Setting pack {{pack}} ({{n}} of {{of}}) …", setAllDone: "Clock set on {{ok}} of {{of}} packs.", setAllFailed: "Not set: {{list}}",
+        setting: "Setting clock …", settingAll: "Setting pack {{pack}} ({{n}} of {{of}}) …", setAllDone: "Clock set on {{ok}} of {{of}} packs.", setAllFailed: "Not set: {{list}}", setAllStopped: "Stopped because the installation or connection changed: clock set on {{ok}} of {{of}} packs.",
         reading: "Reading clock …", readError: "Clock not readable: {{err}}", setError: "Clock not set: {{err}}",
         hint: "This PC's local time is sent; the BMS stores it without a time zone.",
         canBus: "The BMS clock can be read on RS485-1/2 only. The CAN socket does not know the command.", needConnection: "The BMS clock can be read and set only while connected via RS485-1/2.",
