@@ -229,11 +229,11 @@ impl Connection {
         Ok(self.port.write_all(data)?)
     }
 
-    fn read_until<F: Fn(&[u8]) -> bool>(&mut self, done: F) -> Result<Vec<u8>> {
-        let start = Instant::now();
+    /// Read until `done` or the deadline of the whole exchange; lines that are not ours must not extend it.
+    fn read_until<F: Fn(&[u8]) -> bool>(&mut self, deadline: Instant, done: F) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         let mut buf = [0u8; 256];
-        while start.elapsed() < self.timeout {
+        while Instant::now() < deadline {
             match self.port.read(&mut buf) {
                 Ok(0) if self.tcp => return Err(Error::Closed),
                 Ok(0) => {}
@@ -289,7 +289,7 @@ impl Connection {
                     _ => continue,
                 }
             }
-            match self.read_until(|b| b.contains(&b'\r')) {
+            match self.read_until(deadline, |b| b.contains(&b'\r')) {
                 Ok(chunk) => pending.extend(chunk),
                 Err(e) => break Err(e),
             }
@@ -440,7 +440,7 @@ impl Connection {
         let request = modbus::read_request(function, start, count);
         let raw = self.drop_input().map_err(Error::from).and_then(|_| self.send(&request)).and_then(|_| {
             let want = modbus::response_len(count);
-            self.read_until(|b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0))
+            self.read_until(Instant::now() + self.timeout, |b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0))
         });
         self.note_failure(&raw, request[0]);
         std::thread::sleep(self.gap);
@@ -652,6 +652,53 @@ mod tests {
             self.out.clear();
             Ok(())
         }
+    }
+
+    /// A master polling its slave: an intra-pack line every `every` reads (each read waits 10 ms), never our answer.
+    struct Polling {
+        every: u32,
+        reads: u32,
+    }
+
+    impl Read for Polling {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(10));
+            self.reads += 1;
+            if !self.reads.is_multiple_of(self.every) {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            let line = b"~2001465A0000FD9D\r";
+            buf[..line.len()].copy_from_slice(line);
+            Ok(line.len())
+        }
+    }
+
+    impl Write for Polling {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Port for Polling {
+        fn clear_input(&mut self, _: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn foreign_lines_do_not_extend_the_timeout() {
+        let port = Box::new(Polling { every: 8, reads: 0 });
+        let sink = Box::leak(Box::new(capture::Capture::new()));
+        let mut c = Connection { port, timeout: Duration::from_millis(100), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) };
+        let t = Instant::now();
+        let r = c.ascii(&Telemetry::request(0).unwrap(), 0);
+        assert!(matches!(r, Err(Error::Timeout(_))));
+        // a line every ~80 ms: before the fix each one restarted the wait, ending only after the next line (~160 ms)
+        assert!(t.elapsed() < Duration::from_millis(140), "{:?}", t.elapsed());
+        assert!(c.rx.intra >= 1);
     }
 
     fn scripted(script: Vec<(Vec<u8>, Vec<u8>)>) -> Connection {
