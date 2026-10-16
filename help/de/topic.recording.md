@@ -1,7 +1,7 @@
 ---
 title: Aufzeichnung
 short: Speichert die abgefragten Werte in der Verlaufs-Datenbank der App, solange sie verbunden ist. Standardmäßig aus.
-related: topic.history, topic.connection
+related: topic.history, topic.connection, topic.notifications
 ---
 - **Aufzeichnen, solange verbunden:** Einmal eingeschaltet, bleibt die Einstellung über Neustarts erhalten. Die App schreibt dann bei jeder Verbindung mit, ohne dass du etwas starten musst.
 - **Was:** alle Packs oder eine Auswahl, dazu auf der CAN-Buchse die Systemwerte des Masters. Meldungen werden immer mit Beginn und Ende gespeichert.

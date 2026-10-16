@@ -206,8 +206,10 @@ export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; 
  *  text it was moved in from, „übernommen“) and `last_connect` are set by the backend. */
 export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean; legacy?: string | null; last_connect?: number | null }
 /** Settings an installation owns (JSON each, null: none). */
-export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown }
-export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis";
+export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown }
+export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications";
+/** The connection's installation and whether notifications are off for it (CAN socket, master not the installation's). */
+export interface NotifyStatus { installation: string | null; can_unchecked: boolean }
 export interface Board { id: number; bms_serial: string; battery_serial: string | null; first_seen: number; last_seen: number; aliases: string[] }
 /** board: "current" (the newest board at the place), "previous" (another board, swapped since), "unclear". */
 export interface StoredSnapshot { id: number; address: number; bms_serial: string | null; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear" }
@@ -273,7 +275,8 @@ const tauriApi = {
   /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
   probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
-  disconnect: () => invoke<void>("disconnect"),
+  /** `lost`: the UI drops a dead link to reconnect (notifications keep watching for the lost connection) */
+  disconnect: (lost = false) => invoke<void>("disconnect", { lost }),
   /** without addresses: search 0..15; with addresses: only read their device info */
   scan: (addresses?: number[]) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null }),
   startPolling: (addresses: number[], intervalMs: number) => invoke<void>("start_polling", { addresses, intervalMs }),
@@ -411,6 +414,10 @@ const tauriApi = {
   captureStatus: () => invoke<CaptureStatus>("capture_status"),
   /** writes the capture as text to a .txt path from the save dialog; returns the number of entries */
   captureExport: (path: string, lang: string) => invoke<number>("capture_export", { path, lang }),
+  /** the wording of the notifications in the UI's language (`notifyTexts` in notifications.ts) */
+  notifyTexts: (texts: Record<string, unknown>) => invoke<void>("notify_texts", { texts }),
+  notifyTest: (installation: string | null) => invoke<void>("notify_test", { installation }),
+  notifyStatus: () => invoke<NotifyStatus>("notify_status"),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -606,6 +613,9 @@ function demoApi(): typeof tauriApi {
     captureClear: async () => idleCapture,
     captureStatus: async () => idleCapture,
     captureExport: async () => { throw new Error("desktop app only"); },
+    notifyTexts: async () => {},
+    notifyTest: async () => { throw new Error("desktop app only"); },
+    notifyStatus: async () => ({ installation: null, can_unchecked: false }),
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
@@ -615,7 +625,7 @@ function demoApi(): typeof tauriApi {
     maintCreateInstallation: async () => { throw new Error("desktop app only"); },
     // preview: no installations, nothing stored
     installationsMigrate: async () => [],
-    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null }),
+    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null }),
     setInstallationSetting: async () => {},
     setInstallationCellTypes: async () => {},
     installationOverview: async () => { throw new Error("desktop app only"); },
