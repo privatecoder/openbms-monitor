@@ -101,7 +101,7 @@ export default function App() {
           ))}
           {maint.naming && <NameDialog suggested={defaultName(maint.installations, i18n.t("maint.picker.base"))} onConfirm={maint.create} onCancel={() => maint.setNaming(false)} />}
           {view === "firmware" && maintenance ? (
-            <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
+            <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onEditPorts={() => setView("installations")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
           ) : view === "installations" ? (
             <Installations maint={maint} connected={connected}
               onParameters={(id) => { showStoredParameters(); void maint.switchTo(id).then(() => { enableMaintenance(); setView("params"); }); }} />

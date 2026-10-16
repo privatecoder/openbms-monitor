@@ -6,12 +6,13 @@ import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { errorKey, mergeSuggestion, nameCheck } from "../maint";
+import { errorKey, keyLabel, mergeSuggestion, nameCheck, packIsCanAdapter, packPortOf, storedPort, controlKey } from "../maint";
 import type { Maint } from "../maintStore";
 import { reloadSettings } from "../installData";
 import { useCellDb } from "../cells/store";
 import { cellName } from "./CellAssign";
 import { ExportRow, ImportPanel } from "./InstallationTransfer";
+import { MaintSetup } from "./MaintSetup";
 
 const input = "h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -179,6 +180,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
 
       {expanded && (
         <div className="space-y-3">
+          <Ports inst={inst} maint={maint} />
           {others.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-muted">{t("inst.mergeInto")}</span>
@@ -200,6 +202,41 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
       {done && <p className="text-sm text-ok">{done}</p>}
       {error && <p className="text-sm text-alarm">{error}</p>}
     </Panel>
+  );
+}
+
+/** „Anschlüsse“: the CAN socket and the RS485-1/2 port, read-only until „Ändern“ opens the editor. The sidebar fills
+ *  its fields from them; maintenance and flashing use RS485-1/2. */
+function Ports({ inst, maint }: { inst: Installation; maint: Maint }) {
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
+  const show = (p: ReturnType<typeof storedPort>) => (p ? `${t(`conn.${p.kind}`)} · ${p.target}` : t("inst.ports.none"));
+  const pack = storedPort(inst, "pack");
+  const ctl = controlKey(inst.control);
+  // stored endpoints besides the two (kept as they are, the editor changes only the RS485-1/2 port)
+  const more = inst.endpoints.filter((k) => k !== packPortOf(inst) && k !== ctl);
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="flex items-center gap-2">
+        <h3 className="font-medium">{t("inst.ports.title")}</h3>
+        <InfoIcon id="topic.installations" />
+        {!editing && <Button size="sm" variant="ghost" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" />{t("inst.ports.edit")}</Button>}
+      </div>
+      {editing ? (
+        <MaintSetup installation={inst} pending={maint.alerts.pending} disabled={false}
+          onSaved={() => { setEditing(false); void maint.loadLists(); }} onCancel={() => setEditing(false)} />
+      ) : (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+          <dt className="text-muted">{t("inst.ports.can")}</dt><dd>{show(storedPort(inst, "can"))}</dd>
+          <dt className="text-muted">{t("inst.ports.pack")}</dt>
+          <dd>
+            {packIsCanAdapter(inst) ? t("maint.panel.canAdapter") : show(pack)}
+            {pack?.kind === "tcp" && <span className="block text-discharge">{t("maint.setup.rs485Tcp")}</span>}
+          </dd>
+          {more.length > 0 && <><dt className="text-muted">{t("inst.ports.more")}</dt><dd>{more.map(keyLabel).join(", ")}</dd></>}
+        </dl>
+      )}
+    </div>
   );
 }
 

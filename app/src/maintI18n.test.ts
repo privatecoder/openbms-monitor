@@ -7,7 +7,7 @@ import type { MasterView } from "./api";
 const sources = import.meta.glob(["./views/PackBusPanel.tsx", "./views/MaintBanner.tsx", "./views/MaintSetup.tsx", "./views/Firmware.tsx", "./views/NameDialog.tsx", "./views/Installations.tsx", "./views/InstallationTransfer.tsx", "./views/Sidebar.tsx", "./maint.ts", "./maintStore.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 // every refusal key the backend can send
-const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "release-master-first-unread", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation", "installation-busy", "installation-connected", "merge-self", "history-preparing", "bundle-unreadable", "bundle-entry", "bundle-too-large", "bundle-no-manifest", "bundle-manifest", "bundle-format", "bundle-checksum", "bundle-missing", "bundle-symlink", "import-conflict", "import-master-differs", "import-id-exists", "disk-full", "installation-in-use"];
+const REFUSALS = ["no-control-channel", "control-on-pack-bus", "halt-not-offered", "release-not-offered", "release-master-first", "release-master-first-unread", "no-port", "no-serial", "name-required", "name-taken", "unknown-installation", "installation-busy", "installation-connected", "merge-self", "history-preparing", "bundle-unreadable", "bundle-entry", "bundle-too-large", "bundle-no-manifest", "bundle-manifest", "bundle-format", "bundle-checksum", "bundle-missing", "bundle-symlink", "import-conflict", "import-master-differs", "import-id-exists", "disk-full", "installation-in-use", "maintenance-open", "pending-on-port"];
 const keys = (o: unknown, prefix = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
 
 describe("maintenance texts", () => {
@@ -27,6 +27,7 @@ describe("maintenance texts", () => {
       ...["live", "scan", "halt", "release", "flash", "pack", "other"].map((a) => `conn.busyAction.${a}`),
       ...["ok", "failed", "pending", "open"].map((r) => `inst.flash.${r}`),
       ...["read", "written", "refused"].map((k) => `par.kind.${k}`),
+      ...["can", "pack"].map((b) => `conn.saveAsk.${b}`),
     ];
     for (const lng of ["de", "en"]) for (const k of dynamic) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });

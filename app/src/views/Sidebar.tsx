@@ -9,10 +9,10 @@ import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
 import { packBusy } from "../control";
-import { busyMessage, busyWaitStep, pickable, portBusy, preselect } from "../maint";
+import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, explain, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn, storedConn } from "../connCheck";
+import { BAUD, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -24,6 +24,11 @@ const BUSY_WAIT_MS = 30_000;
 const input = "h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-60";
 // the select's entry that opens the name dialog
 const NEW = "__new__";
+// „Nein“ to saving an endpoint: not asked again for it in this session
+const declined = new Set<string>();
+
+/** The offer under the connection status to store the connected endpoint as a port of the installation. */
+interface SaveAsk { inst: string; name: string; bus: Bus; kind: PortKind; target: string }
 
 export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onBoard, onDisconnected, view, setView, maint, packs, locked, maintenance, setMaintenance }: {
   connected: boolean;
@@ -83,6 +88,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [ids, setIds] = useState<IdentityView[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [bankError, setBankError] = useState<string | null>(null);
+  const [saveAsk, setSaveAsk] = useState<SaveAsk | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
   useEffect(loadPorts, [kind]);
@@ -174,7 +181,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const un = api.onBankLinked((name) => { setMsg((m) => [t("conn.linked", { name }), m].filter(Boolean).join(" ")); void maintRef.current.loadLists(); });
     return () => { un.then((f) => f()); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const forgetBank = () => { setIds([]); setBankError(null); clearUnchecked(); };
+  const forgetBank = () => { setIds([]); setBankError(null); clearUnchecked(); setSaveAsk(null); setSaveError(null); };
 
   // the installation of the connection: chosen at a manual connect, reused by every automatic reconnect
   const connInst = useRef<string | null>(null);
@@ -195,6 +202,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
       const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
       if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, packs: packCount });
+      // another port stored for this bus: offer to replace it (never stored without „Speichern“)
+      const owner = maint.installations.find((i) => i.id === connInst.current) ?? null;
+      const ask = owner && { inst: owner.id, name: owner.name, bus, kind, target };
+      if (ask && !retry && !linked && saveOffer(owner, bus, kind, target) && !declined.has(askKey(ask))) setSaveAsk(ask);
       // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
       const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
@@ -327,25 +338,27 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     return () => clearTimeout(timer);
   }, [kind, target, connected, lost, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Another installation chosen while not connected: its last working connection fills the fields (kind, address
-  // or port, bus, packs). The address counts as asked, so the gateway preselection above does not switch back.
+  // Another installation or bus chosen while not connected: the installation's stored port of the bus fills the
+  // fields, the last working connection the bus and pack count (`fillFields`). The address counts as asked, so the
+  // gateway preselection above does not switch back. A port edited in the installations view is taken over too.
+  const apply = (f: ReturnType<typeof fillFields>) => {
+    if (!f) return;
+    setKind(f.kind);
+    setTargets((cur) => ({ ...cur, [f.kind]: f.target }));
+    if (f.kind === "tcp") asked.current = f.target.trim().toLowerCase();
+    setBus(f.bus);
+    if (f.packs !== null) setPackCount(f.packs);
+  };
+  const cur = maint.installations.find((i) => i.id === maint.installation) ?? null;
+  const storedPorts = JSON.stringify([cur?.control ?? null, cur?.endpoints ?? []]);
   useEffect(() => {
     if (connected || lost || busy || !maint.installation) return;
-    const remembered = lastConn(maint.installation);
-    const inst = maint.installations.find((i) => i.id === maint.installation);
-    const last = remembered ?? (inst ? storedConn(inst) : null);
-    if (!last) return;
-    setKind(last.kind);
-    // a stored serial port may be another adapter of the same installation (e.g. one at the CAN socket): without a
-    // remembered connection only the kind switches, a port already entered stays
-    const keepPort = !remembered && last.kind === "serial" && !!targets.serial;
-    if (!keepPort) {
-      setTargets((cur) => ({ ...cur, [last.kind]: last.target }));
-      if (last.kind === "tcp") asked.current = last.target.trim().toLowerCase();
-    }
-    setBus(last.bus);
-    if (remembered) setPackCount(remembered.packs);
-  }, [maint.installation, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+    apply(fillFields(cur, bus, lastConn(maint.installation), "installation"));
+  }, [maint.installation, maint.loaded, storedPorts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const changeBus = (b: Bus) => {
+    setBus(b);
+    apply(fillFields(cur, b, maint.installation ? lastConn(maint.installation) : null, "bus"));
+  };
 
   // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port).
   useEffect(() => {
@@ -369,6 +382,21 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     } catch (e) { setBankError(t("bank.confirmFailed", { err: String(e) })); }
     finally { setConfirming(false); }
   };
+  const askKey = (a: SaveAsk) => `${a.inst}|${a.bus}|${portKey(a.kind, a.target)}`;
+  const savePort = async (a: SaveAsk) => {
+    const inst = maint.installations.find((i) => i.id === a.inst);
+    if (!inst) return;
+    setSaveError(null);
+    try {
+      await api.maintSaveInstallation(withPort(inst, a.bus, a.kind, a.target));
+      setSaveAsk(null); void maint.loadLists();
+    } catch (e) {
+      const k = errorKey(e);
+      setSaveError(t(k.key, refusalParams(inst, maint.alerts.pending, k.params)));
+    }
+  };
+  const declinePort = (a: SaveAsk) => { declined.add(askKey(a)); setSaveAsk(null); setSaveError(null); };
+
   // „Mit „B“ verbinden“: disconnect, choose B, connect with the same settings
   const connectWith = async (id: string) => {
     await disconnect();
@@ -437,6 +465,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <div className="flex items-center gap-1">
             <select className={input} value={target} disabled={fixed} onChange={(e) => setTarget(e.target.value)} aria-label={t("conn.port")}>
               <option value="">{t("conn.port")}</option>
+              {target && !ports.includes(target) && <option value={target}>{t("maint.setup.notPlugged", { port: target })}</option>}
               {ports.map((p) => <option key={p}>{p}</option>)}
             </select>
             <Button variant="ghost" size="icon" className="shrink-0" disabled={fixed} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
@@ -444,7 +473,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         )}
         <label className="block">
           <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
-          <select className={input} value={bus} disabled={fixed} onChange={(e) => setBus(e.target.value as Bus)}>
+          <select className={input} value={bus} disabled={fixed} onChange={(e) => changeBus(e.target.value as Bus)}>
             <option value="can">{t("conn.busCan")}</option>
             <option value="pack">{t("conn.busPack")}</option>
           </select>
@@ -466,6 +495,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
           {msg && <p title={msg} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{msg}</p>}
+          {saveAsk && connected && (
+            <div className="space-y-1 pt-1">
+              <p className="text-sm">{t(`conn.saveAsk.${saveAsk.bus}`, { name: saveAsk.name })}</p>
+              <div className="flex gap-1">
+                <Button variant="secondary" size="sm" disabled={locked} onClick={() => void savePort(saveAsk)}>{t("conn.saveYes")}</Button>
+                <Button variant="ghost" size="sm" onClick={() => declinePort(saveAsk)}>{t("conn.saveNo")}</Button>
+              </div>
+              {saveError && <p className="text-sm text-alarm">{saveError}</p>}
+            </div>
+          )}
           {offer && !busy && !connected && (
             <Button variant="secondary" size="sm" className="mt-1" disabled={locked} onClick={() => { setBus(offer); void connect(false, offer); }}>
               {t("conn.check.switch", { bus: t(`conn.busName.${offer}`) })}
