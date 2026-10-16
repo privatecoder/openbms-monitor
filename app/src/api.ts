@@ -164,6 +164,8 @@ export interface HistorySettings {
 export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; held?: boolean;
   /** why it waits: no read decided yet, only boards this installation does not know yet (until „Übernehmen“), a pack of another installation */
   held_reason?: "pending" | "confirm" | "foreign" | null; error: string | null }
+/** the frame capture under Diagnosis; `full`: it stopped itself at that limit */
+export type CaptureStatus = { running: boolean; entries: number; bytes: number; timeouts: number; span_ms: number; full: "entries" | "bytes" | null };
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
 export interface PackCols { current: Col; soc: Col; voltage: Col; cell_max: Col; cell_min: Col; delta: Col; temp_max: Col; temp_min: Col }
@@ -380,6 +382,13 @@ const tauriApi = {
   /** The window was not closed because a flash is running. */
   onFirmwareBusy: (f: () => void) => listen("firmware-busy", () => f()),
   revealFirmwareLogs: (path: string | null) => invoke<void>("reveal_firmware_logs", { path }),
+  /** frame capture: one at a time for the whole app; starting again continues it, a full one stays stopped until cleared */
+  captureStart: () => invoke<CaptureStatus>("capture_start"),
+  captureStop: () => invoke<CaptureStatus>("capture_stop"),
+  captureClear: () => invoke<CaptureStatus>("capture_clear"),
+  captureStatus: () => invoke<CaptureStatus>("capture_status"),
+  /** writes the capture as text to a .txt path from the save dialog; returns the number of entries */
+  captureExport: (path: string, lang: string) => invoke<number>("capture_export", { path, lang }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -387,6 +396,8 @@ export const isDemo = !inTauri;
 
 /** Preview only: ?balance=<pack> shows cells 3 and 7 of that pack as balancing. */
 const balanceDemo = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("balance");
+
+const idleCapture: CaptureStatus = { running: false, entries: 0, bytes: 0, timeouts: 0, span_ms: 0, full: null };
 
 /** Browser preview without Tauri: replays a recorded capture of a 12-pack system. */
 function demoApi(): typeof tauriApi {
@@ -567,6 +578,11 @@ function demoApi(): typeof tauriApi {
     bmsHistoryCancel: async () => { demoCancel = true; },
     onBmsHistoryProgress: (f) => sub(histL, f),
     saveBmsHistory: async () => {},
+    captureStart: async () => { throw new Error("desktop app only"); },
+    captureStop: async () => idleCapture,
+    captureClear: async () => idleCapture,
+    captureStatus: async () => idleCapture,
+    captureExport: async () => { throw new Error("desktop app only"); },
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     firmwareInspect: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },

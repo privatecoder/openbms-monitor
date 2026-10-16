@@ -288,6 +288,8 @@ fn enter_boot(
     let reset = frame::encode_request_version(0x26, address, 0x45, &[1, 6, 0])?;
     send(link, log_file, &reset)?;
     link.wait(options.boot_delay);
+    // from R F L on the frame capture leaves the bootloader out; the caller takes the link in again
+    link.pause_capture(true);
     let answer = boot_exchange(link, rfl, log_file, options).map_err(|e| match e {
         Error::Timeout { .. } => Error::NoBootloader(options.ack_timeout),
         other => other,
@@ -344,7 +346,9 @@ pub fn probe(
 ) -> Result<ProbeResult> {
     let before = preflight(link, address, log_file, options)?;
     let rfl = boot::encode(b'R', b'L', 0, &[])?;
-    let packet_size = enter_boot(link, address, log_file, options, &rfl)?;
+    let entered = enter_boot(link, address, log_file, options, &rfl);
+    link.pause_capture(false);
+    let packet_size = entered?;
     note(log_file, "probe complete; waiting for application")?;
     wait_for_app(link, address, log_file, options)?;
     Ok(ProbeResult {
@@ -381,6 +385,37 @@ fn uncertain(stage: &str, error: Error) -> Error {
     ))
 }
 
+/// The bootloader part of a flash: R F L, W F E, the data blocks, W F G. Returns the W F D reply times.
+fn boot_phase(
+    link: &mut impl Link,
+    address: u8,
+    frames: &[Vec<u8>],
+    log_file: &mut impl Write,
+    options: Options,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Vec<Duration>> {
+    let total = frames.len() - 3;
+    progress(Progress::Bootloader);
+    enter_boot(link, address, log_file, options, &frames[0])?;
+    note(
+        log_file,
+        "sending W F E; board is in update mode until application restart",
+    )?;
+    progress(Progress::Erase);
+    boot_exchange(link, &frames[1], log_file, options).map_err(|e| uncertain("W F E", e))?;
+    let mut wfd_times = Vec::with_capacity(total);
+    for (index, frame) in frames[2..frames.len() - 1].iter().enumerate() {
+        progress(Progress::Block { index, total });
+        let reply = boot_exchange(link, frame, log_file, options)
+            .map_err(|e| uncertain(&format!("W F D block {index}"), e))?;
+        wfd_times.push(reply.elapsed);
+    }
+    progress(Progress::Finalize);
+    boot_exchange(link, frames.last().unwrap(), log_file, options)
+        .map_err(|e| uncertain("W F G", e))?;
+    Ok(wfd_times)
+}
+
 /// Flash after the caller has validated the vendor image and obtained explicit operator consent.
 /// Every frame is precomputed before reset, including the unverified-checksum guard.
 pub fn flash(
@@ -406,24 +441,10 @@ pub fn flash_with_progress(
     let total = frames.len() - 3;
     progress(Progress::Preflight);
     let before = preflight(link, address, log_file, options)?;
-    progress(Progress::Bootloader);
-    enter_boot(link, address, log_file, options, &frames[0])?;
-    note(
-        log_file,
-        "sending W F E; board is in update mode until application restart",
-    )?;
-    progress(Progress::Erase);
-    boot_exchange(link, &frames[1], log_file, options).map_err(|e| uncertain("W F E", e))?;
-    let mut wfd_times = Vec::with_capacity(total);
-    for (index, frame) in frames[2..frames.len() - 1].iter().enumerate() {
-        progress(Progress::Block { index, total });
-        let reply = boot_exchange(link, frame, log_file, options)
-            .map_err(|e| uncertain(&format!("W F D block {index}"), e))?;
-        wfd_times.push(reply.elapsed);
-    }
-    progress(Progress::Finalize);
-    boot_exchange(link, frames.last().unwrap(), log_file, options)
-        .map_err(|e| uncertain("W F G", e))?;
+    // R F L up to and including W F G stay out of a frame capture, also when one of them fails
+    let wfd_times = boot_phase(link, address, &frames, log_file, options, progress);
+    link.pause_capture(false);
+    let wfd_times = wfd_times?;
     progress(Progress::AppRestart);
     let after = wait_for_app(link, address, log_file, options)
         .map_err(|e| uncertain("application restart", e))?;
