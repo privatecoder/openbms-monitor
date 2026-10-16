@@ -103,8 +103,12 @@ let last: LastRead | null = null;
 export const currentRun = () => run;
 export const lastRead = () => last;
 export const noteProgress = (n: number) => { if (run) run.n = n; };
-/** Whether something begun under the key `of` belongs to the installation of the key `now`. */
-export const sameInstallation = (of: string, now: string) => of.slice(0, of.lastIndexOf("|")) === now.slice(0, now.lastIndexOf("|"));
+/** Whether something begun under the key `of` belongs to the installation of the key `now`. Without an installation
+ *  („Nur ansehen“) nothing ties two connections together, so only the same connection counts. */
+export const sameInstallation = (of: string, now: string) => {
+  const inst = (k: string) => k.slice(0, k.lastIndexOf("|"));
+  return inst(of) === inst(now) && (inst(of) !== "" || of === now);
+};
 
 /** Start a read, or return the one already running. `read` is the backend call. Only this read's own end clears
  *  `run` and the sidebar's read mark. A backend read this UI lost track of (after a reload) ends as an error

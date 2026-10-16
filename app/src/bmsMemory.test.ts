@@ -113,5 +113,7 @@ describe("history read runner", () => {
     expect(sameInstallation("inst-a|3", "inst-b|3")).toBe(false);
     expect(sameInstallation("inst-a|3", "|3")).toBe(false);
     expect(sameInstallation("a|b|3", "a|b|5")).toBe(true);
+    expect(sameInstallation("|3", "|4")).toBe(false);
+    expect(sameInstallation("|3", "|3")).toBe(true);
   });
 });
