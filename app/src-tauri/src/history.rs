@@ -91,14 +91,15 @@ fn site_keys(db: &Connection) -> rusqlite::Result<()> {
 }
 
 /// 2: spread and current range per row, so the health report can tell rest from load in minute rows. A row with
-/// n = 1 is one answer and gets its own values; older minute rows stay NULL (their spread is not recoverable).
+/// n = 1 off the minute is one answer and gets its own values; minute rows stay NULL (their spread is not recoverable),
+/// also imported ones, which were always stored with n = 1 on the minute.
 fn pack_spread(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
         "ALTER TABLE pack ADD COLUMN spread_lo INTEGER;
          ALTER TABLE pack ADD COLUMN spread_hi INTEGER;
          ALTER TABLE pack ADD COLUMN i_lo INTEGER;
          ALTER TABLE pack ADD COLUMN i_hi INTEGER;
-         UPDATE pack SET spread_lo = cell_max - cell_min, spread_hi = cell_max - cell_min, i_lo = current, i_hi = current WHERE n = 1;",
+         UPDATE pack SET spread_lo = cell_max - cell_min, spread_hi = cell_max - cell_min, i_lo = current, i_hi = current WHERE n = 1 AND t % 60000 <> 0;",
     )
 }
 
@@ -725,8 +726,9 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
     };
     let (cell_max, cell_min) = (cells.iter().max().copied(), cells.iter().min().copied());
     // an exported row carries its ranges (null for a minute row from before they were kept); a minute row of an
-    // export without them has none: its averaged cells would understate the spread
-    let merged = tm["samples"].as_i64().is_some_and(|n| n > 1);
+    // export without them has none: its averaged cells would understate the spread. Older exports lack `samples`
+    // too, so an imported row on the minute counts as a minute row.
+    let merged = tm["samples"].as_i64().is_some_and(|n| n > 1) || (keep_existing && t % MINUTE_MS == 0);
     let range = |key: &str, scale: f64, own: Option<i64>| match tm.get(key) {
         Some(v) => scaled(v, scale),
         None if merged => None,
@@ -2030,11 +2032,13 @@ mod tests {
     fn old_minute_rows_get_no_spread_and_stay_out_of_the_report() {
         let path = old_db("spread");
         let b = 10 * DAY_MS;
-        // a minute row compacted by an earlier version (n = 6) and a single answer of the next day
+        // a minute row compacted by an earlier version (n = 6), an imported minute row (always stored with n = 1 on the
+        // minute) and a single answer of the next day
         Connection::open(&path)
             .unwrap()
             .execute_batch(&format!(
                 "INSERT INTO pack(pack, t, session, n, current, cell_max, cell_min, cycles) VALUES(3, {b} + 120000, 1, 6, 500, 3350, 3300, 40);
+                 INSERT INTO pack(pack, t, session, n, current, cell_max, cell_min, cycles) VALUES(3, {b} + 180000, 1, 1, 200, 3310, 3305, 40);
                  INSERT INTO pack(pack, t, session, n, current, cell_max, cell_min, cycles) VALUES(3, {b} + {DAY_MS} + 1500, 1, 1, -400, 3320, 3308, 41);
                  UPDATE sessions SET last = {b} + {DAY_MS} + 1500 WHERE id = 1;"
             ))
@@ -2044,12 +2048,17 @@ mod tests {
         let db = reader(&path).unwrap();
         let ranges = range_rows(&db, "SELECT n, cycles, spread_lo, spread_hi, i_lo, i_hi FROM pack WHERE pack = 3 AND site = (SELECT id FROM sites WHERE site = 'site-a') ORDER BY t");
         // site-a's two answers of the old file (compacted on open into one minute; without cell_min no spread), the old
-        // minute row, the single answer (compacted on open as well, on its own)
-        assert_eq!(ranges, vec![(2, None, (None, None, Some(1000), Some(3000))), (6, Some(40), (None, None, None, None)), (1, Some(41), (Some(12), Some(12), Some(-400), Some(-400)))]);
+        // minute row, the imported one (no ranges from minute averages), the single answer (compacted on open as well, on its own)
+        assert_eq!(ranges, vec![
+            (2, None, (None, None, Some(1000), Some(3000))),
+            (6, Some(40), (None, None, None, None)),
+            (1, Some(40), (None, None, None, None)),
+            (1, Some(41), (Some(12), Some(12), Some(-400), Some(-400))),
+        ]);
         let r = crate::health::report(&db, "site-a", &[b, b + DAY_MS, b + 2 * DAY_MS], &[]).unwrap();
         let days = &r.packs[0].days;
         // day 1: no spread, but the old row's cycles count
-        assert_eq!((days[0].rows, days[0].spread_p95, days[0].cycles), (2, None, Some(40)));
+        assert_eq!((days[0].rows, days[0].spread_p95, days[0].cycles), (3, None, Some(40)));
         assert_eq!((days[1].spread_p50, days[1].rest_p50, days[1].cycles), (Some(12), Some(12), Some(41)));
         assert_eq!(r.spread_from, Some(b + DAY_MS));
     }
@@ -2089,11 +2098,14 @@ mod tests {
         let dir = path.parent().unwrap();
         let out = dir.join("ranges.jsonl");
         export(&reader(&path).unwrap(), "gw", 0, DAY_MS, &[2], Format::Jsonl, &out).unwrap();
-        // an earlier version's export of a minute row (samples, no ranges) and a single answer
+        // an earlier version's export of a minute row (samples, no ranges), an even older one (no samples either, on the
+        // minute) and a single answer
         let old = dir.join("old.jsonl");
         let mut minute = pack_update(2, 1.0, &[3.30, 3.32], &[]);
         minute["telemetry"]["samples"] = json!(6);
-        std::fs::write(&old, format!("{}\n{}\n", json!({ "t": 5 * MINUTE_MS, "pack": minute }), json!({ "t": 6 * MINUTE_MS + 1, "pack": pack_update(2, 1.0, &[3.30, 3.32], &[]) }))).unwrap();
+        let lines = [json!({ "t": 5 * MINUTE_MS, "pack": minute }), json!({ "t": 6 * MINUTE_MS + 1, "pack": pack_update(2, 1.0, &[3.30, 3.32], &[]) }),
+            json!({ "t": 7 * MINUTE_MS, "pack": pack_update(2, 1.0, &[3.30, 3.32], &[]) })];
+        std::fs::write(&old, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         h.clear(None).unwrap();
         h.import(&out, "gw").unwrap();
         h.import(&old, "gw").unwrap();
@@ -2103,6 +2115,7 @@ mod tests {
             (0, Some(1), (Some(0), Some(20), Some(-20_000), Some(120))),
             (5 * MINUTE_MS, Some(1), (None, None, None, None)),
             (6 * MINUTE_MS + 1, Some(1), (Some(20), Some(20), Some(1000), Some(1000))),
+            (7 * MINUTE_MS, Some(1), (None, None, None, None)),
         ]);
     }
 
