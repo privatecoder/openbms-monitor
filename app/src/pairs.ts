@@ -60,6 +60,14 @@ export const PORT_GAP_V = 0.1;
 export const EQUALIZE_SOC = 3;
 
 /**
+ * Whether the states of charge explain the smaller share of a pack (SOC `mine`) against its partner (`other`):
+ * discharging (total < 0) the emptier pack gives less, charging the fuller pack takes less. The health report in
+ * the backend (`health.rs`) uses the same rule; both are tested against `equalize.vectors.json`.
+ */
+export const equalizes = (total: number, mine: number, other: number) =>
+  Math.abs(mine - other) >= EQUALIZE_SOC && ((total < 0 && mine < other) || (total > 0 && mine > other));
+
+/**
  * The check needs this much current per pack (median over all packs). Packs at different states of charge
  * equalize through their bridges, several amps with the bank idle (e.g. 70 % feeding 61 % with ~5 A). That
  * offset is independent of the load and decides the split at low currents (at 10 A per pack it can make the
@@ -101,13 +109,10 @@ export function checkPairs(
     const small = share < (was?.weak !== undefined || was?.equalizing ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
     const sa = soc?.(pair.plus), sb = soc?.(pair.minus);
     let weak = small, equalizing: PairCheck["equalizing"];
-    if (small !== undefined && sa !== undefined && sb !== undefined && Math.abs(sa - sb) >= EQUALIZE_SOC) {
-      const mine = small === pair.plus ? sa : sb, other = small === pair.plus ? sb : sa;
-      // discharging: the emptier pack gives less; charging: the fuller pack takes less
-      if ((total < 0 && mine < other) || (total > 0 && mine > other)) {
-        weak = undefined;
-        equalizing = { pack: small, soc: [sa, sb] };
-      }
+    if (small !== undefined && sa !== undefined && sb !== undefined
+      && equalizes(total, small === pair.plus ? sa : sb, small === pair.plus ? sb : sa)) {
+      weak = undefined;
+      equalizing = { pack: small, soc: [sa, sb] };
     }
     const below = totals.length > 1 && Math.abs(total) < m * (was?.lowTotal ? 0.9 : 0.85);
     // a strong partner at or above an average pack's share means the missing current is the weak pack's alone
