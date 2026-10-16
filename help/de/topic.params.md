@@ -1,6 +1,6 @@
 ---
 title: Parameter
-short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest und vergleicht sie und schreibt sie pro Pack auf Knopfdruck; dazu Seriennummern, BMS-Uhr, CAN-Protokoll und Kalibrierung. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
+short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest und vergleicht sie und schreibt sie auf Knopfdruck, auf ein Pack oder dieselbe Änderung auf mehrere; dazu Seriennummern, BMS-Uhr, CAN-Protokoll und Kalibrierung. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
 related: topic.buses, topic.switches, topic.paramWrite, topic.calibration, topic.control
 ---
 - **Aus den Packs lesen:** nur über RS485-1/2 (19200 Baud). Die CAN-Buchse kennt den Befehl nicht. Der **Master** (DIP 0 mit Slaves) antwortet auf RS485-1/2 nicht; seine Werte bekommst du über einen BatteryMonitor-Export oder wenn er kurz allein am Bus hängt.

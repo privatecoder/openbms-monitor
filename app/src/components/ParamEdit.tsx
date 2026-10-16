@@ -84,19 +84,8 @@ export function EditSwitch({ e, g, b, disabled, onChange }: { e: Edit; g: number
 
 const MAX_LINES = 10;
 
-/** The sticky bar of an edit: change list, datasheet findings, blockers, the capacity line, write and discard. */
-export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused, busy, locked, sources, onChange, onTakeOver, onWrite, onRestore, onDiscard }: {
-  e: Edit; pack: string; changes: Change[]; blockers: Blocker[];
-  /** a refusal of this pack whose switches are still live: writing waits for the restore */
-  refused: Refused | null;
-  /** datasheet findings of the changed values: index, level, limit text */
-  sheet: { index: number; level: ParamLevel; limit: string }[];
-  full: Full; note: Note | null; busy: boolean; locked: boolean;
-  /** other columns with values, for „Werte übernehmen aus …“ */
-  sources: { id: string; label: string }[];
-  onChange: (f: (e: Edit) => Edit) => void; onTakeOver: (id: string) => void;
-  onWrite: () => void; onRestore: (stored: Parameters) => void; onDiscard: () => void;
-}) {
+/** Texts of the write bar: a value with its unit, a parameter's name, a change line and a blocker. */
+export function useWriteTexts() {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const fmt = (i: number, raw: number) => {
@@ -104,19 +93,39 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
     return UNITS[i] ? `${v} ${UNITS[i]}` : v;
   };
   const pname = (i: number) => `P${i} ${helpTitle(`param.${KEYS[i]}`, lang)}`;
-  const swName = (g: number, b: number) => switchName(g, b, lang);
-  const line = (c: Change) => c.kind === "param"
-    ? `${pname(c.index)}: ${fmt(c.index, c.from)} → ${fmt(c.index, c.to)}`
-    : t("pw.switchLine", { name: swName(c.group, c.bit), g: c.group, b: c.bit, to: c.on ? t("par.on") : t("par.off") });
+  const swLine = (g: number, b: number, on: boolean) => t("pw.switchLine", { name: switchName(g, b, lang), g, b, to: on ? t("par.on") : t("par.off") });
+  const line = (c: Change) => c.kind === "param" ? `${pname(c.index)}: ${fmt(c.index, c.from)} → ${fmt(c.index, c.to)}` : swLine(c.group, c.bit, c.on);
   const blockText = (b: Blocker) =>
     b.kind === "input" ? t("pw.blocked.input", { p: pname(b.index) })
     : b.kind === "range" ? t("pw.blocked.range", { p: pname(b.index) })
     : b.kind === "series" ? t("pw.blocked.series")
     : t(b.v.op === "le" ? "pw.rule.le" : "pw.rule.ge", { p: pname(b.v.index), other: "other" in b.v ? `P${b.v.other}` : fmt(b.v.index, b.v.bound) });
+  return { fmt, pname, swLine, line, blockText };
+}
+
+/** The sticky bar of an edit: change list, datasheet findings, blockers, the capacity line, write and discard.
+ *  `more` sits next to the buttons and `extra` below the checks (further packs); `held` keeps the bar still while
+ *  a run over several packs is prepared or runs. */
+export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused, busy, locked, held, sources, writeLabel, more, extra, onChange, onTakeOver, onWrite, onRestore, onDiscard }: {
+  e: Edit; pack: string; changes: Change[]; blockers: Blocker[];
+  /** a refusal of this pack whose switches are still live: writing waits for the restore */
+  refused: Refused | null;
+  /** datasheet findings of the changed values: index, level, limit text */
+  sheet: { index: number; level: ParamLevel; limit: string }[];
+  full: Full; note: Note | null; busy: boolean; locked: boolean; held?: boolean;
+  /** other columns with values, for „Werte übernehmen aus …“ */
+  sources: { id: string; label: string }[];
+  writeLabel?: string; more?: React.ReactNode; extra?: React.ReactNode;
+  onChange: (f: (e: Edit) => Edit) => void; onTakeOver: (id: string) => void;
+  onWrite: () => void; onRestore: (stored: Parameters) => void; onDiscard: () => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language;
+  const { line, pname, blockText } = useWriteTexts();
   const fullAh = full && full.address === e.address && "ah" in full ? full.ah : null;
   const nf2 = new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const resets = capacityResets(fullAh, e.raws[RATED_INDEX]);
-  const canWrite = !busy && !locked && !refused && changes.length > 0 && blockers.length === 0;
+  const canWrite = !busy && !locked && !held && !refused && changes.length > 0 && blockers.length === 0;
   const capacityLine = (rated: number) => fullAh !== null && capacityResets(fullAh, rated) &&
     t("pw.full.resets", { full: nf2.format(fullAh), rated: nf2.format(fromRaw(RATED_INDEX, rated)) });
 
@@ -126,19 +135,20 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
         <span className="flex items-center gap-1.5 font-medium"><PenLine className="h-4 w-4" aria-hidden />
           {changes.length ? t("pw.count", { count: changes.length, pack }) : t("pw.none", { pack })}<InfoIcon id="topic.paramWrite" />
         </span>
-        <select value="" disabled={busy || !sources.length} onChange={(ev) => ev.target.value && onTakeOver(ev.target.value)} aria-label={t("pw.takeOver")}
+        <select value="" disabled={busy || held || !sources.length} onChange={(ev) => ev.target.value && onTakeOver(ev.target.value)} aria-label={t("pw.takeOver")}
           className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
           <option value="">{t("pw.takeOver")}</option>
           {sources.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
         </select>
         <label className="flex cursor-pointer items-center gap-2" title={t("pw.seriesHint")}>
-          <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={e.seriesUnlocked} disabled={busy}
+          <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={e.seriesUnlocked} disabled={busy || held}
             onChange={(ev) => onChange((x) => ({ ...x, seriesUnlocked: ev.target.checked }))} />
           {t("pw.unlockSeries")}
         </label>
         <span className="ml-auto flex gap-2">
-          <Button variant="primary" size="sm" disabled={!canWrite} onClick={onWrite}>{busy ? t("pw.writing") : t("pw.write", { pack })}</Button>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={onDiscard}>{t("pw.discard")}</Button>
+          {more}
+          <Button variant="primary" size="sm" disabled={!canWrite} onClick={onWrite}>{busy ? t("pw.writing") : writeLabel ?? t("pw.write", { pack })}</Button>
+          <Button variant="ghost" size="sm" disabled={busy || held} onClick={onDiscard}>{t("pw.discard")}</Button>
         </span>
       </div>
 
@@ -162,12 +172,13 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
         </ul>
       )}
 
+      {extra}
       {full?.address === e.address && "error" in full ? <p className="text-muted">{t("pw.full.unknown", { err: full.error })}</p>
         : full?.address !== e.address ? <p className="text-muted">{t("pw.full.reading")}</p>
         : resets && (
           <p className="flex flex-wrap items-center gap-2 text-discharge">
             <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden />{capacityLine(e.raws[RATED_INDEX])}
-            <Button size="sm" disabled={busy} onClick={() => onChange((x) => {
+            <Button size="sm" disabled={busy || held} onClick={() => onChange((x) => {
               const text = { ...x.text };
               delete text[RATED_INDEX];
               return { ...x, text, raws: x.raws.map((r, k) => (k === RATED_INDEX ? ratedFor(fullAh!) : r)) };

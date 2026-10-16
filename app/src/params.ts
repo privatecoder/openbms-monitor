@@ -105,6 +105,8 @@ export interface Source {
   suspectFrom?: number | null;
   /** the parameters as read, for saving and as the base of an edit */
   read?: Parameters;
+  /** pack columns: the link (`linkNow()`) the read belongs to; only columns of the current one are write targets */
+  link?: string;
   /** last write of this pack at this installation (ms) and the parameters it replaced */
   lastWritten?: number | null;
   previous?: Parameters | null;
