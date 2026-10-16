@@ -342,8 +342,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     if (!keepPort) {
       setTargets((cur) => ({ ...cur, [last.kind]: last.target }));
       if (last.kind === "tcp") asked.current = last.target.trim().toLowerCase();
-      setBus(last.bus);
     }
+    setBus(last.bus);
     if (remembered) setPackCount(remembered.packs);
   }, [maint.installation, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
