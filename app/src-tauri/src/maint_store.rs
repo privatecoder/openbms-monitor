@@ -165,8 +165,8 @@ impl ControlEndpoint {
 pub struct Installation {
     pub id: String,
     pub name: String,
-    /// pack bus endpoints in stored order (the first serial one is the RS485-1/2 port); an endpoint may belong
-    /// to several installations
+    /// pack bus endpoints in stored order (the first one that is not the CAN socket is the RS485-1/2 port,
+    /// `pack_port`); an endpoint may belong to several installations
     pub endpoints: Vec<String>,
     pub control: Option<ControlEndpoint>,
     /// the master's BMS serial number (0xA4 at address 0), stored at the first flash; set only by the store
@@ -382,9 +382,33 @@ impl Store {
         Ok(())
     }
 
-    /// Name, CAN socket and endpoints. Endpoints are shared freely between installations.
+    /// Name, CAN socket and endpoints. Endpoints are shared freely between installations; a port with open work on
+    /// it is not replaced (`port_change_allowed`).
     pub fn save_installation(&self, i: &Installation) -> Result<(), String> {
-        self.atomic(|s| s.save_rows(i))
+        self.atomic(|s| {
+            s.port_change_allowed(i)?;
+            s.save_rows(i)
+        })
+    }
+
+    /// Refused while a port to be changed is still needed: the CAN socket while the master's marker is set
+    /// ("maintenance-open": the release goes over the stored CAN socket), the RS485-1/2 port or a dropped endpoint
+    /// while a pack there may hang in its bootloader ("pending-on-port": its record and resume are kept by that key).
+    fn port_change_allowed(&self, i: &Installation) -> Result<(), String> {
+        let old = self.installation(&i.id)?;
+        if old.control.as_ref().map(ControlEndpoint::key) != i.control.as_ref().map(ControlEndpoint::key) && self.marker_last_on(&i.id)? {
+            return Err("maintenance-open".into());
+        }
+        let endpoints = i.endpoints.iter().map(|k| normalize_key(k)).collect::<Result<Vec<_>, _>>()?;
+        let new = Installation { endpoints, ..i.clone() };
+        let (old_pack, new_pack) = (pack_port(&old), pack_port(&new));
+        for ep in &old.endpoints {
+            let moved = Some(ep.as_str()) == old_pack && new_pack != old_pack;
+            if (moved || !new.endpoints.contains(ep)) && !self.pending_on(ep)?.is_empty() {
+                return Err("pending-on-port".into());
+            }
+        }
+        Ok(())
     }
 
     fn save_rows(&self, i: &Installation) -> Result<(), String> {
@@ -537,14 +561,22 @@ impl Store {
     }
 }
 
-/// How the endpoint of a connection becomes part of the installation chosen for it (`connect`).
+/// The installation's RS485-1/2 port: the first endpoint in stored order that is not its CAN socket, of any kind
+/// (twin of the frontend's `packPortOf`). None: not set up.
+pub fn pack_port(inst: &Installation) -> Option<&str> {
+    let ctl = inst.control.as_ref().map(ControlEndpoint::key);
+    inst.endpoints.iter().map(String::as_str).find(|k| Some(*k) != ctl.as_deref())
+}
+
+/// How the endpoint of a connection becomes part of the installation chosen for it (`connect`, `bank::settle`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum LinkPlan {
-    /// already known (its CAN socket or a listed endpoint), or nothing to do
+    /// already known (its CAN socket or a listed endpoint), or nothing stored: the installation has a port of that bus
+    /// and only the user replaces it (the sidebar offers „Speichern“)
     Known,
     /// on the CAN socket bus of an installation without a CAN socket: it becomes its CAN socket
     Control,
-    /// listed as an endpoint of the installation
+    /// RS485-1/2 of an installation without an RS485-1/2 port: it becomes that port
     Link,
 }
 
@@ -552,11 +584,11 @@ pub fn link_plan(inst: &Installation, key: &str, can_bus: bool) -> LinkPlan {
     if inst.control.as_ref().is_some_and(|c| c.key() == key) || inst.endpoints.iter().any(|k| k == key) {
         return LinkPlan::Known;
     }
-    match (can_bus, &inst.control) {
-        (true, None) => LinkPlan::Control,
-        // a second serial adapter on the CAN socket would pass for the RS485-1/2 port (the first serial endpoint)
-        (true, Some(_)) if !key.starts_with("tcp:") => LinkPlan::Known,
-        _ => LinkPlan::Link,
+    match can_bus {
+        // a CAN socket connection never becomes a pack bus endpoint
+        true if inst.control.is_none() => LinkPlan::Control,
+        false if pack_port(inst).is_none() => LinkPlan::Link,
+        _ => LinkPlan::Known,
     }
 }
 
@@ -1513,12 +1545,53 @@ mod tests {
         let i = s.installation(&a.id).unwrap();
         assert_eq!((i.control.clone(), i.endpoints.len(), i.last_connect), (Some(gw.clone()), 0, Some(5)));
         assert!(!s.link_connection(&a.id, "tcp:gw:4196", gw, true, 6).unwrap(), "known");
-        // a pack bus port is listed; a second serial adapter on the CAN socket is not (it would pass for RS485-1/2)
+        // the first pack bus port is listed; another CAN socket (USB or network) never goes into the pack endpoints
         assert!(s.link_connection(&a.id, "serial:/dev/p", ControlEndpoint::Serial { path: "/dev/p".into() }, false, 7).unwrap());
         assert!(!s.link_connection(&a.id, "serial:/dev/c", ControlEndpoint::Serial { path: "/dev/c".into() }, true, 8).unwrap());
-        assert!(s.link_connection(&a.id, "tcp:gw2:4196", ControlEndpoint::Tcp { addr: "gw2:4196".into() }, true, 9).unwrap());
-        assert_eq!(s.installation(&a.id).unwrap().endpoints, vec!["serial:/dev/p".to_string(), "tcp:gw2:4196".to_string()]);
+        assert!(!s.link_connection(&a.id, "tcp:gw2:4196", ControlEndpoint::Tcp { addr: "gw2:4196".into() }, true, 9).unwrap());
+        // a stored RS485-1/2 port is not replaced by another one at connect
+        assert!(!s.link_connection(&a.id, "tcp:gw3:4196", ControlEndpoint::Tcp { addr: "gw3:4196".into() }, false, 10).unwrap());
+        let i = s.installation(&a.id).unwrap();
+        assert_eq!((i.endpoints.clone(), i.control.clone(), i.last_connect), (vec!["serial:/dev/p".to_string()], Some(ControlEndpoint::Tcp { addr: "GW:4196".into() }), Some(10)));
         assert!(s.link_connection("nope", "tcp:x:1", ControlEndpoint::Tcp { addr: "x:1".into() }, true, 9).is_err());
+    }
+
+    #[test]
+    fn the_rs485_port_is_the_first_endpoint_that_is_not_the_can_socket() {
+        let inst = |control: Option<ControlEndpoint>, eps: &[&str]| Installation {
+            id: "i".into(), name: "I".into(), endpoints: eps.iter().map(|k| k.to_string()).collect(), control, master_serial: None, archived: false, legacy: None, last_connect: None,
+        };
+        let can = Some(ControlEndpoint::Serial { path: "/dev/cu.test-can".into() });
+        // of any kind, in stored order: a network gateway before a USB port wins
+        assert_eq!(pack_port(&inst(can.clone(), &["serial:/dev/cu.test-can", "tcp:192.0.2.7:4196", "serial:/dev/cu.test-a"])), Some("tcp:192.0.2.7:4196"));
+        assert_eq!(pack_port(&inst(can.clone(), &["serial:/dev/cu.test-a", "tcp:192.0.2.7:4196"])), Some("serial:/dev/cu.test-a"));
+        assert_eq!(pack_port(&inst(can, &["serial:/dev/cu.test-can"])), None);
+        assert_eq!(pack_port(&inst(None, &[])), None);
+    }
+
+    #[test]
+    fn a_port_with_open_work_is_not_replaced() {
+        let s = Store::open(&temp("ports-in-use")).unwrap();
+        let can = ControlEndpoint::Tcp { addr: "192.0.2.10:4196".into() };
+        let a = s.create_installation("A", Some(can.clone()), vec!["tcp:192.0.2.11:4196".into(), "serial:/dev/cu.test".into()]).unwrap();
+        // the marker is set: the CAN socket stays, the RS485-1/2 port may change
+        s.set_master_read(&a.id, "{}", true, 1).unwrap();
+        let other_can = Installation { control: Some(ControlEndpoint::Tcp { addr: "192.0.2.12:4196".into() }), ..a.clone() };
+        assert_eq!(s.save_installation(&other_can), Err("maintenance-open".to_string()));
+        assert_eq!(s.save_installation(&Installation { control: None, ..a.clone() }), Err("maintenance-open".to_string()));
+        s.save_installation(&Installation { name: "A2".into(), ..a.clone() }).unwrap();
+        s.set_master_read(&a.id, "{}", false, 2).unwrap();
+        s.save_installation(&Installation { name: "A".into(), ..a.clone() }).unwrap();
+        // an interrupted update on the RS485-1/2 port: neither replaced, nor moved back, nor dropped
+        s.add_pending("tcp:192.0.2.11:4196", 3, "16.06.13", 3).unwrap();
+        for eps in [vec!["serial:/dev/cu.test"], vec!["serial:/dev/cu.test", "tcp:192.0.2.11:4196"], vec![]] {
+            let i = Installation { endpoints: eps.iter().map(|k| k.to_string()).collect(), ..a.clone() };
+            assert_eq!(s.save_installation(&i), Err("pending-on-port".to_string()), "{eps:?}");
+        }
+        // the same port (written in another case) and other endpoints stay free; the CAN socket too
+        let i = Installation { endpoints: vec!["TCP:192.0.2.11:4196".into()], control: Some(ControlEndpoint::Tcp { addr: "192.0.2.12:4196".into() }), ..a.clone() };
+        s.save_installation(&i).unwrap();
+        assert_eq!(s.installation(&a.id).unwrap().endpoints, vec!["tcp:192.0.2.11:4196".to_string()]);
     }
 
     #[test]
@@ -1653,7 +1726,8 @@ mod tests {
         assert_eq!(s.markers_on().unwrap().iter().map(|m| (m.installation.as_str(), m.at)).collect::<Vec<_>>(), vec![("old", 7)]);
         assert!(s.marker_last_on("old").unwrap() && !s.marker_last_on("one").unwrap());
         // the copy runs once: endpoints removed later are not copied back at the next start
-        s.save_installation(&Installation { endpoints: vec![], ..old }).unwrap();
+        // (without the check of a port in use: the copied record stays open on purpose)
+        s.atomic(|s| s.save_rows(&Installation { endpoints: vec![], ..old })).unwrap();
         drop(s);
         let s = Store::open(&path).unwrap();
         assert!(s.installation("old").unwrap().endpoints.is_empty());

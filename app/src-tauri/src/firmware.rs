@@ -2,13 +2,12 @@
 //! the vendor allowlist; other images only after an explicit opt-in and their own confirmation phrase.
 //! The flash runs on its own thread and reports progress as events.
 
-use crate::maint_store::endpoint_key;
 use crate::{maint, reveal, stop_monitor, AppState};
 use openbms_flash::maint::policy::{self, Master};
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
 use openbms_proto::DeviceInfo;
-use openbms_transport::{Connection, Endpoint};
+use openbms_transport::Connection;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -17,8 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
-
-const PACK_BUS_BAUD: u32 = 19_200;
 
 #[derive(Serialize, Clone)]
 pub struct ImageInfo {
@@ -202,8 +199,9 @@ fn new_log(app: &AppHandle, state: &AppState, installation: Option<&str>, addres
     Ok((file, path, id))
 }
 
-fn open_port(port: &str, l: Lang) -> Result<Connection, String> {
-    let ep = Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD };
+/// The pack bus port by its endpoint key (`maint::pack_key`): USB at 19200 baud or a network gateway.
+fn open_port(key: &str, l: Lang) -> Result<Connection, String> {
+    let ep = maint::pack_endpoint(key).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
     let mut c = Connection::open(&ep).map_err(|e| openbms_flash::Error::from(e).text(l))?;
     c.set_label(crate::capture::label(&ep, openbms_transport::Bus::PackBus));
     Ok(c)
@@ -224,11 +222,11 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     if state.flashing.load(Ordering::SeqCst) {
         return Err(l.pick("Ein Firmware-Update läuft", "a firmware update is running").into());
     }
+    let key = maint::pack_key(&port).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
     stop_monitor(&state)?;
-    let mut link = open_port(&port, l)?;
+    let mut link = open_port(&key, l)?;
     let (mut log, _, _) = new_log(&app, &state, installation.as_deref(), address, "inspect", None)?;
     let info = session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))?;
-    let key = endpoint_key(false, &port);
     let _ = maint::with_store(&state, |s| s.clear_answered(&key, &[address], crate::history::now_ms()));
     Ok(info)
 }
@@ -256,8 +254,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     let _action = maint::begin_action(&state, "flash");
     let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
-    let key = endpoint_key(false, &port);
-    maint::with_store(&state, |s| s.pending_on(&key)).and_then(|p| maint::pending_refusal(&p, address)).map_err(to_text)?;
+    // the endpoint key as the UI formed it: the pending record below is written and checked under this one key
+    let key = maint::pack_key(&port).map_err(to_text)?;
+    maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
     let owner = maint::installation(&state, &installation).map_err(to_text)?;
     let inst = checks.then_some(owner);
     if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
@@ -276,7 +275,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     }
     let slot = FlashSlot(state.flashing.clone());
     stop_monitor(&state)?;
-    let mut link = open_port(&port, l)?;
+    let mut link = open_port(&key, l)?;
     let bank = match &inst {
         // a bus with traffic gets no 0xA4: the preflight refuses it anyway
         Some(_) if !bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?.quiet() => "unchecked",

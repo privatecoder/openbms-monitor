@@ -785,6 +785,24 @@ mod tests {
     }
 
     #[test]
+    fn a_decided_bank_links_its_port_only_where_none_is_stored() {
+        let s = Store::open(&temp("settle-stored")).unwrap();
+        let can = crate::maint_store::ControlEndpoint::Tcp { addr: "192.0.2.10:4196".into() };
+        let a = s.create_installation("A", Some(can), vec!["serial:/dev/cu.test".into()]).unwrap().id;
+        s.board_seen(&a, 1, &set("SYN-A1"), &NONE, 1).unwrap();
+        let state = AppState::default();
+        *state.maint.lock().unwrap() = Some(s);
+        crate::new_link(&state, Some(a.clone()));
+        let link = link_now(&state);
+        // RS485-1/2 over another gateway: the bank is decided, the stored USB port stays (the UI offers „Speichern“)
+        begin(&state, link.gen, true, Some(PendingLink { key: "tcp:192.0.2.11:4196".into(), control: crate::maint_store::ControlEndpoint::Tcp { addr: "192.0.2.11:4196".into() } }));
+        after_read(&state, &link, 1, &Identity::Known, &set("SYN-A1"), &NONE);
+        let i = crate::maint::with_store(&state, |s| s.installation(&a)).unwrap();
+        assert_eq!(i.endpoints, vec!["serial:/dev/cu.test".to_string()]);
+        assert!(i.last_connect.is_some(), "the connect itself is noted");
+    }
+
+    #[test]
     fn a_link_that_could_not_be_stored_is_tried_again() {
         let s = Store::open(&temp("relink")).unwrap();
         let a = s.create_installation("A", None, vec![]).unwrap().id;

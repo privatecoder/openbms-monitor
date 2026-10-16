@@ -46,6 +46,8 @@ struct AppState {
     memory_busy: Arc<AtomicBool>,
     /// Asks the running history read to stop after the current frame.
     memory_cancel: Arc<AtomicBool>,
+    /// Asks the running pack search on the pack bus to stop before the next address (`maint_scan_cancel`).
+    scan_cancel: Arc<AtomicBool>,
     /// The installation of the monitor connection (None: „Nur ansehen“ or not connected).
     link: Arc<Mutex<Link>>,
     /// Reserved packs and installations under a structural operation; see `control.rs`.
@@ -219,9 +221,16 @@ pub(crate) fn with_link<T>(conn: &Shared, flashing: &AtomicBool, links: &Mutex<L
     f(c).map_err(|e| e.to_string())
 }
 
+/// macOS ports that are never an RS485 adapter (debug console, Bluetooth, Wi-Fi debug); left out of every port list.
+fn rs485_candidate(port: &str) -> bool {
+    let name = port.rsplit('/').next().unwrap_or(port);
+    let name = name.strip_prefix("cu.").or_else(|| name.strip_prefix("tty.")).unwrap_or(name);
+    !["debug-console", "Bluetooth-Incoming-Port", "wlan-debug"].contains(&name)
+}
+
 #[tauri::command]
 fn list_ports() -> Vec<String> {
-    list_serial_ports()
+    list_serial_ports().into_iter().filter(|p| rs485_candidate(p)).collect()
 }
 
 /// What `connect` did with the installation: its endpoint was linked to it just now.
@@ -299,8 +308,9 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
     *state.main.lock().map_err(|e| e.to_string())? = Some((key.clone(), bus));
     let can = bus == Bus::CanSocketBus;
-    // the CAN socket shows no String 2: linked now. RS485-1/2: only once a serial read decided the bank (`bank.rs`), so
-    // a foreign bank never gets this endpoint linked to the installation
+    // the CAN socket shows no String 2: linked now, and only into an empty CAN socket. RS485-1/2: only once a serial
+    // read decided the bank (`bank.rs`), so a foreign bank never gets this endpoint linked to the installation, and
+    // only as its first RS485-1/2 port (`link_plan`); replacing a stored port is the user's „Speichern“
     let linked = match &installation {
         Some(id) if can => maint::with_store(&state, |s| s.link_connection(id, &key, control.clone(), can, history::now_ms())).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?,
         _ => false,
@@ -894,7 +904,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
@@ -912,6 +922,16 @@ pub fn run() {
 #[cfg(test)]
 mod port_reservation_tests {
     use super::*;
+
+    #[test]
+    fn system_ports_are_not_offered() {
+        for p in ["/dev/cu.debug-console", "/dev/tty.debug-console", "/dev/cu.Bluetooth-Incoming-Port", "/dev/tty.Bluetooth-Incoming-Port", "/dev/cu.wlan-debug", "/dev/tty.wlan-debug"] {
+            assert!(!rs485_candidate(p), "{p}");
+        }
+        for p in ["/dev/cu.test", "/dev/tty.usbserial-test", "COM3", "/dev/ttyUSB0", "/dev/cu.debug-console-2"] {
+            assert!(rs485_candidate(p), "{p}");
+        }
+    }
 
     #[test]
     fn only_one_operation_can_reserve_the_port_until_its_guard_drops() {
