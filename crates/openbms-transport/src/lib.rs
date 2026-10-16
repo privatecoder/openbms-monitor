@@ -690,14 +690,14 @@ mod tests {
 
     #[test]
     fn foreign_lines_do_not_extend_the_timeout() {
-        let port = Box::new(Polling { every: 15, reads: 0 });
+        let port = Box::new(Polling { every: 30, reads: 0 });
         let sink = Box::leak(Box::new(capture::Capture::new()));
-        let mut c = Connection { port, timeout: Duration::from_millis(200), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) };
+        let mut c = Connection { port, timeout: Duration::from_millis(400), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) };
         let t = Instant::now();
         let r = c.ascii(&Telemetry::request(0).unwrap(), 0);
         assert!(matches!(r, Err(Error::Timeout(_))));
-        // a line every ~150 ms: before the fix each one restarted the wait, ending only after the next line (≥ 300 ms)
-        assert!(t.elapsed() < Duration::from_millis(280), "{:?}", t.elapsed());
+        // a line every ~300 ms: before the fix it restarted the wait, ending only after the next line (≥ 600 ms)
+        assert!(t.elapsed() < Duration::from_millis(520), "{:?}", t.elapsed());
         assert!(c.rx.intra >= 1);
     }
 
