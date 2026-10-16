@@ -34,12 +34,19 @@ pub(crate) fn settings_changed(state: &AppState, installation: &str, text: Optio
     }
 }
 
+/// The stored settings of `installation` changed by a merge or an import: the connection uses them from now on.
+pub(crate) fn reload(state: &AppState, installation: &str) {
+    if let Ok(text) = maint::with_store(state, |s| s.notifications(installation)) {
+        settings_changed(state, installation, text.as_deref());
+    }
+}
+
 /// One poll of `address` on connection `gen`, as fresh as it came.
 pub(crate) fn answer(state: &AppState, gen: u64, address: u8, t: Option<&Telemetry>, s: Option<&Status>) {
-    let confirmed = bank::notify_allowed(state, gen, address);
+    let check = bank::notify_check(state, gen, address);
     let reading = Reading::of(t, s);
     if let Ok(mut n) = state.notify.lock() {
-        n.answer(gen, address, now_ms(), confirmed, reading.as_ref());
+        n.answer(gen, address, now_ms(), check, reading.as_ref());
     }
 }
 
@@ -112,17 +119,25 @@ pub fn notify_test(app: AppHandle, state: State<AppState>, installation: Option<
     show(&app, &title, &texts.test)
 }
 
-/// For the settings: the installation of the connection and whether notifications are off for it (CAN socket, master
-/// not matched).
+/// For the settings: the installation of the connection and why notifications are off for it: CAN socket with the
+/// master not matched (`can_no_serial`: no battery serial stored for address 0 to compare with), RS485-1/2 with no pack
+/// confirmed yet.
 #[derive(Serialize)]
 pub struct NotifyStatus {
     installation: Option<String>,
     can_unchecked: bool,
+    can_no_serial: bool,
+    none_confirmed: bool,
 }
 
 #[tauri::command]
 pub fn notify_status(state: State<AppState>) -> NotifyStatus {
     let link = link_now(&state);
-    let can_unchecked = link.installation.is_some() && bank::can_unchecked(&state, link.gen);
-    NotifyStatus { installation: link.installation, can_unchecked }
+    let Some(inst) = link.installation.clone() else {
+        return NotifyStatus { installation: None, can_unchecked: false, can_no_serial: false, none_confirmed: false };
+    };
+    let can_unchecked = bank::can_unchecked(&state, link.gen);
+    let can_no_serial = can_unchecked
+        && maint::with_store(&state, |s| Ok(s.current_board(&inst, 0)?.and_then(|b| b.battery_serial))).is_ok_and(|b| b.is_none());
+    NotifyStatus { installation: Some(inst), can_unchecked, can_no_serial, none_confirmed: bank::none_confirmed(&state, link.gen) }
 }
