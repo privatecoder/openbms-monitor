@@ -186,6 +186,8 @@ fn read_boot(
                 }
             }
         } else if pending.len() > 3 {
+            // Only noise before "::::" is trimmed; a started frame stays
+            // until the deadline, even across quiet reads.
             let keep = pending.split_off(pending.len() - 3);
             pending = keep;
         }
@@ -491,5 +493,53 @@ mod tests {
             (even.min, even.median, even.max),
             (ms(153), ms(193), ms(233))
         );
+    }
+
+    /// Hands out scripted chunks; an empty chunk stands for a quiet 100-ms read.
+    struct Chunks(std::collections::VecDeque<Vec<u8>>);
+
+    impl Link for Chunks {
+        fn clear_input(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn write_raw(&mut self, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn read_raw(&mut self, out: &mut [u8]) -> Result<usize> {
+            let chunk = self.0.pop_front().unwrap_or_default();
+            out[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+        fn wait(&mut self, _: Duration) {}
+    }
+
+    fn read_chunks(chunks: Vec<Vec<u8>>) -> Result<boot::Frame> {
+        let mut link = Chunks(chunks.into());
+        let started = Instant::now();
+        read_boot(
+            &mut link,
+            &mut std::io::sink(),
+            Duration::from_millis(200),
+            started,
+        )
+        .map(|(frame, _)| frame)
+    }
+
+    #[test]
+    fn boot_reply_survives_quiet_reads_between_its_fragments() {
+        let reply = boot::encode(b'R', b'B', 0, &[1, 0]).unwrap();
+        let mut head = b"noise".to_vec();
+        head.extend_from_slice(&reply[..10]);
+        let frame = read_chunks(vec![head, Vec::new(), Vec::new(), reply[10..].to_vec()]).unwrap();
+        assert_eq!((frame.cid1, frame.cid3), (b'R', b'B'));
+    }
+
+    #[test]
+    fn boot_header_split_inside_the_colons_is_kept_across_quiet_reads() {
+        let reply = boot::encode(b'W', b'B', 0, &[]).unwrap();
+        let mut head = b"xyz".to_vec();
+        head.extend_from_slice(&reply[..3]);
+        let frame = read_chunks(vec![head, Vec::new(), reply[3..].to_vec()]).unwrap();
+        assert_eq!((frame.cid1, frame.cid3), (b'W', b'B'));
     }
 }
