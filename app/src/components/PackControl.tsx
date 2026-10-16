@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive } from "../api";
 import { refusal } from "../calibration";
-import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
@@ -97,7 +97,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const failed = (e: unknown, refused = t("ctl.refused")) => {
     const r = refusal(e);
     // a silent pack: most likely a master that polls its slaves
-    const text = r === "refused" ? refused : r === "invalid" ? t("ctl.invalid") : noAnswer(e) ? t("ctl.silent") : t("ctl.error", { err: errorText(e, t) });
+    const text = r === "refused" ? refused : r === "invalid" ? t("ctl.invalid") : noAnswer(e) ? t("ctl.silent") : writeError(e, t, (err) => t("ctl.error", { err }));
     return { text, tone: "error" as const };
   };
 

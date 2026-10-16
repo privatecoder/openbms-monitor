@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
-import { api, isDemo, type Bus, type DeviceInfo, type Endpoint, type SerialNumbers } from "../api";
+import { api, isDemo, type Bus, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
+import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -9,7 +10,7 @@ import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
 import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, pickable, portBusy, preselect } from "../maint";
-import { RecordingEntry } from "./Recording";
+import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
 import { BAUD, explain, firstLine, noAnswer, otherBus, padAddress, partialLine } from "../connCheck";
 
@@ -75,7 +76,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [since, setSince] = useState(0);
   const [lastTry, setLastTry] = useState(0);
   const now = useNow();
+  const maintRef = useRef(maint); maintRef.current = maint;
+  const recStatus = useHistoryStatus().status;
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
+  // what the serial reads of this connection say about each pack's board (right bank before writing)
+  const [ids, setIds] = useState<IdentityView[]>([]);
+  const [confirming, setConfirming] = useState(false);
+  const [bankError, setBankError] = useState<string | null>(null);
 
   const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
   useEffect(loadPorts, [kind]);
@@ -92,7 +99,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(stopWaiting, [target, kind, bus, packCount, userActions]);
   useEffect(() => { setOffer(null); }, [target, kind, bus]);
   useEffect(() => stopWaiting, []);
-  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<{ linked: boolean; answered: number }> => {
+  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<{ linked: boolean; answered: number; gen: number }> => {
     const token = ++waitToken.current;
     const until = Date.now() + BUSY_WAIT_MS;
     let action: string | null = null;
@@ -119,22 +126,34 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // other between the polls. A new connection or a disconnect starts a new generation, which ends the old reads;
   // a failed read (port held by a flash, pack silent) leaves the value unknown without a message.
   const serialGen = useRef(0);
-  const readSerials = async (addresses: number[]) => {
+  // `linkGen`: the backend's connection generation; when the reads end (also with no pack, or all failed) the backend
+  // decides whether this connection records (`bank_reads_done`)
+  const readSerials = async (addresses: number[], linkGen: number) => {
     const gen = ++serialGen.current;
-    // a pack busy with another action (a write, the parameter read) is asked again at the end, at most three times
-    const queue = addresses.map((a) => ({ a, tries: 0 }));
+    try { await readEach(addresses, gen); } finally { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); }
+  };
+  const readEach = async (addresses: number[], gen: number) => {
+    // a pack busy with another action (a write, the parameter read) is asked again at the end, at most three times; a
+    // failed read once more at the end (reads that collided would otherwise keep the recorder waiting)
+    const queue = addresses.map((a) => ({ a, tries: 0, again: false }));
     for (let q = queue.shift(); q; q = queue.shift()) {
       const { a } = q;
       if (gen !== serialGen.current) return;
       let busyNow = false;
       const s = await api.serialNumbers(a).catch((e) => { busyNow = !!packBusy(e); return null; });
       if (busyNow && q.tries < 3) {
-        queue.push({ a, tries: q.tries + 1 });
+        queue.push({ ...q, tries: q.tries + 1 });
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
+      if ((!s || s.identity?.kind === "failed") && !q.again) {
+        queue.push({ ...q, again: true });
+        if (!s) continue;
+      }
       if (s && gen === serialGen.current) {
         onSerials(a, s);
+        const id = s.identity;
+        if (id) setIds((all) => withIdentity(all, id));
         if (s.board?.kind === "other" && s.bms.kind === "set") onBoard({ address: a, serial: s.bms.value, previous: s.board.previous });
       }
     }
@@ -145,13 +164,26 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const un = api.onMonitorStopped(() => { serialGen.current += 1; });
     return () => { un.then((f) => f()); };
   }, []);
+  // a write's check (or a read elsewhere) found a pack this installation does not know yet: the line lists it too
+  useEffect(() => {
+    const un = api.onBankUnconfirmed((v) => setIds((all) => withIdentity(all, v)));
+    return () => { un.then((f) => f()); };
+  }, []);
+  // RS485-1/2: the endpoint is linked to the installation once the bank is decided
+  useEffect(() => {
+    const un = api.onBankLinked((name) => { setMsg((m) => [t("conn.linked", { name }), m].filter(Boolean).join(" ")); void maintRef.current.loadLists(); });
+    return () => { un.then((f) => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const forgetBank = () => { setIds([]); setBankError(null); clearUnchecked(); };
 
   // the installation of the connection: chosen at a manual connect, reused by every automatic reconnect
   const connInst = useRef<string | null>(null);
-  // `useBus`: the bus offered after a failed check (the select is set as well)
-  const connect = async (retry = false, useBus: Bus = bus) => {
+  // `useBus`: the bus offered after a failed check (the select is set as well); `inst`: the installation to connect
+  // with when it was switched just now („Mit „B“ verbinden“), before this closure sees the new choice
+  const connect = async (retry = false, useBus: Bus = bus, inst?: string | null) => {
     serialGen.current += 1;
-    if (!retry) connInst.current = maint.installation;
+    forgetBank();
+    if (!retry) connInst.current = inst !== undefined ? inst : maint.installation;
     const bus = useBus;
     setBusy(true); setFailed(false); setOffer(null); if (!retry) { setMsg(null); setLost(false); }
     setLastTry(Date.now());
@@ -161,9 +193,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
-      const { linked, answered } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
       // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
-      const linkedNote = linked ? t("conn.linked", { name: maint.current?.name ?? "" }) : "";
+      const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
       const answeredNote = t("conn.answered", { addr: padAddress(answered), bus: t(`conn.busName.${bus}`) });
       // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
@@ -192,8 +224,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           if (gen !== serialGen.current) return;
           const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
           if (gaps) setMsg(`${base} ${gaps}`);
-          onDevices(found); void readSerials(found.map(([a]) => a));
-        }).catch(() => {});
+          onDevices(found); void readSerials(found.map(([a]) => a), linkGen);
+        }).catch(() => { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); });
         return;
       }
       const found = await api.scan();
@@ -203,7 +235,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       setSince(Date.now()); setLost(false);
       // on the CAN socket bus the system values are polled even if no pack answered
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
-      void readSerials(found.map(([a]) => a));
+      void readSerials(found.map(([a]) => a), linkGen);
     } catch (e) {
       // a cancelled wait never opened the port: nothing to close, no error
       if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
@@ -229,7 +261,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const disconnect = async () => {
-    stopWaiting(); serialGen.current += 1;
+    stopWaiting(); serialGen.current += 1; forgetBank();
     // a running pack action (a restart up to 15 s) ends first
     setMsg(t("conn.disconnectWait"));
     await api.disconnect();
@@ -247,7 +279,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
-    serialGen.current += 1;
+    serialGen.current += 1; forgetBank();
     setLost(true);
     setMsg(text);
     setLastTry(Date.now());
@@ -302,6 +334,26 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
 
 
   const fixed = connected || lost || busy || locked;
+  const line = connected ? bankLine(ids) : null;
+  const noSerial = connected ? noSerialPacks(ids) : [];
+  const instName = maint.current?.name ?? "";
+  // „Übernehmen“: the listed packs belong to this installation; they count as known from now on
+  const confirm = async (addresses: number[]) => {
+    const inst = connInst.current;
+    if (!inst || !addresses.length) return;
+    setConfirming(true); setBankError(null);
+    try {
+      const done = await api.bankConfirm(inst, addresses);
+      setIds((all) => all.map((v) => (done.includes(v.address) ? { ...v, kind: "known" } : v)));
+    } catch (e) { setBankError(t("bank.confirmFailed", { err: String(e) })); }
+    finally { setConfirming(false); }
+  };
+  // „Mit „B“ verbinden“: disconnect, choose B, connect with the same settings
+  const connectWith = async (id: string) => {
+    await disconnect();
+    await maint.switchTo(id);
+    await connect(false, bus, id);
+  };
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
@@ -398,6 +450,37 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
               {t("conn.check.switch", { bus: t(`conn.busName.${offer}`) })}
             </Button>
           )}
+          {line?.kind === "foreign" && (
+            <div className="space-y-1 pt-1">
+              <p className="text-sm text-alarm">{t("bank.foreign", { count: line.packs.length, packs: packList(line.packs), other: line.other.name })}</p>
+              <div className="flex flex-wrap gap-1">
+                <Button variant="secondary" size="sm" disabled={locked || busy} onClick={() => void disconnect()}>{t("bank.disconnect")}</Button>
+                <Button variant="secondary" size="sm" disabled={locked || busy} onClick={() => void connectWith(line.other.id)}>{t("bank.connectOther", { other: line.other.name })}</Button>
+              </div>
+              {!line.hint && line.confirm.length > 0 && (
+                <button className="text-xs text-muted underline hover:text-ink disabled:opacity-60" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>
+                  {t("bank.adoptAnyway", { name: instName })}
+                </button>
+              )}
+            </div>
+          )}
+          {line?.kind === "new" && (
+            <div className="space-y-1 pt-1">
+              <p className="text-sm text-discharge">
+                {t("bank.new", { count: line.packs.length, packs: packList(line.packs), name: instName })}
+              </p>
+              <Button variant="secondary" size="sm" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
+            </div>
+          )}
+          {noSerial.length > 0 && (
+            <p className="pt-1 text-xs text-muted">
+              {t("bank.noSerial", { count: noSerial.length, packs: packList(noSerial) })}{" "}
+              <button className="underline hover:text-ink disabled:opacity-60" disabled={locked} onClick={() => { setMaintenance(true); setView("params"); }}>{t("bank.openParams")}</button>
+            </p>
+          )}
+          {bankError && <p className="text-sm text-alarm">{bankError}</p>}
+          {/* from the backend's decision (it also learns from writes' checks and parameter reads) */}
+          {connected && recStatus?.held && <p className="text-xs text-muted">{recStatus.held_reason === "confirm" ? t("bank.afterConfirm") : t("rec.held")}</p>}
           {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
           {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
         </div>

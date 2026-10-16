@@ -4,6 +4,7 @@ import { KEYS, UNITS, type Parameters } from "./params";
 import { CAN_PROTOCOLS, type Calibration } from "./calibration";
 import type { RestartResult } from "./control";
 import { fromRaw, isSigned, toRaw, violations, type Wire } from "./paramWrite";
+import { noteUnchecked } from "./bank";
 
 export type Bus = "pack" | "can";
 /** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
@@ -39,8 +40,18 @@ export interface SerialNumbers { battery: SerialValue; bms: SerialValue }
 /** What a serial number read says about the board at its place: new (first identified there), same, other (another
  *  real String 2 than the newest board's: a new board row), unclear (String 2 not readable: nothing claimed). */
 export type BoardSeen = { kind: "new" } | { kind: "same" } | { kind: "other"; previous: string } | { kind: "unclear" };
-/** A serial number read; `board` is null with „Nur ansehen“ (nothing stored). */
-export type SerialRead = SerialNumbers & { board?: BoardSeen | null };
+/** The other installation a board belongs to. */
+export type OtherInstallation = { id: string; name: string; archived: boolean };
+/** What a pack's BMS serial says about it against the connection's installation (`bank.rs`): known, unconfirmed (new:
+ *  unknown everywhere, moved: this installation's at another address, foreign: another installation's; nothing is
+ *  recorded until the user confirms), unchecked (no serial to compare), failed (no answer). `hint`: CAN socket bus,
+ *  from the master's battery serial, nothing to confirm. */
+export type IdentityView = {
+  kind: "known" | "unconfirmed" | "unchecked" | "failed"; address: number; serial: string | null;
+  why: "new" | "moved" | "foreign" | null; installation: OtherInstallation | null; hint: boolean;
+};
+/** A serial number read; `board` is null with „Nur ansehen“ (nothing stored), `identity` null with „Nur ansehen“. */
+export type SerialRead = SerialNumbers & { board?: BoardSeen | null; identity?: IdentityView | null };
 export interface Telemetry {
   address: number;
   cell_voltages: number[];
@@ -149,7 +160,10 @@ export interface HistorySettings {
   /** days minute values are kept after that, 0 = forever */
   keep_minutes_days: number;
 }
-export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; error: string | null }
+/** `held`: connected, but recording waits until the bank is checked (right bank before writing) */
+export interface HistoryStatus { settings: HistorySettings; active: boolean; path: string | null; bytes: number; rows: number; preparing?: boolean; held?: boolean;
+  /** why it waits: no read decided yet, only boards this installation does not know yet (until „Übernehmen“), a pack of another installation */
+  held_reason?: "pending" | "confirm" | "foreign" | null; error: string | null }
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
 export interface PackCols { current: Col; soc: Col; voltage: Col; cell_max: Col; cell_min: Col; delta: Col; temp_max: Col; temp_min: Col }
@@ -222,13 +236,18 @@ export const setChosenInstallation = (id: string | null) => { chosen = id; };
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** A write's result from the backend: the value and whether the target had no serial to check the bank with. The
+ *  wrapper hands on the value and reports `unchecked` to the note in the Parameters view (`bank.ts`). */
+const written = <T,>(address: number, p: Promise<{ value: T; unchecked: boolean }>): Promise<T> =>
+  p.then((r) => { if (r.unchecked) noteUnchecked(address); return r.value; });
+
 const tauriApi = {
   listPorts: () => invoke<string[]>("list_ports"),
   /** `installation` null: „Nur ansehen“ (nothing stored, no writes). `linked`: the endpoint was linked to it just now. */
   /** opens the port and checks that a pack answers (`addresses` first, then the rest of 0..15); no answer: error
    *  JSON `{ code: "no-answer", noise, intra }`, the port is closed again */
   connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
-    invoke<{ linked: boolean; answered: number }>("connect", { endpoint, installation, addresses: addresses ?? null }),
+    invoke<{ linked: boolean; answered: number; gen: number }>("connect", { endpoint, installation, addresses: addresses ?? null }),
   /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
   probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
@@ -249,6 +268,14 @@ const tauriApi = {
   onLinkLost: (f: (err: string) => void) => listen<string>("link-lost", (e) => f(e.payload)),
   /** The pack bus panel or a flash stopped the monitor to use the pack port: not a lost link. */
   onMonitorStopped: (f: () => void) => listen("monitor-stopped", () => f()),
+  /** a serial read or a write's check found a pack whose board this installation does not know yet */
+  onBankUnconfirmed: (f: (v: IdentityView) => void) => listen<IdentityView>("bank-unconfirmed", (e) => f(e.payload)),
+  /** „Übernehmen“: the listed unconfirmed packs of this connection belong to `installation`; returns those recorded */
+  bankConfirm: (installation: string, addresses: number[]) => invoke<number[]>("bank_confirm", { installation, addresses }),
+  /** the serial reads after connection `gen` have ended (also with no pack found): a bank nothing decided records */
+  bankReadsDone: (gen: number) => invoke<void>("bank_reads_done", { gen }),
+  /** RS485-1/2: the endpoint was linked to the installation once its bank was decided; the installation's name */
+  onBankLinked: (f: (name: string) => void) => listen<string>("bank-linked", (e) => f(e.payload)),
   loadUserCells: () => invoke<unknown[]>("load_user_cells"),
   saveUserCells: (cells: unknown[]) => invoke<void>("save_user_cells", { cells }),
   historyStatus: () => invoke<HistoryStatus>("history_status"),
@@ -270,29 +297,29 @@ const tauriApi = {
   /** RS485-1/2 only, like the parameters */
   bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
   /** sets the clock to `time` and returns the clock read back */
-  setBmsClock: (address: number, time: BmsTime) => invoke<BmsTime>("set_bms_clock", { address, time, installation: chosen }),
+  setBmsClock: (address: number, time: BmsTime) => written(address, invoke<{ value: BmsTime; unchecked: boolean }>("set_bms_clock", { address, time, installation: chosen })),
   /** RS485-1/2 only: telemetry and status of one pack, for the calibration's live values */
   packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
   /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
-  bmsCalibrate: (address: number, calibration: Calibration) => invoke<void>("bms_calibrate", { address, calibration, installation: chosen }),
+  bmsCalibrate: (address: number, calibration: Calibration) => written(address, invoke<{ value: void; unchecked: boolean }>("bms_calibrate", { address, calibration, installation: chosen })),
   /** RS485-1/2 only, 1…6; once accepted, the device info read back or why that read failed */
-  setCanProtocol: (address: number, protocol: number) => invoke<CanProtocolSet>("set_can_protocol", { address, protocol, installation: chosen }),
+  setCanProtocol: (address: number, protocol: number) => written(address, invoke<{ value: CanProtocolSet; unchecked: boolean }>("set_can_protocol", { address, protocol, installation: chosen })),
   /** RS485-1/2 only: reads 0x47 again, writes `edited` (changes against `base`) on top of it and reads back;
    *  `restore` sends `edited` as it is (the stored block after a refusal) */
-  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean) => invoke<ParamWrite>("write_parameters", { address, base, edited, restore, installation: chosen }),
+  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean) => written(address, invoke<{ value: ParamWrite; unchecked: boolean }>("write_parameters", { address, base, edited, restore, installation: chosen })),
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
   /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
-  setSerial: (address: number, which: "battery" | "bms", text: string) => invoke<SerialSet>("set_serial", { address, which, text, installation: chosen }),
+  setSerial: (address: number, which: "battery" | "bms", text: string) => written(address, invoke<{ value: SerialSet; unchecked: boolean }>("set_serial", { address, which, text, installation: chosen })),
   /** RS485-1/2 only, one pack each; every one fails with `{"kind":"pack-busy",…}` while another action holds the pack
    *  (see `packBusy` in control.ts) and with a refusal like `bmsCalibrate`. Restart: 0x51 before, then up to 15 s
    *  watching for the pack to answer again */
-  packRestart: (address: number) => invoke<RestartResult>("pack_restart", { address, installation: chosen }),
-  packOnOff: (address: number, on: boolean) => invoke<void>("pack_on_off", { address, on, installation: chosen }),
-  packHeater: (address: number, on: boolean) => invoke<void>("pack_heater", { address, on, installation: chosen }),
+  packRestart: (address: number) => written(address, invoke<{ value: RestartResult; unchecked: boolean }>("pack_restart", { address, installation: chosen })),
+  packOnOff: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen })),
+  packHeater: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_heater", { address, on, installation: chosen })),
   /** history, energy counters and cycle count to 0; not reversible */
-  packClearHistory: (address: number) => invoke<void>("pack_clear_history", { address, installation: chosen }),
+  packClearHistory: (address: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_clear_history", { address, installation: chosen })),
   /** remaining capacity in 10 mAh; RAM only until the BMS saves its state */
-  packSetRemaining: (address: number, raw: number) => invoke<void>("pack_set_remaining", { address, raw, installation: chosen }),
+  packSetRemaining: (address: number, raw: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_set_remaining", { address, raw, installation: chosen })),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -383,7 +410,7 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => ({ linked: false, answered: 0 }),
+    connect: async () => ({ linked: false, answered: 0, gen: 0 }),
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     disconnect: async () => { clearInterval(timer); },
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
@@ -415,6 +442,10 @@ function demoApi(): typeof tauriApi {
     onSystem: (f) => sub(sysL, f),
     onLinkLost: async () => () => {},
     onMonitorStopped: async () => () => {},
+    onBankUnconfirmed: async () => () => {},
+    bankConfirm: async (_installation, addresses) => addresses,
+    bankReadsDone: async () => {},
+    onBankLinked: async () => () => {},
     // preview: keep own cells in browser storage
     // errors are passed on, so the cell store can refuse to report success or overwrite unreadable data
     loadUserCells: async () => JSON.parse(localStorage.getItem("cells.user") ?? "[]"),
