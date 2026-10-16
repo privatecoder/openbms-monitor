@@ -223,7 +223,7 @@ function Ports({ inst, maint }: { inst: Installation; maint: Maint }) {
         {!editing && <Button size="sm" variant="ghost" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" />{t("inst.ports.edit")}</Button>}
       </div>
       {editing ? (
-        <MaintSetup installation={inst} pending={maint.alerts.pending} disabled={false}
+        <MaintSetup installation={inst} pending={maint.alerts.pending} markerOn={maint.alerts.markers.some((m) => m.installation === inst.id)} disabled={false}
           onSaved={() => { setEditing(false); void maint.loadLists(); }} onCancel={() => setEditing(false)} />
       ) : (
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">

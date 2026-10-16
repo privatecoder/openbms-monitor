@@ -98,10 +98,12 @@ export function packIsCanAdapter(inst: Pick<Installation, "endpoints" | "control
   return !!inst && !!ctl && !packPortOf(inst) && inst.endpoints.includes(ctl);
 }
 
-/** The stored port of an installation for a bus: the CAN socket (`control`) or the RS485-1/2 port. */
+/** The stored port of an installation for a bus: the CAN socket (`control`) or the RS485-1/2 port (also the CAN
+ *  socket's adapter set up as RS485-1/2). */
 export function storedPort(inst: Pick<Installation, "endpoints" | "control"> | null, bus: Bus): { kind: PortKind; target: string } | null {
   if (!inst) return null;
-  if (bus === "can") return inst.control ? (inst.control.kind === "tcp" ? { kind: "tcp", target: inst.control.addr } : { kind: "serial", target: inst.control.path }) : null;
+  const can = inst.control ? (inst.control.kind === "tcp" ? { kind: "tcp" as const, target: inst.control.addr } : { kind: "serial" as const, target: inst.control.path }) : null;
+  if (bus === "can" || packIsCanAdapter(inst)) return can;
   return keyParts(packPortOf(inst));
 }
 

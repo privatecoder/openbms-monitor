@@ -602,9 +602,13 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
+    // a cancel while the search still waits for the bus counts too
+    state.scan_cancel.store(false, std::sync::atomic::Ordering::SeqCst);
     let _op = crate::control::reserve_bus_wait(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
-    state.scan_cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+    if state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true });
+    }
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &key)?;
     let packs = link.scan(scan_addresses(&state.scan_cancel));
@@ -722,8 +726,7 @@ mod tests {
         s.set_master_read(&a.id, "{}", true, 1).unwrap();
         let state = AppState::default();
         *state.maint.lock().unwrap() = Some(s);
-        let moved = Installation { control: Some(ControlEndpoint::Tcp { addr: "192.0.2.12:4196".into() }), ..a.clone() };
-        assert!(refused_with(save_installation(&state, &moved), "maintenance-open"));
+        assert!(refused_with(save_installation(&state, &Installation { control: None, ..a.clone() }), "maintenance-open"));
         // while a pack action holds the bus, nothing is saved
         let held = crate::control::reserve_pack(&state, 1, "params").unwrap();
         assert!(matches!(save_installation(&state, &Installation { name: "B".into(), ..a.clone() }), Err(MaintError::Busy)));

@@ -44,8 +44,10 @@ export function PortInput({ kind, value, ports, onChange, onRefresh, label, disa
 /** The ports of an installation (installations view): the CAN socket (the monitor on the CAN socket bus; reads and
  *  halts the master) and RS485-1/2 (the monitor on the pack bus; packs are flashed there), each over a network gateway
  *  or USB. The master's serial number is stored by the app at the first flash. */
-export function MaintSetup({ installation, pending, onSaved, onCancel, disabled }: {
+export function MaintSetup({ installation, pending, markerOn, onSaved, onCancel, disabled }: {
   installation: Installation;
+  /** the master's marker was last seen on: it is released over the CAN socket saved here */
+  markerOn: boolean;
   /** the open bootloader records, to name the port of a refusal */
   pending: Pending[];
   onSaved: (inst: Installation) => void;
@@ -82,6 +84,7 @@ export function MaintSetup({ installation, pending, onSaved, onCancel, disabled 
           <PortInput kind={f.canKind} value={f.canValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ canValue: v })} label={t("maint.setup.can")} disabled={disabled} />
         </div>
         <p className="text-muted">{t("maint.setup.controlHint")}</p>
+        {markerOn && <p className="text-discharge">{t("maint.setup.markerOn")}</p>}
       </div>
 
       <div className="space-y-1">
