@@ -72,3 +72,13 @@ describe("last connection per installation", () => {
     expect(lastConn("inst-c")).toBeNull();
   });
 });
+
+describe("stored ports of an installation", () => {
+  it("prefers the control endpoint (CAN socket), then a network, then a serial pack-bus port", async () => {
+    const { storedConn } = await import("./connCheck");
+    expect(storedConn({ control: { kind: "tcp", addr: "192.0.2.10:4196" }, endpoints: ["serial:/dev/cu.test"] })).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
+    expect(storedConn({ control: null, endpoints: ["serial:/dev/cu.test", "tcp:192.0.2.11:4196"] })).toEqual({ kind: "tcp", target: "192.0.2.11:4196", bus: "pack" });
+    expect(storedConn({ control: null, endpoints: ["serial:/dev/cu.test"] })).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack" });
+    expect(storedConn({ control: null, endpoints: [] })).toBeNull();
+  });
+});

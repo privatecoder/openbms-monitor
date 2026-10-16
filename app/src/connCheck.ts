@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { Bus, OtherBus } from "./api";
+import type { Bus, Installation, OtherBus } from "./api";
 
 /** what a connect's check heard when no pack answered */
 export type NoAnswer = { noise: boolean; intra: boolean };
@@ -63,6 +63,15 @@ export function lastConn(installation: string): LastConn | null {
       && (v.bus === "pack" || v.bus === "can") && Number.isInteger(v.packs) && v.packs >= 0 && v.packs <= 16) return v;
   } catch { /* not JSON */ }
   return null;
+}
+
+/** Without a remembered connection: the installation's stored ports. The control endpoint is the master's CAN
+ *  socket; the other endpoints are pack-bus ports (network first). The pack count stays as it is. */
+export function storedConn(inst: Pick<Installation, "control" | "endpoints">): Omit<LastConn, "packs"> | null {
+  if (inst.control) return inst.control.kind === "tcp" ? { kind: "tcp", target: inst.control.addr, bus: "can" } : { kind: "serial", target: inst.control.path, bus: "can" };
+  const keys = inst.endpoints.map((k) => [k.slice(0, k.indexOf(":")).toLowerCase(), k.slice(k.indexOf(":") + 1)] as const).filter(([, v]) => v);
+  const pick = keys.find(([k]) => k === "tcp") ?? keys.find(([k]) => k === "serial");
+  return pick ? { kind: pick[0] as "tcp" | "serial", target: pick[1], bus: "pack" } : null;
 }
 
 export { BAUD, other as otherBus, pad as padAddress };
