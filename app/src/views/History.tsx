@@ -13,6 +13,7 @@ import { exportName, packColor, shares } from "../history/data";
 import { BmsHistory } from "./BmsHistory";
 import { HealthReport } from "./HealthReport";
 import { neighbourPairs, usePairs, validPairs } from "../pairs";
+import { useHistoryStatus } from "./Recording";
 
 const no = (a: number) => String(a).padStart(2, "0");
 const HOUR = 3_600_000;
@@ -189,9 +190,7 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
 
       {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} />
         : tab === "report" ? (site && info ? <HealthReport site={site} name={installation?.name ?? site} siteFrom={info.from} pairs={reportPairs} />
-          : sites && <div className="flex max-w-lg flex-col gap-3 py-10 text-lg text-muted">
-            <ChartLine className="h-8 w-8" strokeWidth={1.5} aria-hidden />{site ? t("hist.empty") : t("hist.chooseInstallation")}
-          </div>) : <>
+          : sites && <Empty site={site} />) : <>
       <Panel className="space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <span className="font-medium">{isDemo ? site : installation?.name ?? t("hist.noInstallation")}</span>
@@ -215,9 +214,7 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
       </Panel>
 
       {sites && !hasData ? (
-        <div className="flex max-w-lg flex-col gap-3 py-10 text-lg text-muted">
-          <ChartLine className="h-8 w-8" strokeWidth={1.5} aria-hidden />{site ? t("hist.empty") : t("hist.chooseInstallation")}
-        </div>
+        <Empty site={site} />
       ) : data && (
         <>
           <Panel className="space-y-4 p-5">
@@ -326,5 +323,24 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
       className={cn("flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm", on ? "border-charge bg-charge/10 font-medium text-ink" : "border-line text-muted hover:text-ink")}>
       <Tick state={on ? "all" : "none"} />{children}
     </button>
+  );
+}
+
+/** No data yet: says whether recording is on, and switches it on right here (its settings sit behind the dot at
+ *  the bottom of the sidebar). */
+function Empty({ site }: { site: string | null }) {
+  const { t } = useTranslation();
+  const rec = useHistoryStatus();
+  const s = rec.status;
+  return (
+    <div className="flex max-w-lg flex-col items-start gap-3 py-10 text-lg text-muted">
+      <ChartLine className="h-8 w-8" strokeWidth={1.5} aria-hidden />
+      {!site ? t("hist.chooseInstallation") : s && !s.settings.enabled ? (
+        <>
+          <span>{t("hist.emptyOff")}</span>
+          <Button disabled={isDemo} onClick={() => void rec.save({ ...s.settings, enabled: true })}>{t("hist.enableRecording")}</Button>
+        </>
+      ) : t("hist.emptyOn")}
+    </div>
   );
 }
