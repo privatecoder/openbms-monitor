@@ -107,6 +107,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const prepTicket = useRef(0);
   const cancelled = useRef(false);
   const resume = useRef<((goOn: boolean) => void) | null>(null);
+  // leaving the view ends a run before its next pack (a waiting one too), so nothing writes on unseen
+  useEffect(() => () => { cancelled.current = true; resume.current?.(false); prepTicket.current++; }, []);
   // another installation or a new connection: what was read no longer belongs to the packs on the bus
   useEffect(() => {
     if (keptLink === link) return;
@@ -235,14 +237,15 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     let r: ParamWrite;
     try { r = await api.writeParameters(a, base, toWire(raws, switches), restore); }
     catch (error) { return { error, out: failure(error) }; }
+    // the pending refusal is kept per site and pack and holds whatever the link: the switches are live on that pack
+    if (r.kind === "refused") {
+      // only the first refusal knows the stored block: later reads show the live switches
+      if (r.refusal === "refused" && !refusedOf(a) && switchDiff(switches, r.stored.function_switches).length) setRefused(a, { stored: r.stored, live: [...switches] });
+    } else if (r.kind === "written" && restore) setRefused(a, null);
     if (linkNow() === l) {
       if (r.kind === "stale") { replace(packCol(r.fresh, a, l)); seen(a, r.fresh); }
-      else if (r.kind === "refused") {
-        // only the first refusal knows the stored block: later reads show the live switches
-        if (r.refusal === "refused" && !refusedOf(a) && switchDiff(switches, r.stored.function_switches).length) setRefused(a, { stored: r.stored, live: [...switches] });
-      } else {
+      else if (r.kind === "written") {
         void loadHistory(a);
-        if (restore) setRefused(a, null);
         if (r.read_back) replace({ ...packCol(r.read_back, a, l), notTaken: notTaken(raws, switches, rawsOf(r.read_back), r.read_back.function_switches) });
       }
     }
@@ -532,6 +535,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
               onDiscard={() => { setEdit(null); setNote(null); setPicking(false); setTargets([]); }} />
           )}
           {runState && <SeriesPanel rows={runState.rows} current={runState.current} paused={runState.paused} end={runState.end}
+            held={writing.params}
             onCancel={() => { cancelled.current = true; resume.current?.(false); }} onGoOn={() => resume.current?.(true)} onClose={() => setRunState(null)} />}
           {cols.flatMap((c) => {
             const r = c.kind === "pack" && c.address !== undefined && c.address !== edit?.address ? refusedOf(c.address) : null;

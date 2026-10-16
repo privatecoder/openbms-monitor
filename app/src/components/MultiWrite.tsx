@@ -79,8 +79,10 @@ export function MultiConfirm({ changes, packs, skipped, capacity, reading, onCon
 
 /** A run's progress and result: one line per pack, „Abbrechen“ while it runs, and at a refusal with live switches
  *  the choice to go on (the pack's restore panel shows below). */
-export function SeriesPanel({ rows, current, paused, end, onCancel, onGoOn, onClose }: {
+export function SeriesPanel({ rows, current, paused, end, held, onCancel, onGoOn, onClose }: {
   rows: Row[]; current: number | null; paused: number | null; end: "done" | "cancelled" | "link" | null;
+  /** a restore of the paused pack is being written: going on or cancelling waits for it */
+  held?: boolean;
   onCancel: () => void; onGoOn: () => void; onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -100,8 +102,8 @@ export function SeriesPanel({ rows, current, paused, end, onCancel, onGoOn, onCl
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-alarm/40 bg-alarm/10 p-3">
           <span className="text-alarm">{t("pw.multi.paused", { pack: no(paused) })}</span>
           <span className="ml-auto flex gap-2">
-            <Button size="sm" onClick={onGoOn}>{t("pw.multi.goOn")}</Button>
-            <Button size="sm" variant="ghost" onClick={onCancel}>{t("pw.multi.cancel")}</Button>
+            <Button size="sm" disabled={held} onClick={onGoOn}>{t("pw.multi.goOn")}</Button>
+            <Button size="sm" variant="ghost" disabled={held} onClick={onCancel}>{t("pw.multi.cancel")}</Button>
           </span>
         </div>
       )}
