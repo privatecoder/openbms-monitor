@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BmsHistoryRead, BmsHistoryRecord } from "./api";
-import { clockDiff, csvName, currentRun, lastRead, noteProgress, startHistoryRead, durationText, fmtBmsTime, fromBmsTime, historyCsv, readMark, setHistoryReading, summary, toBmsTime, utcOffset, zoneLabel } from "./bmsMemory";
+import { clockDiff, csvName, currentRun, lastRead, noteProgress, startHistoryRead, durationText, fmtBmsTime, fromBmsTime, historyCsv, readMark, sameInstallation, setHistoryReading, summary, toBmsTime, utcOffset, zoneLabel } from "./bmsMemory";
 
 const T = { year: 2026, month: 3, day: 9, hour: 7, minute: 5, second: 30 };
 
@@ -86,24 +86,32 @@ describe("history read runner", () => {
   it("a second start re-attaches to the running read; only its end clears the run and the read mark", async () => {
     let finish!: (r: BmsHistoryRead) => void;
     const read = vi.fn(() => new Promise<BmsHistoryRead>((res) => { finish = res; }));
-    const a = startHistoryRead(2, read);
+    const a = startHistoryRead(2, "inst-a|3", read);
     noteProgress(5);
-    const b = startHistoryRead(3, read);
+    const b = startHistoryRead(3, "inst-a|3", read);
     expect(b).toBe(a);
     expect(read).toHaveBeenCalledTimes(1);
-    expect(currentRun()).toMatchObject({ address: 2, n: 5 });
+    expect(currentRun()).toMatchObject({ address: 2, link: "inst-a|3", n: 5 });
     expect(Math.abs(readMark() - Date.now())).toBeLessThan(50);
     finish(done(2, 3));
     expect((await a.promise).records).toHaveLength(3);
     expect(currentRun()).toBeNull();
-    expect(lastRead()?.records).toHaveLength(3);
+    expect(lastRead()?.read.records).toHaveLength(3);
+    expect(lastRead()?.link).toBe("inst-a|3");
   });
 
   it("an error, also 'already running', becomes the result and ends the run", async () => {
-    const failed = startHistoryRead(1, () => Promise.reject("timeout"));
+    const failed = startHistoryRead(1, "inst-a|1", () => Promise.reject("timeout"));
     expect(await failed.promise).toMatchObject({ end: "error", error: "timeout", records: [] });
-    const other = startHistoryRead(1, () => Promise.reject("a history read is already running"));
+    const other = startHistoryRead(1, "inst-a|1", () => Promise.reject("a history read is already running"));
     expect(await other.promise).toMatchObject({ end: "error", records: [] });
     expect(currentRun()).toBeNull();
+  });
+
+  it("a read belongs to the installation it began under, across reconnects", () => {
+    expect(sameInstallation("inst-a|3", "inst-a|4")).toBe(true);
+    expect(sameInstallation("inst-a|3", "inst-b|3")).toBe(false);
+    expect(sameInstallation("inst-a|3", "|3")).toBe(false);
+    expect(sameInstallation("a|b|3", "a|b|5")).toBe(true);
   });
 });

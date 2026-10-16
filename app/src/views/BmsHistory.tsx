@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, History as HistoryIcon, X } from "lucide-react";
-import { api, isDemo, type BmsHistoryRead, type Bus } from "../api";
-import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, noteProgress, startHistoryRead, summary, type HistoryRun } from "../bmsMemory";
+import { api, isDemo, linkNow, type Bus } from "../api";
+import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, noteProgress, sameInstallation, startHistoryRead, summary, type HistoryRun, type LastRead } from "../bmsMemory";
 import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
 import { errorText } from "../control";
 import { Button } from "../components/ui/button";
@@ -23,7 +23,9 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const [address, setAddressState] = useState<number | null>(currentRun()?.address ?? keptAddress ?? packs[0] ?? null);
   const setAddress = (a: number | null) => { keptAddress = a; setAddressState(a); };
   useEffect(() => { if (address === null || !packs.includes(address)) setAddress(packs[0] ?? null); }, [packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [result, setResult] = useState<BmsHistoryRead | null>(lastRead);
+  const [tagged, setResult] = useState<LastRead | null>(lastRead);
+  // a result of another installation (same address, other bank) is not this one's history: not shown, not exported
+  const result = tagged && sameInstallation(tagged.link, linkNow()) ? tagged.read : null;
   const [progress, setProgress] = useState<number | null>(() => currentRun()?.n ?? null);
   const [saved, setSaved] = useState<{ name: string } | { error: string } | null>(null);
   const usable = connected && (bus === "pack" || isDemo);
@@ -34,7 +36,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const alive = useRef(true);
   const attach = (r: HistoryRun) => {
     setProgress(r.n);
-    void r.promise.then((res) => { if (alive.current) { setResult(res); setProgress(null); } });
+    void r.promise.then((res) => { if (alive.current) { setResult({ link: r.link, read: res }); setProgress(null); } });
   };
   useEffect(() => {
     alive.current = true;
@@ -47,7 +49,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const start = () => {
     if (address === null || currentRun()) return;
     setSaved(null); setResult(null);
-    attach(startHistoryRead(address, api.bmsHistory));
+    attach(startHistoryRead(address, linkNow(), api.bmsHistory));
   };
 
   const save = async () => {

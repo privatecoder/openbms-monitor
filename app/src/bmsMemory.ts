@@ -94,26 +94,30 @@ export const setHistoryReading = (on: boolean) => { if (reading && !on) endedAt 
 export const readMark = () => (reading ? Date.now() : endedAt);
 
 // The running history read and the last result live here, not in the view: switching tabs or views during a read
-// re-attaches to the same read instead of losing it or starting a second one.
-export interface HistoryRun { address: number; n: number; promise: Promise<BmsHistoryRead> }
+// re-attaches to the same read instead of losing it or starting a second one. Both carry the `linkNow()` key they
+// began under ("installation|connection"), so another installation's pack 00 is never shown as this one's.
+export interface HistoryRun { address: number; link: string; n: number; promise: Promise<BmsHistoryRead> }
+export interface LastRead { link: string; read: BmsHistoryRead }
 let run: HistoryRun | null = null;
-let last: BmsHistoryRead | null = null;
+let last: LastRead | null = null;
 export const currentRun = () => run;
 export const lastRead = () => last;
 export const noteProgress = (n: number) => { if (run) run.n = n; };
+/** Whether something begun under the key `of` belongs to the installation of the key `now`. */
+export const sameInstallation = (of: string, now: string) => of.slice(0, of.lastIndexOf("|")) === now.slice(0, now.lastIndexOf("|"));
 
 /** Start a read, or return the one already running. `read` is the backend call. Only this read's own end clears
  *  `run` and the sidebar's read mark. A backend read this UI lost track of (after a reload) ends as an error
  *  result ("already running"): read again once it is over. */
-export function startHistoryRead(address: number, read: (address: number) => Promise<BmsHistoryRead>): HistoryRun {
+export function startHistoryRead(address: number, link: string, read: (address: number) => Promise<BmsHistoryRead>): HistoryRun {
   if (run) return run;
   setHistoryReading(true);
   last = null;
-  const r = { address, n: 0 } as HistoryRun;
+  const r = { address, link, n: 0 } as HistoryRun;
   run = r;
   r.promise = read(address)
     .catch((e): BmsHistoryRead => ({ address, records: [], end: "error", error: String(e) }))
-    .then((res) => { last = res; return res; })
+    .then((res) => { last = { link, read: res }; return res; })
     .finally(() => { if (run === r) run = null; setHistoryReading(false); });
   return r;
 }
