@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { explain, noAnswer, partialLine } from "./connCheck";
+import { explain, fillFields, noAnswer, partialLine } from "./connCheck";
 
 const t = i18n.getFixedT("de");
 const none = { answered: null, noise: false, intra: false, pack_at_9600: false };
@@ -73,12 +73,30 @@ describe("last connection per installation", () => {
   });
 });
 
-describe("stored ports of an installation", () => {
-  it("prefers the control endpoint (CAN socket), then a network, then a serial pack-bus port", async () => {
-    const { storedConn } = await import("./connCheck");
-    expect(storedConn({ control: { kind: "tcp", addr: "192.0.2.10:4196" }, endpoints: ["serial:/dev/cu.test"] })).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
-    expect(storedConn({ control: null, endpoints: ["serial:/dev/cu.test", "tcp:192.0.2.11:4196"] })).toEqual({ kind: "tcp", target: "192.0.2.11:4196", bus: "pack" });
-    expect(storedConn({ control: null, endpoints: ["serial:/dev/cu.test"] })).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack" });
-    expect(storedConn({ control: null, endpoints: [] })).toBeNull();
+describe("sidebar fields after a change of installation or bus", () => {
+  const can = { kind: "tcp" as const, addr: "192.0.2.10:4196" };
+  const both = { control: can, endpoints: ["serial:/dev/cu.test"] };
+  const last = (bus: "can" | "pack", kind: "tcp" | "serial" = "tcp", target = "192.0.2.99:4196") => ({ kind, target, bus, packs: 4 });
+  it("the stored port of the chosen bus wins over the remembered connection; that gives bus and pack count", () => {
+    expect(fillFields(both, "can", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: null });
+    expect(fillFields(both, "can", last("pack"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack", packs: 4 });
+    expect(fillFields(both, "pack", last("can"), "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: 4 });
+  });
+  it("the remembered address only where no port is stored for that bus", () => {
+    const canOnly = { control: can, endpoints: [] };
+    expect(fillFields(canOnly, "can", last("pack", "serial", "/dev/cu.other"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: 4 });
+    // a bus change takes the remembered address of that bus only, never its pack count
+    expect(fillFields(canOnly, "pack", last("pack", "serial", "/dev/cu.other"), "bus")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: null });
+    expect(fillFields(canOnly, "pack", last("can"), "bus")).toEqual({ kind: "serial", target: "", bus: "pack", packs: null });
+  });
+  it("without a stored port or a remembered one: an empty USB field (a new installation takes its CAN socket)", () => {
+    const none = { control: null, endpoints: [] };
+    expect(fillFields(none, "pack", null, "installation")).toEqual({ kind: "serial", target: "", bus: "pack", packs: null });
+    expect(fillFields(none, "can", null, "bus")).toEqual({ kind: "serial", target: "", bus: "can", packs: null });
+    expect(fillFields({ control: can, endpoints: [] }, "pack", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: null });
+    // the RS485-1/2 port by the shared rule: the first endpoint that is not the CAN socket, also a gateway
+    expect(fillFields({ control: can, endpoints: ["tcp:192.0.2.10:4196", "tcp:192.0.2.11:4196"] }, "pack", null, "bus")).toEqual({ kind: "tcp", target: "192.0.2.11:4196", bus: "pack", packs: null });
+    // „Nur ansehen“: nothing changes
+    expect(fillFields(null, "pack", null, "installation")).toBeNull();
   });
 });

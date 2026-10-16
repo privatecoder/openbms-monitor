@@ -1,5 +1,6 @@
 import type { TFunction } from "i18next";
 import type { Bus, Installation, OtherBus } from "./api";
+import { storedPort } from "./maint";
 
 /** what a connect's check heard when no pack answered */
 export type NoAnswer = { noise: boolean; intra: boolean };
@@ -65,13 +66,21 @@ export function lastConn(installation: string): LastConn | null {
   return null;
 }
 
-/** Without a remembered connection: the installation's stored ports. The control endpoint is the master's CAN
- *  socket; the other endpoints are pack-bus ports (network first). The pack count stays as it is. */
-export function storedConn(inst: Pick<Installation, "control" | "endpoints">): Omit<LastConn, "packs"> | null {
-  if (inst.control) return inst.control.kind === "tcp" ? { kind: "tcp", target: inst.control.addr, bus: "can" } : { kind: "serial", target: inst.control.path, bus: "can" };
-  const keys = inst.endpoints.map((k) => [k.slice(0, k.indexOf(":")).toLowerCase(), k.slice(k.indexOf(":") + 1)] as const).filter(([, v]) => v);
-  const pick = keys.find(([k]) => k === "tcp") ?? keys.find(([k]) => k === "serial");
-  return pick ? { kind: pick[0] as "tcp" | "serial", target: pick[1], bus: "pack" } : null;
+/** The sidebar's connection fields after the installation (`on: "installation"`) or the bus changed. The installation's
+ *  stored port for the chosen bus wins; the remembered last connection gives the bus and the pack count, and its
+ *  address/port only where no port is stored for that bus. A new installation without a remembered connection whose
+ *  current bus has no port takes its CAN socket. Without either: an empty USB field, so no port of another
+ *  installation stays. null for „Nur ansehen“: the fields stay as they are. */
+export function fillFields(inst: Pick<Installation, "control" | "endpoints"> | null, bus: Bus, last: LastConn | null, on: "installation" | "bus"): { kind: "tcp" | "serial"; target: string; bus: Bus; packs: number | null } | null {
+  if (!inst) return null;
+  const remembered = on === "installation" ? last : null;
+  let b = remembered?.bus ?? bus;
+  let stored = storedPort(inst, b);
+  if (on === "installation" && !last && !stored && inst.control) { b = "can"; stored = storedPort(inst, b); }
+  const packs = remembered ? remembered.packs : null;
+  if (stored) return { ...stored, bus: b, packs };
+  if (last && last.bus === b) return { kind: last.kind, target: last.target, bus: b, packs };
+  return { kind: "serial", target: "", bus: b, packs };
 }
 
 export { BAUD, other as otherBus, pad as padAddress };

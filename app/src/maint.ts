@@ -1,4 +1,4 @@
-import type { ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, Pending } from "./api";
+import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, Pending } from "./api";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
  *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
@@ -34,7 +34,28 @@ export function endpointKey(ep: Endpoint): string {
   return ep.kind === "tcp" ? `tcp:${ep.addr.trim().toLowerCase()}` : `serial:${ep.path.trim()}`;
 }
 
-const controlKey = (c: ControlEndpoint | null) => (c ? (c.kind === "tcp" ? endpointKey({ kind: "tcp", addr: c.addr, bus: "can" }) : endpointKey({ kind: "serial", path: c.path, bus: "can" })) : null);
+export const controlKey = (c: ControlEndpoint | null) => (c ? (c.kind === "tcp" ? endpointKey({ kind: "tcp", addr: c.addr, bus: "can" }) : endpointKey({ kind: "serial", path: c.path, bus: "can" })) : null);
+
+export type PortKind = "tcp" | "serial";
+
+/** The key of a port as chosen in a form or the sidebar ("" = none): formed once here, then passed unchanged to the
+ *  backend, the pending records and every comparison. */
+export function portKey(kind: PortKind, target: string): string {
+  if (!target.trim()) return "";
+  return kind === "tcp" ? endpointKey({ kind, addr: target, bus: "pack" }) : endpointKey({ kind, path: target, bus: "pack" });
+}
+
+/** An endpoint key split into kind and address/port; null for anything else. */
+export function keyParts(key: string | null): { kind: PortKind; target: string } | null {
+  const i = key?.indexOf(":") ?? -1;
+  if (!key || i < 0) return null;
+  const kind = key.slice(0, i).toLowerCase();
+  const target = key.slice(i + 1);
+  return (kind === "tcp" || kind === "serial") && target ? { kind, target } : null;
+}
+
+/** What a key shows: the address or the port. */
+export const keyLabel = (key: string) => keyParts(key)?.target ?? key;
 
 export type Preselect = { do: "keep" } | { do: "use"; id: string } | { do: "pick" };
 
@@ -62,38 +83,63 @@ export function mergeSuggestion(inst: Installation, list: Installation[]): Insta
   return owners.length === 1 ? owners[0] : null;
 }
 
-/** The installation's RS485-1/2 port (flash packs): the first stored serial endpoint that is not its CAN socket.
- *  null: not set up. */
+/** The installation's RS485-1/2 port as its endpoint key: the first endpoint in stored order that is not its CAN
+ *  socket, of any kind (twin of the backend's `pack_port`). Used by the editor, the sidebar, maintenance, flashing and
+ *  the pending display. null: not set up. */
 export function packPortOf(inst: Pick<Installation, "endpoints" | "control"> | null): string | null {
   if (!inst) return null;
-  const pick = inst.endpoints.find((k) => k.startsWith("serial:") && k !== controlKey(inst.control));
-  return pick ? pick.slice("serial:".length) : null;
+  const ctl = controlKey(inst.control);
+  return inst.endpoints.find((k) => k !== ctl) ?? null;
 }
 
 /** RS485-1/2 was set to the CAN socket's adapter: the panel names it instead of watching a bus it cannot tell. */
 export function packIsCanAdapter(inst: Pick<Installation, "endpoints" | "control"> | null): boolean {
   const ctl = controlKey(inst?.control ?? null);
-  return !!inst && inst.control?.kind === "serial" && !packPortOf(inst) && inst.endpoints.includes(ctl!);
+  return !!inst && !!ctl && !packPortOf(inst) && inst.endpoints.includes(ctl);
+}
+
+/** The stored port of an installation for a bus: the CAN socket (`control`) or the RS485-1/2 port. */
+export function storedPort(inst: Pick<Installation, "endpoints" | "control"> | null, bus: Bus): { kind: PortKind; target: string } | null {
+  if (!inst) return null;
+  if (bus === "can") return inst.control ? (inst.control.kind === "tcp" ? { kind: "tcp", target: inst.control.addr } : { kind: "serial", target: inst.control.path }) : null;
+  return keyParts(packPortOf(inst));
 }
 
 /** The setup form's fields from a stored installation. */
 export function setupFields(inst: Installation) {
   const c = inst.control;
-  const pack = packPortOf(inst) ?? (packIsCanAdapter(inst) && c?.kind === "serial" ? c.path : "");
-  return { name: inst.name, canKind: (c?.kind ?? "serial") as ControlEndpoint["kind"], canValue: c ? (c.kind === "tcp" ? c.addr : c.path) : "", pack };
+  const pack = keyParts(packPortOf(inst) ?? (packIsCanAdapter(inst) ? controlKey(c) : null));
+  return {
+    name: inst.name, canKind: (c?.kind ?? "serial") as PortKind, canValue: c ? (c.kind === "tcp" ? c.addr : c.path) : "",
+    packKind: pack?.kind ?? ("serial" as PortKind), packValue: pack?.target ?? "",
+  };
 }
 
-/** The endpoint list the setup form saves: the RS485-1/2 port first (it reads back as the pack port), then every
- *  other stored endpoint except the old pack port and the CAN socket key. An empty pack port drops it. */
+/** The endpoint list the setup form saves: the RS485-1/2 port (`pack`, a key; "" drops it) first, so it reads back as
+ *  the pack port, then every other stored endpoint except the old pack port and the CAN socket key. The CAN socket's
+ *  own adapter as RS485-1/2 stands alone: any other endpoint would pass for the pack port (`packPortOf`). */
 export function setupEndpoints(inst: Pick<Installation, "endpoints" | "control">, pack: string): string[] {
   const oldPack = packPortOf(inst);
-  const oldPackKey = oldPack ? `serial:${oldPack}` : null;
   // the CAN socket key is dropped below unless it is chosen as RS485-1/2 again
   const ctl = controlKey(inst.control);
-  const kept = inst.endpoints.filter((k) => k !== oldPackKey && k !== ctl);
+  if (pack && pack === ctl) return [pack];
+  const kept = inst.endpoints.filter((k) => k !== oldPack && k !== ctl);
   const out: string[] = [];
-  for (const k of [pack ? endpointKey({ kind: "serial", path: pack, bus: "pack" }) : null, ...kept]) if (k && !out.includes(k)) out.push(k);
+  for (const k of [pack || null, ...kept]) if (k && !out.includes(k)) out.push(k);
   return out;
+}
+
+/** What „Speichern“ under the connection status stores: the endpoint as the CAN socket or as the RS485-1/2 port. */
+export function withPort(inst: Installation, bus: Bus, kind: PortKind, target: string): Installation {
+  if (bus === "can") return { ...inst, control: kind === "tcp" ? { kind, addr: target.trim() } : { kind, path: target } };
+  return { ...inst, endpoints: setupEndpoints(inst, portKey(kind, target)) };
+}
+
+/** After a connect: offer to save its endpoint when the installation has another port stored for that bus. An empty
+ *  one was filled by the connect itself (CAN socket) or is filled once the bank is decided (RS485-1/2). */
+export function saveOffer(inst: Pick<Installation, "endpoints" | "control"> | null, bus: Bus, kind: PortKind, target: string): boolean {
+  const stored = storedPort(inst, bus);
+  return !!stored && portKey(stored.kind, stored.target) !== portKey(kind, target);
 }
 
 const KINDS = ["connection", "unsupported", "no-answer", "rejected", "timeout", "refused", "busy", "store", "other-bank", "bootloader-pending"];
@@ -198,10 +244,16 @@ export function releaseFirst(master: MasterView | null, address: number, kind: F
   return address === 0 && !!kind && kind !== "maintenance" && !!master?.may_release;
 }
 
-/** A pending bootloader record on this endpoint that refuses flashing `address` (another pack), or null. */
+/** A pending bootloader record on this endpoint (`port`: its key) that refuses flashing `address` (another pack), or
+ *  null. */
 export function pendingBlock(pending: Pending[], port: string, address: number): Pending | null {
-  const key = port ? endpointKey({ kind: "serial", path: port, bus: "pack" }) : null;
-  return pending.find((p) => p.endpoint === key && p.pack !== address) ?? null;
+  return port ? pending.find((p) => p.endpoint === port && p.pack !== address) ?? null : null;
+}
+
+/** The text params of a refused save: the port of an open bootloader record of the installation ("pending-on-port"). */
+export function refusalParams(inst: Pick<Installation, "endpoints">, pending: Pending[], params?: Record<string, unknown>): Record<string, unknown> {
+  const open = inst.endpoints.find((ep) => pending.some((p) => p.endpoint === ep));
+  return { ...params, port: open ? keyLabel(open) : "" };
 }
 
 /** Why a pack row's „Flashen“ is not usable now (text key and params), or null. The backend checks again. */

@@ -2,12 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, endpointKey, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, releaseFirst, showDone, type Tone } from "../maint";
+import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, releaseFirst, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { MaintSetup } from "./MaintSetup";
 
 const select = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 const toneClass: Record<Tone, string> = { ok: "text-ok", warn: "text-discharge", muted: "text-muted", alarm: "text-alarm" };
@@ -20,12 +19,13 @@ function ActButton({ spinning, children, className, ...props }: Parameters<typeo
 /** The pack bus panel (design: simple flash flow): one screen with a live status line, „Bus ruhig machen“ while the
  *  bus is not quiet, the packs that answer with one „Flashen“ each, and „Fertig“. No steps to tick: the backend
  *  re-checks a quiet bus and the target right before each flash. */
-export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction }: {
+export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction }: {
   maint: Maint;
-  /** the RS485-1/2 port of the installation ("" = none) */
+  /** the RS485-1/2 port of the installation as its endpoint key ("" = none) */
   port: string;
   ports: string[];
-  onPortsChanged: () => void;
+  /** „In Anlagen ändern“: the ports are edited in the installations view */
+  onEditPorts: () => void;
   imagePicker: ReactNode;
   image: FirmwareImage | null;
   /** a flash runs: the panel sends nothing on the pack bus */
@@ -51,7 +51,6 @@ export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, 
   const [flashed, setFlashed] = useState(false);
   // after a flash the master polls again (DIP back or released): the maintenance is over
   const [back, setBack] = useState(false);
-  const [setup, setSetup] = useState(false);
 
   // the live loop reads the newest values through refs
   const args = useRef({ installation: inst?.id ?? null, port, running, action });
@@ -109,7 +108,7 @@ export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, 
   const quiet = live?.bus === "quiet";
   const busy = !!action || scanning;
   // the running flash stores its own record before the restart: it counts only once the flash has ended (like the banner)
-  const pendingHere = running ? [] : maint.alerts.pending.filter((p) => port && p.endpoint === endpointKey({ kind: "serial", path: port, bus: "pack" }));
+  const pendingHere = running ? [] : maint.alerts.pending.filter((p) => port && p.endpoint === port);
 
   const run = async (key: string, f: () => Promise<void>) => {
     onUserAction(); setAction(key); setActionError(null); setBack(false);
@@ -129,6 +128,15 @@ export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, 
   const flash = (address: number, from: string | null) => run("flash", async () => { setTarget(address); await onFlash(address, from); });
 
   const line = port ? busLine(live, running, t) : { tone: "muted" as Tone, text: t("maint.live.noPort") };
+  // „USB /dev/… (nicht eingesteckt)“ or „Netzwerk 192.0.2.1:4196“
+  const portText = (key: string) => {
+    const p = keyParts(key);
+    if (!p) return key;
+    const text = `${t(`conn.${p.kind}`)} ${p.target}`;
+    return p.kind === "serial" && !ports.includes(p.target) ? `${text} (${t("maint.panel.notPlugged")})` : text;
+  };
+  const can = storedPort(inst, "can");
+  const canText = can ? `${t(`conn.${can.kind}`)} ${can.target}` : t("maint.panel.noCan");
   const mLine = master ? masterLine(master, t) : null;
   const bank = scan?.bank;
   const packs: [number, DeviceInfo | null][] = [
@@ -151,28 +159,29 @@ export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, 
         <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /></h2>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{inst.name}</span>
-          <Button variant="secondary" size="sm" disabled={running || busy} onClick={() => setSetup(!setup)}>{t("maint.panel.setup")}</Button>
+          <Button variant="ghost" size="sm" disabled={running} onClick={onEditPorts}>{t("maint.panel.editPorts")}</Button>
         </div>
       </div>
-      {setup && (
-        <MaintSetup key={inst.id} installation={inst} disabled={running || busy}
-          onSaved={() => { setSetup(false); onPortsChanged(); void maint.loadLists(); }} onCancel={() => setSetup(false)} />
-      )}
 
-      {/* the RS485-1/2 port of the installation */}
+      {/* the ports of the installation, read-only: they are edited under Anlagen */}
       {packIsCanAdapter(inst) ? <p className="text-discharge">{t("maint.panel.canAdapter")}</p>
-        : <p>{port ? t("maint.panel.port", { port: ports.includes(port) ? port : `${port} (${t("maint.panel.notPlugged")})` }) : t("maint.panel.noPort")}</p>}
-
-      {port && <p className="text-muted">{t("maint.panel.monitorStops")}</p>}
+        : !port ? <p className="text-discharge">{t("maint.panel.noPortFor", { name: inst.name })}{" "}<button className="underline hover:text-ink" onClick={onEditPorts}>{t("maint.panel.setUpThere")}</button></p>
+        : (
+          <div className="space-y-0.5">
+            <p>{t("maint.panel.port", { port: portText(port) })}</p>
+            <p className="text-muted">{t("maint.panel.can", { port: canText })}</p>
+            <p className="text-muted">{t("maint.panel.monitorStops")}</p>
+          </div>
+        )}
 
       {/* live status */}
-      <div role="status" className="space-y-1 rounded-md bg-sunken p-3">
+      {port && <div role="status" className="space-y-1 rounded-md bg-sunken p-3">
         <p className={cn("font-medium", toneClass[line.tone])}>{line.text}</p>
         {mLine && <p className={toneClass[mLine.tone]} title={master?.build_id ? t("maint.live.buildId", { id: master.build_id }) : undefined}>{t("maint.live.master", { text: mLine.text })}</p>}
         {back && <p className="text-ok">{t("maint.done.back")}</p>}
         {live?.master_error && <p className="text-muted">{t(errorKey(live.master_error).key, errorKey(live.master_error).params)}</p>}
         {inst && !inst.control && <p className="text-muted">{t("maint.live.noControl")}</p>}
-      </div>
+      </div>}
 
       {/* make the bus quiet: only while the master (or anything else) still talks */}
       {live && !quiet && !running && live.bus !== "no-port" && (
@@ -191,6 +200,7 @@ export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, 
       {(quiet || running) && (
         <div className="space-y-3">
           <p className="text-muted">{t("maint.packs.inverter")}</p>
+          {keyParts(port)?.kind === "tcp" && <p className="text-discharge">{t("fw.tcpUntested")}</p>}
           {imagePicker}
           {bank && bank.state !== "none" && (
             bank.state === "mismatch" ? (
@@ -203,8 +213,10 @@ export function PackBusPanel({ maint, port, ports, onPortsChanged, imagePicker, 
           <div className="flex items-center gap-2">
             <h3 className="font-medium">{t("maint.packs.title")}</h3>
             <ActButton variant="ghost" size="sm" spinning={scanning} disabled={busy || running || !quiet} onClick={() => { onUserAction(); void doScan(inst?.id ?? null, port); }}>{t("maint.packs.rescan")}</ActButton>
+            {scanning && <Button variant="ghost" size="sm" onClick={() => void api.maintScanCancel()}>{t("maint.packs.cancel")}</Button>}
           </div>
-          {scan && !packs.length && <p className="text-muted">{t("maint.packs.none")}</p>}
+          {scan?.cancelled && !scanning && <p className="text-muted">{t("maint.packs.cancelled")}</p>}
+          {scan && !scan.cancelled && !packs.length && <p className="text-muted">{t("maint.packs.none")}</p>}
           <ul className="space-y-2">
             {packs.map(([a, d]) => {
               const pending = pendingHere.find((p) => p.pack === a);

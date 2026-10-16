@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
+import { keyParts, portKey, refusalParams, saveOffer, storedPort, withPort, packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
 import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
@@ -43,24 +43,59 @@ describe("installations: an address book", () => {
     const usb: Installation = { id: "u", name: "/dev/p", endpoints: [], control: null, legacy: "/dev/p" };
     expect(mergeSuggestion(usb, [usb, { ...lab, endpoints: ["serial:/dev/p"] }])?.id).toBe("lab");
   });
-  it("the RS485-1/2 port is the first serial endpoint that is not the CAN socket; the CAN adapter itself is named, not used", () => {
+  it("the RS485-1/2 port is the first endpoint in stored order that is not the CAN socket, of any kind", () => {
     expect(packPortOf(null)).toBeNull();
     expect(packPortOf(inst)).toBeNull();
-    expect(packPortOf({ ...inst, endpoints: ["tcp:gw:4196", "serial:/dev/a", "serial:/dev/p"] })).toBe("/dev/p");
+    // a mixed, ordered list: the same pick as the backend's `pack_port`
+    expect(packPortOf({ ...inst, endpoints: ["serial:/dev/a", "tcp:192.0.2.7:4196", "serial:/dev/p"] })).toBe("tcp:192.0.2.7:4196");
+    expect(packPortOf({ ...inst, endpoints: ["serial:/dev/p", "tcp:192.0.2.7:4196"] })).toBe("serial:/dev/p");
+    expect(packPortOf({ ...inst, control: { kind: "tcp", addr: "192.0.2.7:4196" }, endpoints: ["tcp:192.0.2.7:4196", "serial:/dev/p"] })).toBe("serial:/dev/p");
     expect(packPortOf({ ...inst, endpoints: ["serial:/dev/a"] })).toBeNull();
+    // the CAN adapter itself is named, not used
     expect(packIsCanAdapter({ ...inst, endpoints: ["serial:/dev/a"] })).toBe(true);
     expect(packIsCanAdapter({ ...inst, endpoints: ["serial:/dev/a", "serial:/dev/p"] })).toBe(false);
     expect(packIsCanAdapter(inst)).toBe(false);
-    expect(setupFields({ ...inst, endpoints: ["serial:/dev/a"] }).pack).toBe("/dev/a");
+    expect(setupFields({ ...inst, endpoints: ["serial:/dev/a"] }).packValue).toBe("/dev/a");
+    // the same rule for the sidebar
+    expect(storedPort({ ...inst, endpoints: ["serial:/dev/a", "tcp:192.0.2.7:4196"] }, "pack")).toEqual({ kind: "tcp", target: "192.0.2.7:4196" });
+    expect(storedPort(inst, "can")).toEqual({ kind: "serial", target: "/dev/a" });
+    expect(storedPort(null, "can")).toBeNull();
+  });
+  it("forms a port key once and splits it again", () => {
+    expect(portKey("tcp", " Gateway.Test:4196 ")).toBe("tcp:gateway.test:4196");
+    expect(portKey("serial", "/dev/cu.test")).toBe("serial:/dev/cu.test");
+    expect(portKey("tcp", " ")).toBe("");
+    expect(keyParts("tcp:192.0.2.7:4196")).toEqual({ kind: "tcp", target: "192.0.2.7:4196" });
+    expect(keyParts("/dev/cu.test")).toBeNull();
+    expect(keyParts(null)).toBeNull();
   });
   it("the setup saves the pack port first and keeps other endpoints", () => {
     const stored = { ...inst, endpoints: ["serial:/dev/a", "serial:/dev/p", "tcp:gw:4196"] };
-    expect(setupFields(stored)).toEqual({ name: "Bank", canKind: "serial", canValue: "/dev/a", pack: "/dev/p" });
-    expect(setupEndpoints(stored, "/dev/q")).toEqual(["serial:/dev/q", "tcp:gw:4196"]);
+    expect(setupFields(stored)).toEqual({ name: "Bank", canKind: "serial", canValue: "/dev/a", packKind: "serial", packValue: "/dev/p" });
+    expect(setupEndpoints(stored, "serial:/dev/q")).toEqual(["serial:/dev/q", "tcp:gw:4196"]);
     expect(setupEndpoints(stored, "")).toEqual(["tcp:gw:4196"]);
-    // one adapter for both buses: the CAN adapter is listed as the pack port
-    expect(setupEndpoints(stored, "/dev/a")).toEqual(["serial:/dev/a", "tcp:gw:4196"]);
-    expect(packIsCanAdapter({ ...inst, endpoints: setupEndpoints(stored, "/dev/a") })).toBe(true);
+    // a network gateway as RS485-1/2: first, the old USB port goes
+    expect(setupEndpoints(stored, portKey("tcp", "192.0.2.8:4196"))).toEqual(["tcp:192.0.2.8:4196", "tcp:gw:4196"]);
+    expect(setupFields({ ...stored, endpoints: ["tcp:192.0.2.8:4196"] })).toMatchObject({ packKind: "tcp", packValue: "192.0.2.8:4196" });
+    // one adapter for both buses: the CAN adapter alone, so no other endpoint passes for the pack port
+    expect(setupEndpoints(stored, "serial:/dev/a")).toEqual(["serial:/dev/a"]);
+    expect(packIsCanAdapter({ ...inst, endpoints: setupEndpoints(stored, "serial:/dev/a") })).toBe(true);
+  });
+  it("offers to save a connection only over another stored port of that bus", () => {
+    const stored = { ...inst, control: { kind: "tcp" as const, addr: "192.0.2.10:4196" }, endpoints: ["serial:/dev/p"] };
+    expect(saveOffer(stored, "can", "tcp", "192.0.2.10:4196")).toBe(false);
+    expect(saveOffer(stored, "can", "tcp", "192.0.2.11:4196")).toBe(true);
+    expect(saveOffer(stored, "pack", "serial", "/dev/p")).toBe(false);
+    expect(saveOffer(stored, "pack", "tcp", "192.0.2.12:4196")).toBe(true);
+    // nothing stored: the connect fills it (CAN socket) or the decided bank does (RS485-1/2)
+    expect(saveOffer({ ...inst, control: null, endpoints: [] }, "can", "tcp", "192.0.2.11:4196")).toBe(false);
+    expect(saveOffer({ ...inst, control: null, endpoints: [] }, "pack", "serial", "/dev/p")).toBe(false);
+    // „Speichern“: the CAN socket replaced, or the new RS485-1/2 port first
+    expect(withPort(stored, "can", "tcp", "192.0.2.11:4196").control).toEqual({ kind: "tcp", addr: "192.0.2.11:4196" });
+    expect(withPort(stored, "pack", "tcp", "192.0.2.12:4196").endpoints).toEqual(["tcp:192.0.2.12:4196"]);
+    // a refused save names the port of the open bootloader record
+    expect(refusalParams({ endpoints: ["tcp:192.0.2.12:4196"] }, [pending(3, "tcp:192.0.2.12:4196")])).toEqual({ port: "192.0.2.12:4196" });
+    expect(refusalParams({ endpoints: [] }, [pending(3)])).toEqual({ port: "" });
   });
   it("names endpoints like the backend", () => {
     expect(endpointKey({ kind: "tcp", addr: " Gateway.local:4196 ", bus: "can" })).toBe("tcp:gateway.local:4196");
@@ -130,7 +165,7 @@ describe("flash per pack", () => {
     expect(packVersion(0, "16.06", null)).toBe("16.06");
   });
 
-  const ok = { image: image("original"), quiet: true, busy: false, running: false, address: 3, master: null, pending: [], port: "/dev/p" };
+  const ok = { image: image("original"), quiet: true, busy: false, running: false, address: 3, master: null, pending: [], port: "serial:/dev/p" };
   it("needs an image and a quiet bus; nothing while a flash or another action runs", () => {
     expect(flashBlocked(ok)).toBeNull();
     expect(flashBlocked({ ...ok, image: null })?.key).toBe("maint.packs.why.image");
@@ -139,9 +174,13 @@ describe("flash per pack", () => {
     expect(flashBlocked({ ...ok, running: true })?.key).toBe("maint.packs.why.running");
   });
   it("a pending pack on the same endpoint blocks every other address there, not itself and not other endpoints", () => {
-    expect(pendingBlock([pending(5)], "/dev/p", 3)?.pack).toBe(5);
-    expect(pendingBlock([pending(5)], "/dev/p", 5)).toBeNull();
-    expect(pendingBlock([pending(5, "serial:/dev/q")], "/dev/p", 3)).toBeNull();
+    expect(pendingBlock([pending(5)], "serial:/dev/p", 3)?.pack).toBe(5);
+    expect(pendingBlock([pending(5)], "serial:/dev/p", 5)).toBeNull();
+    expect(pendingBlock([pending(5, "serial:/dev/q")], "serial:/dev/p", 3)).toBeNull();
+    expect(pendingBlock([pending(5)], "", 3)).toBeNull();
+    // a gateway: the record carries the key formed at the input, compared unchanged
+    const gw = portKey("tcp", "192.0.2.20:4196");
+    expect(pendingBlock([pending(5, "tcp:192.0.2.20:4196")], gw, 3)?.pack).toBe(5);
     expect(flashBlocked({ ...ok, pending: [pending(5)] })).toEqual({ key: "maint.err.bootloader-pending", params: { pack: 5 } });
   });
   it("C': a master with its marker on gets a non-maintenance image only after its release", () => {

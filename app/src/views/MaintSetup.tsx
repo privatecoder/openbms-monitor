@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
-import { api, type ControlEndpoint, type Installation } from "../api";
-import { errorKey, setupEndpoints, setupFields } from "../maint";
+import { api, type ControlEndpoint, type Installation, type Pending } from "../api";
+import { errorKey, portKey, refusalParams, setupEndpoints, setupFields, type PortKind } from "../maint";
 import { Button } from "../components/ui/button";
 
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
@@ -22,23 +22,32 @@ function PortSelect({ value, ports, onChange, onRefresh, label, disabled }: { va
   );
 }
 
-/** The kind of the RS485-1/2 endpoint: USB only for now; flashing over a network gateway needs its bench test first
- *  (design: maintenance mode, "Transport for remote use"). */
-export function PackKindSelect({ disabled }: { disabled: boolean }) {
+/** Network (a gateway, Host:Port) or USB (a port) for one of the two ports. */
+export function KindSelect({ value, onChange, label, disabled }: { value: PortKind; onChange: (k: PortKind) => void; label: string; disabled: boolean }) {
   const { t } = useTranslation();
   return (
-    <select className={input} value="serial" disabled={disabled} onChange={() => {}} aria-label={t("maint.setup.rs485Kind")}>
+    <select className={input} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as PortKind)} aria-label={label}>
       <option value="serial">{t("conn.serial")}</option>
-      <option value="tcp" disabled>{t("conn.tcp")}</option>
+      <option value="tcp">{t("conn.tcp")}</option>
     </select>
   );
 }
 
-/** The maintenance parts of an installation: the CAN socket (reads and halts the master) and RS485-1/2 (packs are
- *  flashed there). Name, archive and delete are in the installations view; the master's serial number is stored by the
- *  app at the first flash. */
-export function MaintSetup({ installation, onSaved, onCancel, disabled }: {
+/** One port: a gateway address or a USB port. */
+export function PortInput({ kind, value, ports, onChange, onRefresh, label, disabled }: { kind: PortKind; value: string; ports: string[]; onChange: (v: string) => void; onRefresh: () => void; label: string; disabled: boolean }) {
+  const { t } = useTranslation();
+  return kind === "tcp"
+    ? <input className={input} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} placeholder="192.168.1.10:4196" aria-label={`${label}: ${t("conn.host")}`} />
+    : <PortSelect value={value} ports={ports} onRefresh={onRefresh} onChange={onChange} label={label} disabled={disabled} />;
+}
+
+/** The ports of an installation (installations view): the CAN socket (the monitor on the CAN socket bus; reads and
+ *  halts the master) and RS485-1/2 (the monitor on the pack bus; packs are flashed there), each over a network gateway
+ *  or USB. The master's serial number is stored by the app at the first flash. */
+export function MaintSetup({ installation, pending, onSaved, onCancel, disabled }: {
   installation: Installation;
+  /** the open bootloader records, to name the port of a refusal */
+  pending: Pending[];
   onSaved: (inst: Installation) => void;
   onCancel: () => void;
   disabled: boolean;
@@ -56,8 +65,11 @@ export function MaintSetup({ installation, onSaved, onCancel, disabled }: {
 
   const save = async () => {
     setError(null); setSaving(true);
-    try { onSaved(await api.maintSaveInstallation({ ...installation, control: can, endpoints: setupEndpoints(installation, f.pack) })); }
-    catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
+    try { onSaved(await api.maintSaveInstallation({ ...installation, control: can, endpoints: setupEndpoints(installation, portKey(f.packKind, f.packValue)) })); }
+    catch (e) {
+      const k = errorKey(e);
+      setError(t(k.key, refusalParams(installation, pending, k.params)));
+    }
     finally { setSaving(false); }
   };
 
@@ -66,13 +78,8 @@ export function MaintSetup({ installation, onSaved, onCancel, disabled }: {
       <div className="space-y-1">
         <p className="font-medium">{t("maint.setup.can")}</p>
         <div className="flex flex-wrap items-center gap-3">
-          <select className={input} value={f.canKind} disabled={disabled} onChange={(e) => edit({ canKind: e.target.value as ControlEndpoint["kind"], canValue: "" })} aria-label={t("maint.setup.can")}>
-            <option value="serial">{t("conn.serial")}</option>
-            <option value="tcp">{t("conn.tcp")}</option>
-          </select>
-          {f.canKind === "tcp"
-            ? <input className={input} value={f.canValue} disabled={disabled} onChange={(e) => edit({ canValue: e.target.value })} placeholder="192.168.1.10:4196" aria-label={t("conn.host")} />
-            : <PortSelect value={f.canValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ canValue: v })} label={t("conn.port")} disabled={disabled} />}
+          <KindSelect value={f.canKind} disabled={disabled} onChange={(k) => edit({ canKind: k, canValue: "" })} label={t("maint.setup.can")} />
+          <PortInput kind={f.canKind} value={f.canValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ canValue: v })} label={t("maint.setup.can")} disabled={disabled} />
         </div>
         <p className="text-muted">{t("maint.setup.controlHint")}</p>
       </div>
@@ -80,9 +87,10 @@ export function MaintSetup({ installation, onSaved, onCancel, disabled }: {
       <div className="space-y-1">
         <p className="font-medium">{t("maint.setup.rs485")}</p>
         <div className="flex flex-wrap items-center gap-3">
-          <PackKindSelect disabled={disabled} />
-          <PortSelect value={f.pack} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ pack: v })} label={t("maint.setup.rs485")} disabled={disabled} />
+          <KindSelect value={f.packKind} disabled={disabled} onChange={(k) => edit({ packKind: k, packValue: "" })} label={t("maint.setup.rs485Kind")} />
+          <PortInput kind={f.packKind} value={f.packValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ packValue: v })} label={t("maint.setup.rs485")} disabled={disabled} />
         </div>
+        {f.packKind === "tcp" && <p className="text-discharge">{t("maint.setup.rs485Tcp")}</p>}
         <p className="text-muted">{t("maint.setup.rs485Hint")}</p>
       </div>
       {installation.master_serial && <p className="text-muted">{t("maint.setup.serial", { serial: installation.master_serial })}</p>}

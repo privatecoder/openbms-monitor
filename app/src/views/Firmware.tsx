@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, Cpu, FolderOpen, RefreshCw, TriangleAlert } from "lucide-react";
+import { CircleCheck, Cpu, FolderOpen, TriangleAlert } from "lucide-react";
 import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type MasterView } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
@@ -8,15 +8,17 @@ import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
-import { errorKey, otherBank, packPortOf, packVersion, releaseFirst } from "../maint";
+import { errorKey, keyParts, otherBank, packPortOf, packVersion, portKey, releaseFirst, type PortKind } from "../maint";
 import type { Maint } from "../maintStore";
-import { PackKindSelect } from "./MaintSetup";
+import { KindSelect, PortInput } from "./MaintSetup";
 import { PackBusPanel } from "./PackBusPanel";
 
 const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 
-export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack, onUserAction }: {
+export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack, onUserAction, onEditPorts }: {
   connected: boolean;
+  /** open the installations view, where the ports are edited */
+  onEditPorts: () => void;
   maint: Maint;
   onMonitorStopped: () => void;
   onRunning: (running: boolean) => void;
@@ -28,7 +30,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const lang = i18n.language;
   const [ports, setPorts] = useState<string[]>([]);
   // the single pack tab's own port, independent of the installation (starts with the panel's)
-  const [manualPort, setManualPort] = useState<string | null>(null);
+  const [manualPort, setManualPort] = useState<{ kind: PortKind; target: string } | null>(null);
   const [address, setAddress] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
@@ -68,9 +70,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inst = maint.current;
-  // the RS485-1/2 port of the installation's setup; flashing needs an installation (its log and checks)
+  // the RS485-1/2 port of the installation as its endpoint key; flashing needs an installation (its log and checks)
   const port = inst ? packPortOf(inst) ?? "" : "";
-  const mPort = manualPort ?? port;
+  const manual = manualPort ?? keyParts(port) ?? { kind: "serial" as PortKind, target: "" };
+  const mPort = manualPort ? portKey(manualPort.kind, manualPort.target) : port;
   useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [mPort, address, image?.sha256]);
   // the master read belongs to the port it came from
   useEffect(() => { setMaster(null); }, [port]);
@@ -185,7 +188,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ))}
       </div>
 
-      {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onPortsChanged={loadPorts} imagePicker={imagePicker} image={image}
+      {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onEditPorts={onEditPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
         onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, true)} onMaster={setMaster} />}
 
@@ -195,15 +198,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <p className="text-sm text-muted">{t("fw.manualHint")}</p>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           {/* the RS485-1/2 port of this tab: always free to choose; the installation's checks apply on its own port */}
-          <label className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
-            <PackKindSelect disabled={inputsLocked} />
-            <select className={input} value={mPort} disabled={inputsLocked} onChange={(e) => setManualPort(e.target.value)}>
-              <option value="">{t("fw.choosePort")}</option>
-              {mPort && !ports.includes(mPort) && <option value={mPort}>{t("maint.setup.notPlugged", { port: mPort })}</option>}
-              {ports.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <Button variant="ghost" size="icon" disabled={running} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
-          </label>
+          <span className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
+            <KindSelect value={manual.kind} disabled={inputsLocked} onChange={(k) => setManualPort({ kind: k, target: "" })} label={t("maint.setup.rs485Kind")} />
+            <PortInput kind={manual.kind} value={manual.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setManualPort({ kind: manual.kind, target: v })} label={t("maint.setup.rs485")} disabled={inputsLocked} />
+          </span>
           <label className="flex items-center gap-2 text-muted">{t("fw.address")}
             <select className={input} value={address} disabled={inputsLocked} onChange={(e) => setAddress(Number(e.target.value))}>
               {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
@@ -222,6 +220,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion })}</p>}
         {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: targetVersion, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
+        {keyParts(mPort)?.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
         <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
           <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
         </label>

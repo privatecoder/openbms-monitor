@@ -241,7 +241,8 @@ export type MaintError =
 /** The panel's live status: a short listen on the pack bus, and with a CAN socket the master read. */
 export interface LiveStatus { bus: "quiet" | "polling" | "traffic" | "no-port" | "error"; polled: number[]; bus_error: string | null; master: MasterView | null; master_error: MaintError | null }
 export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked" | "none"; serial: string | null }
-export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[] }
+/** `cancelled`: stopped by „Abbrechen“, `packs` holds what answered until then */
+export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean }
 /** A pack that may hang in its bootloader after an interrupted flash, per pack bus endpoint. */
 export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number }
 export interface Alerts { markers: { installation: string; name: string; at: number }[]; pending: Pending[] }
@@ -400,7 +401,9 @@ const tauriApi = {
   maintClearPending: (id: number) => invoke<void>("maint_clear_pending", { id }),
   /** refused busy while a flash or another operation runs */
   maintLive: (installation: string | null, port: string) => invoke<LiveStatus>("maint_live", { installation, port }),
+  /** `port`: the RS485-1/2 endpoint key (`serial:…` / `tcp:…`), like `maintLive`, `firmwareInspect` and `firmwareStart` */
   maintScanPacks: (installation: string | null, port: string) => invoke<PackScan>("maint_scan_packs", { installation, port }),
+  maintScanCancel: () => invoke<void>("maint_scan_cancel"),
   maintHalt: (installation: string) => invoke<MasterView>("maint_halt", { installation }),
   maintRelease: (installation: string) => invoke<MasterView>("maint_release", { installation }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
@@ -647,6 +650,7 @@ function demoApi(): typeof tauriApi {
     maintClearPending: async () => { throw new Error("desktop app only"); },
     maintLive: async () => { throw new Error("desktop app only"); },
     maintScanPacks: async () => { throw new Error("desktop app only"); },
+    maintScanCancel: async () => {},
     maintHalt: async () => { throw new Error("desktop app only"); },
     maintRelease: async () => { throw new Error("desktop app only"); },
     onFirmwareProgress: async () => () => {},
