@@ -1,6 +1,6 @@
 ---
 title: Parameters
-short: The packs' settings: limits, delays, balancing and function switches. The app reads and compares them and writes them one pack per click; also serial numbers, the BMS clock, the CAN protocol and the calibration. Visible only when maintenance functions are switched on.
+short: The packs' settings: limits, delays, balancing and function switches. The app reads and compares them and writes them on a click, to one pack or the same change to several; also serial numbers, the BMS clock, the CAN protocol and the calibration. Visible only when maintenance functions are switched on.
 related: topic.buses, topic.switches, topic.paramWrite, topic.calibration, topic.control
 ---
 - **Read from packs:** only via RS485-1/2 (19200 baud). The CAN socket does not know the command. The **master** (DIP 0 with slaves) does not answer on RS485-1/2; get its values from a BatteryMonitor export or while it is alone on the bus.
