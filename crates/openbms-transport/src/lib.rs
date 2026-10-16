@@ -6,6 +6,8 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+pub mod capture;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("I/O: {0}")]
@@ -91,23 +93,29 @@ pub enum Endpoint {
 }
 
 trait Port: Read + Write + Send {
-    fn clear_input(&mut self) -> std::io::Result<()>;
+    /// Drop what was received so far. Bytes read in user space to drop them (TCP) go to `dropped` when given.
+    fn clear_input(&mut self, dropped: Option<&mut Vec<u8>>) -> std::io::Result<()>;
 }
 
 impl Port for Box<dyn serialport::SerialPort> {
-    fn clear_input(&mut self) -> std::io::Result<()> {
+    // the driver drops them unseen
+    fn clear_input(&mut self, _dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
         self.clear(serialport::ClearBuffer::Input).map_err(std::io::Error::other)
     }
 }
 
 impl Port for TcpStream {
-    fn clear_input(&mut self) -> std::io::Result<()> {
+    fn clear_input(&mut self, mut dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
         self.set_nonblocking(true)?;
         let mut buf = [0u8; 256];
         loop {
             match self.read(&mut buf) {
                 Ok(0) => break,
-                Ok(_) => continue,
+                Ok(n) => {
+                    if let Some(d) = dropped.as_deref_mut() {
+                        d.extend_from_slice(&buf[..n]);
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) => {
                     self.set_nonblocking(false)?;
@@ -128,6 +136,8 @@ pub struct Connection {
     tcp: bool,
     /// What arrived during ASCII exchanges since the last `reset_rx`; tells a silent bus from a wrong baud rate.
     rx: RxStats,
+    /// Where this connection's bytes go while a capture runs (`capture::GLOBAL`).
+    tap: capture::Tap,
 }
 
 /// Received bytes, valid frames and intra-pack frames (master polling its slaves) of ASCII exchanges.
@@ -174,7 +184,49 @@ impl Connection {
                 Box::new(s)
             }
         };
-        Ok(Self { port, timeout, gap: Duration::from_millis(100), tcp, rx: RxStats::default() })
+        let label = match endpoint {
+            Endpoint::Serial { path, baud } => format!("USB {path} · {baud} Bd"),
+            Endpoint::Tcp { addr } => format!("TCP {addr}"),
+        };
+        Ok(Self { port, timeout, gap: Duration::from_millis(100), tcp, rx: RxStats::default(), tap: capture::Tap::new(&capture::GLOBAL, label) })
+    }
+
+    /// The name this connection has in a capture, e.g. endpoint and bus as the caller knows them.
+    pub fn set_label(&mut self, label: impl Into<String>) {
+        self.tap.label = label.into().into();
+    }
+
+    /// Leave this connection's traffic out of the capture (the bootloader) or take it in again; on resuming the
+    /// capture notes how many bytes were left out.
+    pub fn pause_capture(&mut self, paused: bool) {
+        self.tap.pause(paused);
+    }
+
+    /// Note how an exchange ended without its answer: a timeout or a broken link (I/O, gateway closed). Other
+    /// failures (RTN, a malformed answer) are visible in the received bytes.
+    fn note_failure<T>(&mut self, r: &Result<T>, address: u8) {
+        match r {
+            Err(Error::Timeout(d)) => self.tap.event(capture::Kind::Timeout { waited_ms: d.as_millis() as u64, address }),
+            Err(e @ (Error::Io(_) | Error::Serial(_) | Error::Closed)) => self.tap.event(capture::Kind::Error(e.to_string())),
+            _ => {}
+        }
+    }
+
+    /// Drop what was received before a request; on TCP a late answer read to drop it shows up in the capture.
+    fn drop_input(&mut self) -> std::io::Result<()> {
+        if !self.tap.sink.is_running() {
+            return self.port.clear_input(None);
+        }
+        let mut dropped = Vec::new();
+        let r = self.port.clear_input(Some(&mut dropped));
+        self.tap.dropped(&dropped);
+        r
+    }
+
+    /// `write_all` that shows up in the capture.
+    fn send(&mut self, data: &[u8]) -> Result<()> {
+        self.tap.tx(data);
+        Ok(self.port.write_all(data)?)
     }
 
     fn read_until<F: Fn(&[u8]) -> bool>(&mut self, done: F) -> Result<Vec<u8>> {
@@ -186,6 +238,7 @@ impl Connection {
                 Ok(0) if self.tcp => return Err(Error::Closed),
                 Ok(0) => {}
                 Ok(n) => {
+                    self.tap.rx(&buf[..n]);
                     self.rx.bytes += n;
                     out.extend_from_slice(&buf[..n]);
                     if done(&out) {
@@ -202,8 +255,14 @@ impl Connection {
     /// Send an ASCII request and return the answer for `address`. Interleaved intra-pack
     /// frames (CID2 0x5A, master polling on the pack bus) are skipped.
     pub fn ascii(&mut self, request: &[u8], address: u8) -> Result<Frame> {
-        self.port.clear_input()?;
-        self.port.write_all(request)?;
+        let r = self.ascii_exchange(request, address);
+        self.note_failure(&r, address);
+        r
+    }
+
+    fn ascii_exchange(&mut self, request: &[u8], address: u8) -> Result<Frame> {
+        self.drop_input()?;
+        self.send(request)?;
         let deadline = Instant::now() + self.timeout;
         let mut pending = Vec::new();
         let result = loop {
@@ -378,10 +437,12 @@ impl Connection {
 
     /// Modbus FC03/04 read (master only, CAN socket bus).
     pub fn modbus_read(&mut self, function: u8, start: u16, count: u16) -> Result<Vec<u16>> {
-        self.port.clear_input()?;
-        self.port.write_all(&modbus::read_request(function, start, count))?;
-        let want = modbus::response_len(count);
-        let raw = self.read_until(|b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0));
+        let request = modbus::read_request(function, start, count);
+        let raw = self.drop_input().map_err(Error::from).and_then(|_| self.send(&request)).and_then(|_| {
+            let want = modbus::response_len(count);
+            self.read_until(|b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0))
+        });
+        self.note_failure(&raw, request[0]);
         std::thread::sleep(self.gap);
         Ok(modbus::parse_read_response(function, &raw?)?)
     }
@@ -516,23 +577,29 @@ pub fn watch_comeback<E>(sent: Instant, limit: Duration, mut answered: impl FnMu
 impl Connection {
     /// Drop everything received so far.
     pub fn clear_input(&mut self) -> Result<()> {
-        Ok(self.port.clear_input()?)
+        Ok(self.drop_input()?)
     }
 
     /// Write and wait until the bytes have left the computer (serial: transmitted; TCP: handed to the socket).
     pub fn write_raw(&mut self, data: &[u8]) -> Result<()> {
-        self.port.write_all(data)?;
-        Ok(self.port.flush()?)
+        let r = self.send(data).and_then(|_| Ok(self.port.flush()?));
+        self.note_failure(&r, 0);
+        r
     }
 
     /// One read: waits up to the port's read timeout (100 ms) and returns what arrived; 0 = nothing yet.
     pub fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize> {
-        match self.port.read(buf) {
+        let r = match self.port.read(buf) {
             Ok(0) if self.tcp => Err(Error::Closed),
             Ok(n) => Ok(n),
             Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Ok(0),
             Err(e) => Err(e.into()),
+        };
+        match &r {
+            Ok(n) if *n > 0 => self.tap.rx(&buf[..*n]),
+            _ => self.note_failure(&r, 0),
         }
+        r
     }
 }
 
@@ -576,16 +643,24 @@ mod tests {
         }
     }
 
+    // behaves like a TCP gateway: what is dropped was read
     impl Port for Scripted {
-        fn clear_input(&mut self) -> std::io::Result<()> {
+        fn clear_input(&mut self, dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            if let Some(d) = dropped {
+                d.extend_from_slice(&self.out);
+            }
             self.out.clear();
             Ok(())
         }
     }
 
     fn scripted(script: Vec<(Vec<u8>, Vec<u8>)>) -> Connection {
+        scripted_into(script, Box::leak(Box::new(capture::Capture::new())))
+    }
+
+    fn scripted_into(script: Vec<(Vec<u8>, Vec<u8>)>, sink: &'static capture::Capture) -> Connection {
         let port = Box::new(Scripted { script, out: Vec::new() });
-        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default() }
+        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) }
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.
@@ -806,6 +881,90 @@ mod tests {
         c.set_serial(2, serial::Which::Bms, "SYN-0009").unwrap();
         assert_eq!(c.serial(2, serial::Which::Bms).unwrap(), SerialValue::Set { value: "SYN-0009".into(), truncated: false });
         assert!(matches!(c.set_serial(2, serial::Which::Bms, "ä"), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+    }
+
+    #[test]
+    fn a_timeout_keeps_what_arrived_in_the_capture() {
+        let sink: &'static capture::Capture = Box::leak(Box::new(capture::Capture::new()));
+        sink.start();
+        // an answer from another address and a partial line: not ours, the exchange times out
+        let mut stray = answer(5, 0, &[]);
+        stray.extend_from_slice(b"~2003");
+        let request = DeviceInfo::request(3).unwrap();
+        let mut c = scripted_into(vec![(request.clone(), stray.clone())], sink);
+        c.set_label("USB /dev/test · RS485-1/2");
+        assert!(matches!(c.device_info(3), Err(Error::Timeout(_))));
+        let es = sink.snapshot().entries;
+        assert_eq!(es[0].kind, capture::Kind::Tx);
+        assert_eq!(es[0].bytes, request);
+        let rx: Vec<u8> = es.iter().filter(|e| e.kind == capture::Kind::Rx).flat_map(|e| e.bytes.clone()).collect();
+        assert_eq!(rx, stray);
+        assert_eq!(es.last().unwrap().kind, capture::Kind::Timeout { waited_ms: 50, address: 3 });
+        assert!(es.iter().all(|e| &*e.label == "USB /dev/test · RS485-1/2"));
+        assert_eq!(sink.status().timeouts, 1);
+    }
+
+    #[test]
+    fn a_late_answer_dropped_before_the_next_request_is_captured_as_dropped() {
+        let sink: &'static capture::Capture = Box::leak(Box::new(capture::Capture::new()));
+        sink.start();
+        let first = DeviceInfo::request(1).unwrap();
+        let late = answer(1, 0, &[]);
+        // the answer to the first request is still in the input when the next request goes out
+        let mut c = scripted_into(vec![(first.clone(), late.clone())], sink);
+        c.write_raw(&first).unwrap();
+        let before = sink.status().entries;
+        assert!(matches!(c.device_info(2), Err(Error::Timeout(_))));
+        let es = sink.snapshot().entries;
+        let kinds: Vec<capture::Kind> = es[before..].iter().map(|e| e.kind.clone()).collect();
+        assert_eq!(kinds, vec![capture::Kind::Dropped, capture::Kind::Tx, capture::Kind::Timeout { waited_ms: 50, address: 2 }]);
+        assert_eq!(es[before].bytes, late);
+        // not recorded while the capture is off
+        sink.stop();
+        c.write_raw(&first).unwrap();
+        let n = sink.status().entries;
+        let _ = c.device_info(2);
+        assert_eq!(sink.status().entries, n);
+    }
+
+    #[test]
+    fn modbus_and_raw_traffic_are_captured() {
+        let sink: &'static capture::Capture = Box::leak(Box::new(capture::Capture::new()));
+        let mut ex = vec![0x01, 0x84, 0x02];
+        let crc = modbus::crc16(&ex);
+        ex.extend(crc.to_le_bytes());
+        let request = modbus::read_request(0x04, 0, 21);
+        let mut c = scripted_into(vec![(request.clone(), ex.clone()), (b"raw".to_vec(), b"ok".to_vec())], sink);
+        // nothing is recorded before the capture starts
+        c.master_battery_serial().unwrap();
+        assert_eq!(sink.status().entries, 0);
+        sink.start();
+        c.master_battery_serial().unwrap();
+        c.write_raw(b"raw").unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(c.read_raw(&mut buf).unwrap(), 2);
+        let es: Vec<(capture::Kind, Vec<u8>)> = sink.snapshot().entries.iter().map(|e| (e.kind.clone(), e.bytes.clone())).collect();
+        assert_eq!(es, vec![
+            (capture::Kind::Tx, request),
+            (capture::Kind::Rx, ex),
+            (capture::Kind::Tx, b"raw".to_vec()),
+            (capture::Kind::Rx, b"ok".to_vec()),
+        ]);
+    }
+
+    #[test]
+    fn a_paused_connection_notes_the_left_out_bytes() {
+        let sink: &'static capture::Capture = Box::leak(Box::new(capture::Capture::new()));
+        sink.start();
+        let mut c = scripted_into(vec![(b"::::boot".to_vec(), b"::::ack".to_vec())], sink);
+        c.pause_capture(true);
+        c.write_raw(b"::::boot").unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(c.read_raw(&mut buf).unwrap(), 7);
+        c.pause_capture(false);
+        let es = sink.snapshot().entries;
+        assert_eq!(es.len(), 1);
+        assert_eq!(es[0].kind, capture::Kind::Skipped { sent: 8, received: 7 });
     }
 
     fn two() -> Vec<SocketAddr> {

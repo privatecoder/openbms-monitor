@@ -22,6 +22,8 @@ openbms-flash = { path = "../../crates/openbms-flash" }
 openbms-transport = { path = "../../crates/openbms-transport" }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+# local time in the frame capture export
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(unix)'.dependencies]
 # free disk space before a migration copies a database

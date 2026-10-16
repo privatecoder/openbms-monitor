@@ -13,13 +13,14 @@ Every exchange of every `openbms_transport::Connection` the app opens while the 
 Recorded at byte level in the transport (r2, review findings 1 and 4), so nothing that passes the port is missed and the answer selection of `ascii` stays as it is:
 
 - **TX:** every write: the request in `ascii` and `modbus_read`, and every `write_raw` (maintenance dialog `dialog::exchange`, flash preflight 0x51/0x47, the 0x45 reset and the check after the flash all use the raw path).
+- **RX verworfen:** what `clear_input` reads on TCP to drop it before a request (see below).
 - **RX:** every chunk read, as it arrives, copied in the read branch of `read_until` and in `read_raw`, with its time. Partial lines, trailing lines after our answer, noise and collisions are therefore in the capture; a timeout does not drop what arrived.
 - **Timeout:** an `ascii`/`modbus_read` exchange ended without its answer, with the waited time.
 - **Error:** I/O error or gateway closed, with the text.
 
 Lines are assembled only at export (per connection: RX bytes up to `\r` for ASCII; a raw chunk run between two TX for Modbus and other binary data).
 
-**Bootloader left out.** `session::flash_with_progress` pauses the capture for its connection from `R F L` up to and including `W F G` (a `Link` method with a no-op default, `Connection` sets a flag); the capture notes „Bootloader-Verkehr ausgelassen (n Byte gesendet, m empfangen)“ there. Preflight, reset and the check after the flash are captured. Not captured: bytes dropped by `clear_input` before a request (the serial driver drops them unseen).
+**Bootloader left out.** `session::flash_with_progress` pauses the capture for its connection from `R F L` up to and including `W F G` (a `Link` method with a no-op default, `Connection` sets a flag); the capture notes „Bootloader-Verkehr ausgelassen (n Byte gesendet, m empfangen)“ there. Preflight, reset and the check after the flash are captured. Bytes dropped by `clear_input` before a request: on TCP they are read in user space to drop them, so they are recorded as „RX verworfen“ (export: „vor der Anfrage verworfen (kam zu spät)“, a late answer is visible next to its timeout), kept apart from the next answer's line; only while capturing, no extra I/O. On serial ports the driver drops them unseen, so they are not captured.
 
 Each entry: wall-clock time (ms), monotonic offset from capture start (ms), connection label, direction/kind, bytes.
 

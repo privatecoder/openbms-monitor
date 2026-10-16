@@ -17,6 +17,9 @@ pub struct BootSim {
     boot_writes: Vec<(u8, Duration)>,
     boot_ack_delay: Duration,
     boot_reply_ready_at: Duration,
+    capture_paused: bool,
+    /// every write: bootloader framing, and whether the frame capture was paused then
+    writes: Vec<(bool, bool)>,
 }
 
 impl BootSim {
@@ -33,6 +36,8 @@ impl BootSim {
             boot_writes: Vec::new(),
             boot_ack_delay: Duration::ZERO,
             boot_reply_ready_at: Duration::ZERO,
+            capture_paused: false,
+            writes: Vec::new(),
         }
     }
     pub fn set_boot_ack_delay(&mut self, delay: Duration) {
@@ -49,6 +54,13 @@ impl BootSim {
     }
     pub fn boot_writes(&self) -> &[(u8, Duration)] {
         &self.boot_writes
+    }
+    /// Every write as (bootloader framing, capture paused at the time).
+    pub fn capture_writes(&self) -> &[(bool, bool)] {
+        &self.writes
+    }
+    pub fn capture_paused(&self) -> bool {
+        self.capture_paused
     }
     fn queue(&mut self, bytes: Vec<u8>) {
         self.pending.extend(bytes);
@@ -138,6 +150,7 @@ impl Link for BootSim {
         Ok(())
     }
     fn write_raw(&mut self, bytes: &[u8]) -> Result<()> {
+        self.writes.push((bytes.starts_with(b"::::"), self.capture_paused));
         if bytes.starts_with(b"~") {
             self.handle_ascii(bytes);
         } else if bytes.starts_with(b"::::") {
@@ -161,5 +174,8 @@ impl Link for BootSim {
     }
     fn wait(&mut self, duration: Duration) {
         self.now += duration;
+    }
+    fn pause_capture(&mut self, paused: bool) {
+        self.capture_paused = paused;
     }
 }

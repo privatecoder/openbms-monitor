@@ -60,6 +60,29 @@ fn probe_and_flash_complete_against_bootloader_simulator() {
 }
 
 #[test]
+fn the_frame_capture_pauses_from_rfl_through_wfg_only() {
+    let mut sim = BootSim::new();
+    session::flash(&mut sim, 0, &image(), &mut Vec::new(), fast()).unwrap();
+    let writes = sim.capture_writes();
+    // every bootloader frame while paused, every ASCII frame (preflight, reset, check afterwards) captured
+    assert!(writes.iter().all(|(boot, paused)| boot == paused), "{writes:?}");
+    assert_eq!(writes.iter().filter(|(boot, _)| *boot).count(), 6);
+    assert!(writes.last().is_some_and(|(boot, _)| !boot));
+    assert!(!sim.capture_paused());
+
+    // a failure inside the bootloader part takes the link in again
+    let mut sim = BootSim::new();
+    sim.reject_data_block(1);
+    assert!(session::flash(&mut sim, 0, &image(), &mut Vec::new(), fast()).is_err());
+    assert!(!sim.capture_paused());
+
+    let mut sim = BootSim::new();
+    session::probe(&mut sim, 0, &mut Vec::new(), fast()).unwrap();
+    assert!(sim.capture_writes().iter().all(|(boot, paused)| boot == paused));
+    assert!(!sim.capture_paused());
+}
+
+#[test]
 fn flash_stops_on_nak_without_retrying_block() {
     let mut sim = BootSim::new();
     sim.reject_data_block(1);
