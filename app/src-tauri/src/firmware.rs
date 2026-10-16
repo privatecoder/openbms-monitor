@@ -203,8 +203,10 @@ fn new_log(app: &AppHandle, state: &AppState, installation: Option<&str>, addres
 }
 
 fn open_port(port: &str, l: Lang) -> Result<Connection, String> {
-    Connection::open(&Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD })
-        .map_err(|e| openbms_flash::Error::from(e).text(l))
+    let ep = Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD };
+    let mut c = Connection::open(&ep).map_err(|e| openbms_flash::Error::from(e).text(l))?;
+    c.set_label(crate::capture::label(&ep, openbms_transport::Bus::PackBus));
+    Ok(c)
 }
 
 #[tauri::command]
