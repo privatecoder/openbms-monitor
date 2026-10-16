@@ -68,6 +68,12 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
   useEffect(() => { loadSites(); setHidden(new Set()); }, [site]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const info = sites?.find((s) => s.site === site);
+  // no data for this installation yet: look again every few seconds, so the first recorded rows show up
+  useEffect(() => {
+    if (!site || info || isDemo) return;
+    const id = window.setInterval(loadSites, 5000);
+    return () => window.clearInterval(id);
+  }, [site, !!info]); // eslint-disable-line react-hooks/exhaustive-deps
   const packs = useMemo(() => info?.packs ?? [], [info]);
   // the installation's pairs for the report; the preview pairs neighbours
   const { pairs: storedPairs } = usePairs(installation?.id ?? null);
