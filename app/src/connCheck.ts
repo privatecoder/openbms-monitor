@@ -46,4 +46,23 @@ export function partialLine(addrs: number[], found: number[], t: TFunction): str
   return t("conn.partial", { n: addrs.length - missing.length, total: addrs.length, list: missing.map(pad).join(", ") });
 }
 
+/** The last connection that worked for an installation, kept in this browser's storage. */
+export interface LastConn { kind: "tcp" | "serial"; target: string; bus: Bus; packs: number }
+
+const lastKey = (installation: string) => `conn.last.${installation}`;
+
+export function saveLastConn(installation: string, c: LastConn) {
+  try { localStorage.setItem(lastKey(installation), JSON.stringify(c)); } catch { /* storage full or off */ }
+}
+
+/** What `saveLastConn` stored, if it is still well-formed. */
+export function lastConn(installation: string): LastConn | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(lastKey(installation)) ?? "null");
+    if (v && (v.kind === "tcp" || v.kind === "serial") && typeof v.target === "string" && v.target
+      && (v.bus === "pack" || v.bus === "can") && Number.isInteger(v.packs) && v.packs >= 0 && v.packs <= 16) return v;
+  } catch { /* not JSON */ }
+  return null;
+}
+
 export { BAUD, other as otherBus, pad as padAddress };

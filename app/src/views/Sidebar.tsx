@@ -12,7 +12,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, pickable, portBusy, preselect } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, explain, firstLine, noAnswer, otherBus, padAddress, partialLine } from "../connCheck";
+import { BAUD, explain, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -194,6 +194,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
       const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, packs: packCount });
       // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
       const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
@@ -325,6 +326,19 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     }, 400);
     return () => clearTimeout(timer);
   }, [kind, target, connected, lost, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Another installation chosen while not connected: its last working connection fills the fields (kind, address
+  // or port, bus, packs). The address counts as asked, so the gateway preselection above does not switch back.
+  useEffect(() => {
+    if (connected || lost || busy || !maint.installation) return;
+    const last = lastConn(maint.installation);
+    if (!last) return;
+    setKind(last.kind);
+    setTargets((cur) => ({ ...cur, [last.kind]: last.target }));
+    if (last.kind === "tcp") asked.current = last.target.trim().toLowerCase();
+    setBus(last.bus);
+    setPackCount(last.packs);
+  }, [maint.installation]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port).
   useEffect(() => {
