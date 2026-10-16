@@ -9,7 +9,7 @@ import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
 import { packBusy } from "../control";
-import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, withPort, type PortKind } from "../maint";
+import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
 import { BAUD, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
@@ -343,6 +343,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // gateway preselection above does not switch back. A port edited in the installations view is taken over too.
   const apply = (f: ReturnType<typeof fillFields>) => {
     if (!f) return;
+    setOther(false);
     setKind(f.kind);
     setTargets((cur) => ({ ...cur, [f.kind]: f.target }));
     if (f.kind === "tcp") asked.current = f.target.trim().toLowerCase();
@@ -355,6 +356,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     if (connected || lost || busy || !maint.installation) return;
     apply(fillFields(cur, bus, lastConn(maint.installation), "installation"));
   }, [maint.installation, maint.loaded, storedPorts]); // eslint-disable-line react-hooks/exhaustive-deps
+  // the installation's stored port of the chosen bus is shown as a fixed line; the free fields only without one, or
+  // for a one-off other port („Anderer Anschluss“, not stored unless the offer after connecting is accepted)
+  const [other, setOther] = useState(false);
+  const stored = cur ? storedPort(cur, bus) : null;
+  const useStored = !!stored && !other && stored.kind === kind && stored.target === target;
   const changeBus = (b: Bus) => {
     setBus(b);
     apply(fillFields(cur, b, maint.installation ? lastConn(maint.installation) : null, "bus"));
@@ -451,6 +457,28 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             {pickHint && <p className="text-xs text-discharge">{t("conn.pickHint")}</p>}
           </div>
         )}
+        <label className="block">
+          <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
+          <select className={input} value={bus} disabled={fixed} onChange={(e) => changeBus(e.target.value as Bus)}>
+            <option value="can">{t("conn.busCan")}</option>
+            <option value="pack">{t("conn.busPack")}</option>
+          </select>
+        </label>
+        {useStored ? (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 rounded-md bg-sunken px-3 py-2 text-sm" title={t("conn.storedHint")}>
+              {kind === "tcp" ? <Network className="h-3.5 w-3.5 shrink-0 text-muted" /> : <Usb className="h-3.5 w-3.5 shrink-0 text-muted" />}
+              <span className="truncate">{target}</span>
+            </div>
+            {!fixed && (
+              <p className="flex gap-3 text-xs text-muted">
+                <button className="underline hover:text-ink" onClick={() => setOther(true)}>{t("conn.otherPort")}</button>
+                <button className="underline hover:text-ink" onClick={() => setView("installations")}>{t("conn.editPorts")}</button>
+              </p>
+            )}
+          </div>
+        ) : (
+          <>
         <div className="grid grid-cols-2 gap-1 rounded-md bg-sunken p-1">
           {([["tcp", Network], ["serial", Usb]] as const).map(([k, I]) => (
             <button key={k} onClick={() => setKind(k)} disabled={fixed}
@@ -471,13 +499,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <Button variant="ghost" size="icon" className="shrink-0" disabled={fixed} onClick={loadPorts} aria-label={t("fw.refreshPorts")} title={t("fw.refreshPorts")}><RefreshCw className="h-4 w-4" /></Button>
           </div>
         )}
-        <label className="block">
-          <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
-          <select className={input} value={bus} disabled={fixed} onChange={(e) => changeBus(e.target.value as Bus)}>
-            <option value="can">{t("conn.busCan")}</option>
-            <option value="pack">{t("conn.busPack")}</option>
-          </select>
-        </label>
+            {stored && !fixed && (
+              <p className="text-xs text-muted">
+                <button className="underline hover:text-ink" onClick={() => apply(fillFields(cur, bus, null, "bus"))}>{t("conn.useStored")}</button>
+              </p>
+            )}
+          </>
+        )}
         <label className="flex items-center justify-between gap-3 text-sm text-muted">
           {t("conn.packs")}
           <select className={cn(input, "w-28")} value={packCount} disabled={fixed} onChange={(e) => setPackCount(Number(e.target.value))}>
