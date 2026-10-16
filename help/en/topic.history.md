@@ -1,7 +1,7 @@
 ---
 title: History
 short: Shows the recorded values as charts over time, with export and import.
-related: topic.recording, value.share, topic.bmsHistory
+related: topic.recording, value.share, topic.healthReport, topic.bmsHistory
 ---
 - **Installation and span:** the history shows the installation chosen in the sidebar, also without a connection. Spans up to now (1 h to 30 days) refresh every 30 s; “All” shows the whole recording.
 - **Charts per pack:** current, current share, SOC, pack voltage, highest and lowest cell, cell difference, warmest and coldest cell. Each pack keeps its colour everywhere; the pack buttons hide single packs.
@@ -12,3 +12,4 @@ related: topic.recording, value.share, topic.bmsHistory
 - **Messages:** below the charts are the messages in the span with start and end. Clicking the time zooms the charts to that moment.
 - **Export:** the span shown and the packs shown, as CSV (one row per pack and time with all cells; the master's values in a second file) or as JSON Lines (the earlier recording format, to pass on and import again). Times in UTC.
 - **Import:** JSON Lines recordings of earlier versions or exports, for the installation shown. Times already present are not overwritten, so importing twice does no harm.
+- **Report:** the “Report” tab evaluates the recording over days and weeks (see Health report).
