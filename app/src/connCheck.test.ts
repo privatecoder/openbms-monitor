@@ -55,3 +55,20 @@ describe("connection check", () => {
     expect(partialLine([0, 1], [0, 1], t)).toBe("");
   });
 });
+
+describe("last connection per installation", () => {
+  it("keeps what worked per installation and ignores broken entries", async () => {
+    const { lastConn, saveLastConn } = await import("./connCheck");
+    const store = new Map<string, string>();
+    globalThis.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) } as Storage;
+    saveLastConn("inst-a", { kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: 0 });
+    saveLastConn("inst-b", { kind: "serial", target: "/dev/cu.test", bus: "pack", packs: 1 });
+    expect(lastConn("inst-a")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: 0 });
+    expect(lastConn("inst-b")?.bus).toBe("pack");
+    expect(lastConn("inst-c")).toBeNull();
+    localStorage.setItem("conn.last.inst-c", "{\"kind\":\"usb\",\"target\":\"x\",\"bus\":\"can\",\"packs\":1}");
+    expect(lastConn("inst-c")).toBeNull();
+    localStorage.setItem("conn.last.inst-c", "nonsense");
+    expect(lastConn("inst-c")).toBeNull();
+  });
+});
