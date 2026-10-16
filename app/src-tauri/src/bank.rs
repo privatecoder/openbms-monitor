@@ -184,6 +184,8 @@ pub(crate) struct BankState {
     /// RS485-1/2: the recorder and the endpoint link follow the verdict; the CAN socket records from the start
     pack_bus: bool,
     link: Option<PendingLink>,
+    /// CAN socket: the master's battery serial read after connecting equals the installation's (`notify.rs`)
+    can_master: bool,
 }
 
 impl BankState {
@@ -252,6 +254,29 @@ pub(crate) fn foreign(state: &AppState, gen: u64) -> bool {
 /// The pack at `address` is unconfirmed on connection `gen`.
 pub(crate) fn unconfirmed(state: &AppState, gen: u64, address: u8) -> bool {
     state.bank.lock().map(|b| b.current(gen).is_some_and(|b| matches!(b.packs.get(&address), Some(Seen::Unconfirmed(_))))).unwrap_or(true)
+}
+
+/// Whether answers of `address` on connection `gen` may raise a notification: on RS485-1/2 only a pack whose board is
+/// known here, and none while a pack of another installation is open; on the CAN socket (no per-pack check) every
+/// pack once the master's battery serial matched the installation's.
+pub(crate) fn notify_allowed(state: &AppState, gen: u64, address: u8) -> bool {
+    state.bank.lock().is_ok_and(|b| {
+        b.current(gen).is_some_and(|b| if b.pack_bus { !b.foreign() && matches!(b.packs.get(&address), Some(Seen::Known)) } else { b.can_master })
+    })
+}
+
+/// The master's battery serial read on the CAN socket connection `gen` matched the installation's or not.
+pub(crate) fn can_master_read(state: &AppState, gen: u64, matched: bool) {
+    if let Ok(mut b) = state.bank.lock() {
+        if b.gen == gen && !b.pack_bus {
+            b.can_master = matched;
+        }
+    }
+}
+
+/// Connection `gen` is on the CAN socket and its master has not matched (yet): notifications are off for it.
+pub(crate) fn can_unchecked(state: &AppState, gen: u64) -> bool {
+    state.bank.lock().is_ok_and(|b| b.current(gen).is_some_and(|b| !b.pack_bus && !b.can_master))
 }
 
 /// Apply the verdict of `link`'s connection: the recorder waits unless it may record; the first `Record` links the
@@ -684,6 +709,32 @@ mod tests {
         assert!(held(&state));
         confirm(&state, &a, &[5]).unwrap();
         assert!(!held(&state));
+    }
+
+    #[test]
+    fn notifications_count_only_known_packs_or_the_installations_can_master() {
+        let state = AppState::default();
+        crate::new_link(&state, Some("a".into()));
+        let gen = link_now(&state).gen;
+        begin(&state, gen, true, None);
+        note(&state, gen, 1, Seen::Known);
+        note(&state, gen, 2, Seen::Unchecked);
+        note(&state, gen, 3, held(Why::New, NONE));
+        assert!(notify_allowed(&state, gen, 1));
+        assert!(!notify_allowed(&state, gen, 2) && !notify_allowed(&state, gen, 3) && !notify_allowed(&state, gen, 4));
+        assert!(!notify_allowed(&state, gen + 1, 1), "another connection");
+        // a pack of another installation open: none at all
+        note(&state, gen, 5, held(Why::Foreign, NONE));
+        assert!(!notify_allowed(&state, gen, 1));
+        // CAN socket: all or nothing, by the master's battery serial
+        begin(&state, gen, false, None);
+        assert!(!notify_allowed(&state, gen, 0) && can_unchecked(&state, gen));
+        can_master_read(&state, gen + 1, true);
+        assert!(!notify_allowed(&state, gen, 0), "a read of another connection");
+        can_master_read(&state, gen, true);
+        assert!(notify_allowed(&state, gen, 0) && notify_allowed(&state, gen, 7) && !can_unchecked(&state, gen));
+        can_master_read(&state, gen, false);
+        assert!(!notify_allowed(&state, gen, 0));
     }
 
     #[test]

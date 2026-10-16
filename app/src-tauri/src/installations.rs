@@ -133,6 +133,7 @@ pub struct SettingsView {
     groups: Value,
     pairs: Value,
     diagnosis: Value,
+    notifications: Value,
 }
 
 fn parse(t: Option<String>) -> Value {
@@ -151,6 +152,7 @@ pub async fn installation_settings(state: State<'_, AppState>, installation: Str
         groups: parse(s.groups),
         pairs: parse(s.pairs),
         diagnosis: parse(s.diagnosis),
+        notifications: parse(s.notifications),
     })
 }
 
@@ -165,7 +167,7 @@ pub async fn set_installation_cell_types(state: State<'_, AppState>, installatio
     .map_err(maint::store_refusal)
 }
 
-/// Store one setting the UI edits as a whole: "groups", "pairs" or "diagnosis"; null removes it.
+/// Store one setting the UI edits as a whole: "groups", "pairs", "diagnosis" or "notifications"; null removes it.
 #[tauri::command]
 pub async fn set_installation_setting(state: State<'_, AppState>, installation: String, key: String, value: Value) -> Result<(), MaintError> {
     let text = (!value.is_null()).then(|| value.to_string());
@@ -178,10 +180,16 @@ pub async fn set_installation_setting(state: State<'_, AppState>, installation: 
                 Some(t) => s.set_diagnosis(&installation, t),
                 None => s.clear_diagnosis(&installation),
             },
+            "notifications" => s.set_notifications(&installation, text.as_deref()),
             other => Err(format!("unknown setting {other}")),
         }
     })
-    .map_err(maint::store_refusal)
+    .map_err(maint::store_refusal)?;
+    // the connection of this installation uses them from its next answer on
+    if key == "notifications" {
+        crate::notifications::settings_changed(&state, &installation, text.as_deref());
+    }
+    Ok(())
 }
 
 /// The installations view of one installation: places, what it owns here and in the recording, the folder of its logs.

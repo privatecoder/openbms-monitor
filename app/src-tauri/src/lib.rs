@@ -19,6 +19,8 @@ mod installations;
 mod maint;
 mod maint_store;
 mod migrate;
+mod notifications;
+mod notify;
 use history::{Format, Settings, SharedHistory};
 
 #[derive(Default)]
@@ -50,6 +52,9 @@ struct AppState {
     ops: control::Ops,
     /// The unconfirmed packs of the connection (right bank before writing); see `bank.rs`.
     bank: Mutex<bank::BankState>,
+    /// Notifications from the poll answers (`notify.rs`) and their wording from the UI.
+    notify: Mutex<notify::Notifier>,
+    notify_texts: Mutex<notify::Texts>,
 }
 
 /// The installation a connection belongs to. `gen` counts connects and disconnects: an answer that arrives after one is
@@ -304,6 +309,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     let gen = link_now(&state).gen;
     let pending = (!can && installation.is_some()).then(|| bank::PendingLink { key: key.clone(), control });
     bank::begin(&state, gen, !can, pending);
+    notifications::begin(&state, gen, installation.as_deref());
     if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
         h.connected(id, if can { "can" } else { "pack" });
         // RS485-1/2: nothing is recorded until a serial read shows no pack of another installation (`bank.rs`)
@@ -344,6 +350,12 @@ async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, 
 
 /// Stop polling and drop the monitor's connection (also before a firmware update takes the port).
 fn stop_monitor(state: &AppState) -> Result<(), String> {
+    stop_monitor_as(state, false)
+}
+
+/// `lost`: the UI drops a dead link and reconnects; notifications keep watching for the lost connection.
+fn stop_monitor_as(state: &AppState, lost: bool) -> Result<(), String> {
+    notifications::end(state, lost);
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
@@ -368,14 +380,15 @@ pub(crate) fn stop_monitor_and_tell(state: &AppState, app: &AppHandle) -> Result
 
 /// Async, so the window never waits: a running pack action (a restart watch up to 15 s) ends first, a history read is
 /// asked to stop. After 20 s the monitor stops anyway; the action's next step then finds the connection changed.
+/// `lost`: the UI drops a dead link to reconnect, not closed by the user.
 #[tauri::command]
-async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
+async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<(), String> {
     let _pending = control::begin_disconnect(&state.ops);
     state.memory_cancel.store(true, Ordering::SeqCst);
     let ops = state.ops.clone();
     // waiting blocks: off the async runtime
     tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, Duration::from_secs(20))).await.map_err(|e| e.to_string())?;
-    stop_monitor(&state)
+    stop_monitor_as(&state, lost.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -445,6 +458,11 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
     if bus == Bus::CanSocketBus {
         // no String 2 here: the master's battery serial of another installation is a hint only, nothing is held
         let other = if address == 0 { maint::with_store(&state, |s| bank::can_hint(s, &inst, &serials.battery)).ok().flatten() } else { None };
+        // notifications run on this connection only with the installation's own master
+        if address == 0 {
+            let stored = maint::with_store(&state, |s| Ok(s.current_board(&inst, 0)?.and_then(|b| b.battery_serial))).ok().flatten();
+            bank::can_master_read(&state, before.gen, notify::master_matches(stored.as_deref(), &serials.battery));
+        }
         let identity = other.map(|o| bank::IdentityView {
             kind: "unconfirmed", address, serial: None, why: Some(bank::Why::Foreign), installation: Some(o), hint: true,
         });
@@ -517,6 +535,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     // answers of a connection replaced meanwhile are neither recorded nor shown
     let current = move || links.lock().map(|l| l.gen == gen).unwrap_or(false);
     std::thread::spawn(move || {
+        let state = app.state::<AppState>();
         while running.load(Ordering::SeqCst) {
             // a BMS history read has the bus to itself
             if paused.load(Ordering::SeqCst) {
@@ -563,11 +582,16 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
+                // notifications from this fresh answer, never from the UI's merged state
+                notifications::answer(&state, gen, address, telemetry.as_ref().ok(), status.as_ref().ok());
                 let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error };
                 if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
                     rec.pack(history::now_ms(), address, &v);
                 }
                 let _ = app.emit("pack", update);
+            }
+            if running.load(Ordering::SeqCst) && current() {
+                notifications::round_end(&app, &state);
             }
             let wait = Duration::from_millis(interval_ms).saturating_sub(started.elapsed());
             std::thread::sleep(wait.max(Duration::from_millis(100)));
@@ -808,11 +832,13 @@ pub fn run() {
     });
     builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("history.sqlite");
             let state = app.state::<AppState>();
             let _ = state.app.set(app.handle().clone());
+            notifications::start(app.handle());
             // migrating a big file takes a while: off the setup thread, so the window opens meanwhile; the
             // recorder starts once the file is ready, the status says so until then
             if let Ok(mut h) = state.history.lock() {
@@ -842,7 +868,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
