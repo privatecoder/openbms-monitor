@@ -41,7 +41,9 @@ CREATE TABLE sites(id INTEGER PRIMARY KEY, site TEXT NOT NULL UNIQUE);
 CREATE TABLE pack(site INTEGER NOT NULL, pack INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
   current INTEGER, soc INTEGER, voltage INTEGER, remaining INTEGER, cycles INTEGER,
   cell_max INTEGER, cell_min INTEGER, temp_max INTEGER, temp_min INTEGER, ambient INTEGER, mosfet INTEGER,
-  cells BLOB, temps BLOB, PRIMARY KEY(site, pack, t)) WITHOUT ROWID;
+  cells BLOB, temps BLOB,
+  -- per minute row: min/max of the rows' cell spread (cell_max - cell_min, mV) and current; a raw row has its own twice
+  spread_lo INTEGER, spread_hi INTEGER, i_lo INTEGER, i_hi INTEGER, PRIMARY KEY(site, pack, t)) WITHOUT ROWID;
 CREATE INDEX pack_t ON pack(t);
 CREATE TABLE system(site INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
   current INTEGER, soc INTEGER, voltage INTEGER, ccl INTEGER, dcl INTEGER, cvl INTEGER,
@@ -54,7 +56,7 @@ CREATE INDEX events_start ON events(start);
 
 /// Migrations of an existing file, in order; a new file gets SCHEMA and counts them as done. The SQL is frozen
 /// as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[site_keys];
+const MIGRATIONS: &[crate::migrate::Step] = &[site_keys, pack_spread];
 
 /// 1: `pack` and `system` keyed per site (from their session), so compaction no longer merges two installations'
 /// rows of the same minute. Rows whose session is gone were in no site's view; they keep the empty site.
@@ -85,6 +87,18 @@ fn site_keys(db: &Connection) -> rusqlite::Result<()> {
          ALTER TABLE system_new RENAME TO system;
          CREATE INDEX system_t ON system(t);
          DROP TABLE temp.session_site;",
+    )
+}
+
+/// 2: spread and current range per row, so the health report can tell rest from load in minute rows. A row with
+/// n = 1 is one answer and gets its own values; older minute rows stay NULL (their spread is not recoverable).
+fn pack_spread(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "ALTER TABLE pack ADD COLUMN spread_lo INTEGER;
+         ALTER TABLE pack ADD COLUMN spread_hi INTEGER;
+         ALTER TABLE pack ADD COLUMN i_lo INTEGER;
+         ALTER TABLE pack ADD COLUMN i_hi INTEGER;
+         UPDATE pack SET spread_lo = cell_max - cell_min, spread_hi = cell_max - cell_min, i_lo = current, i_hi = current WHERE n = 1;",
     )
 }
 
@@ -573,8 +587,8 @@ impl History {
                 let pack = tx
                     .execute(
                         "INSERT OR IGNORE INTO pack(site, pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min, temp_max, temp_min,
-                           ambient, mosfet, cells, temps) SELECT ?2, pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min, temp_max,
-                           temp_min, ambient, mosfet, cells, temps FROM pack WHERE site = ?1",
+                           ambient, mosfet, cells, temps, spread_lo, spread_hi, i_lo, i_hi) SELECT ?2, pack, t, session, n, current, soc, voltage, remaining,
+                           cycles, cell_max, cell_min, temp_max, temp_min, ambient, mosfet, cells, temps, spread_lo, spread_hi, i_lo, i_hi FROM pack WHERE site = ?1",
                         [o, new_id],
                     )
                     .map_err(e2s)? as u64;
@@ -709,10 +723,21 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         Some(0) | None => tm["idle_current_ma"].as_i64().or(Some(0)),
         c => c,
     };
+    let (cell_max, cell_min) = (cells.iter().max().copied(), cells.iter().min().copied());
+    // an exported row carries its ranges (null for a minute row from before they were kept); a minute row of an
+    // export without them has none: its averaged cells would understate the spread
+    let merged = tm["samples"].as_i64().is_some_and(|n| n > 1);
+    let range = |key: &str, scale: f64, own: Option<i64>| match tm.get(key) {
+        Some(v) => scaled(v, scale),
+        None if merged => None,
+        None => own,
+    };
+    let spread = cell_max.zip(cell_min).map(|(a, b)| a - b);
     let changed = db
         .prepare_cached(&format!(
             "INSERT OR {} INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min,
-               temp_max, temp_min, ambient, mosfet, cells, temps, site) VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+               temp_max, temp_min, ambient, mosfet, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi)
+               VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             if keep_existing { "IGNORE" } else { "REPLACE" }
         ))?
         .execute(params![
@@ -724,8 +749,8 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         scaled(&tm["pack_voltage"], 100.0),
         scaled(&tm["remaining_capacity_ah"], 100.0),
         tm["cycles"].as_i64(),
-        cells.iter().max(),
-        cells.iter().min(),
+        cell_max,
+        cell_min,
         temps.iter().max(),
         temps.iter().min(),
         scaled(&tm["ambient_temperature"], 10.0),
@@ -733,6 +758,10 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         blob_u16(&cells),
         blob_i16(&temps),
         site,
+        range("spread_lo_mv", 1.0, spread),
+        range("spread_hi_mv", 1.0, spread),
+        range("current_lo", 1000.0, current),
+        range("current_hi", 1000.0, current),
     ])?;
     Ok(changed > 0)
 }
@@ -867,11 +896,38 @@ fn maintain(db: &Connection, s: &Settings, now: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Extremes of a range column over a minute's rows; unknown as soon as one row lacks it (a minute row from before the
+/// ranges were kept), so a partial range never passes for the whole minute.
+#[derive(Default)]
+struct Range {
+    lo: Option<i64>,
+    hi: Option<i64>,
+    unknown: bool,
+}
+impl Range {
+    fn add(&mut self, lo: Option<i64>, hi: Option<i64>) {
+        match lo.zip(hi) {
+            Some((lo, hi)) => {
+                self.lo = Some(self.lo.map_or(lo, |x| x.min(lo)));
+                self.hi = Some(self.hi.map_or(hi, |x| x.max(hi)));
+            }
+            None => self.unknown = true,
+        }
+    }
+    fn get(&self) -> (Option<i64>, Option<i64>) {
+        if self.unknown { (None, None) } else { (self.lo, self.hi) }
+    }
+}
+
 struct PackAcc {
     session: i64,
     n: i64,
-    /// current, soc, voltage, remaining, cycles, ambient, mosfet
+    /// current, soc, voltage, remaining, (unused), ambient, mosfet
     cols: [Acc; 7],
+    /// the last cycle count of the minute (time, value): a counter cleared within the minute reads as cleared
+    cycles: Option<(i64, i64)>,
+    spread: Range,
+    current: Range,
     cell_max: Acc,
     cell_min: Acc,
     temp_max: Acc,
@@ -886,7 +942,7 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
     {
         let mut st = tx.prepare(
             "SELECT site, pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
-               temp_max, temp_min, cells, temps FROM pack WHERE t >= ?1 AND t < ?2",
+               temp_max, temp_min, cells, temps, spread_lo, spread_hi, i_lo, i_hi FROM pack WHERE t >= ?1 AND t < ?2",
         )?;
         let mut rows = st.query([from, to])?;
         while let Some(r) = rows.next()? {
@@ -897,6 +953,9 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
                 session: r.get(3).unwrap_or(0),
                 n: 0,
                 cols: Default::default(),
+                cycles: None,
+                spread: Range::default(),
+                current: Range::default(),
                 cell_max: Acc::default(),
                 cell_min: Acc::default(),
                 temp_max: Acc::default(),
@@ -908,6 +967,13 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
             for (i, col) in [5, 6, 7, 8, 9, 10, 11].into_iter().enumerate() {
                 g.cols[i].add(r.get(col)?, w);
             }
+            if let Some(c) = r.get::<_, Option<i64>>(9)? {
+                if g.cycles.is_none_or(|(at, _)| t >= at) {
+                    g.cycles = Some((t, c));
+                }
+            }
+            g.spread.add(r.get(18)?, r.get(19)?);
+            g.current.add(r.get(20)?, r.get(21)?);
             g.cell_max.add(r.get(12)?, w);
             g.cell_min.add(r.get(13)?, w);
             g.temp_max.add(r.get(14)?, w);
@@ -925,15 +991,18 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
     tx.execute("DELETE FROM pack WHERE t >= ?1 AND t < ?2", [from, to])?;
     let mut ins = tx.prepare(
         "INSERT INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
-           temp_max, temp_min, cells, temps, site) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+           temp_max, temp_min, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi)
+           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
     )?;
     for ((site, pack, t), g) in groups {
         let m = |i: usize| g.cols[i].mean();
         let cells: Vec<i64> = g.cells.iter().filter_map(Acc::mean).collect();
         let temps: Vec<i64> = g.temps.iter().filter_map(Acc::mean).collect();
+        let (spread, current) = (g.spread.get(), g.current.get());
         ins.execute(params![
-            pack, t, g.session, g.n, m(0), m(1), m(2), m(3), g.cols[4].max, m(5), m(6),
-            g.cell_max.max, g.cell_min.min, g.temp_max.max, g.temp_min.min, blob_u16(&cells), blob_i16(&temps), site
+            pack, t, g.session, g.n, m(0), m(1), m(2), m(3), g.cycles.map(|c| c.1), m(5), m(6),
+            g.cell_max.max, g.cell_min.min, g.temp_max.max, g.temp_min.min, blob_u16(&cells), blob_i16(&temps), site,
+            spread.0, spread.1, current.0, current.1
         ])?;
     }
     Ok(())
@@ -1307,7 +1376,7 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
     let io = |e: std::io::Error| format!("{}: {e}", out.display());
     let mut ps = db
         .prepare(&format!(
-            "SELECT t, pack, current, soc, voltage, remaining, cycles, ambient, mosfet, cells, temps, n FROM pack
+            "SELECT t, pack, current, soc, voltage, remaining, cycles, ambient, mosfet, cells, temps, n, spread_lo, spread_hi, i_lo, i_hi FROM pack
              WHERE {in_site} AND pack IN ({pack_list}) AND t >= ?2 AND t <= ?3 ORDER BY t, pack"
         ))
         .map_err(e2s)?;
@@ -1326,6 +1395,9 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
             "remaining_capacity_ah": f(r.get(5)?, 100.0), "cycles": r.get::<_, Option<i64>>(6)?,
             "ambient_temperature": f(r.get(7)?, 10.0), "power_temperature": f(r.get(8)?, 10.0),
             "samples": r.get::<_, i64>(11)?,
+            // the ranges of a minute row (see SCHEMA); import takes them as they are
+            "spread_lo_mv": r.get::<_, Option<i64>>(12)?, "spread_hi_mv": r.get::<_, Option<i64>>(13)?,
+            "current_lo": f(r.get(14)?, 1000.0), "current_hi": f(r.get(15)?, 1000.0),
         });
         Ok((t, json!({ "t": t, "pack": { "address": a, "telemetry": tm, "status": null, "error": null } })))
     };
@@ -1916,7 +1988,7 @@ mod tests {
         // and its writes (without a site) fail instead of landing under a wrong key
         assert!(Connection::open(&path).unwrap().execute("INSERT INTO pack(pack, t, session, n) VALUES(1, 1, 1, 1)", []).is_err());
         // the copy holds the file as it was
-        assert_eq!(crate::migrate::backups(&path), vec!["history.sqlite.bak-1".to_string()]);
+        assert_eq!(crate::migrate::backups(&path), vec!["history.sqlite.bak-1".to_string(), "history.sqlite.bak-2".to_string()]);
         let bak = Connection::open(path.with_file_name("history.sqlite.bak-1")).unwrap();
         let n: i64 = bak.query_row("SELECT COUNT(*) FROM pack", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 4);
@@ -1933,12 +2005,105 @@ mod tests {
         // opening again: nothing to migrate, no new copy, nothing lost
         let mut h = History::default();
         h.open(&path).unwrap();
-        assert_eq!(crate::migrate::backups(&path).len(), 1);
+        assert_eq!(crate::migrate::backups(&path).len(), 2);
         assert_eq!(pack_rows(&path).len(), 5);
         let n: i64 = reader(&path).unwrap().query_row("SELECT COUNT(*) FROM system WHERE t >= ?1", [20 * DAY_MS], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
         let done: String = reader(&path).unwrap().query_row("SELECT value FROM meta WHERE key = 'migration'", [], |r| r.get(0)).unwrap();
-        assert_eq!(done, "1");
+        assert_eq!(done, "2");
+    }
+
+    /// spread_lo, spread_hi, i_lo, i_hi
+    type Ranges = (Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+
+    /// Two leading integer columns and the four range columns of each row of `sql`.
+    fn range_rows(db: &Connection, sql: &str) -> Vec<(i64, Option<i64>, Ranges)> {
+        db.prepare(sql)
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, (r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn old_minute_rows_get_no_spread_and_stay_out_of_the_report() {
+        let path = old_db("spread");
+        let b = 10 * DAY_MS;
+        // a minute row compacted by an earlier version (n = 6) and a single answer of the next day
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO pack(pack, t, session, n, current, cell_max, cell_min, cycles) VALUES(3, {b} + 120000, 1, 6, 500, 3350, 3300, 40);
+                 INSERT INTO pack(pack, t, session, n, current, cell_max, cell_min, cycles) VALUES(3, {b} + {DAY_MS} + 1500, 1, 1, -400, 3320, 3308, 41);
+                 UPDATE sessions SET last = {b} + {DAY_MS} + 1500 WHERE id = 1;"
+            ))
+            .unwrap();
+        let mut h = History::default();
+        h.open(&path).unwrap();
+        let db = reader(&path).unwrap();
+        let ranges = range_rows(&db, "SELECT n, cycles, spread_lo, spread_hi, i_lo, i_hi FROM pack WHERE pack = 3 AND site = (SELECT id FROM sites WHERE site = 'site-a') ORDER BY t");
+        // site-a's two answers of the old file (compacted on open into one minute; without cell_min no spread), the old
+        // minute row, the single answer (compacted on open as well, on its own)
+        assert_eq!(ranges, vec![(2, None, (None, None, Some(1000), Some(3000))), (6, Some(40), (None, None, None, None)), (1, Some(41), (Some(12), Some(12), Some(-400), Some(-400)))]);
+        let r = crate::health::report(&db, "site-a", &[b, b + DAY_MS, b + 2 * DAY_MS], &[]).unwrap();
+        let days = &r.packs[0].days;
+        // day 1: no spread, but the old row's cycles count
+        assert_eq!((days[0].rows, days[0].spread_p95, days[0].cycles), (2, None, Some(40)));
+        assert_eq!((days[1].spread_p50, days[1].rest_p50, days[1].cycles), (Some(12), Some(12), Some(41)));
+        assert_eq!(r.spread_from, Some(b + DAY_MS));
+    }
+
+    #[test]
+    fn compaction_keeps_the_ranges_and_the_last_cycle_count() {
+        let (path, mut h) = temp_db("ranges");
+        h.set_settings(Settings { enabled: true, keep_full_days: 1, ..Settings::default() }).unwrap();
+        h.connected("gw", "can");
+        let base = 10 * DAY_MS;
+        // one minute: currents -30..+20 A, spreads 5..25 mV, the counter cleared in the middle
+        for (i, (current, top, cycles)) in [(-30.0, 3.325, 120), (5.0, 3.305, 121), (20.0, 3.310, 0), (1.0, 3.315, 0)].into_iter().enumerate() {
+            let mut u = pack_update(4, current, &[3.30, top], &[]);
+            u["telemetry"]["cycles"] = json!(cycles);
+            h.pack(base + i as i64 * 10_000, 4, &u);
+        }
+        // the next minute holds a row of an earlier version's compaction: its ranges are unknown, so the minute's are too
+        h.pack(base + MINUTE_MS + 5_000, 4, &pack_update(4, 1.0, &[3.30, 3.31], &[]));
+        Connection::open(&path)
+            .unwrap()
+            .execute("INSERT INTO pack(site, pack, t, session, n, current) SELECT site, 4, ?1, session, 3, 0 FROM pack LIMIT 1", [base + MINUTE_MS])
+            .unwrap();
+        h.maintain(base + 3 * DAY_MS);
+        let rows = range_rows(&reader(&path).unwrap(), "SELECT n, cycles, spread_lo, spread_hi, i_lo, i_hi FROM pack ORDER BY t");
+        assert_eq!(rows, vec![(4, Some(0), (Some(5), Some(25), Some(-30_000), Some(20_000))), (4, Some(78), (None, None, None, None))]);
+    }
+
+    #[test]
+    fn an_export_carries_the_ranges_and_an_old_one_is_tolerated() {
+        let (path, mut h) = temp_db("ranges-export");
+        h.set_settings(Settings { enabled: true, keep_full_days: 1, ..Settings::default() }).unwrap();
+        h.connected("gw", "can");
+        for i in 0..3 {
+            h.pack(i * 10_000 + 1, 2, &pack_update(2, -10.0 * i as f64, &[3.30, 3.30 + 0.01 * i as f64], &[]));
+        }
+        h.maintain(3 * DAY_MS);
+        let dir = path.parent().unwrap();
+        let out = dir.join("ranges.jsonl");
+        export(&reader(&path).unwrap(), "gw", 0, DAY_MS, &[2], Format::Jsonl, &out).unwrap();
+        // an earlier version's export of a minute row (samples, no ranges) and a single answer
+        let old = dir.join("old.jsonl");
+        let mut minute = pack_update(2, 1.0, &[3.30, 3.32], &[]);
+        minute["telemetry"]["samples"] = json!(6);
+        std::fs::write(&old, format!("{}\n{}\n", json!({ "t": 5 * MINUTE_MS, "pack": minute }), json!({ "t": 6 * MINUTE_MS + 1, "pack": pack_update(2, 1.0, &[3.30, 3.32], &[]) }))).unwrap();
+        h.clear(None).unwrap();
+        h.import(&out, "gw").unwrap();
+        h.import(&old, "gw").unwrap();
+        let rows = range_rows(&reader(&path).unwrap(), "SELECT t, n, spread_lo, spread_hi, i_lo, i_hi FROM pack ORDER BY t");
+        assert_eq!(rows, vec![
+            // idle current 120 mA where the value reads 0
+            (0, Some(1), (Some(0), Some(20), Some(-20_000), Some(120))),
+            (5 * MINUTE_MS, Some(1), (None, None, None, None)),
+            (6 * MINUTE_MS + 1, Some(1), (Some(20), Some(20), Some(1000), Some(1000))),
+        ]);
     }
 
     #[test]
