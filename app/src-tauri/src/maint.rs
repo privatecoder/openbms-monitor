@@ -4,7 +4,7 @@
 //! lock (`port_busy`, through `control::reserve_bus`: only while no pack action runs); a control exchange on the endpoint of the main connection runs through that connection,
 //! so no endpoint is opened twice.
 
-use crate::maint_store::{endpoint_key, ControlEndpoint, Installation, MarkerOn, Pending, Store};
+use crate::maint_store::{normalize_key, ControlEndpoint, Installation, MarkerOn, Pending, Store};
 use crate::{lock, AppState, EndpointArg};
 use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError};
 use openbms_flash::maint::policy::Master;
@@ -96,7 +96,7 @@ pub fn with_store_arc<T>(store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Stor
 /// A store refusal (name) reaches the UI as a refusal key, anything else as a store error.
 pub fn store_refusal(e: MaintError) -> MaintError {
     match e {
-        MaintError::Store { message } if ["name-required", "name-taken", "unknown-installation", "installation-busy", "merge-self", "installation-connected"].contains(&message.as_str()) => refused(&message),
+        MaintError::Store { message } if ["name-required", "name-taken", "unknown-installation", "installation-busy", "merge-self", "installation-connected", "maintenance-open", "pending-on-port"].contains(&message.as_str()) => refused(&message),
         other => other,
     }
 }
@@ -317,14 +317,30 @@ pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
     main.is_some_and(|(key, bus)| matches!(bus, Bus::PackBus) || key == pack_key)
 }
 
-/// Open the pack bus port; first stop the monitor when it holds that adapter or polls the pack bus, and tell
-/// the UI ("monitor-stopped"): a stop by the app is no lost connection.
-pub fn open_pack_for(state: &AppState, app: &AppHandle, port: &str) -> Result<Connection, MaintError> {
+/// The RS485-1/2 port as the UI passes it: an endpoint key (`serial:<path>` / `tcp:<host:port>`), formed once where
+/// the user chose it and used unchanged for opening, pending records and comparisons. A bare path is refused.
+pub fn pack_key(port: &str) -> Result<String, MaintError> {
+    normalize_key(port).map_err(|_| refused("no-port"))
+}
+
+/// The transport endpoint of a pack bus key: a network gateway (its channel set to 19200 baud) or a USB port.
+pub fn pack_endpoint(key: &str) -> Result<Endpoint, MaintError> {
+    let key = pack_key(key)?;
+    Ok(match key.split_once(':') {
+        Some(("tcp", addr)) => Endpoint::Tcp { addr: addr.into() },
+        Some((_, path)) => Endpoint::Serial { path: path.into(), baud: PACK_BUS_BAUD },
+        None => return Err(refused("no-port")),
+    })
+}
+
+/// Open the pack bus port (an endpoint key, `pack_key`); first stop the monitor when it holds that endpoint or polls
+/// the pack bus, and tell the UI ("monitor-stopped"): a stop by the app is no lost connection.
+pub fn open_pack_for(state: &AppState, app: &AppHandle, key: &str) -> Result<Connection, MaintError> {
+    let ep = pack_endpoint(key)?;
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
-    if must_stop_monitor(main.as_ref(), &endpoint_key(false, port)) {
+    if must_stop_monitor(main.as_ref(), &pack_key(key)?) {
         crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
     }
-    let ep = Endpoint::Serial { path: port.into(), baud: PACK_BUS_BAUD };
     let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
     c.set_label(crate::capture::label(&ep, Bus::PackBus));
     Ok(c)
@@ -401,6 +417,11 @@ pub fn pending_refusal(pending: &[Pending], address: u8) -> Result<(), MaintErro
     }
 }
 
+/// The pending rule on the stored records of one endpoint key (`firmware_start`).
+pub fn pending_check(store: &Arc<Mutex<Option<Store>>>, key: &str, address: u8) -> Result<(), MaintError> {
+    with_store_arc(store, |s| s.pending_on(key)).and_then(|p| pending_refusal(&p, address))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum AfterFlash {
     /// clear the pending record, with this `how`
@@ -448,10 +469,20 @@ pub async fn maint_installations_of(state: State<'_, AppState>, endpoint: Endpoi
     with_store(&state, |s| s.installations_of(&key, active_only.unwrap_or(false)))
 }
 
+/// The ports and name from the installations view or the sidebar's „Speichern“. Takes the bus like `connect`, so no
+/// maintenance step or flash runs on a port while it is replaced; the store refuses a port still needed.
 #[tauri::command]
 pub async fn maint_save_installation(state: State<'_, AppState>, installation: Installation) -> Result<Installation, MaintError> {
-    with_store(&state, |s| {
-        s.save_installation(&installation)?;
+    save_installation(&state, &installation)
+}
+
+pub fn save_installation(state: &AppState, installation: &Installation) -> Result<Installation, MaintError> {
+    if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(MaintError::Busy);
+    }
+    let _op = crate::control::reserve_bus(state).ok_or(MaintError::Busy)?;
+    with_store(state, |s| {
+        s.save_installation(installation)?;
         s.installation(&installation.id)
     })
     .map_err(store_refusal)
@@ -514,7 +545,7 @@ pub async fn maint_live(app: AppHandle, state: State<'_, AppState>, installation
     let _op = crate::control::reserve_bus(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "live");
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
-    let (bus, polled, bus_error) = if port.is_empty() {
+    let (bus, polled, bus_error) = if port.trim().is_empty() {
         ("no-port", vec![], None)
     } else {
         match open_pack_for(&state, &app, &port) {
@@ -552,31 +583,47 @@ pub struct PackScan {
     bank: BankView,
     /// pending bootloader records cleared because their pack answered
     cleared: Vec<u8>,
+    /// stopped by „Abbrechen“: `packs` holds what answered until then
+    cancelled: bool,
 }
 
-/// One `0x51` scan of addresses 0–15 on the pack bus (when the bus became quiet, or the re-scan button). A pending
-/// pack that answers is cleared; with an installation selected the master's serial number is compared.
+/// Addresses 0–15 until `cancel` is set: checked before each address, so a cancelled search ends after the one
+/// running (at most one 0x51 timeout).
+pub fn scan_addresses(cancel: &std::sync::atomic::AtomicBool) -> impl Iterator<Item = u8> + '_ {
+    (0..=15u8).take_while(move |_| !cancel.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// One `0x51` scan of addresses 0–15 on the pack bus (when the bus became quiet, or the re-scan button); „Abbrechen“
+/// (`maint_scan_cancel`) stops it before the next address and the packs found so far are listed. A pending pack that
+/// answers is cleared; with an installation selected the master's serial number is compared.
 #[tauri::command]
 pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, installation: Option<String>, port: String) -> Result<PackScan, MaintError> {
-    if port.is_empty() {
-        return Err(refused("no-port"));
-    }
+    let key = pack_key(&port)?;
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
     let _op = crate::control::reserve_bus_wait(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
+    state.scan_cancel.store(false, std::sync::atomic::Ordering::SeqCst);
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
-    let mut link = open_pack_for(&state, &app, &port)?;
-    let packs = link.scan(0..=15);
+    let mut link = open_pack_for(&state, &app, &key)?;
+    let packs = link.scan(scan_addresses(&state.scan_cancel));
+    let cancelled = state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst);
     let found: Vec<u8> = packs.iter().map(|(a, _)| *a).collect();
-    let cleared = with_store(&state, |s| s.clear_answered(&endpoint_key(false, &port), &found, crate::history::now_ms()))?;
+    let cleared = with_store(&state, |s| s.clear_answered(&key, &found, crate::history::now_ms()))?;
     let bank = match &inst {
         Some(i) if found.contains(&0) => bank_view(&check_bank(&state.maint, i, &mut link)?),
         Some(_) => bank_view(&Bank::Unchecked),
         None => BankView { state: "none", serial: None },
     };
-    Ok(PackScan { packs, bank, cleared })
+    Ok(PackScan { packs, bank, cleared, cancelled })
+}
+
+/// „Abbrechen“ of the pack search: it stops before the next address.
+#[tauri::command]
+pub async fn maint_scan_cancel(state: State<'_, AppState>) -> Result<(), MaintError> {
+    state.scan_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 /// „Master anhalten“: `start` on a trusted maintenance build with the marker off, then a fresh read.
@@ -637,6 +684,68 @@ mod tests {
 
     fn pending(pack: u8) -> Pending {
         Pending { id: 1, endpoint: "serial:/dev/p".into(), pack, release: "16.06.13".into(), since: 0 }
+    }
+
+    fn store_at(name: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!("openbms-maint-rs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(&dir.join("maintenance.sqlite")).unwrap()
+    }
+
+    #[test]
+    fn a_tcp_flash_that_failed_after_erase_blocks_other_packs_on_the_same_key() {
+        let store = Arc::new(Mutex::new(Some(store_at("tcp-pending"))));
+        // the key the UI formed for a gateway; it opens the network endpoint
+        let key = pack_key("tcp:192.0.2.20:4196").unwrap();
+        assert!(matches!(pack_endpoint(&key).unwrap(), Endpoint::Tcp { addr } if addr == "192.0.2.20:4196"));
+        assert!(matches!(pack_endpoint("serial:/dev/cu.test").unwrap(), Endpoint::Serial { path, baud: 19_200 } if path == "/dev/cu.test"));
+        // `firmware_start`: free, the record written before the restart, the flash breaks off after the erase
+        pending_check(&store, &key, 3).unwrap();
+        with_store_arc(&store, |s| s.add_pending(&key, 3, "16.06.13", 1)).unwrap();
+        assert_eq!(after_flash(false, Some(Progress::Erase), || false), AfterFlash::Keep);
+        // another pack on the same gateway is refused, also when its key arrives written in another case
+        assert!(matches!(pending_check(&store, &key, 4), Err(MaintError::BootloaderPending { pack: 3 })));
+        assert!(matches!(pending_check(&store, &pack_key(" TCP:192.0.2.20:4196 ").unwrap(), 4), Err(MaintError::BootloaderPending { pack: 3 })));
+        pending_check(&store, &key, 3).unwrap();
+        // the record carries the key the UI compares with; other ports stay free; a bare path is no key
+        assert_eq!(with_store_arc(&store, |s| s.all_pending()).unwrap()[0].endpoint, key);
+        pending_check(&store, "serial:/dev/cu.test", 4).unwrap();
+        assert!(refused_with(pack_key("/dev/cu.test"), "no-port"));
+        assert!(refused_with(pack_key(""), "no-port"));
+    }
+
+    #[test]
+    fn saving_ports_takes_the_bus_and_names_the_refusal() {
+        let s = store_at("save-ports");
+        let a = s.create_installation("A", Some(ControlEndpoint::Tcp { addr: "192.0.2.10:4196".into() }), vec!["tcp:192.0.2.11:4196".into()]).unwrap();
+        s.set_master_read(&a.id, "{}", true, 1).unwrap();
+        let state = AppState::default();
+        *state.maint.lock().unwrap() = Some(s);
+        let moved = Installation { control: Some(ControlEndpoint::Tcp { addr: "192.0.2.12:4196".into() }), ..a.clone() };
+        assert!(refused_with(save_installation(&state, &moved), "maintenance-open"));
+        // while a pack action holds the bus, nothing is saved
+        let held = crate::control::reserve_pack(&state, 1, "params").unwrap();
+        assert!(matches!(save_installation(&state, &Installation { name: "B".into(), ..a.clone() }), Err(MaintError::Busy)));
+        drop(held);
+        assert_eq!(save_installation(&state, &Installation { name: "B".into(), ..a.clone() }).unwrap().name, "B");
+        state.flashing.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(save_installation(&state, &a), Err(MaintError::Busy)));
+    }
+
+    #[test]
+    fn a_cancelled_scan_stops_before_the_next_address() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut seen = vec![];
+        for a in scan_addresses(&cancel) {
+            seen.push(a);
+            if a == 2 {
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        assert_eq!(seen, vec![0, 1, 2]);
+        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(scan_addresses(&cancel).count(), 16);
     }
 
     #[test]
@@ -743,6 +852,9 @@ mod tests {
         assert!(must_stop_monitor(Some(&can("serial:/dev/a")), "serial:/dev/a"));
         assert!(!must_stop_monitor(Some(&can("tcp:gw:4196")), "serial:/dev/a"));
         assert!(!must_stop_monitor(None, "serial:/dev/a"));
+        // a monitor on the same network gateway is stopped like one on the same USB port
+        assert!(must_stop_monitor(Some(&can("tcp:192.0.2.5:4196")), "tcp:192.0.2.5:4196"));
+        assert!(!must_stop_monitor(Some(&can("tcp:192.0.2.5:4196")), "tcp:192.0.2.6:4196"));
     }
 
     #[test]
