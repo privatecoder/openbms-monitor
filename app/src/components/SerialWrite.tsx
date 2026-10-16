@@ -14,7 +14,7 @@ type Which = "battery" | "bms";
 type Note = { text: string; error: boolean } | null;
 
 /** Battery (String 1, 0xA2/0xA3) and BMS serial number (String 2, 0xA4/0xA5) of the chosen pack, each with a write. */
-export function SerialLine({ address, usable, locked, onBusy }: { address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void }) {
+export function SerialLine({ address, usable, locked, onBusy, linkKey }: { address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void; linkKey: string }) {
   const { t } = useTranslation();
   const [read, setRead] = useState<SerialNumbers | { error: string } | null>(null);
   const [input, setInput] = useState<Record<Which, string>>({ battery: "", bms: "" });
@@ -26,8 +26,8 @@ export function SerialLine({ address, usable, locked, onBusy }: { address: numbe
   const [fillNote, setFillNote] = useState<string | null>(null);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
-  // nothing typed for one pack may be written to another
-  useEffect(() => { setInput({ battery: "", bms: "" }); setNote({}); setFillNote(null); }, [address]);
+  // nothing typed for one pack may be written to another, nor to the same address of another bank or connection
+  useEffect(() => { setInput({ battery: "", bms: "" }); setNote({}); setFillNote(null); }, [address, linkKey]);
   useEffect(() => {
     setRead(null);
     if (address === null || !usable) return;
