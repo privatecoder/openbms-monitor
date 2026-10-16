@@ -11,6 +11,8 @@ pub trait Link {
     fn wait(&mut self, duration: Duration) {
         std::thread::sleep(duration);
     }
+    /// Leave the bootloader traffic out of a frame capture (true) or take the link in again (false).
+    fn pause_capture(&mut self, _paused: bool) {}
 }
 
 impl Link for Connection {
@@ -22,5 +24,8 @@ impl Link for Connection {
     }
     fn read_raw(&mut self, out: &mut [u8]) -> Result<usize> {
         Ok(Connection::read_raw(self, out)?)
+    }
+    fn pause_capture(&mut self, paused: bool) {
+        Connection::pause_capture(self, paused);
     }
 }
