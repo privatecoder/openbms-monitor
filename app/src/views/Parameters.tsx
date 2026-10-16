@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Archive, Download, FileUp, FolderOpen, History, PenLine, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
-import { api, isDemo, type Bus, type Installation } from "../api";
+import { api, isDemo, linkNow, type Bus, type Installation } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
@@ -19,6 +19,7 @@ import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, writeError } from "../control";
+import { latestOnly } from "../maint";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -35,6 +36,8 @@ const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: 
 let keptRef: Assignment | "none" | null = null;
 // the installations view's link to the stored state: the view opens with those columns
 let wantStored = false;
+// the newest „Letzter Stand“ load; an older one's answer is dropped
+const storedLoads = latestOnly();
 export function showStoredParameters() { wantStored = true; }
 
 /** The cell type most packs have, as the default datasheet for the check. */
@@ -59,7 +62,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const common = commonAssignment(assigned);
   const ref = refChoice === "none" ? undefined : refChoice ?? common;
   const refCell = ref ? db.entries.find((e) => e.cell.id === ref.cell)?.cell : undefined;
-  const link = `${site}|${connected}`;
+  // a reconnect to the same installation is another connection as well
+  const link = `${site}|${connected ? linkNow() : "-"}`;
   const [sources, setSourcesState] = useState<Source[]>(() => {
     if (keptLink !== link) {
       // another installation: its read and stored columns go (they describe its packs); opened exports stay
@@ -102,16 +106,20 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [storedNote, setStoredNote] = useState<string | null>(null);
   const loadStored = async () => {
     if (!installation) return;
+    const ticket = storedLoads.begin(), id = installation.id;
+    // a late answer for another installation (or a superseded load) must not put its columns into this one
+    const current = () => storedLoads.accepts(ticket) && keptLink.split("|")[0] === id;
     setStoredNote(null);
     try {
-      const rows = await api.installationSnapshots(installation.id);
+      const rows = await api.installationSnapshots(id);
+      if (!current()) return;
       setSources((s) => [...s.filter((x) => x.kind !== "stored"), ...rows.map(fromStored)]);
       // said also when the columns were there already, so a click visibly did something
       const newest = rows.reduce((m, r) => Math.max(m, r.at), 0);
       setStoredNote(rows.length
         ? t("par.storedLoaded", { count: rows.length, at: new Date(newest).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })
         : t("par.storedNone"));
-    } catch (e) { setStoredNote(String(e)); }
+    } catch (e) { if (current()) setStoredNote(String(e)); }
   };
   // from the installations view, or nothing shown yet without a connection
   useEffect(() => {
@@ -310,8 +318,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         {chosen !== null && unchecked.has(chosen) && <p className="flex items-center gap-1.5 text-sm text-discharge">{t("bank.unchecked", { pack: packNo(chosen) })}<InfoIcon id="topic.installations" /></p>}
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} canWrite={writable} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
-        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} />
-        <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} />
+        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
+        <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={writable} locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} linkKey={link} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
