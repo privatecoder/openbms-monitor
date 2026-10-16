@@ -235,6 +235,11 @@ export interface Alerts { markers: { installation: string; name: string; at: num
  *  write when the connection belongs to another one. Set by the installation store. */
 let chosen: string | null = null;
 export const setChosenInstallation = (id: string | null) => { chosen = id; };
+// the backend's generation of the last connect (`connect` returns it)
+let linkGen = 0;
+/** The chosen installation and the last connection as one key: a series of writes or a late answer that began under
+ *  another key belongs to another bank or connection. */
+export const linkNow = () => `${chosen ?? ""}|${linkGen}`;
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -249,7 +254,8 @@ const tauriApi = {
   /** opens the port and checks that a pack answers (`addresses` first, then the rest of 0..15); no answer: error
    *  JSON `{ code: "no-answer", noise, intra }`, the port is closed again */
   connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
-    invoke<{ linked: boolean; answered: number; gen: number }>("connect", { endpoint, installation, addresses: addresses ?? null }),
+    invoke<{ linked: boolean; answered: number; gen: number }>("connect", { endpoint, installation, addresses: addresses ?? null })
+      .then((r) => { linkGen = r.gen; return r; }),
   /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
   probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),

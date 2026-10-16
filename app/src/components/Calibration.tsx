@@ -98,7 +98,7 @@ const FLAG_TEXT: Record<FlagAfter, string> = { gone: "cal.flagGone", still: "cal
 type Outcome = { ok: true; value: string; flag: FlagAfter } | { ok: false; text: string };
 
 /** „Kalibrieren (Experten)“: zero point, current and voltage (0xA0) with the pack's live values, read every 2 s while open. */
-export function CalibrationSection({ address, usable, locked, onBusy }: WriteProps) {
+export function CalibrationSection({ address, usable, locked, onBusy, linkKey }: WriteProps & { linkKey: string }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const [open, setOpen] = useState(false);
@@ -112,8 +112,8 @@ export function CalibrationSection({ address, usable, locked, onBusy }: WritePro
   const gen = useRef(0);
   const current = useCurrent(address);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
-  // values measured on one pack must never be sent to another
-  useEffect(() => { setAmps(""); setVolts(""); setOutcome({}); }, [address]);
+  // values measured on one pack must never be sent to another, nor to the same address of another bank or connection
+  useEffect(() => { setAmps(""); setVolts(""); setOutcome({}); }, [address, linkKey]);
 
   // one read after the other, 2 s apart, so a slow answer cannot pile up requests
   useEffect(() => {

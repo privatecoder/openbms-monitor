@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChartLine, FolderOpen } from "lucide-react";
 import { api, isDemo, type HistorySettings, type HistoryStatus } from "../api";
@@ -8,22 +8,26 @@ import { PackPicker, Segmented, Switch, packSections } from "../components/PackP
 import { useGroups } from "../groups";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
+import { settingsSync } from "../history/settingsSync";
 
 const INTERVALS = [0, 60, 300] as const;
 const FULL_DAYS = [7, 30, 90, 365] as const;
 const MINUTE_DAYS = [0, 365, 90] as const;
 
-/** Recording state of the backend, refreshed every 2 s while the app is open. */
+/** Recording state of the backend, refreshed every 2 s while the app is open; `save` writes settings in order. */
 export function useHistoryStatus() {
   const [status, setStatus] = useState<HistoryStatus | null>(null);
+  const alive = useRef(true);
+  const [sync] = useState(() => settingsSync<HistoryStatus>((s) => { if (alive.current) setStatus(s); }));
   useEffect(() => {
-    let alive = true;
-    const tick = () => api.historyStatus().then((s) => alive && setStatus(s)).catch(() => {});
+    alive.current = true;
+    const tick = () => sync.poll(api.historyStatus).catch(() => {});
     tick();
     const id = window.setInterval(tick, 2000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
-  return { status, setStatus };
+    return () => { alive.current = false; window.clearInterval(id); };
+  }, [sync]);
+  const save = (next: HistorySettings) => sync.write(() => api.setHistorySettings(next));
+  return { status, setStatus, save };
 }
 
 export const size = (bytes: number) =>
@@ -78,7 +82,7 @@ function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable
   const update = async (next: HistorySettings) => {
     setErr(null);
     rec.setStatus({ ...s, settings: next });
-    try { rec.setStatus(await api.setHistorySettings(next)); } catch (e) { setErr(String(e)); }
+    try { await rec.save(next); } catch (e) { setErr(String(e)); }
   };
   const toggle = (list: number[], on: boolean) => {
     const base = new Set(all ? packs : opts.packs);

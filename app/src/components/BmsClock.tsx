@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
-import { api, isDemo, type BmsTime, type Bus } from "../api";
+import { api, isDemo, linkNow, type BmsTime, type Bus } from "../api";
 import { bankRefusal, errorText, writeError } from "../control";
 import { CLOCK_OK_S, clockDiff, durationText, fmtBmsTime, fromBmsTime, toBmsTime, zoneLabel } from "../bmsMemory";
 import { cn } from "../lib/utils";
@@ -83,14 +83,20 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
     setNote(null);
     const failed: string[] = [];
     let bank: unknown = null;
+    // the series belongs to the installation and connection it began on: after a switch the rest is not set
+    const link = linkNow();
+    let set = 0;
     for (const [n, a] of packs.entries()) {
+      if (linkNow() !== link) break;
       setBusy(t("clock.settingAll", { pack: no(a), n: n + 1, of: packs.length }));
       try {
         const bms = await api.setBmsClock(a, toBmsTime(new Date()));
-        if (a === address) setRead({ bms, at: Date.now() });
+        set += 1;
+        if (a === address && linkNow() === link) setRead({ bms, at: Date.now() });
       } catch (e) { failed.push(no(a)); if (!bank && bankRefusal(e)) bank = e; }
     }
     setBusy(null);
+    if (linkNow() !== link) { setNote({ text: t("clock.setAllStopped", { ok: set, of: packs.length }), error: true }); return; }
     const done = t("clock.setAllDone", { ok: packs.length - failed.length, of: packs.length });
     const why = bank ? ` ${errorText(bank, t)}` : "";
     setNote({ text: failed.length ? `${done} ${t("clock.setAllFailed", { list: failed.join(", ") })}${why}` : done, error: failed.length > 0 });
