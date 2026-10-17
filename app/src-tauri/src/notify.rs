@@ -8,9 +8,11 @@
 //!
 //! Triggers: a protection or fault alarm starts (again only after it cleared); a pack that answered misses
 //! `SILENT_POLLS` polls in a row (again only after it answered); the rest cell spread stays above the threshold for
-//! `SPREAD_HOLD_MS` (re-armed below threshold − `SPREAD_REARM_MV`); no answer for the set minutes while the connection
-//! is wanted. At most one notification per pack and trigger (each alarm its own) per `RATE_MS`; what fires
-//! in one round is joined per trigger. This module decides; `send` words it (`Texts`, from the UI) and shows it.
+//! `SPREAD_HOLD_MS` of answers without a gap (a missing or incomplete answer, or more than `HOLD_GAP_MS` since the last
+//! one, starts it again; re-armed below threshold − `SPREAD_REARM_MV`); no answer for the set minutes while the
+//! connection is wanted. At most one notification per pack and trigger (each alarm its own) per `RATE_MS`; what the
+//! limit holds back is not marked as notified and is tried again while it lasts. What fires in one round is joined per
+//! trigger. This module decides; `send` words it (`Texts`, from the UI) and shows it.
 
 use openbms_proto::status::{ActiveAlarm, Severity};
 use openbms_proto::{SerialValue, Status, Telemetry};
@@ -23,6 +25,9 @@ pub const SPREAD_REARM_MV: f64 = 10.0;
 /// rest as in the health report: |current| below 2 A, this answer and the one before
 pub const REST_A: f64 = 2.0;
 pub const RATE_MS: i64 = 10 * 60_000;
+/// The spread's hold and the rest predecessor need answers at most this far apart (ms): three poll periods, but the
+/// period is not known here, so a fixed bound well above a round over a full bank
+pub const HOLD_GAP_MS: i64 = 60_000;
 
 /// An installation's notification settings (key `notifications`); off by default.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +128,9 @@ pub enum Check {
 }
 
 /// A pack's state. `alarms` and `spread_fired` (what was notified and not cleared since) live for the installation, so
-/// a reconnect does not repeat a lasting alarm; the rest for one link generation.
+/// a reconnect does not repeat a lasting alarm; the rest for one link generation. `silent`, `alarms` and
+/// `spread_fired` are set when the notice is released (`flush`), not when it fires: one the rate limit held back fires
+/// again on the next answer while its condition lasts.
 #[derive(Default, Debug)]
 struct Pack {
     answered: bool,
@@ -133,6 +140,16 @@ struct Pack {
     rest_before: bool,
     over_since: Option<i64>,
     spread_fired: bool,
+    /// the last answer with current and spread, for the gap check of the hold
+    last_fresh: Option<i64>,
+}
+
+impl Pack {
+    /// The hold and the rest predecessor start again: an answer missing, incomplete or too far from the last.
+    fn restart_hold(&mut self) {
+        self.rest_before = false;
+        self.over_since = None;
+    }
 }
 
 /// The state of one connection's notifications; the rate limit, the lost watch and what was notified per pack live for
@@ -217,10 +234,10 @@ impl Notifier {
         }
         let p = self.packs.entry(address).or_default();
         let Some(r) = reading else {
+            p.restart_hold();
             if p.answered && !p.silent {
                 p.misses += 1;
                 if p.misses >= SILENT_POLLS {
-                    p.silent = true;
                     self.pending.push((Trigger::Silent, address, None));
                 }
             }
@@ -236,9 +253,15 @@ impl Notifier {
             for id in active.difference(&p.alarms) {
                 self.pending.push((Trigger::Alarm { id: id.clone() }, address, None));
             }
-            p.alarms = active;
+            // notified ones stay while active; a cleared one may fire again
+            p.alarms.retain(|id| active.contains(id));
         }
-        if let (Some(i), Some(mv)) = (r.current, r.spread_mv) {
+        let fresh = r.current.zip(r.spread_mv);
+        if fresh.is_none() || p.last_fresh.is_some_and(|t| now - t > HOLD_GAP_MS) {
+            p.restart_hold();
+        }
+        if let Some((i, mv)) = fresh {
+            p.last_fresh = Some(now);
             let rest = i > -REST_A && i < REST_A;
             let at_rest = rest && p.rest_before;
             p.rest_before = rest;
@@ -249,7 +272,6 @@ impl Notifier {
             } else if mv > limit {
                 let since = *p.over_since.get_or_insert(now);
                 if !p.spread_fired && now - since >= SPREAD_HOLD_MS {
-                    p.spread_fired = true;
                     self.pending.push((Trigger::Spread, address, Some(mv.round() as u32)));
                 }
             } else {
@@ -261,16 +283,28 @@ impl Notifier {
         }
     }
 
-    /// The end of a polling round: what fired, joined per trigger, without what the rate limit holds back. Nothing
-    /// while switched off (what fired meanwhile is not sent later).
+    /// The end of a polling round: what fired, joined per trigger, without what the rate limit holds back (that stays
+    /// unmarked and fires again on the next answer). Nothing while switched off (what fired meanwhile counts as
+    /// notified and is not sent later).
     pub fn flush(&mut self, now: i64) -> Vec<Note> {
         let pending = std::mem::take(&mut self.pending);
-        if !self.settings.enabled {
-            return vec![];
-        }
+        let enabled = self.settings.enabled;
         let mut notes: BTreeMap<Trigger, Note> = BTreeMap::new();
         for (trigger, address, mv) in pending {
-            if !self.allow(&trigger, Some(address), now) {
+            if enabled && !self.allow(&trigger, Some(address), now) {
+                continue;
+            }
+            if let Some(p) = self.packs.get_mut(&address) {
+                match &trigger {
+                    Trigger::Alarm { id } => {
+                        p.alarms.insert(id.clone());
+                    }
+                    Trigger::Silent => p.silent = true,
+                    Trigger::Spread => p.spread_fired = true,
+                    Trigger::Lost => {}
+                }
+            }
+            if !enabled {
                 continue;
             }
             let limit = (trigger == Trigger::Spread).then_some(self.settings.spread_mv);
@@ -473,7 +507,9 @@ mod tests {
         assert!(poll(&mut n, 0, Reading { current: Some(-30.0), ..idle(80.0) }).is_empty());
         assert!(poll(&mut n, MIN, idle(60.0)).is_empty());
         assert!(poll(&mut n, 2 * MIN, idle(60.0)).is_empty(), "the five minutes start here");
-        assert!(poll(&mut n, 6 * MIN, idle(61.0)).is_empty());
+        for t in 3..=6 {
+            assert!(poll(&mut n, t * MIN, idle(61.0)).is_empty(), "minute {t}");
+        }
         let notes = poll(&mut n, 7 * MIN, idle(62.0));
         assert_eq!(triggers(&notes), vec![(Trigger::Spread, vec![2])]);
         assert_eq!((notes[0].spread_mv, notes[0].limit_mv), (Some(62), Some(50)));
@@ -484,19 +520,78 @@ mod tests {
         }
         // below threshold − 10 mV: re-armed, fires after another five minutes over it
         assert!(poll(&mut n, 21 * MIN, idle(39.0)).is_empty());
-        assert!(poll(&mut n, 22 * MIN, idle(60.0)).is_empty());
+        for t in 22..=26 {
+            assert!(poll(&mut n, t * MIN, idle(60.0)).is_empty(), "minute {t}");
+        }
         assert_eq!(triggers(&poll(&mut n, 27 * MIN, idle(60.0))), vec![(Trigger::Spread, vec![2])]);
+    }
+
+    fn spread(notes: &[Note]) -> bool {
+        notes.iter().any(|n| n.trigger == Trigger::Spread)
+    }
+
+    #[test]
+    fn a_gap_or_a_missing_answer_restarts_the_five_minutes() {
+        let noon = 12 * 60 * MIN;
+        // two rest answers over the threshold at 12:00, then six minutes without an answer, one at 12:06
+        let mut n = watching(1);
+        n.answer(1, 2, noon, C, Some(&idle(60.0)));
+        n.answer(1, 2, noon + 10_000, C, Some(&idle(60.0)));
+        assert!(n.flush(noon + 10_000).is_empty());
+        n.answer(1, 2, noon + 6 * MIN, C, Some(&idle(60.0)));
+        assert!(n.flush(noon + 6 * MIN).is_empty(), "three answers are no five minutes");
+        // from 12:06 on every minute: 12:06 is the first answer after the gap, the five minutes run from 12:07
+        for t in 7..=11 {
+            n.answer(1, 2, noon + t * MIN, C, Some(&idle(60.0)));
+            assert!(n.flush(noon + t * MIN).is_empty(), "12:{t:02}");
+        }
+        n.answer(1, 2, noon + 12 * MIN, C, Some(&idle(60.0)));
+        assert_eq!(triggers(&n.flush(noon + 12 * MIN)), vec![(Trigger::Spread, vec![2])]);
+        // the same with the pack polled but not answering in between, or answering without cell voltages
+        for gap in [None, Some(Reading { spread_mv: None, ..idle(60.0) })] {
+            let mut n = watching(1);
+            n.answer(1, 2, noon, C, Some(&idle(60.0)));
+            n.answer(1, 2, noon + 10_000, C, Some(&idle(60.0)));
+            for k in 1..36 {
+                n.answer(1, 2, noon + 10_000 + k * 10_000, C, gap.as_ref());
+            }
+            n.answer(1, 2, noon + 6 * MIN, C, Some(&idle(60.0)));
+            assert!(!spread(&n.flush(noon + 6 * MIN)), "{gap:?}");
+        }
+    }
+
+    #[test]
+    fn a_spread_the_rate_limit_held_back_fires_once_the_limit_ends() {
+        let noon = 12 * 60 * MIN;
+        let mut n = watching(1);
+        for t in -6..=0 {
+            n.answer(1, 2, noon + t * MIN, C, Some(&idle(60.0)));
+        }
+        assert_eq!(triggers(&n.flush(noon)), vec![(Trigger::Spread, vec![2])]);
+        // below the re-arm limit at 12:01, over it again from 12:02: five minutes over it at 12:07, within the limit
+        n.answer(1, 2, noon + MIN, C, Some(&idle(39.0)));
+        for t in 2..=9 {
+            n.answer(1, 2, noon + t * MIN, C, Some(&idle(60.0)));
+            assert!(n.flush(noon + t * MIN).is_empty(), "12:{t:02}");
+        }
+        // still over it when the limit ends: sent then, and once
+        n.answer(1, 2, noon + 10 * MIN, C, Some(&idle(60.0)));
+        assert_eq!(triggers(&n.flush(noon + 10 * MIN)), vec![(Trigger::Spread, vec![2])]);
+        n.answer(1, 2, noon + 11 * MIN, C, Some(&idle(60.0)));
+        assert!(n.flush(noon + 11 * MIN).is_empty());
     }
 
     #[test]
     fn load_restarts_the_five_minutes() {
         let mut n = watching(1);
-        n.answer(1, 2, 0, C, Some(&idle(60.0)));
-        n.answer(1, 2, MIN, C, Some(&idle(60.0)));
+        for t in 0..=3 {
+            n.answer(1, 2, t * MIN, C, Some(&idle(60.0)));
+        }
         n.answer(1, 2, 4 * MIN, C, Some(&Reading { current: Some(25.0), ..idle(90.0) }));
-        n.answer(1, 2, 5 * MIN, C, Some(&idle(60.0)));
-        n.answer(1, 2, 6 * MIN, C, Some(&idle(60.0)));
-        assert!(n.flush(6 * MIN).is_empty());
+        for t in 5..=10 {
+            n.answer(1, 2, t * MIN, C, Some(&idle(60.0)));
+            assert!(n.flush(t * MIN).is_empty(), "minute {t}");
+        }
         n.answer(1, 2, 11 * MIN, C, Some(&idle(60.0)));
         assert_eq!(triggers(&n.flush(11 * MIN)), vec![(Trigger::Spread, vec![2])]);
     }
@@ -542,6 +637,9 @@ mod tests {
         n.answer(1, 3, 3 * MIN, C, Some(&alarm(&[OV, "alarm.ev2.b5"])));
         n.answer(1, 4, 3 * MIN, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(3 * MIN)), vec![(ov(), vec![4]), (Trigger::Alarm { id: "alarm.ev2.b5".into() }, vec![3])]);
+        // the alarm held back is still active when the limit ends: sent then
+        n.answer(1, 3, 10 * MIN, C, Some(&alarm(&[OV, "alarm.ev2.b5"])));
+        assert_eq!(triggers(&n.flush(10 * MIN)), vec![(ov(), vec![3])]);
     }
 
     #[test]
@@ -617,9 +715,9 @@ mod tests {
     fn a_reconnect_does_not_repeat_a_lasting_alarm_or_spread() {
         let mut n = watching(1);
         n.answer(1, 3, 0, C, Some(&alarm(&[OV])));
-        n.answer(1, 2, 0, C, Some(&idle(60.0)));
-        n.answer(1, 2, MIN, C, Some(&idle(60.0)));
-        n.answer(1, 2, 6 * MIN, C, Some(&idle(60.0)));
+        for t in 0..=6 {
+            n.answer(1, 2, t * MIN, C, Some(&idle(60.0)));
+        }
         assert_eq!(triggers(&n.flush(6 * MIN)), vec![(ov(), vec![3]), (Trigger::Spread, vec![2])]);
         // the link died and came back long after the rate limit: the packs wait for their check first, then count
         n.end(true);
