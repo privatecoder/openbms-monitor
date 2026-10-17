@@ -222,8 +222,12 @@ pub enum ParamWrite {
     /// The pack changed a value the user did not touch since the edit's read: nothing was written; `fresh` is the
     /// pack now.
     Stale { fresh: Parameters },
-    /// Written; the block read back, or why that read failed.
-    Written { read_back: Option<Parameters>, read_error: Option<String> },
+    /// Written; the block read back, or why that read failed. `unanswered`: the BMS's answer to the write was missing
+    /// or broken, the fresh read showed the values sent.
+    Written { read_back: Option<Parameters>, read_error: Option<String>, unanswered: bool },
+    /// The answer to the write was missing or broken and a fresh read showed neither the values sent nor those before
+    /// (or failed): whether the pack took the block is open; read the parameters again.
+    Unclear { error: String },
     /// The BMS did not take the block (RTN 06 plausibility, RTN 04 markers). `stored` is the read right before the
     /// write: after RTN 06 the switches sent are live, these are the stored ones.
     Refused { refusal: Refusal, stored: Parameters },
@@ -257,15 +261,51 @@ fn write_checked(state: &AppState, link: &Link, address: u8, base: Values, edite
         }
     };
     let block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
-    if let Err(refusal) = with_link(&state.conn, &state.flashing, &state.link, link, |c| refusable(c.write_parameters(address, &block)))? {
-        snapshot(state, link, address, SnapshotKind::Refused, &block);
-        return Ok(ParamWrite::Refused { refusal, stored: fresh });
+    // the exchange's own error inside: from then on the frame may have been sent (a lost or broken answer)
+    let sent = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(refusable(c.write_parameters(address, &block))))?;
+    match sent {
+        Ok(Err(refusal)) => {
+            snapshot(state, link, address, SnapshotKind::Refused, &block);
+            return Ok(ParamWrite::Refused { refusal, stored: fresh });
+        }
+        Err(e) => {
+            let e = e.to_string();
+            let read = read_parameters(state, link, address);
+            return match after_lost(read.as_ref().ok().map(|p| p.values()).as_ref(), &values, &fresh.values()) {
+                AfterLost::Written => {
+                    snapshot(state, link, address, SnapshotKind::Written, &block);
+                    Ok(ParamWrite::Written { read_back: read.ok(), read_error: None, unanswered: true })
+                }
+                AfterLost::Unreached => Err(e),
+                AfterLost::Unclear => Ok(ParamWrite::Unclear { error: e }),
+            };
+        }
+        Ok(Ok(())) => {}
     }
     snapshot(state, link, address, SnapshotKind::Written, &block);
     Ok(match read_parameters(state, link, address) {
-        Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None },
-        Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e) },
+        Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None, unanswered: false },
+        Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e), unanswered: false },
     })
+}
+
+/// What a fresh 0x47 read says after a write whose answer was lost or broken (`read`: None when it failed).
+#[derive(Debug, PartialEq, Eq)]
+pub enum AfterLost {
+    /// the values sent: the pack took the block
+    Written,
+    /// the values before: the block did not arrive, as a write that reached nothing
+    Unreached,
+    /// anything else, or not readable
+    Unclear,
+}
+
+pub fn after_lost(read: Option<&Values>, sent: &Values, before: &Values) -> AfterLost {
+    match read {
+        Some(r) if r == sent => AfterLost::Written,
+        Some(r) if r == before => AfterLost::Unreached,
+        _ => AfterLost::Unclear,
+    }
 }
 
 /// The last write of a pack at this installation and the parameters it replaced, for „Vorherigen Stand“.
@@ -439,6 +479,18 @@ mod tests {
         assert!(refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x02)))).is_err());
         assert!(refusable::<()>(Err(E::Closed)).is_err());
         assert_eq!(refusable(Ok(5)).unwrap(), Ok(5));
+    }
+
+    #[test]
+    fn a_lost_write_answer_is_decided_by_a_fresh_read() {
+        let v = |p0: u16| Values { raws: vec![p0, 2], switches: [0; 8] };
+        let (sent, before) = (v(3650), v(3600));
+        assert_eq!(after_lost(Some(&v(3650)), &sent, &before), AfterLost::Written);
+        assert_eq!(after_lost(Some(&v(3600)), &sent, &before), AfterLost::Unreached);
+        assert_eq!(after_lost(Some(&v(3500)), &sent, &before), AfterLost::Unclear);
+        assert_eq!(after_lost(None, &sent, &before), AfterLost::Unclear);
+        let j = serde_json::to_value(ParamWrite::Unclear { error: "timeout".into() }).unwrap();
+        assert_eq!(j, serde_json::json!({ "kind": "unclear", "error": "timeout" }));
     }
 
     #[test]

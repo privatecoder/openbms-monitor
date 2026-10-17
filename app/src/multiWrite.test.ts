@@ -19,6 +19,10 @@ describe("result of one pack", () => {
   it("written without a read-back", () => {
     expect(outcomeOf({ kind: "written", read_back: null, read_error: "timeout" }, raws(2731), SW)).toEqual({ kind: "unread", error: "timeout" });
   });
+  it("a lost answer: confirmed by the read-back is written, else unclear", () => {
+    expect(outcomeOf({ kind: "unclear", error: "timeout" }, raws(2731), SW)).toEqual({ kind: "unclear", error: "timeout" });
+    expect(outcomeOf({ kind: "written", read_back: block(2731, SW), read_error: null, unanswered: true }, raws(2731), SW)).toEqual({ kind: "written", unanswered: true });
+  });
   it("stale is skipped", () => {
     expect(outcomeOf({ kind: "stale", fresh: block(2631, SW) }, raws(2731), SW)).toEqual({ kind: "skipped", why: "stale" });
   });
@@ -85,6 +89,13 @@ describe("the series", () => {
   it("a cancel at the pause leaves the rest unwritten", async () => {
     const h = harness({ 1: { kind: "refused", refusal: "refused", live: 1 } }, { goOn: false });
     expect(await h.run).toBe("cancelled");
+    expect(h.written).toEqual([0, 1]);
+    expect(h.lines.slice(2)).toEqual([[2, "cancelled"], [3, "cancelled"]]);
+  });
+
+  it("stops at a pack whose result is unclear", async () => {
+    const h = harness({ 1: { kind: "unclear", error: "timeout" } });
+    expect(await h.run).toBe("unclear");
     expect(h.written).toEqual([0, 1]);
     expect(h.lines.slice(2)).toEqual([[2, "cancelled"], [3, "cancelled"]]);
   });

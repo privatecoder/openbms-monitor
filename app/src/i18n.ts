@@ -587,6 +587,7 @@ const resources = {
         refusedShort: "Vom BMS abgelehnt: Werte nicht plausibel. Nichts gespeichert.",
         restoreRefused: "Auch das Wiederherstellen wurde abgelehnt. Ein Neustart des Packs stellt die gespeicherten Schalter her; danach die Packs neu lesen.",
         invalid: "Vom BMS nicht angenommen (RTN 04: Block-Kennung). Nichts geändert.", error: "Nicht geschrieben: {{err}}",
+        unanswered: "(Antwort fehlte, Rücklesen bestätigt.)", unclear: "Ergebnis ungeklärt: bitte Parameter neu lesen. Die Antwort auf das Schreiben fehlte ({{err}}) und das Rücklesen zeigt weder die gesendeten noch die vorherigen Werte.",
         multi: {
           more: "Auch auf weitere Packs …", readFirst: "erst lesen", allRead: "alle gelesenen", none: "keine",
           hint: "Geschrieben wird nur die Änderung, nicht der ganze Block: jedes Pack behält seine übrigen Werte und Schalter. Pack für Pack, erst dieses, dann die übrigen nach Adresse.",
@@ -599,10 +600,12 @@ const resources = {
           fullUnknown_other: "Pack {{list}}: Wirkung auf die Vollkapazität ungeklärt (nicht lesbar).",
           go_one: "1 Pack schreiben", go_other: "{{count}} Packs schreiben", cancel: "Abbrechen", close: "Schließen",
           running: "Schreibe nacheinander: {{n}} von {{of}} Packs erledigt", end: "Fertig.", endLink: "Verbindung oder Anlage gewechselt: die übrigen Packs wurden nicht geschrieben.",
+          endUnclear: "Angehalten: das Ergebnis an einem Pack ist ungeklärt, die übrigen Packs wurden nicht geschrieben. Bitte Parameter neu lesen.",
           paused: "Pack {{pack}} hat den Block abgelehnt; seine Schalter sind aktiv, aber nicht gespeichert (unten). Erst wiederherstellen oder neu starten, dann weiter.",
           goOn: "Weiter mit den übrigen Packs", waiting: "wartet", switchByte: "Schalterbyte {{g}}",
           res: {
-            written: "geschrieben und rückgelesen", notTaken: "nicht übernommen: {{list}}", unread: "geschrieben; Rücklesen fehlgeschlagen ({{err}})",
+            written: "geschrieben und rückgelesen", writtenUnanswered: "geschrieben (Antwort fehlte, Rücklesen bestätigt)",
+            unclear: "Ergebnis ungeklärt: bitte Parameter neu lesen ({{err}})", notTaken: "nicht übernommen: {{list}}", unread: "geschrieben; Rücklesen fehlgeschlagen ({{err}})",
             refused: "abgelehnt (RTN 06: Werte nicht plausibel)", invalid: "abgelehnt (RTN 04: Block-Kennung)", skipped: "übersprungen: {{why}}",
             unreached: "nicht erreicht: {{err}}", cancelled: "abgebrochen",
           },
@@ -1375,6 +1378,7 @@ const resources = {
         refusedShort: "Refused by the BMS: values not plausible. Nothing stored.",
         restoreRefused: "Restoring was refused, too. A restart of the pack restores the stored switches; then read the packs again.",
         invalid: "Not accepted by the BMS (RTN 04: block markers). Nothing changed.", error: "Not written: {{err}}",
+        unanswered: "(Answer missing, read-back confirmed.)", unclear: "Result unclear: please read the parameters again. The answer to the write was missing ({{err}}) and the read-back shows neither the values sent nor those before.",
         multi: {
           more: "Also to other packs …", readFirst: "read first", allRead: "all read", none: "none",
           hint: "Only the change is written, not the whole block: every pack keeps its other values and switches. Pack by pack, this one first, then the others by address.",
@@ -1387,10 +1391,12 @@ const resources = {
           fullUnknown_other: "Packs {{list}}: effect on the full capacity unknown (not readable).",
           go_one: "Write 1 pack", go_other: "Write {{count}} packs", cancel: "Cancel", close: "Close",
           running: "Writing one after another: {{n}} of {{of}} packs done", end: "Done.", endLink: "Connection or installation changed: the other packs were not written.",
+          endUnclear: "Stopped: the result at one pack is unclear, the other packs were not written. Please read the parameters again.",
           paused: "Pack {{pack}} refused the block; its switches are active but not stored (below). Restore or restart first, then go on.",
           goOn: "Go on with the other packs", waiting: "waiting", switchByte: "switch byte {{g}}",
           res: {
-            written: "written and read back", notTaken: "not taken: {{list}}", unread: "written; reading back failed ({{err}})",
+            written: "written and read back", writtenUnanswered: "written (answer missing, read-back confirmed)",
+            unclear: "result unclear: please read the parameters again ({{err}})", notTaken: "not taken: {{list}}", unread: "written; reading back failed ({{err}})",
             refused: "refused (RTN 06: values not plausible)", invalid: "refused (RTN 04: block markers)", skipped: "skipped: {{why}}",
             unreached: "not reached: {{err}}", cancelled: "cancelled",
           },

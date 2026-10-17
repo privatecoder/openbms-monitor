@@ -135,11 +135,14 @@ export interface PackLive { telemetry: Telemetry; status: Status }
 /** A CAN protocol set the BMS accepted; `device` is null when the read-back of 0x51 failed. */
 export interface CanProtocolSet { device: DeviceInfo | null; read_error: string | null }
 /** Outcome of a parameter write. stale: the pack changed an untouched value since the edit's read, nothing written;
+ *  written with `unanswered`: the answer to the write was missing, a fresh read showed the values sent; unclear: the
+ *  answer was missing and a fresh read showed neither the values sent nor those before (or failed);
  *  refused: the BMS did not take the block, `stored` is the read right before the write (after RTN 06 the switches
  *  sent are live, these are the stored ones). */
 export type ParamWrite =
   | { kind: "stale"; fresh: Parameters }
-  | { kind: "written"; read_back: Parameters | null; read_error: string | null }
+  | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered?: boolean }
+  | { kind: "unclear"; error: string }
   | { kind: "refused"; refusal: "refused" | "invalid"; stored: Parameters };
 /** The last write of a pack at this installation and the parameters it replaced. */
 export interface ParamHistory { last_written: number | null; previous: Parameters | null }
