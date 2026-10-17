@@ -233,8 +233,8 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
 
 /// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
 /// of this pack bus endpoint pending in its bootloader, and with `checks` (the installation's own RS485-1/2 port) a
-/// patched master with its marker on is released before a non-maintenance image (C') and the master's serial number
-/// matches (right bank). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an
+/// patched master with its marker on is released before a non-maintenance image (C'), the master's serial number
+/// matches (right bank) and the target's String 2 is the board stored for its address (when both are known). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an
 /// installation; its log is named and indexed with it on the installation's own port (`checks`), else „ohne Anlage“.
 /// Flashes on its own thread and returns at once. Refusals reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
@@ -279,12 +279,17 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let bank = match &inst {
         // a bus with traffic gets no 0xA4: the preflight refuses it anyway
         Some(_) if !bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?.quiet() => "unchecked",
-        Some(i) => match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
-            maint::Bank::Mismatch(serial) => return Err(to_text(maint::MaintError::OtherBank { serial })),
-            maint::Bank::Match => "match",
-            maint::Bank::Stored(_) => "stored",
-            maint::Bank::Unchecked => "unchecked",
-        },
+        Some(i) => {
+            let bank = match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
+                maint::Bank::Mismatch(serial) => return Err(to_text(maint::MaintError::OtherBank { serial })),
+                maint::Bank::Match => "match",
+                maint::Bank::Stored(_) => "stored",
+                maint::Bank::Unchecked => "unchecked",
+            };
+            // the target itself: another board than the one stored for its address is not flashed
+            maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
+            bank
+        }
         None => "none",
     };
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
