@@ -68,6 +68,20 @@ function deviceWriter(scope: string) {
   return w;
 }
 
+/** A cell type write: null when it went through; else its error, after `restore` got the stored cell types (read back
+ *  fresh; if that fails too, the error stays and the cache keeps what was shown). */
+export async function writeCellTypes(write: () => Promise<unknown>, reload: () => Promise<Record<string, unknown>>,
+  restore: (stored: Record<string, unknown>) => void): Promise<unknown> {
+  try {
+    await write();
+    return null;
+  } catch (e) {
+    console.error("cell types:", e);
+    await reload().then(restore, (r) => console.error("cell types read back:", r));
+    return e ?? "error";
+  }
+}
+
 /** After a merge or the move of the old data: read again from the backend. */
 export function reloadSettings() { cache.clear(); changed(); }
 
@@ -101,15 +115,20 @@ export function useSettings(scope: string | null) {
       return e ?? "error";
     }
   };
-  /** The cell types of some places (null removes one); the other places keep theirs. Not before loaded. */
-  const saveCellTypes = (changes: Record<number, unknown>) => {
+  /** The cell types of some places (null removes one); the other places keep theirs. Not before loaded. Resolves to
+   *  null, or to the backend's error after the cache was set back to the stored cell types. */
+  const saveCellTypes = async (changes: Record<number, unknown>): Promise<unknown> => {
     const cur = cache.get(k);
-    if (!cur) return;
+    if (!cur) return null;
     const next = { ...cur.cell_types };
     for (const [a, v] of Object.entries(changes)) if (v === null) delete next[a]; else next[a] = v;
     cache.set(k, { ...cur, cell_types: next });
     changed();
-    if (stored(scope)) api.setInstallationCellTypes(scope, changes).catch((e) => console.error("cell types:", e));
+    if (!stored(scope)) return null;
+    return writeCellTypes(() => api.setInstallationCellTypes(scope, changes), () => api.installationSettings(scope).then((s) => s.cell_types), (stored) => {
+      const now = cache.get(k);
+      if (now) { cache.set(k, { ...now, cell_types: stored }); changed(); }
+    });
   };
   return { settings: cache.get(k) ?? EMPTY, loaded, save, saveCellTypes };
 }

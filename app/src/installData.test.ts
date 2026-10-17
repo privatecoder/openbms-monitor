@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectLegacy, legacyKeys, serialWriter } from "./installData";
+import { collectLegacy, legacyKeys, serialWriter, writeCellTypes } from "./installData";
 import { parseGroups } from "./groups";
 import { parsePairs } from "./pairs";
 import { parseAssignments } from "./cells/packCheck";
@@ -65,5 +65,20 @@ describe("serial writes", () => {
     expect(await d).toBeNull();
     await tick();
     expect(idle).toBe(2);
+  });
+});
+
+describe("cell type writes", () => {
+  it("a failed write gives its error and puts the stored cell types back", async () => {
+    let shown: Record<string, unknown> = { 3: { cell: "new", parallel: 1 } };
+    const restore = (s: Record<string, unknown>) => { shown = s; };
+    const stored = { 3: { cell: "old", parallel: 1 } };
+    const err = await writeCellTypes(() => Promise.reject("disk full"), async () => stored, restore);
+    expect(err).toBe("disk full");
+    expect(shown).toEqual(stored);
+    // a write that goes through changes nothing back
+    shown = { 3: { cell: "new", parallel: 1 } };
+    expect(await writeCellTypes(async () => undefined, async () => stored, restore)).toBeNull();
+    expect(shown).toEqual({ 3: { cell: "new", parallel: 1 } });
   });
 });
