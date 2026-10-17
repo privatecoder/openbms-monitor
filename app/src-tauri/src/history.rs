@@ -2166,7 +2166,9 @@ mod tests {
     }
 
     /// t, n, balancing, bal_rows, bal_n
-    fn bal_rows(path: &Path, site: &str) -> Vec<(i64, i64, Option<i64>, Option<i64>, Option<i64>)> {
+    type BalRow = (i64, i64, Option<i64>, Option<i64>, Option<i64>);
+
+    fn bal_rows(path: &Path, site: &str) -> Vec<BalRow> {
         reader(path)
             .unwrap()
             .prepare("SELECT t, n, balancing, bal_rows, bal_n FROM pack WHERE site = (SELECT id FROM sites WHERE site = ?1) ORDER BY t")
@@ -2217,7 +2219,7 @@ mod tests {
         export(&reader(&path).unwrap(), "inst-b", 0, i64::MAX, &[5], Format::Jsonl, &out).unwrap();
         h.clear(None).unwrap();
         h.import(&out, "inst-c").unwrap();
-        let without_n = |v: Vec<(i64, i64, Option<i64>, Option<i64>, Option<i64>)>| v.into_iter().map(|(t, _, b, r, n)| (t, b, r, n)).collect::<Vec<_>>();
+        let without_n = |v: Vec<BalRow>| v.into_iter().map(|(t, _, b, r, n)| (t, b, r, n)).collect::<Vec<_>>();
         assert_eq!(without_n(bal_rows(&path, "inst-c")), without_n(merged));
     }
 
