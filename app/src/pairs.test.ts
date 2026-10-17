@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkPairs, equalizes, gapTrend, neighbourPairs, validPairs, windowMean } from "./pairs";
+import { checkPairs, equalizes, gapTrend, neighbourPairs, offsetMaxMilliohm, pairedMeans, validPairs } from "./pairs";
 import vectors from "./equalize.vectors.json";
 
 describe("pairs", () => {
@@ -33,9 +33,23 @@ describe("pairs", () => {
     expect(checkPairs(pairs, at(15.2), first)[0].weak).toBeUndefined(); // 76 %: cleared
     expect(checkPairs(pairs, (a) => ({ 0: 6, 1: 2, 2: 6, 3: 6 } as Record<number, number>)[a])[0].weak).toBeUndefined();
   });
-  it("averages over the window", () => {
-    expect(windowMean([{ t: 0, i: 100 }, { t: 50_000, i: 10 }, { t: 60_000, i: 20 }], 70_000, 60_000)).toBe(15);
-    expect(windowMean([], 0, 60_000)).toBeUndefined();
+  it("live figures only from time-paired answers in the window", () => {
+    const s = (t: number, i: number, u = 53.5) => ({ t, i, u });
+    // every 10 s, the partner 1 s later: six pairs in the minute
+    const a = [0, 1, 2, 3, 4, 5].map((k) => s(k * 10_000, 30)), b = [0, 1, 2, 3, 4, 5].map((k) => s(k * 10_000 + 1_000, 20, 53.45));
+    expect(pairedMeans(a, b, 55_000, 60_000)).toMatchObject({ a: 30, b: 20, n: 6 });
+    expect(pairedMeans(a, b, 55_000, 60_000)!.ua - pairedMeans(a, b, 55_000, 60_000)!.ub).toBeCloseTo(0.05);
+    // the partner 5 s away from each answer: never the same moment, no figures
+    expect(pairedMeans(a, b.map((x) => ({ ...x, t: x.t + 4_000 })), 60_000, 60_000)).toBeUndefined();
+    // one pack's last answer 55 s ago at 40 A, the other now at 20 A after a load step: not a split
+    expect(pairedMeans([s(5_000, 40)], [s(60_000, 20)], 60_000, 60_000)).toBeUndefined();
+    // four pairs are too few
+    expect(pairedMeans(a.slice(0, 4), b.slice(0, 4), 40_000, 60_000)).toBeUndefined();
+  });
+  it("takes the true median of an even count of pack currents", () => {
+    // one pair at 35 A and 1 A: the median is 18 A, below the 20 A the check needs
+    expect(checkPairs([{ plus: 0, minus: 1 }], (a) => (a === 0 ? 35 : 1))[0]).toMatchObject({ judged: false });
+    expect(checkPairs([{ plus: 0, minus: 1 }], (a) => (a === 0 ? 35 : 10))[0]).toMatchObject({ judged: true, weak: 1 });
   });
   it("reports equalizing instead of a weak pack when the states of charge explain it", () => {
     const I: Record<number, number> = { 0: -19.7, 1: -6.3, 2: -21, 3: -20, 4: -21, 5: -22, 6: -21, 7: -21, 8: -21, 9: -22, 10: -22, 11: -23 };
@@ -66,6 +80,9 @@ describe("gapTrend", () => {
     const t = gapTrend(at((i) => 0.042 + (i % 3) * 0.001))!;
     expect(t.kind).toBe("offset");
     expect(t.offset).toBeCloseTo(0.042, 2);
+    // over −25 … +33 A a resistance below 20 mV / 58 A ≈ 0.34 mΩ stays hidden in the offset
+    expect(t.range).toBe(58);
+    expect(offsetMaxMilliohm(t.range)).toBeCloseTo(0.345, 3);
   });
   it("calls a gap that grows with the current a resistance", () => {
     const t = gapTrend(at((i) => 0.01 + i * 0.004))!;

@@ -10,7 +10,7 @@ import { LiveIndicator } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
-import { PAIR_MIN_A, checkPairs, usePairs, validPairs, windowMean, type Pair, type PairCheck, gapTrend } from "../pairs";
+import { PAIRED_MIN, PAIR_MIN_A, checkPairs, offsetMaxMilliohm, pairedMeans, usePairs, validPairs, type Pair, type PackSample, type PairCheck, gapTrend } from "../pairs";
 import { GroupEditor } from "./GroupEditor";
 import { CellAssignSheet } from "./CellAssign";
 import { useCellDb } from "../cells/store";
@@ -261,13 +261,14 @@ const TREND_EVERY_MS = 20_000;
 const TREND_KEEP_MS = 6 * 3_600_000;
 
 /**
- * Pair check on each pack's mean current over the last minute, with hysteresis against the last result.
- * A polling round over many packs takes ~10 s and the inverter's current swings by a few amperes between
- * rounds, so single readings made the notes flicker. Waits until every pack has answered once.
+ * Pair check on the means of time-paired answers over the last minute (pairs.ts pairedMeans), with hysteresis against
+ * the last result. A polling round over many packs takes ~10 s and the inverter's current swings by a few amperes
+ * between rounds, so single readings made the notes flicker; pairing keeps a load step between the two packs' answers
+ * from reading as a split. A pair without PAIRED_MIN paired answers gets no check. Waits until every pack has answered
+ * once.
  */
 function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairCheck[] {
-  const samples = useRef(new Map<number, { t: number; i: number }[]>());
-  const ports = useRef(new Map<number, { t: number; i: number }[]>());
+  const samples = useRef(new Map<number, PackSample[]>());
   const last = useRef<PairCheck[]>([]);
   const seen = useRef("");
   // per pair: mean current per pack and output gap, every TREND_EVERY_MS, for the trend of the gap
@@ -276,19 +277,21 @@ function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairChe
   for (const p of Object.values(packs)) {
     if (!p.telemetry || !p.updated) continue;
     const s = samples.current.get(p.address) ?? [];
-    if (s[s.length - 1]?.t !== p.updated) s.push({ t: p.updated, i: effectiveCurrent(p.telemetry) });
+    if (s[s.length - 1]?.t !== p.updated) s.push({ t: p.updated, i: effectiveCurrent(p.telemetry), u: p.telemetry.port_voltage });
     samples.current.set(p.address, s.filter((x) => now - x.t <= PAIR_WINDOW_MS));
-    const u = ports.current.get(p.address) ?? [];
-    if (u[u.length - 1]?.t !== p.updated) u.push({ t: p.updated, i: p.telemetry.port_voltage });
-    ports.current.set(p.address, u.filter((x) => now - x.t <= PAIR_WINDOW_MS));
   }
   if (!Object.values(packs).every((p) => p.telemetry)) return [];
   // recompute only when new data arrived, so re-renders do not step the hysteresis
   const key = Object.values(packs).map((p) => p.updated).join();
   if (key !== seen.current) {
     seen.current = key;
-    const checks = checkPairs(pairs, (a) => windowMean(samples.current.get(a) ?? [], now, PAIR_WINDOW_MS), last.current,
-      (a) => packs[a]?.telemetry?.soc, (a) => windowMean(ports.current.get(a) ?? [], now, PAIR_WINDOW_MS));
+    // per pack (each in one pair at most) its mean over the pair's paired answers
+    const means = new Map<number, { i: number; u: number }>();
+    for (const p of pairs) {
+      const m = pairedMeans(samples.current.get(p.plus) ?? [], samples.current.get(p.minus) ?? [], now, PAIR_WINDOW_MS);
+      if (m) { means.set(p.plus, { i: m.a, u: m.ua }); means.set(p.minus, { i: m.b, u: m.ub }); }
+    }
+    const checks = checkPairs(pairs, (a) => means.get(a)?.i, last.current, (a) => packs[a]?.telemetry?.soc, (a) => means.get(a)?.u);
     last.current = checks.map((c) => {
       if (c.gap === undefined) return c;
       const list = (trend.current.get(c.pair.plus) ?? []).filter((x) => now - x.t <= TREND_KEEP_MS);
@@ -317,10 +320,11 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
         {check?.weak !== undefined && <>; {t("diag.pairWeak", { p: no(check.weak), bridge: check.weak === pair.minus ? "+" : "−" })}</>}
         {check?.equalizing && <span className="text-muted">; {t("pairs.equalizing", { p: no(check.equalizing.pack), a: fmt(check.equalizing.soc[0], 1, "%"), b: fmt(check.equalizing.soc[1], 1, "%") })}</span>}
         {check && !check.judged && <span className="text-muted/70">; {t("pairs.notJudged", { a: PAIR_MIN_A })}</span>}
+        {!check && <span className="text-muted/70">; {t("pairs.noPaired", { n: PAIRED_MIN })}</span>}
         {check?.gap !== undefined && (
           <span className={check.gapHigh ? "text-alarm" : "text-muted"}>
             ; {t(check.gapHigh ? "pairs.gapHigh" : "pairs.gap", { v: fmt(Math.abs(check.gap) * 1000, 0, "mV") })}
-            {check.trend?.kind === "offset" && `, ${t("pairs.gapOffset")}`}
+            {check.trend?.kind === "offset" && `, ${t("pairs.gapOffset", { max: fmt(offsetMaxMilliohm(check.trend.range), 1) })}`}
             {check.trend?.kind === "resistance" && `, ${t("pairs.gapGrows", { r: fmt(Math.abs(check.trend.milliohm), 1, "mΩ") })}`}
           </span>
         )}
