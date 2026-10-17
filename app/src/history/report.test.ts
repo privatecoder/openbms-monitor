@@ -63,6 +63,50 @@ describe("health report", () => {
     expect(flags([pack(0, 8, flat), pack(1, 8, flat), pack(2, 11, flat, 0, 20 * DAY)])[2]).toEqual([]);
   });
 
+  it("compares a pack with the others' median: with two packs the partner", () => {
+    const rows = (a: Partial<PackDay>, b: Partial<PackDay>) => packRows(report({ packs: [pack(0, null, [pd(0, a)]), pack(1, null, [pd(0, b)])] }));
+    // [10, 25] mV: against a median of 17.5 including itself 25 would pass, against the partner's 10 it does not
+    expect(rows({ rest_p95: 10 }, { rest_p95: 25 }).map((x) => x.flags)).toEqual([[], [{ key: "spread", mv: 25, median: 10 }]]);
+    // [25, 32] °C: 7 K above the partner
+    expect(rows({ temp_max: 25 }, { temp_max: 32 })[1].flags).toEqual([{ key: "warm", c: 32, median: 25 }]);
+    // cycles: two packs at 8, one at 11 against the others' 8
+    const flat = [pd(0)];
+    expect(packRows(report({ packs: [pack(0, 8, flat), pack(1, 11, flat)] }))[1].flags).toEqual([{ key: "cycles", pct: 38 }]);
+  });
+
+  it("compares rest spreads only from the latest day with rest values and from enough rest rows", () => {
+    const flags = (packs: ReturnType<typeof pack>[]) => packRows(report({ packs })).map((x) => x.flags);
+    // the other pack's rest values are a week old: not the same moment, no comparison
+    const stale = [pack(0, null, [pd(7, { rest_p95: 55 })]), pack(1, null, [pd(0, { rest_p95: 10 }), pd(7, { rest_p95: null, rest_p50: null, rest_rows: 0 })])];
+    expect(flags(stale)).toEqual([[], []]);
+    expect(packRows(report({ packs: stale }))[1].restP95).toBe(10);
+    // two rest values that day are too few: shown, not flagged, and not in the others' median
+    const thin = [pack(0, null, [pd(0, { rest_p95: 55, rest_rows: 2 })]), pack(1, null, [pd(0)]), pack(2, null, [pd(0, { rest_p95: 40, rest_rows: 2 })])];
+    expect(flags(thin)).toEqual([[], [], []]);
+    expect(flags([...thin, pack(3, null, [pd(0, { rest_p95: 30 })])])).toEqual([[], [], [], [{ key: "spread", mv: 30, median: 10 }]]);
+    // minute maxima and raw rows of the same day are different measures: raw ones are compared
+    const kinds = [pack(0, null, [pd(0, { rest_p95: 50, spread_raw: false })]), pack(1, null, [pd(0)]), pack(2, null, [pd(0, { rest_p95: 30 })])];
+    expect(flags(kinds)).toEqual([[], [], [{ key: "spread", mv: 30, median: 10 }]]);
+  });
+
+  it("compares the warmest cell only over the days every pack has temperatures", () => {
+    // pack 0 has a hot day nobody else recorded; over the shared days it is as warm as the other
+    const a = [pd(0, { temp_max: 33 }), pd(1), pd(2)], b = [pd(1), pd(2)];
+    const rows = packRows(report({ packs: [pack(0, null, a), pack(1, null, b)] }));
+    expect(rows.map((x) => [x.tempMax, x.flags])).toEqual([[33, []], [25, []]]);
+  });
+
+  it("a rest trend only from well-covered days of one kind", () => {
+    const rising = (o: Partial<PackDay>) => [0, 1, 2].map((i) => pd(i, { rest_p95: 10 + i * 5, ...o }));
+    expect(packRows(report({ packs: [pack(0, null, rising({}))] }))[0].restTrend).toMatchObject({ dir: "up", change: 10 });
+    // two rest values a day are no trend
+    expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 2 }))] }))[0].restTrend).toBeUndefined();
+    // minute maxima before, raw rows after the change: only the raw days, never across
+    const change = [pd(0, { rest_p95: 40, spread_raw: false }), pd(1, { rest_p95: 40, spread_raw: false }), pd(2), pd(3), pd(4)];
+    expect(packRows(report({ packs: [pack(0, null, change)] }))[0].restTrend).toMatchObject({ dir: "flat", change: 0 });
+    expect(packRows(report({ packs: [pack(0, null, change.slice(0, 4))] }))[0].restTrend).toBeUndefined();
+  });
+
   it("no bank comparison with a single pack", () => {
     expect(packRows(report({ packs: [pack(0, 50, [pd(0, { rest_p95: 80 })])] }))[0].flags).toEqual([]);
   });
