@@ -75,9 +75,10 @@ export const equalizes = (total: number, mine: number, other: number) =>
  * fuller pack look weak), so only a load well above it shows the resistances.
  */
 export const PAIR_MIN_A = 20;
-/** Load sharing needs both currents the same way, each above this (A). */
+/** Currents against each other: both above this (A) with opposite signs. A pack at or below it next to a loaded
+ *  partner is judged normally (a disconnected pack at ~0 A is the weak one). */
 export const SHARE_MIN_A = 1;
-const sharing = (a: number, b: number) => Math.abs(a) > SHARE_MIN_A && Math.abs(b) > SHARE_MIN_A && Math.sign(a) === Math.sign(b);
+const opposite = (a: number, b: number) => Math.abs(a) > SHARE_MIN_A && Math.abs(b) > SHARE_MIN_A && Math.sign(a) !== Math.sign(b);
 
 /**
  * Pair currents: a low total against the other pairs points at the shared main cables; one pack
@@ -86,8 +87,8 @@ const sharing = (a: number, b: number) => Math.abs(a) > SHARE_MIN_A && Math.abs(
  * lowTotal: total below 85 % of the median pair total (cleared above 90 %), but only when the stronger
  * pack is itself below normal; otherwise the weak pack alone explains the low total.
  * `prev` (the last result) provides the hysteresis so values near a threshold do not flicker.
- * Only judged when the median pack current is at least PAIR_MIN_A, and only pairs whose currents flow the same way
- * (`sharing`); the medians are taken over those pairs.
+ * Only judged when the median pack current is at least PAIR_MIN_A, and never for currents against each other
+ * (`opposite`); the medians are taken without those pairs.
  */
 export function checkPairs(
   pairs: Pair[], current: (a: number) => number | undefined, prev?: PairCheck[],
@@ -99,7 +100,7 @@ export function checkPairs(
     if (a === undefined || b === undefined) return [];
     return [{ pair, a, b, total: a + b }];
   });
-  const shared = rows.filter((r) => sharing(r.a, r.b));
+  const shared = rows.filter((r) => !opposite(r.a, r.b));
   const totals = shared.map((r) => Math.abs(r.total)).sort((x, y) => x - y);
   const each = shared.flatMap((r) => [Math.abs(r.a), Math.abs(r.b)]).sort((x, y) => x - y);
   const mid = (s: number[]) => (s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2);
@@ -113,9 +114,8 @@ export function checkPairs(
     const pa = port?.(pair.plus), pb = port?.(pair.minus);
     const gap = pa !== undefined && pb !== undefined ? pa - pb : undefined;
     const gapHigh = gap !== undefined && Math.abs(gap) >= (was?.gapHigh ? PORT_GAP_V * 0.8 : PORT_GAP_V);
-    if (Math.abs(a) > SHARE_MIN_A && Math.abs(b) > SHARE_MIN_A && Math.sign(a) !== Math.sign(b))
-      return { pair, total, share, judged: false, lowTotal: false, opposite: true, gap, gapHigh };
-    if (!loaded || !sharing(a, b)) return { pair, total, share, judged: false, lowTotal: false, gap, gapHigh };
+    if (opposite(a, b)) return { pair, total, share, judged: false, lowTotal: false, opposite: true, gap, gapHigh };
+    if (!loaded) return { pair, total, share, judged: false, lowTotal: false, gap, gapHigh };
     const small = share < (was?.weak !== undefined ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
     const sa = soc?.(pair.plus), sb = soc?.(pair.minus);
     const weak = small;

@@ -71,8 +71,9 @@ describe("pairs", () => {
     expect(res[0]).toMatchObject({ opposite: true, judged: false, lowTotal: false });
     expect(res[0].weak).toBeUndefined();
     expect(res[1]).toMatchObject({ judged: true, weak: undefined });
-    // below 1 A on one side there is no direction to share
-    expect(checkPairs([{ plus: 0, minus: 1 }], (a) => [40, 0.5][a])[0]).toMatchObject({ judged: false });
+    // a disconnected pack at 0 A next to a loaded partner is no counter-current: it is the weak one
+    expect(checkPairs([{ plus: 0, minus: 1 }, { plus: 2, minus: 3 }], (a) => [40, 0, 40, 40][a])[0]).toMatchObject({ judged: true, weak: 1 });
+    expect(checkPairs([{ plus: 0, minus: 1 }, { plus: 2, minus: 3 }], (a) => [40, 0, 40, 40][a])[0].opposite).toBeUndefined();
   });
   it("flags a large output voltage gap inside a pair, at any load", () => {
     const pairs = [{ plus: 0, minus: 1 }];

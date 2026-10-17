@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 const REST_MA: i64 = 2_000;
 /// Per pack (A) the pair needs for a share, as in the live check (`pairs.ts` PAIR_MIN_A); the pair's total twice that.
 const PAIR_MIN_A: i64 = 20;
+/// Currents against each other: both above this (mA) with opposite signs (`pairs.ts` SHARE_MIN_A).
+const OPPOSITE_MA: i64 = 1_000;
 /// Two answers of a pair this close (ms) count as the same moment.
 const MATCH_MS: i64 = 3_000;
 /// SOC difference (points) from which the states of charge may explain a smaller share (`pairs.ts` EQUALIZE_SOC).
@@ -75,7 +77,7 @@ pub struct PackReport {
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct PairDay {
     pub day: i64,
-    /// matched samples under load (both currents the same way), the minutes with samples and the plus pack's mean
+    /// matched samples under load (not against each other), the minutes with samples and the plus pack's mean
     /// share of them (%)
     pub samples: u32,
     pub minutes: u32,
@@ -358,7 +360,8 @@ impl PairAcc {
 }
 
 /// A pair's days: each raw plus-pack row with the minus-pack row nearest in time (at most MATCH_MS apart), both read
-/// in time order side by side. A sample counts with both currents the same way and their sum at least twice PAIR_MIN_A.
+/// in time order side by side. A sample counts with their sum at least twice PAIR_MIN_A, not with both currents above
+/// 1 A against each other.
 fn pair_days(db: &Connection, site: i64, pair: Pair, days: &[i64]) -> Result<Vec<PairDay>, String> {
     // raw rows; one on the full minute only with a row of the pack less than a minute before or after it
     let sql = format!(
@@ -392,8 +395,10 @@ fn pair_days(db: &Connection, site: i64, pair: Pair, days: &[i64]) -> Result<Vec
         let Some(b) = b.filter(|b| (b.0 - a.0).abs() <= MATCH_MS) else { continue };
         let (Some(ia), Some(ib)) = (a.1, b.1) else { continue };
         let total = ia + ib;
-        // load sharing needs both currents the same way: against each other the packs equalize, they do not share
-        if ia.signum() != ib.signum() || total.abs() < 2 * PAIR_MIN_A * 1000 {
+        // against each other (both above 1 A, opposite signs) the packs equalize, they do not share; a pack at ~0 A next
+        // to a loaded partner still counts (a disconnected pack is the weak one)
+        let opposite = ia.abs() > OPPOSITE_MA && ib.abs() > OPPOSITE_MA && ia.signum() != ib.signum();
+        if opposite || total.abs() < 2 * PAIR_MIN_A * 1000 {
             continue;
         }
         let Some(d) = day_index(days, &mut at, a.0) else { continue };
@@ -564,6 +569,16 @@ mod tests {
         }
         let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
         assert!(r.pairs[0].days.is_empty());
+        // a disconnected pack at 0 A next to the partner at 40 A counts: the plus pack carries everything
+        let (path, c) = db("disconnected");
+        for k in 0..40 {
+            let t = 1_000 + k * MINUTE_MS;
+            raw(&c, 1, 0, t, -40_000, 5);
+            raw(&c, 1, 1, t + 1_000, 0, 5);
+        }
+        let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
+        let d = &r.pairs[0].days[0];
+        assert_eq!((d.samples, d.share, d.marked), (40, Some(100.0), true));
     }
 
     #[test]
