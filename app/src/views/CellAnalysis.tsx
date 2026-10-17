@@ -21,7 +21,7 @@ const SLICES = 240;
 let keptPeriod: Period = "7";
 
 const CLASS_TONE: Record<CellResult["class"], string> = {
-  ok: "text-muted", rest_ok: "text-muted", soc_offset: "text-discharge", capacity: "text-alarm", ambiguous: "text-discharge", resistance: "text-alarm", measurement: "text-alarm", none: "text-muted",
+  ok: "text-muted", rest_ok: "text-muted", soc_offset: "text-discharge", rest_offset: "text-discharge", capacity: "text-alarm", ambiguous: "text-discharge", resistance: "text-alarm", measurement: "text-alarm", none: "text-muted",
 };
 
 /** The cell analysis of a pack (`cell_analysis`) over a period of its recording: a heatmap of each cell's deviation from

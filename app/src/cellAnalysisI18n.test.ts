@@ -7,7 +7,7 @@ const source = Object.values(import.meta.glob("./views/CellAnalysis.tsx", { quer
 describe("cell analysis texts", () => {
   it("every literal key, class, reason and period exists in German and English", () => {
     const used = new Set([...source.matchAll(/["`](cell\.[A-Za-z0-9.]+)["`]/g)].map((m) => m[1]));
-    const classes: CellClass[] = ["ok", "rest_ok", "soc_offset", "capacity", "ambiguous", "resistance", "measurement", "none"];
+    const classes: CellClass[] = ["ok", "rest_ok", "soc_offset", "rest_offset", "capacity", "ambiguous", "resistance", "measurement", "none"];
     const reasons: CellReason["key"][] = ["within", "partial", "rest_only", "rest", "same_sign", "capacity", "ambiguous", "resistance", "offset", "jumps", "no_rest",
       "top_only", "bottom_only", "pattern", "r_slight"];
     classes.forEach((c) => used.add(`cell.class.${c}`));
