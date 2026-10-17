@@ -10,6 +10,8 @@ import { useDark } from "../history/Chart";
 import { cn, fmt } from "../lib/utils";
 import { HEAT_CLIP_MV, MIN_ROWS, MIN_STEPS, bottomOf, heatRgb, hexRgb, reasonText, signedMv, topOf } from "../cellAnalysis";
 import { BalancerTimeline } from "./BalancerTimeline";
+import { TimeAxis } from "./TimeAxis";
+import { covered, durationText } from "../timeAxis";
 
 const DAY = 86_400_000;
 const PERIODS = ["1", "7", "30", "90"] as const;
@@ -59,6 +61,15 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
 
   const when = (ms: number) => new Date(ms).toLocaleString(lang, period === "1" ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" });
   const n = (v: number) => v.toLocaleString(lang);
+  // which columns say anything at all; without any the table is left out and only the reasons stand below
+  const cells = data?.cells ?? [];
+  const has = { rest: cells.some((c) => c.rest !== null), top: cells.some((c) => topOf(c) !== null), bottom: cells.some((c) => bottomOf(c) !== null),
+    r: cells.some((c) => c.r_mohm !== null), order: cells.some((c) => c.order !== null) };
+  const anyData = Object.values(has).some(Boolean);
+  // „keine Aussage“ with the same reason for every such cell: the reason once below, not in every row
+  const noneReasons = [...new Set(cells.filter((c) => c.class === "none").map((c) => reasonText(t, c.reason, lang)))];
+  const commonNone = noneReasons.length === 1 ? noneReasons[0] : null;
+  const coveredMs = data ? covered(data.heat[0], data.from, data.to) : 0;
 
   return (
     <Panel className="space-y-5 p-5">
@@ -76,7 +87,13 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
           <section className="space-y-2">
             <p className="max-w-3xl text-sm text-muted">{t("cell.intro")}</p>
             <Heatmap data={data} when={when} />
-            <div className="flex justify-between text-xs text-muted tabular-nums"><span>{when(data.from)}</span><HeatLegend /><span>{when(data.to)}</span></div>
+            <TimeAxis from={data.from} to={data.to} />
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-muted">
+              <HeatLegend />
+              {data.heat[0] && coveredMs < data.to - data.from && (
+                <span>{t("cell.coverage", { rec: durationText(coveredMs, lang, t), span: durationText(data.to - data.from, lang, t) })}</span>
+              )}
+            </div>
           </section>
         )}
 
@@ -85,7 +102,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
       {data && data.cell_count > 0 && (
         <section className="space-y-3">
           <h3 className="font-display text-lg font-semibold">{t("cell.tableTitle")}</h3>
-          <div className="overflow-x-auto">
+          {anyData && <div className="overflow-x-auto">
             <table className="w-full text-sm tabular-nums">
               <thead className="text-left text-muted">
                 <tr className="border-b border-line">
@@ -115,16 +132,21 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
                       <td className="py-2 pr-4 text-right">{fmt(c.order, 1)}</td>
                       <td className="py-2">
                         <span className={cn("font-medium", CLASS_TONE[c.class], c.class === "ok" && "text-ink")}>{t(`cell.class.${c.class}`)}</span>
-                        <span className="block text-xs text-muted">{reasonText(t, c.reason, lang)}{c.jumps > 0 && c.reason.key !== "jumps" ? `; ${t("cell.jumpsNote", { count: c.jumps })}` : ""}</span>
+                        {!(c.class === "none" && commonNone) && (
+                          <span className="block text-xs text-muted">{reasonText(t, c.reason, lang)}{c.jumps > 0 && c.reason.key !== "jumps" ? `; ${t("cell.jumpsNote", { count: c.jumps })}` : ""}</span>
+                        )}
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-          </div>
+          </div>}
           <ul className="space-y-0.5 text-sm text-muted">
             <li>{t("cell.sum.rows", { rows: n(data.rows), cells: data.cell_count, rest: n(data.rest_rows), top: n(data.top_rows), bottom: n(data.bottom_rows), load: n(data.load_rows), steps: n(data.steps) })}</li>
+            {!anyData ? noneReasons.map((r) => <li key={r}>{t("cell.sum.noStatement", { reason: r })}</li>)
+              : commonNone && <li>{t("cell.sum.noStatementCells", { reason: commonNone })}</li>}
+            {anyData && !has.rest && <li>{t("cell.none.rest", { rows: Math.max(0, ...cells.map((c) => c.rest_rows)), min: MIN_ROWS })}</li>}
             {data.top_rows < MIN_ROWS && <li>{t("cell.none.top")}</li>}
             {data.bottom_rows < MIN_ROWS && <li>{t("cell.none.bottom")}</li>}
             {data.steps < MIN_STEPS && <li>{t("cell.none.stepsPack", { steps: data.steps, min: MIN_STEPS })}</li>}
@@ -144,7 +166,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
 
 function NoStatement({ title }: { title: string }) {
   const { t } = useTranslation();
-  return <span className="cursor-help text-muted underline decoration-dotted underline-offset-2" title={title}>{t("cell.none.short")}</span>;
+  return <span className="cursor-help text-muted" title={title} aria-label={`${t("cell.none.short")}: ${title}`}>–</span>;
 }
 
 /** Top or bottom: the corrected value where the resistance is known, the raw one in the tooltip. */
@@ -196,7 +218,7 @@ function Heatmap({ data, when }: { data: CellAnalysis; when: (ms: number) => str
   return (
     <div className="relative">
       <canvas ref={ref} width={cols} height={rows} onMouseMove={move} title={tip} aria-label={t("cell.heatLabel")}
-        className="block w-full rounded border border-line" style={{ height: rows * rowPx, imageRendering: "pixelated" }} />
+        className="no-record block w-full rounded border border-line" style={{ height: rows * rowPx, imageRendering: "pixelated" }} />
       <div className="pointer-events-none absolute inset-y-px left-px flex flex-col" aria-hidden>
         {Array.from({ length: rows }, (_, i) => (
           <span key={i} className="bg-surface/70 px-0.5 text-[8px] leading-none text-muted" style={{ height: rowPx, lineHeight: `${rowPx}px` }}>{rows <= 20 || i % 2 === 0 ? i + 1 : ""}</span>
@@ -214,6 +236,7 @@ function HeatLegend() {
       <span className="h-2 w-24 rounded-sm border border-line" style={{ background: "linear-gradient(to right, var(--low), var(--surface), var(--high))" }} />
       <span>+{HEAT_CLIP_MV} mV</span>
       <span>{t("cell.heatRef")}</span>
+      <span className="ml-3 inline-flex items-center gap-1.5"><span className="no-record h-2.5 w-2.5 rounded-sm border border-line" />{t("dev.tl.legend.gap")}</span>
     </span>
   );
 }
