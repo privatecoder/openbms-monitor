@@ -112,6 +112,11 @@ describe("health report", () => {
     // four common quarter hours: compared, over those only
     const together = [pack(0, null, [pd(0, { temp_max: 40, temp_slots: slots(35, 40, 48).map((v, s) => (s === 80 ? 40 : v)) })]), pack(1, null, [pd(0, { temp_slots: slots(25, 44, 52) })])];
     expect(packRows(report({ packs: together }))[0].flags).toEqual([{ key: "warm", c: 35, median: 25 }]);
+    // a 25-hour day has 100 quarter hours: pack 0 only at 22:50 (second pass, slot 95), pack 1 only at 23:50 (slot 99),
+    // besides three truly common ones; the two are not the same time, three common ones are too few
+    const day25 = (v: number, own: number) => Array.from({ length: 100 }, (_, s) => (s >= 4 && s < 7 ? 25 : s === own ? v : null));
+    const dst = [pack(0, null, [pd(0, { temp_max: 35, temp_slots: day25(35, 95) })]), pack(1, null, [pd(0, { temp_slots: day25(25, 99) })])];
+    expect(packRows(report({ packs: dst })).map((x) => [x.flags, x.unrated])).toEqual([[[], ["warm"]], [[], ["warm"]]]);
     // three are too few
     const three = [pack(0, null, [pd(0, { temp_max: 35, temp_slots: slots(35, 40, 47) })]), pack(1, null, [pd(0, { temp_slots: slots(25, 44, 52) })])];
     expect(packRows(report({ packs: three }))[0].unrated).toEqual(["warm"]);
