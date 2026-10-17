@@ -1503,17 +1503,17 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
             stats.files.push(out.display().to_string());
         }
         Format::Csv => {
+            // the column counts first (one aggregate over the blobs), then every row straight into the file: a month of
+            // answers never sits in memory
+            let (ncells, ntemps): (i64, i64) = db
+                .query_row(
+                    &format!("SELECT IFNULL(MAX(length(cells)), 0) / 2, IFNULL(MAX(length(temps)), 0) / 2 FROM pack WHERE {in_site} AND pack IN ({pack_list}) AND t >= ?2 AND t <= ?3"),
+                    params![site, from, to],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(e2s)?;
+            let (ncells, ntemps) = (ncells as usize, ntemps as usize);
             let mut w = BufWriter::new(std::fs::File::create(out).map_err(io)?);
-            let mut rows = vec![];
-            let mut pr = ps.query(params![site, from, to]).map_err(e2s)?;
-            let (mut ncells, mut ntemps) = (0, 0);
-            while let Some(r) = pr.next().map_err(e2s)? {
-                let (t, v) = pack_json(r).map_err(e2s)?;
-                let tm = &v["pack"]["telemetry"];
-                ncells = ncells.max(tm["cell_voltages"].as_array().map_or(0, Vec::len));
-                ntemps = ntemps.max(tm["cell_temperatures"].as_array().map_or(0, Vec::len));
-                rows.push((t, tm.clone()));
-            }
             let mut head = "time_utc,pack,samples,current_a,soc_pct,voltage_v,remaining_ah,cycles,ambient_c,mosfet_c".to_string();
             (1..=ncells).for_each(|i| head += &format!(",cell_{i}_v"));
             (1..=ntemps).for_each(|i| head += &format!(",temp_{i}_c"));
@@ -1524,15 +1524,18 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
                 (None, Some(x)) => x.to_string(),
                 _ => String::new(),
             };
-            for (t, tm) in &rows {
-                let mut line = format!("{},{},{}", iso(*t), tm["address"], tm["samples"]);
+            let mut pr = ps.query(params![site, from, to]).map_err(e2s)?;
+            while let Some(r) = pr.next().map_err(e2s)? {
+                let (t, v) = pack_json(r).map_err(e2s)?;
+                let tm = &v["pack"]["telemetry"];
+                let mut line = format!("{},{},{}", iso(t), tm["address"], tm["samples"]);
                 for k in ["current", "soc", "pack_voltage", "remaining_capacity_ah", "cycles", "ambient_temperature", "power_temperature"] {
                     line += &format!(",{}", cell(&tm[k]));
                 }
                 for (key, count) in [("cell_voltages", ncells), ("cell_temperatures", ntemps)] {
-                    let a = tm[key].as_array().cloned().unwrap_or_default();
+                    let a = tm[key].as_array();
                     for i in 0..count {
-                        line += &format!(",{}", a.get(i).map_or(String::new(), cell));
+                        line += &format!(",{}", a.and_then(|a| a.get(i)).map_or(String::new(), cell));
                     }
                 }
                 writeln!(w, "{line}").map_err(io)?;
@@ -1541,22 +1544,21 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
             w.flush().map_err(io)?;
             stats.files.push(out.display().to_string());
 
+            // the master's file only if it has values, streamed the same way
             let mut sr = ss.query(params![site, from, to]).map_err(e2s)?;
-            let mut sys = vec![];
-            while let Some(r) = sr.next().map_err(e2s)? {
-                sys.push(sys_json(r).map_err(e2s)?);
-            }
-            if !sys.is_empty() {
+            let mut first = sr.next().map_err(e2s)?.map(sys_json).transpose().map_err(e2s)?;
+            if first.is_some() {
                 let stem = out.file_stem().map_or("export".into(), |s| s.to_string_lossy().into_owned());
                 let path = out.with_file_name(format!("{stem}_master.csv"));
                 let mut w = BufWriter::new(std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?);
                 let keys = ["current", "soc", "voltage", "charge_current_limit", "discharge_current_limit", "charge_voltage_limit", "highest_cell_voltage", "lowest_cell_voltage"];
                 writeln!(w, "time_utc,current_a,soc_pct,voltage_v,charge_limit_a,discharge_limit_a,charge_voltage_v,highest_cell_v,lowest_cell_v").map_err(io)?;
-                for (t, v) in sys {
+                while let Some((t, v)) = first.take() {
                     let vals = &v["system"]["values"];
                     let line: Vec<String> = keys.iter().map(|k| cell(&vals[*k])).collect();
                     writeln!(w, "{},{}", iso(t), line.join(",")).map_err(io)?;
                     stats.rows += 1;
+                    first = sr.next().map_err(e2s)?.map(sys_json).transpose().map_err(e2s)?;
                 }
                 w.flush().map_err(io)?;
                 stats.files.push(path.display().to_string());
@@ -2008,6 +2010,32 @@ mod tests {
         assert_eq!(serde_json::to_value(&a.packs).unwrap(), serde_json::to_value(&b.packs).unwrap());
         assert_eq!(serde_json::to_value(&a.cells).unwrap(), serde_json::to_value(&b.cells).unwrap());
         assert_eq!(b.system.unwrap().ccl[0], Some(150.0));
+    }
+
+    #[test]
+    fn the_csv_export_streams_the_same_text() {
+        let (path, mut h) = temp_db("csv-stream");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("gw", "can");
+        // a row with two cells, one with three, one without cells; the master once
+        h.pack(1000, 2, &pack_update(2, -12.5, &[3.25, 3.26], &[]));
+        h.pack(2000, 2, &pack_update(2, 1.0, &[3.25, 3.26, 3.27], &[]));
+        let mut none = pack_update(2, 0.0, &[], &[]);
+        none["telemetry"]["cell_temperatures"] = json!([]);
+        h.pack(3000, 2, &none);
+        h.system(1500, &system_update(-12.5));
+        let csv = path.parent().unwrap().join("s.csv");
+        let st = export(&reader(&path).unwrap(), "gw", 0, 10_000, &[2], Format::Csv, &csv).unwrap();
+        assert_eq!(st.rows, 4);
+        // the text of the version that collected all rows first, unchanged
+        assert_eq!(std::fs::read_to_string(&csv).unwrap(), "time_utc,pack,samples,current_a,soc_pct,voltage_v,remaining_ah,cycles,ambient_c,mosfet_c,cell_1_v,cell_2_v,cell_3_v,temp_1_c,temp_2_c
+1970-01-01T00:00:01.000Z,2,1,-12.5,50,53.2,140,78,25,26,3.25,3.26,,20,22.5
+1970-01-01T00:00:02.000Z,2,1,1,50,53.2,140,78,25,26,3.25,3.26,3.27,20,22.5
+1970-01-01T00:00:03.000Z,2,1,0.12,50,53.2,140,78,25,26,,,,,
+");
+        assert_eq!(std::fs::read_to_string(csv.with_file_name("s_master.csv")).unwrap(), "time_utc,current_a,soc_pct,voltage_v,charge_limit_a,discharge_limit_a,charge_voltage_v,highest_cell_v,lowest_cell_v
+1970-01-01T00:00:01.500Z,-12.5,50,53.2,150,200,56,3.34,3.3
+");
     }
 
     /// The layout before per-site keys, as earlier versions created it.
