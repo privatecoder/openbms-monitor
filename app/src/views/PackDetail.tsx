@@ -21,13 +21,15 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const fresh = packFresh(p, now);
   const age = (at: number) => Math.max(0, Math.round((now - at) / 1000));
   const tmOld = !!tm && !fresh.telemetry, stOld = !!st && !fresh.status;
+  // state, balancing and the strip's balancer marks only from a fresh status; the kept one stays in its faded panels
+  const live = fresh.status ? st : null;
   const cells = tm?.cell_voltages ?? [];
   const center = median(cells);
   const hi = Math.max(...cells), lo = Math.min(...cells);
   const sw = st?.switch_state ?? 0;
   const switches: [string, boolean, LucideIcon][] = [["discharge", !!(sw & 1), ArrowDownFromLine], ["charge", !!(sw & 2), ArrowUpToLine], ["limiter", !!(sw & 4), ShieldHalf], ["heater", !!(sw & 8), Flame]];
   const current = tm ? effectiveCurrent(tm) : NaN;
-  const balanced = new Set(balancedCells(st?.balancing, cells.length));
+  const balanced = new Set(balancedCells(live?.balancing, cells.length));
 
   return (
     <div className="view-in mx-auto max-w-7xl space-y-8">
@@ -48,7 +50,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
-          <StateMark state={packState(st?.system_status)} />
+          <StateMark state={packState(live?.system_status)} />
           <LiveIndicator updated={p.updated} expected={p.interval} />
         </div>
       </header>
@@ -64,7 +66,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             <Stat icon={Gauge} label={t("dash.power")} help="value.power" value={kw(current * tm.pack_voltage)} />
             <Stat icon={RotateCw} label={t("dash.cycles")} help="value.cycles" value={String(tm.cycles)} />
             {/* the counter that is currently growing goes first */}
-            {packState(st?.system_status) === "discharging" ? (
+            {packState(live?.system_status) === "discharging" ? (
               <Stat icon={BatteryMedium} label={t("dash.dischargedLabel")} help="value.energy" value={fmt(tm.energy_discharged_kwh, 1, "kWh")}
                 note={t("dash.chargedNote", { v: fmt(tm.energy_charged_kwh, 1, "kWh") })} />
             ) : (
@@ -78,8 +80,9 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
               <h2 className="flex items-center gap-1.5 font-display text-2xl font-semibold">{t("dash.cells")}<InfoIcon id="value.cell_voltages" /></h2>
               <span className="text-sm text-muted">{t("dash.delta")} {fmt((hi - lo) * 1000, 0, "mV")}, {t("dash.stripRefPack", { v: fmt(center, 3, "V") })}</span>
             </div>
-            <BalancingLine cells={cells} mask={st?.balancing} discharging={packState(st?.system_status) === "discharging"} />
-            <CellStrip cells={cells} center={center} balancing={st?.balancing} height={64} />
+            {live ? <BalancingLine cells={cells} mask={live.balancing} discharging={packState(live.system_status) === "discharging"} />
+              : <p className="mb-3 text-sm text-muted">{t("bal.unknown")}</p>}
+            <CellStrip cells={cells} center={center} balancing={live?.balancing} height={64} />
             <div className="mt-3 grid" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
               {cells.map((v, i) => (
                 <div key={i} className={cn("rounded text-center leading-tight", balanced.has(i + 1) && "bg-charge/15 ring-1 ring-charge")}>
@@ -102,20 +105,20 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             </Panel>
             <Panel className={cn("p-5", stOld && "opacity-60")}>
               <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold"><ToggleRight className="h-5 w-5 text-muted" aria-hidden />{t("dash.switches")}<InfoIcon id="status.mosfets" /></h2>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5">
+              {!st ? <p className="text-sm text-muted">{t("dash.statusUnknown")}</p> : <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5">
                 {switches.map(([k, on, I]) => (
                   <Row key={k} k={<span className="flex items-center gap-2"><I className="h-4 w-4" aria-hidden />{t(`sw.${k}`)}</span>} v={
                     <span className={cn("inline-flex items-center gap-1.5", on ? "text-charge" : "text-muted")}>
                       <span className={cn("h-2 w-2 rounded-full transition-colors", on ? "bg-charge" : "border border-muted")} />{on ? t("sw.on") : t("sw.off")}
                     </span>} />
                 ))}
-              </dl>
+              </dl>}
             </Panel>
             {/* lg: h-0 + min-h-full keeps the list out of the row height; the row follows the other two cards and the list scrolls */}
             <Panel className={cn("flex max-h-96 flex-col p-5 lg:h-0 lg:max-h-none lg:min-h-full", stOld && "opacity-60")}>
               <h2 className="mb-1 flex shrink-0 items-center gap-1.5 font-display text-xl font-semibold">{t("dash.alarms")}<InfoIcon id="topic.alarms" /></h2>
               <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-                <AlarmList alarms={st?.alarms ?? []} />
+                {st ? <AlarmList alarms={st.alarms} /> : <p className="text-sm text-muted">{t("dash.statusUnknown")}</p>}
               </div>
             </Panel>
           </div>

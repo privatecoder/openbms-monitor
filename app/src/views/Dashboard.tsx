@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Settings, Thermometer } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { effectiveCurrent, packState, type PackState, type Telemetry } from "../api";
-import { current as counted, freshSystem, omittedStatus, type SystemEntry } from "../freshness";
+import { current as counted, freshSystem, headMessages, type SystemEntry } from "../freshness";
 import type { Cell } from "../cells/types";
 import type { PackEntry } from "../store";
 import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
@@ -43,8 +43,8 @@ export function Dashboard({ packs: stored, system, scope, onOpen }: { packs: Rec
   // limits and permissions only from a fresh system poll; kept ones are shown as old
   const s = freshSystem(system, now);
   const systemOld = !s && !!system?.values;
-  // packs whose status is old: their messages are left out above, say so
-  const statusOld = omittedStatus(list);
+  // „Keine Meldungen“ only when every counted pack has a fresh status; the others are named as unknown or old
+  const head = headMessages(list);
 
   // Bank totals: from the master's system values, or summed from the packs (RS485-1/2 has no system values).
   const voltage = s?.voltage ?? (live.length ? live.reduce((x, p) => x + p.telemetry!.pack_voltage, 0) / live.length : NaN);
@@ -98,8 +98,8 @@ export function Dashboard({ packs: stored, system, scope, onOpen }: { packs: Rec
           </h1>
           <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 pl-12">
             <span className="text-muted">{t("dash.sub", { v: fmt(voltage, 1, "V"), a: fmt(current, 1, "A"), n: list.length })}</span>
-            {live.length > 0 && <MessagesMark alarms={list.flatMap((p) => p.status?.alarms ?? [])} />}
-            {statusOld > 0 && <span className="text-sm font-medium text-discharge">{t("dash.statusOmitted", { count: statusOld })}</span>}
+            {live.length > 0 && (head.allKnown || head.alarms.length > 0) && <MessagesMark alarms={head.alarms} />}
+            {head.missing > 0 && <span className="text-sm font-medium text-discharge">{t("dash.statusMissing", { count: head.missing })}</span>}
             {balancingPacks > 0 && <span className="inline-flex items-center gap-1.5 text-sm text-charge"><Scale className="h-4 w-4" aria-hidden />{t("bal.packs", { count: balancingPacks })}</span>}
             <LiveIndicator updated={Math.max(0, ...list.map((p) => p.updated))} />
           </div>
@@ -370,7 +370,7 @@ function RackRow({ p, index, center, multi, onOpen }: { p: Viewed; index: number
           <MessagesMark alarms={alarms} compact />
           <BalancingMark mask={st?.balancing} count={cells.length} />
         </span>
-        {p.old.status ? <span className="text-xs font-medium text-discharge">{t("dash.statusOld")}</span>
+        {!st && tm ? <span className="text-xs font-medium text-discharge">{t(p.old.status ? "dash.statusOld" : "dash.statusUnknown")}</span>
           : (alarms?.length || (multi && p.address === 0)) ? (
           <span className="text-xs text-muted">
             {alarms?.length ? <MessagesText alarms={alarms} /> : t("dash.master")}
