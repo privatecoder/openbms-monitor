@@ -12,10 +12,12 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
+import { BAUD, connectCancelled, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
+/** „Abbrechen“ while connecting, noticed between two steps */
+class ConnectCancelled extends Error {}
 
 // a busy port: try again every BUSY_POLL_MS, give up after BUSY_WAIT_MS
 const BUSY_POLL_MS = 500;
@@ -187,7 +189,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const connInst = useRef<string | null>(null);
   // `useBus`: the bus offered after a failed check (the select is set as well); `inst`: the installation to connect
   // with when it was switched just now („Mit „B“ verbinden“), before this closure sees the new choice
+  // „Abbrechen“ while connecting: the backend stops the check or the search before the next address, the UI between
+  // its steps; whatever was opened is closed again
+  const cancelRef = useRef(false);
+  const cancelConnect = () => { cancelRef.current = true; stopWaiting(); void api.connectCancel().catch(() => {}); };
+  const stopIfCancelled = () => { if (cancelRef.current) throw new ConnectCancelled(); };
   const connect = async (retry = false, useBus: Bus = bus, inst?: string | null) => {
+    cancelRef.current = false;
     serialGen.current += 1;
     forgetBank();
     if (!retry) connInst.current = inst !== undefined ? inst : maint.installation;
@@ -201,6 +209,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
       const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      stopIfCancelled();
       if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, packs: packCount });
       // another port stored for this bus: offer to replace it (never stored without „Speichern“)
       const owner = maint.installations.find((i) => i.id === connInst.current) ?? null;
@@ -221,6 +230,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         if (m && !m.marker) { addrs = range(m.effective_slaves + 1); note = t("conn.fromMaster", { count: addrs.length }); }
         else if (m?.marker) note = t("conn.maintActive");
       }
+      stopIfCancelled();
       if (!addrs && packCount > 0) { addrs = range(packCount); note = t("conn.fixed", { count: packCount }); }
       if (addrs) {
         // start polling at once; name and firmware version follow from a short device query
@@ -241,6 +251,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         return;
       }
       const found = await api.scan();
+      stopIfCancelled();
       if (retry && !found.length && bus !== "can") throw new Error(t("conn.none"));
       setMsg([linkedNote, answeredNote, note, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
       onConnected(found, bus);
@@ -250,7 +261,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       void readSerials(found.map(([a]) => a), linkGen);
     } catch (e) {
       // a cancelled wait never opened the port: nothing to close, no error
-      if (e instanceof Cancelled) { setMsg(t("conn.busyCancelled")); return; }
+      if (e instanceof Cancelled && !cancelRef.current) { setMsg(t("conn.busyCancelled")); return; }
+      if (cancelRef.current || e instanceof ConnectCancelled || connectCancelled(e)) {
+        await disconnect().catch(() => {});
+        setMsg(t("conn.connectCancelled"));
+        return;
+      }
       if (retry) await api.disconnect(true).catch(() => {});
       const n = noAnswer(e);
       if (n && !retry) {
@@ -259,6 +275,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         if (kind === "serial") {
           setMsg(t("conn.check.probing", { baud: BAUD[otherBus(bus)] }));
           const probe = await api.probeOtherBus(target, bus, Array.from({ length: packCount }, (_, i) => i)).catch(() => null);
+          if (cancelRef.current) { await api.disconnect().catch(() => {}); setFailed(false); setMsg(t("conn.connectCancelled")); return; }
           if (probe) { const r = explain(bus, n, probe, t); setMsg(r.text); setOffer(r.offer); }
           else setMsg(`${firstLine(bus, n, t)} ${t("conn.check.hintSerial")}`);
         } else setMsg(explain(bus, n, null, t).text);
@@ -517,7 +534,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
-          {waiting && <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>}
+          {waiting ? <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>
+            : busy && <Button variant="ghost" onClick={cancelConnect}>{t("conn.cancel")}</Button>}
           {(connected || lost) && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}

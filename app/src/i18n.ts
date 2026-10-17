@@ -486,7 +486,7 @@ const resources = {
         busyWait: "Port belegt: {{what}}. Die Verbindung wird danach aufgebaut.",
         installationWait: "{{what}} Die Verbindung wird danach aufgebaut.", installationGaveUp: "{{what}} Nach 30 s nicht frei geworden; bitte später erneut verbinden.",
         disconnectWait: "Warte auf laufende Aktion an einem Pack, dann wird getrennt …",
-        cancel: "Abbrechen", busyCancelled: "Warten auf den Port abgebrochen.",
+        cancel: "Abbrechen", busyCancelled: "Warten auf den Port abgebrochen.", connectCancelled: "Verbinden abgebrochen.",
         busName: { can: "CAN-Buchse", pack: "RS485-1/2" }, checking: "Prüfe …",
         answered: "Pack {{addr}} antwortet über {{bus}}.", partial: "{{n}} von {{total}} Packs antworten, keine Antwort von {{list}}.",
         check: {
@@ -1163,7 +1163,7 @@ const resources = {
         busyWait: "Port busy: {{what}}. The connection follows once it is done.",
         installationWait: "{{what}} The connection follows once it is done.", installationGaveUp: "{{what}} Still not free after 30 s; please connect again later.",
         disconnectWait: "Waiting for a running action on a pack, then disconnecting …",
-        cancel: "Cancel", busyCancelled: "Waiting for the port cancelled.",
+        cancel: "Cancel", busyCancelled: "Waiting for the port cancelled.", connectCancelled: "Connecting cancelled.",
         busName: { can: "CAN socket", pack: "RS485-1/2" }, checking: "Checking …",
         answered: "Pack {{addr}} answers on {{bus}}.", partial: "{{n}} of {{total}} packs answer, no answer from {{list}}.",
         check: {

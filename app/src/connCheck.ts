@@ -17,6 +17,13 @@ export function noAnswer(e: unknown): NoAnswer | null {
   } catch { return null; }
 }
 
+/** the backend stopped connecting on „Abbrechen“ */
+export function connectCancelled(e: unknown): boolean {
+  try {
+    return JSON.parse(typeof e === "string" ? e : e instanceof Error ? e.message : String(e))?.code === "cancelled";
+  } catch { return false; }
+}
+
 /** the first sentence: what was heard on the chosen bus */
 export function firstLine(bus: Bus, n: NoAnswer, t: TFunction): string {
   const p = { bus: t(`conn.busName.${bus}`), baud: BAUD[bus] };
