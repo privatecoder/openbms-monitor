@@ -43,7 +43,10 @@ CREATE TABLE pack(site INTEGER NOT NULL, pack INTEGER NOT NULL, t INTEGER NOT NU
   cell_max INTEGER, cell_min INTEGER, temp_max INTEGER, temp_min INTEGER, ambient INTEGER, mosfet INTEGER,
   cells BLOB, temps BLOB,
   -- per minute row: min/max of the rows' cell spread (cell_max - cell_min, mV) and current; a raw row has its own twice
-  spread_lo INTEGER, spread_hi INTEGER, i_lo INTEGER, i_hi INTEGER, PRIMARY KEY(site, pack, t)) WITHOUT ROWID;
+  spread_lo INTEGER, spread_hi INTEGER, i_lo INTEGER, i_hi INTEGER,
+  -- the BMS's balancing bits (bit n = cell n+1), NULL without a parsed status; per minute row the OR of its rows,
+  -- bal_rows of them with a bit set out of bal_n with a status (a raw row: 0/1 of 1)
+  balancing INTEGER, bal_rows INTEGER, bal_n INTEGER, PRIMARY KEY(site, pack, t)) WITHOUT ROWID;
 CREATE INDEX pack_t ON pack(t);
 CREATE TABLE system(site INTEGER NOT NULL, t INTEGER NOT NULL, session INTEGER NOT NULL, n INTEGER NOT NULL,
   current INTEGER, soc INTEGER, voltage INTEGER, ccl INTEGER, dcl INTEGER, cvl INTEGER,
@@ -56,7 +59,7 @@ CREATE INDEX events_start ON events(start);
 
 /// Migrations of an existing file, in order; a new file gets SCHEMA and counts them as done. The SQL is frozen
 /// as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[site_keys, pack_spread];
+const MIGRATIONS: &[crate::migrate::Step] = &[site_keys, pack_spread, pack_balancing];
 
 /// 1: `pack` and `system` keyed per site (from their session), so compaction no longer merges two installations'
 /// rows of the same minute. Rows whose session is gone were in no site's view; they keep the empty site.
@@ -100,6 +103,15 @@ fn pack_spread(db: &Connection) -> rusqlite::Result<()> {
          ALTER TABLE pack ADD COLUMN i_lo INTEGER;
          ALTER TABLE pack ADD COLUMN i_hi INTEGER;
          UPDATE pack SET spread_lo = cell_max - cell_min, spread_hi = cell_max - cell_min, i_lo = current, i_hi = current WHERE n = 1 AND t % 60000 <> 0;",
+    )
+}
+
+/// 3: the BMS's balancing bits per row (see SCHEMA). Rows from before stay NULL: nothing says whether they balanced.
+fn pack_balancing(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "ALTER TABLE pack ADD COLUMN balancing INTEGER;
+         ALTER TABLE pack ADD COLUMN bal_rows INTEGER;
+         ALTER TABLE pack ADD COLUMN bal_n INTEGER;",
     )
 }
 
@@ -588,8 +600,9 @@ impl History {
                 let pack = tx
                     .execute(
                         "INSERT OR IGNORE INTO pack(site, pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min, temp_max, temp_min,
-                           ambient, mosfet, cells, temps, spread_lo, spread_hi, i_lo, i_hi) SELECT ?2, pack, t, session, n, current, soc, voltage, remaining,
-                           cycles, cell_max, cell_min, temp_max, temp_min, ambient, mosfet, cells, temps, spread_lo, spread_hi, i_lo, i_hi FROM pack WHERE site = ?1",
+                           ambient, mosfet, cells, temps, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n) SELECT ?2, pack, t, session, n, current, soc,
+                           voltage, remaining, cycles, cell_max, cell_min, temp_max, temp_min, ambient, mosfet, cells, temps, spread_lo, spread_hi, i_lo, i_hi,
+                           balancing, bal_rows, bal_n FROM pack WHERE site = ?1",
                         [o, new_id],
                     )
                     .map_err(e2s)? as u64;
@@ -735,11 +748,23 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         None => own,
     };
     let spread = cell_max.zip(cell_min).map(|(a, b)| a - b);
+    // the balancing bits: an export carries them with the values, a live answer in its status; NULL without a parsed
+    // status (0 would say „none balanced“)
+    let balancing = match tm.get("balancing") {
+        Some(v) => v.as_i64(),
+        None => update["status"]["balancing"].as_i64(),
+    };
+    // the counts of a minute row come with its export; bits from a status are one answer's
+    let bal = |key: &str, own: Option<i64>| match tm.get(key) {
+        Some(v) => v.as_i64(),
+        None if merged && tm.get("balancing").is_some() => None,
+        None => own,
+    };
     let changed = db
         .prepare_cached(&format!(
             "INSERT OR {} INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min,
-               temp_max, temp_min, ambient, mosfet, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi)
-               VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+               temp_max, temp_min, ambient, mosfet, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n)
+               VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             if keep_existing { "IGNORE" } else { "REPLACE" }
         ))?
         .execute(params![
@@ -764,6 +789,9 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         range("spread_hi_mv", 1.0, spread),
         range("current_lo", 1000.0, current),
         range("current_hi", 1000.0, current),
+        balancing,
+        bal("balancing_rows", balancing.map(|b| i64::from(b != 0))),
+        bal("balancing_n", balancing.map(|_| 1)),
     ])?;
     Ok(changed > 0)
 }
@@ -930,6 +958,10 @@ struct PackAcc {
     cycles: Option<(i64, i64)>,
     spread: Range,
     current: Range,
+    /// OR of the balancing bits, rows with a bit set, rows with a status; rows without one count neither way
+    balancing: Option<i64>,
+    bal_rows: Option<i64>,
+    bal_n: Option<i64>,
     cell_max: Acc,
     cell_min: Acc,
     temp_max: Acc,
@@ -944,7 +976,7 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
     {
         let mut st = tx.prepare(
             "SELECT site, pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
-               temp_max, temp_min, cells, temps, spread_lo, spread_hi, i_lo, i_hi FROM pack WHERE t >= ?1 AND t < ?2",
+               temp_max, temp_min, cells, temps, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n FROM pack WHERE t >= ?1 AND t < ?2",
         )?;
         let mut rows = st.query([from, to])?;
         while let Some(r) = rows.next()? {
@@ -958,6 +990,9 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
                 cycles: None,
                 spread: Range::default(),
                 current: Range::default(),
+                balancing: None,
+                bal_rows: None,
+                bal_n: None,
                 cell_max: Acc::default(),
                 cell_min: Acc::default(),
                 temp_max: Acc::default(),
@@ -976,6 +1011,14 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
             }
             g.spread.add(r.get(18)?, r.get(19)?);
             g.current.add(r.get(20)?, r.get(21)?);
+            if let Some(b) = r.get::<_, Option<i64>>(22)? {
+                g.balancing = Some(g.balancing.unwrap_or(0) | b);
+            }
+            for (sum, col) in [(&mut g.bal_rows, 23), (&mut g.bal_n, 24)] {
+                if let Some(v) = r.get::<_, Option<i64>>(col)? {
+                    *sum = Some(sum.unwrap_or(0) + v);
+                }
+            }
             g.cell_max.add(r.get(12)?, w);
             g.cell_min.add(r.get(13)?, w);
             g.temp_max.add(r.get(14)?, w);
@@ -993,8 +1036,8 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
     tx.execute("DELETE FROM pack WHERE t >= ?1 AND t < ?2", [from, to])?;
     let mut ins = tx.prepare(
         "INSERT INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, ambient, mosfet, cell_max, cell_min,
-           temp_max, temp_min, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi)
-           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+           temp_max, temp_min, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n)
+           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
     )?;
     for ((site, pack, t), g) in groups {
         let m = |i: usize| g.cols[i].mean();
@@ -1004,7 +1047,7 @@ fn compact_packs(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
         ins.execute(params![
             pack, t, g.session, g.n, m(0), m(1), m(2), m(3), g.cycles.map(|c| c.1), m(5), m(6),
             g.cell_max.max, g.cell_min.min, g.temp_max.max, g.temp_min.min, blob_u16(&cells), blob_i16(&temps), site,
-            spread.0, spread.1, current.0, current.1
+            spread.0, spread.1, current.0, current.1, g.balancing, g.bal_rows, g.bal_n
         ])?;
     }
     Ok(())
@@ -1378,7 +1421,8 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
     let io = |e: std::io::Error| format!("{}: {e}", out.display());
     let mut ps = db
         .prepare(&format!(
-            "SELECT t, pack, current, soc, voltage, remaining, cycles, ambient, mosfet, cells, temps, n, spread_lo, spread_hi, i_lo, i_hi FROM pack
+            "SELECT t, pack, current, soc, voltage, remaining, cycles, ambient, mosfet, cells, temps, n, spread_lo, spread_hi, i_lo, i_hi,
+               balancing, bal_rows, bal_n FROM pack
              WHERE {in_site} AND pack IN ({pack_list}) AND t >= ?2 AND t <= ?3 ORDER BY t, pack"
         ))
         .map_err(e2s)?;
@@ -1400,6 +1444,8 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
             // the ranges of a minute row (see SCHEMA); import takes them as they are
             "spread_lo_mv": r.get::<_, Option<i64>>(12)?, "spread_hi_mv": r.get::<_, Option<i64>>(13)?,
             "current_lo": f(r.get(14)?, 1000.0), "current_hi": f(r.get(15)?, 1000.0),
+            // the BMS's balancing bits as stored (null: no status); import takes them as they are
+            "balancing": r.get::<_, Option<i64>>(16)?, "balancing_rows": r.get::<_, Option<i64>>(17)?, "balancing_n": r.get::<_, Option<i64>>(18)?,
         });
         Ok((t, json!({ "t": t, "pack": { "address": a, "telemetry": tm, "status": null, "error": null } })))
     };
@@ -1990,7 +2036,7 @@ mod tests {
         // and its writes (without a site) fail instead of landing under a wrong key
         assert!(Connection::open(&path).unwrap().execute("INSERT INTO pack(pack, t, session, n) VALUES(1, 1, 1, 1)", []).is_err());
         // the copy holds the file as it was
-        assert_eq!(crate::migrate::backups(&path), vec!["history.sqlite.bak-1".to_string(), "history.sqlite.bak-2".to_string()]);
+        assert_eq!(crate::migrate::backups(&path), vec!["history.sqlite.bak-1".to_string(), "history.sqlite.bak-2".to_string(), "history.sqlite.bak-3".to_string()]);
         let bak = Connection::open(path.with_file_name("history.sqlite.bak-1")).unwrap();
         let n: i64 = bak.query_row("SELECT COUNT(*) FROM pack", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 4);
@@ -2007,12 +2053,12 @@ mod tests {
         // opening again: nothing to migrate, no new copy, nothing lost
         let mut h = History::default();
         h.open(&path).unwrap();
-        assert_eq!(crate::migrate::backups(&path).len(), 2);
+        assert_eq!(crate::migrate::backups(&path).len(), 3);
         assert_eq!(pack_rows(&path).len(), 5);
         let n: i64 = reader(&path).unwrap().query_row("SELECT COUNT(*) FROM system WHERE t >= ?1", [20 * DAY_MS], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
         let done: String = reader(&path).unwrap().query_row("SELECT value FROM meta WHERE key = 'migration'", [], |r| r.get(0)).unwrap();
-        assert_eq!(done, "2");
+        assert_eq!(done, MIGRATIONS.len().to_string());
     }
 
     /// spread_lo, spread_hi, i_lo, i_hi
@@ -2117,6 +2163,62 @@ mod tests {
             (6 * MINUTE_MS + 1, Some(1), (Some(20), Some(20), Some(1000), Some(1000))),
             (7 * MINUTE_MS, Some(1), (None, None, None, None)),
         ]);
+    }
+
+    /// t, n, balancing, bal_rows, bal_n
+    fn bal_rows(path: &Path, site: &str) -> Vec<(i64, i64, Option<i64>, Option<i64>, Option<i64>)> {
+        reader(path)
+            .unwrap()
+            .prepare("SELECT t, n, balancing, bal_rows, bal_n FROM pack WHERE site = (SELECT id FROM sites WHERE site = ?1) ORDER BY t")
+            .unwrap()
+            .query_map([site], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn balancing_bits_are_kept_ored_per_minute_and_go_through_merge_and_export() {
+        let (path, mut h) = temp_db("balancing");
+        h.set_settings(Settings { enabled: true, keep_full_days: 1, ..Settings::default() }).unwrap();
+        h.connected("gw", "can");
+        let base = 10 * DAY_MS;
+        // one minute: cells 3 and 7, none, no status (NULL), cell 1; then a single answer with none (on its minute after
+        // compaction)
+        let with = |bits: Option<i64>| {
+            let mut u = pack_update(5, 2.0, &[3.30, 3.31], &[]);
+            match bits {
+                Some(b) => u["status"]["balancing"] = json!(b),
+                None => u["status"] = Value::Null,
+            }
+            u
+        };
+        for (i, bits) in [Some(0b100_0100), Some(0), None, Some(0b1)].into_iter().enumerate() {
+            h.pack(base + i as i64 * 10_000, 5, &with(bits));
+        }
+        h.pack(base + 2 * MINUTE_MS + 1, 5, &with(Some(0)));
+        assert_eq!(bal_rows(&path, "gw")[2], (base + 20_000, 1, None, None, None), "no status: NULL, not 0");
+        h.maintain(base + 2 * DAY_MS);
+        let compacted = vec![(base, 4, Some(0b100_0101), Some(2), Some(3)), (base + 2 * MINUTE_MS, 1, Some(0), Some(0), Some(1))];
+        assert_eq!(bal_rows(&path, "gw"), compacted);
+        // compacting again changes nothing
+        h.maintain(base + 2 * DAY_MS);
+        assert_eq!(bal_rows(&path, "gw"), compacted);
+        // a merge into a used key keeps them
+        h.connected("inst-b", "can");
+        h.pack(base + 3 * MINUTE_MS, 5, &with(Some(0b10)));
+        h.merge_site("gw", "inst-b").unwrap();
+        let merged = bal_rows(&path, "inst-b");
+        assert_eq!(merged[..2], compacted[..]);
+        assert_eq!(merged[2], (base + 3 * MINUTE_MS, 1, Some(0b10), Some(1), Some(1)));
+        // export and import: the same values, the minute row's counts included (an import stores n = 1, so the share
+        // of a minute is bal_rows / bal_n, never / n)
+        let out = path.parent().unwrap().join("balancing.jsonl");
+        export(&reader(&path).unwrap(), "inst-b", 0, i64::MAX, &[5], Format::Jsonl, &out).unwrap();
+        h.clear(None).unwrap();
+        h.import(&out, "inst-c").unwrap();
+        let without_n = |v: Vec<(i64, i64, Option<i64>, Option<i64>, Option<i64>)>| v.into_iter().map(|(t, _, b, r, n)| (t, b, r, n)).collect::<Vec<_>>();
+        assert_eq!(without_n(bal_rows(&path, "inst-c")), without_n(merged));
     }
 
     #[test]
