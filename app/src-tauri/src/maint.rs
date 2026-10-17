@@ -4,7 +4,7 @@
 //! lock (`port_busy`, through `control::reserve_bus`: only while no pack action runs); a control exchange on the endpoint of the main connection runs through that connection,
 //! so no endpoint is opened twice.
 
-use crate::maint_store::{normalize_key, ControlEndpoint, Installation, MarkerOn, Pending, Store};
+use crate::maint_store::{normalize_key, real, Board, ControlEndpoint, Installation, MarkerOn, Pending, Store};
 use crate::{lock, AppState, EndpointArg};
 use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError};
 use openbms_flash::maint::policy::Master;
@@ -409,6 +409,27 @@ pub fn check_bank(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, link: 
     Ok(b)
 }
 
+/// Before a flash with checks: the target's String 2 against the board stored for its address in the installation.
+/// Only a real serial that is neither the stored board's nor one of its earlier ones refuses; no stored board or no
+/// readable serial goes on as before.
+pub fn target_check(current: Option<&Board>, read: &SerialValue) -> Result<(), MaintError> {
+    match (current, real(read)) {
+        (Some(b), Some(s)) if b.bms_serial != s && !b.aliases.iter().any(|a| a == s) => Err(refused("other-pack")),
+        _ => Ok(()),
+    }
+}
+
+/// Read String 2 of the flash target on the open pack bus link and check it (`target_check`).
+pub fn check_target_board(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, address: u8, link: &mut Connection) -> Result<(), MaintError> {
+    let read = match link.bms_serial(address) {
+        Ok(v) => v,
+        Err(e) if link_dead(&e.to_string()) => return Err(MaintError::Connection { message: e.to_string() }),
+        Err(_) => return Ok(()),
+    };
+    let current = with_store_arc(store, |s| s.current_board(&inst.id, address))?;
+    target_check(current.as_ref(), &read)
+}
+
 /// The bootloader-pending rule: flashing another address than a pending pack on the same endpoint is refused.
 pub fn pending_refusal(pending: &[Pending], address: u8) -> Result<(), MaintError> {
     match pending.iter().find(|p| p.pack != address) {
@@ -798,6 +819,21 @@ mod tests {
             assert!(refused_with(master_check("BANK-A", Some(&v)), "master-serial-unreadable"));
         }
         assert!(refused_with(master_check("BANK-A", None), "master-serial-unreadable"));
+    }
+
+    #[test]
+    fn a_flash_target_with_another_boards_serial_is_refused() {
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        let board = Board { id: 1, bms_serial: "SYN-5".into(), battery_serial: None, first_seen: 0, last_seen: 0, aliases: vec!["SYN-5-OLD".into()] };
+        assert!(target_check(Some(&board), &set("SYN-5")).is_ok());
+        assert!(target_check(Some(&board), &set("SYN-5-OLD")).is_ok());
+        assert!(refused_with(target_check(Some(&board), &set("SYN-OTHER")), "other-pack"));
+        // unknown or unreadable identity: as before
+        assert!(target_check(None, &set("SYN-OTHER")).is_ok());
+        for v in [SerialValue::NoAnswer, SerialValue::Unavailable, SerialValue::Empty, SerialValue::Placeholder { value: "EMU110110S-XXXX".into() },
+            SerialValue::Set { value: "SYN-CUT".into(), truncated: true }] {
+            assert!(target_check(Some(&board), &v).is_ok());
+        }
     }
 
     #[test]
