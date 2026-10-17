@@ -1088,6 +1088,12 @@ impl Store {
         })
     }
 
+    /// Whether both installations have devices and they differ. A merge then stops: the recording would move into the
+    /// target and be computed with the target's balancers and assignments, the source's would be lost.
+    pub fn devices_differ(&self, a: &str, b: &str) -> Result<bool, String> {
+        Ok(devices_conflict(&self.settings(a)?.devices, &self.settings(b)?.devices))
+    }
+
     /// Merge `source` into `target`: everything it owns moves over; settings add, never overwrite (the target's win,
     /// the source's values are kept in the log of the move); then `source` is gone. `history`: what the merge of the
     /// recording did, for the log.
@@ -1100,6 +1106,9 @@ impl Store {
             // an unfinished import resumes into its stored target: neither side may change under it
             if s.import_open_for(source)? || s.import_open_for(target)? {
                 return Err("installation-busy".into());
+            }
+            if s.devices_differ(source, target)? {
+                return Err("merge-devices-differ".into());
             }
             let kept = s.add_settings(target, &s.settings(source)?)?;
             let mut moved = serde_json::Map::new();
@@ -1312,6 +1321,19 @@ impl Store {
     pub fn devices(&self, inst: &str) -> Result<Option<String>, String> {
         self.db.query_row("SELECT data FROM devices WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
     }
+}
+
+/// Two `devices` settings that cannot both hold after a merge: both have definitions or assignments, and they differ.
+/// None, an unreadable or an empty one (no definitions, no assignments) never conflicts.
+pub fn devices_conflict(a: &Option<String>, b: &Option<String>) -> bool {
+    let read = |x: &Option<String>| {
+        x.as_deref().and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok()).filter(|v| {
+            let defs = v["defs"].as_array().is_some_and(|d| !d.is_empty());
+            let assign = v["assign"].as_object().is_some_and(|m| m.values().any(|l| l.as_array().is_some_and(|l| !l.is_empty())));
+            defs || assign
+        })
+    };
+    matches!((read(a), read(b)), (Some(x), Some(y)) if x != y)
 }
 
 #[cfg(test)]
@@ -1767,6 +1789,12 @@ mod tests {
         s.set_notifications(&src, Some(r#"{"enabled":true}"#)).unwrap();
         s.set_devices(&src, Some(r#"{"defs":[1]}"#)).unwrap();
         s.set_devices(&dst.id, Some(r#"{"defs":[2]}"#)).unwrap();
+        // devices on both sides that differ: refused, nothing moved
+        assert_eq!(s.merge(&src, &dst.id, Value::Null, 7), Err("merge-devices-differ".into()));
+        assert!(s.installation(&src).is_ok());
+        assert_eq!(s.settings(&dst.id).unwrap().pairs.as_deref(), Some("[2]"));
+        // the same devices on both sides (written differently): merged
+        s.set_devices(&src, Some(r#"{ "defs": [ 2 ] }"#)).unwrap();
         s.add_param_snapshot(&src, 1, SnapshotKind::Read, &[1], 5).unwrap();
         s.add_log(Some(&src), Some(1), "flash", Some("16.06.13"), "f.log", 6).unwrap();
         assert_eq!(s.merge(&src, &src, Value::Null, 7), Err("merge-self".into()));
@@ -1779,7 +1807,6 @@ mod tests {
         let n: i64 = s.db.query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "the source's row is gone");
         assert_eq!(set.devices.as_deref(), Some(r#"{"defs":[2]}"#), "the target's own stay");
-        assert_eq!(d["not_taken"]["devices"], r#"{"defs":[1]}"#);
         assert_eq!(s.db.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         let o = s.overview(&dst.id).unwrap();
         assert_eq!((o.counts.snapshots, o.counts.logs), (1, 1));
@@ -1794,6 +1821,17 @@ mod tests {
         assert_eq!(s.db.query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(s.db.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(s.legacy_installation("gw:4196", 9).unwrap(), None, "moved before, installation gone");
+    }
+
+    #[test]
+    fn devices_conflict_only_when_both_have_some_that_differ() {
+        let d = |t: &str| Some(t.to_string());
+        assert!(devices_conflict(&d(r#"{"defs":[{"id":"a"}],"assign":{}}"#), &d(r#"{"defs":[{"id":"b"}],"assign":{}}"#)));
+        assert!(devices_conflict(&d(r#"{"defs":[],"assign":{"1":[{"from":0,"device":"a"}]}}"#), &d(r#"{"defs":[{"id":"b"}]}"#)));
+        assert!(!devices_conflict(&d(r#"{"defs":[{"id":"a"}],"assign":{}}"#), &d(r#"{"assign":{},"defs":[{"id":"a"}]}"#)), "equal");
+        assert!(!devices_conflict(&d(r#"{"defs":[{"id":"a"}]}"#), &None), "one side only");
+        assert!(!devices_conflict(&d(r#"{"defs":[{"id":"a"}]}"#), &d(r#"{"defs":[],"assign":{"2":[]}}"#)), "empty");
+        assert!(!devices_conflict(&d(r#"{"defs":[{"id":"a"}]}"#), &d("not json")), "unreadable");
     }
 
     #[test]

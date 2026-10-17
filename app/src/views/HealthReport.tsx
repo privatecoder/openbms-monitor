@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Download } from "lucide-react";
 import { api, isDemo, type CellAnalysis, type HealthReport as Report } from "../api";
-import { reasonArgs, reportCells } from "../cellAnalysis";
+import { reasonText, reportCells } from "../cellAnalysis";
 import { useSettings } from "../installData";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
@@ -202,14 +202,18 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     <td className="py-2">
                       {typeof a === "string" ? <span className="text-alarm">{t("hist.rep.cells.failed", { err: a })}</span>
                         : !off ? <span className="text-muted">{t("hist.rep.cells.noRaw")}</span>
-                        : off.all ? <span className="text-muted">{t("hist.rep.cells.allNone")}: {t(...reasonArgs(off.all.reason, lang))}</span>
-                        : !off.cells.length ? <span className="text-muted">{t("hist.rep.cells.allOk", { count: a.cells.length })}</span>
+                        : off.all ? <span className="text-muted">{t("hist.rep.cells.allNone")}: {reasonText(t, off.all.reason, lang)}</span>
+                        : !off.cells.length ? (
+                          <span className="text-muted">{a.cells.some((c) => c.class === "rest_ok")
+                            ? t("hist.rep.cells.quiet", { ok: a.cells.filter((c) => c.class === "ok").length, rest: a.cells.filter((c) => c.class === "rest_ok").length })
+                            : t("hist.rep.cells.allOk", { count: a.cells.length })}</span>
+                        )
                         : (
                           <ul className="space-y-0.5">
                             {off.cells.map((c) => (
                               <li key={c.cell}>
                                 <span className={cn("font-medium", c.class === "none" ? "text-muted" : "text-discharge")}>{t("hist.rep.cells.cell", { n: c.cell })}: {t(`cell.class.${c.class}`)}</span>
-                                <span className="text-muted"> ({t(...reasonArgs(c.reason, lang))})</span>
+                                <span className="text-muted"> ({reasonText(t, c.reason, lang)})</span>
                               </li>
                             ))}
                           </ul>

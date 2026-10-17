@@ -238,6 +238,10 @@ pub async fn installation_merge(state: State<'_, AppState>, source: String, targ
     if with_store(&state, |s| Ok(s.import_open_for(&source)? || s.import_open_for(&target)?))? {
         return Err(maint::refused("installation-busy"));
     }
+    // devices on both sides that differ: refused before the recording moves (it would be computed with the target's)
+    if with_store(&state, |s| s.devices_differ(&source, &target))? {
+        return Err(maint::refused("merge-devices-differ"));
+    }
     let merged = {
         let mut h = state.history.lock().map_err(text)?;
         h.merge_site(&source, &target).map_err(text)?;

@@ -96,7 +96,7 @@ pub fn with_store_arc<T>(store: &Arc<Mutex<Option<Store>>>, f: impl FnOnce(&Stor
 /// A store refusal (name) reaches the UI as a refusal key, anything else as a store error.
 pub fn store_refusal(e: MaintError) -> MaintError {
     match e {
-        MaintError::Store { message } if ["name-required", "name-taken", "unknown-installation", "installation-busy", "merge-self", "installation-connected", "maintenance-open", "pending-on-port"].contains(&message.as_str()) => refused(&message),
+        MaintError::Store { message } if ["name-required", "name-taken", "unknown-installation", "installation-busy", "merge-self", "merge-devices-differ", "installation-connected", "maintenance-open", "pending-on-port"].contains(&message.as_str()) => refused(&message),
         other => other,
     }
 }
