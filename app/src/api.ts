@@ -182,12 +182,12 @@ export interface Series {
 /** Health report (`health.rs`): per pack and local day spread (mV, all rows and at rest), last cycle count, warmest cell. */
 export interface PackDay {
   day: number; rows: number; spread_p50: number | null; spread_p95: number | null;
-  /** time of the day's first and last row (ms) */
-  t_first: number; t_last: number;
   /** the spread figures (all and rest) come from raw rows; false: from minute maxima, a different measure */
   spread_raw: boolean;
-  /** rest_hours: distinct clock hours with rest values (of the kind taken) */
-  rest_rows: number; rest_hours: number; rest_p50: number | null; rest_p95: number | null; cycles: number | null; temp_max: number | null;
+  /** rest_minutes: distinct clock minutes with rest values (of the kind taken) */
+  rest_rows: number; rest_minutes: number; rest_p50: number | null; rest_p95: number | null; cycles: number | null; temp_max: number | null;
+  /** per quarter hour from local midnight the warmest cell's maximum (96 entries), null without a value */
+  temp_slots: (number | null)[];
   /** BMS balancing bits of the day: OR (bit n = cell n+1), rows with a bit set of rows with a status; null without a status */
   bal_mask?: number | null; bal_rows?: number | null; bal_n?: number | null;
 }
@@ -768,8 +768,9 @@ function demoReport(from: number, to: number, packs: number[], pairs: { plus: nu
       cycles_gained: Math.round((a === 8 ? 16.8 : 12 + (a % 3) * 0.4) * (days.length - 1) / 30), cycles_span_ms: Math.max(0, days.length - 1) * 86_400_000,
       days: days.map((day, i) => {
         const rest = 7 + (a % 3) + wobble(a, i) + (a === 5 ? Math.round(i * 0.35) : 0);
-        return { day, rows: 17_000, t_first: day + 60_000, t_last: day + 86_340_000, rest_hours: 18, spread_p50: rest + 6, spread_p95: rest + 22, spread_raw: i >= days.length - 30, rest_rows: 6_000, rest_p50: rest, rest_p95: rest + 3,
-          cycles: Math.round(140 + i * (a === 8 ? 0.56 : 0.4)), temp_max: 24 + (a % 4) + wobble(a, i) / 2 };
+        return { day, rows: 17_000, rest_minutes: 900, spread_p50: rest + 6, spread_p95: rest + 22, spread_raw: i >= days.length - 30, rest_rows: 6_000, rest_p50: rest, rest_p95: rest + 3,
+          cycles: Math.round(140 + i * (a === 8 ? 0.56 : 0.4)), temp_max: 24 + (a % 4) + wobble(a, i) / 2,
+          temp_slots: Array.from({ length: 96 }, (_, s) => 22 + (a % 4) + wobble(a, i) / 2 + (s >= 40 && s < 72 ? 2 : 0)) };
       }),
     })),
     pairs: pairs.map(({ plus, minus }) => ({
