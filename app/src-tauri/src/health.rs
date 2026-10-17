@@ -6,9 +6,9 @@
 //! NULL there and are left out. A minute row keeps the minute's largest spread, a different measure than single
 //! answers: a day with raw rows takes its percentiles from those alone, a day with only minute rows from the minute
 //! maxima, and says which (`spread_raw`). Pair shares need single answers a few seconds apart, so only raw rows count
-//! (`cell_analysis::raw`, by the row's contents), and of those on the full minute only one with a row of the same pack
-//! less than a minute away: an old imported minute row is stored as one answer on the minute, its time rounded. Pair
-//! figures therefore cover the raw-data period only.
+//! (`cell_analysis::raw`, by the row's contents), without rows on the full minute that have no ranges: an old imported
+//! minute row is stored as one answer on the minute, its time rounded (a real answer exactly on :00.000 is rare enough
+//! to lose). Pair figures therefore cover the raw-data period only.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -41,13 +41,17 @@ pub struct PackDay {
     /// local midnight
     pub day: i64,
     pub rows: u32,
+    /// time of the day's first and last row (ms), for comparing packs only over overlapping spans
+    pub t_first: i64,
+    pub t_last: i64,
     /// cell spread in mV over the day's rows (median, 95th percentile); None without range data
     pub spread_p50: Option<i64>,
     /// whether the spread figures (all and rest) come from raw rows; false: from minute maxima (no raw row that day)
     pub spread_raw: bool,
     pub spread_p95: Option<i64>,
-    /// the same at rest only
+    /// the same at rest only, and the number of distinct clock hours with rest values (of the kind taken)
     pub rest_rows: u32,
+    pub rest_hours: u32,
     pub rest_p50: Option<i64>,
     pub rest_p95: Option<i64>,
     /// the day's last cycle count
@@ -192,6 +196,11 @@ fn min_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 #[derive(Default)]
 struct DayAcc {
     rows: u32,
+    t_first: i64,
+    t_last: i64,
+    /// distinct hours with rest values, raw and minute rows apart: count and the last hour (rows come in time order)
+    rest_hours: (u32, Option<i64>),
+    rest_hours_min: (u32, Option<i64>),
     all: Vec<i64>,
     rest: Vec<i64>,
     all_min: Vec<i64>,
@@ -206,16 +215,19 @@ impl DayAcc {
     fn finish(self, day: i64) -> PackDay {
         // raw rows when the day has any, else the minute maxima: the two never mix in one percentile
         let spread_raw = !self.all.is_empty();
-        let (mut all, mut rest) = if spread_raw { (self.all, self.rest) } else { (self.all_min, self.rest_min) };
+        let (mut all, mut rest, hours) = if spread_raw { (self.all, self.rest, self.rest_hours.0) } else { (self.all_min, self.rest_min, self.rest_hours_min.0) };
         all.sort_unstable();
         rest.sort_unstable();
         PackDay {
             day,
             rows: self.rows,
+            t_first: self.t_first,
+            t_last: self.t_last,
             spread_p50: pct(&all, 0.5),
             spread_p95: pct(&all, 0.95),
             spread_raw,
             rest_rows: rest.len() as u32,
+            rest_hours: hours,
             rest_p50: pct(&rest, 0.5),
             rest_p95: pct(&rest, 0.95),
             cycles: self.cycles.map(|c| c.1),
@@ -258,7 +270,11 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
             cur = Some((d, DayAcc::default()));
         }
         let acc = &mut cur.as_mut().unwrap().1;
+        if acc.rows == 0 {
+            acc.t_first = t;
+        }
         acc.rows += 1;
+        acc.t_last = t;
         if let Some(c) = r.get::<_, Option<i64>>(2).map_err(e2s)? {
             acc.cycles = Some((t, c));
         }
@@ -278,10 +294,14 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
         let at_rest = lo.zip(hi).is_some_and(|(lo, hi)| lo > -REST_MA && hi < REST_MA);
         if let Some(s) = spread {
             spread_from.get_or_insert(t);
-            let (all, rest) = if raw { (&mut acc.all, &mut acc.rest) } else { (&mut acc.all_min, &mut acc.rest_min) };
+            let (all, rest, hours) = if raw { (&mut acc.all, &mut acc.rest, &mut acc.rest_hours) } else { (&mut acc.all_min, &mut acc.rest_min, &mut acc.rest_hours_min) };
             all.push(s);
             if at_rest && (!raw || prev_rest) {
                 rest.push(s);
+                let hour = t.div_euclid(3_600_000);
+                if hours.1 != Some(hour) {
+                    *hours = (hours.0 + 1, Some(hour));
+                }
             }
         }
         prev_rest = at_rest;
@@ -363,12 +383,10 @@ impl PairAcc {
 /// in time order side by side. A sample counts with their sum at least twice PAIR_MIN_A, not with both currents above
 /// 1 A against each other.
 fn pair_days(db: &Connection, site: i64, pair: Pair, days: &[i64]) -> Result<Vec<PairDay>, String> {
-    // raw rows; one on the full minute only with a row of the pack less than a minute before or after it
+    // raw rows, without those on the full minute that have no ranges (old imported minute rows)
     let sql = format!(
-        "SELECT t, current, soc FROM (
-           SELECT t, current, soc, {} AS raw, LAG(t) OVER w AS pt, LEAD(t) OVER w AS nt FROM pack
-           WHERE site = ?1 AND pack = ?2 AND t >= ?3 - {MINUTE_MS} AND t < ?4 + {MINUTE_MS} WINDOW w AS (ORDER BY t))
-         WHERE raw AND t >= ?3 AND t < ?4 AND (t % {MINUTE_MS} <> 0 OR t - pt < {MINUTE_MS} OR nt - t < {MINUTE_MS}) ORDER BY t",
+        "SELECT t, current, soc FROM pack WHERE site = ?1 AND pack = ?2 AND t >= ?3 AND t < ?4 AND {}
+           AND NOT (t % {MINUTE_MS} = 0 AND spread_lo IS NULL AND spread_hi IS NULL AND i_lo IS NULL AND i_hi IS NULL) ORDER BY t",
         crate::cell_analysis::RAW_SQL
     );
     let (mut sp, mut sm) = (db.prepare(&sql).map_err(e2s)?, db.prepare(&sql).map_err(e2s)?);
@@ -556,6 +574,39 @@ mod tests {
         let mut st = db.prepare(&sql).unwrap();
         let got: Vec<(bool, bool)> = st.query_map([], |r| Ok((crate::cell_analysis::raw(&crate::balancer::read_row(r)?), r.get(13)?))).unwrap().map(Result::unwrap).collect();
         assert_eq!(got, vec![(false, false), (false, false), (false, false), (false, false), (true, true)]);
+    }
+
+    #[test]
+    fn old_imported_minute_rows_never_pair_even_beside_raw_rows() {
+        let (path, c) = db("import-overlap");
+        // an import of rounded minute values (−30 / −10 A, no ranges) and, overlapping, a raw recording at :10 of every
+        // minute with both packs at −20 A: only the raw answers are the same moment
+        for k in 0..30 {
+            let m = (60 + k) * MINUTE_MS;
+            row(&c, 1, 0, m, 1, -30_000, 500, None, None, None);
+            row(&c, 1, 1, m, 1, -10_000, 500, None, None, None);
+            raw(&c, 1, 0, m + 10_000, -20_000, 5);
+            raw(&c, 1, 1, m + 10_500, -20_000, 5);
+        }
+        let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
+        let d = &r.pairs[0].days[0];
+        assert_eq!((d.samples, d.share, d.marked), (30, Some(50.0), false));
+    }
+
+    #[test]
+    fn a_day_knows_its_span_and_the_hours_with_rest_values() {
+        let (path, c) = db("hours");
+        // rest in two clock hours (30 answers each), load in between
+        for k in 0..30 {
+            raw(&c, 1, 0, 3_600_000 + 1_000 + k * 10_000, 0, 5);
+        }
+        raw(&c, 1, 0, 2 * 3_600_000, -50_000, 30);
+        for k in 0..30 {
+            raw(&c, 1, 0, 3 * 3_600_000 + 1_000 + k * 10_000, 0, 5);
+        }
+        let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[]).unwrap();
+        let d = &r.packs[0].days[0];
+        assert_eq!((d.t_first, d.t_last, d.rest_hours), (3_600_000 + 1_000, 3 * 3_600_000 + 1_000 + 29 * 10_000, 2));
     }
 
     #[test]

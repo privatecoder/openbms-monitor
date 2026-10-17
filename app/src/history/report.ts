@@ -23,10 +23,11 @@ export const SPREAD_RISE_MV = 10;
 export const WARM_ABOVE_C = 5;
 /** A day's rest P95 counts for the bank comparison from this many rest rows that day. */
 export const REST_ROWS_MIN = 30;
-/** A trend day needs this many rest rows: single answers (one every few seconds) 180, minute maxima 30; the trend
- *  needs TREND_DAYS_MIN such days. */
+/** A trend day needs this many rest rows: single answers (one every few seconds) 180, minute maxima 30, spread over at
+ *  least TREND_HOURS_MIN clock hours; the trend needs TREND_DAYS_MIN such days. */
 export const TREND_ROWS_RAW = 180;
 export const TREND_ROWS_MINUTE = 30;
+export const TREND_HOURS_MIN = 2;
 export const TREND_DAYS_MIN = 3;
 
 /** [from, to] of a period up to now; "all" from the start of the installation's recording. */
@@ -62,7 +63,7 @@ export function othersMedian<T>(all: T[], self: T, f: (x: T) => number): number 
 
 /** The days a pack's rest trend may use: of the kind (raw rows or minute maxima, health.rs `spread_raw`) of its last
  *  day with rest values and only after the last day of the other kind, never across the change; each with at least
- *  TREND_ROWS_RAW or TREND_ROWS_MINUTE rest rows. */
+ *  TREND_ROWS_RAW or TREND_ROWS_MINUTE rest rows in TREND_HOURS_MIN clock hours. */
 export function trendDays(days: PackDay[]): PackDay[] {
   const spread = days.filter((d) => d.spread_p95 !== null);
   const rest = spread.filter((d) => d.rest_p95 !== null);
@@ -70,7 +71,7 @@ export function trendDays(days: PackDay[]): PackDay[] {
   const kind = rest[rest.length - 1].spread_raw;
   let i = spread.length;
   while (i > 0 && spread[i - 1].spread_raw === kind) i--;
-  const out = spread.slice(i).filter((d) => d.rest_p95 !== null && d.rest_rows >= (d.spread_raw ? TREND_ROWS_RAW : TREND_ROWS_MINUTE));
+  const out = spread.slice(i).filter((d) => d.rest_p95 !== null && d.rest_rows >= (d.spread_raw ? TREND_ROWS_RAW : TREND_ROWS_MINUTE) && d.rest_hours >= TREND_HOURS_MIN);
   return out.length >= TREND_DAYS_MIN ? out : [];
 }
 
@@ -114,7 +115,9 @@ function restDayOf(r: HealthReport): { day: number; raw: boolean } | undefined {
 }
 
 /** The days the warmest cell is compared over: every pack with temperatures has one that day and at least half the
- *  bank's median row count, so a short recording (one hour after load) is not set against a whole day. */
+ *  bank's median row count, so a short recording (one hour after load) is not set against a whole day, and the packs'
+ *  spans that day (first to last row) overlap by at least half the shortest, so a morning is not set against an
+ *  evening. */
 function tempDaysOf(r: HealthReport): Set<number> {
   const withTemp = r.packs.filter((p) => p.days.some((d) => d.temp_max !== null));
   const days = new Set(r.packs.flatMap((p) => p.days.map((d) => d.day)));
@@ -122,7 +125,11 @@ function tempDaysOf(r: HealthReport): Set<number> {
   for (const day of days) {
     const of = (p: HealthReport["packs"][number]) => p.days.find((d) => d.day === day);
     const med = median(r.packs.map((p) => of(p)?.rows ?? 0)) ?? 0;
-    if (withTemp.every((p) => { const d = of(p); return d !== undefined && d.temp_max !== null && d.rows >= med / 2; })) out.add(day);
+    const ds = withTemp.map(of);
+    if (!ds.every((d) => d !== undefined && d.temp_max !== null && d.rows >= med / 2)) continue;
+    const spans = ds.map((d) => d!.t_last - d!.t_first);
+    const overlap = Math.min(...ds.map((d) => d!.t_last)) - Math.max(...ds.map((d) => d!.t_first));
+    if (overlap >= Math.min(...spans) / 2) out.add(day);
   }
   return out;
 }
@@ -168,7 +175,8 @@ export function packRows(r: HealthReport): PackRow[] {
     const tempMed = othersMedian(tempRows, x, (y: Row) => y.tempCmp!);
     if (tempRows.includes(x) && tempMed !== undefined && x.tempCmp! >= tempMed + WARM_ABOVE_C)
       x.flags.push({ key: "warm", c: x.tempCmp!, median: tempMed });
-    if (x.tempMax !== null && (!tempRows.includes(x) || tempMed === undefined)) x.unrated.push("warm");
+    // also without any temperature: never „unauffällig“ for a comparison that could not be made
+    if (!tempRows.includes(x) || tempMed === undefined) x.unrated.push("warm");
     if (x.resets > 0) x.flags.push({ key: "counterCleared", count: x.resets });
   }
   return rows.map(({ resets: _r, gained: _g, span: _s, restCmp: _c, tempCmp: _t, ...x }) => x);

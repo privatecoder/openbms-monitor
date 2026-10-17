@@ -5,7 +5,7 @@ import { localDate, packRows, pairRows, periodRange, reportCsv, trend } from "./
 const DAY = 86_400_000;
 const day0 = new Date(2030, 0, 1).getTime();
 const pd = (i: number, o: Partial<PackDay> = {}): PackDay => ({
-  day: day0 + i * DAY, rows: 100, spread_p50: 20, spread_p95: 30, spread_raw: true, rest_rows: 200, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
+  day: day0 + i * DAY, rows: 100, t_first: day0 + i * DAY + 3_600_000, t_last: day0 + i * DAY + 82_800_000, spread_p50: 20, spread_p95: 30, spread_raw: true, rest_rows: 200, rest_hours: 10, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
 });
 const pairDay = (i: number, o: Partial<PairDay> = {}): PairDay => ({
   day: day0 + i * DAY, samples: 100, minutes: 60, share: 50, equalizing: 0, marked: false, ...o,
@@ -108,6 +108,20 @@ describe("health report", () => {
     expect(ok[0].flags).toEqual([{ key: "warm", c: 35, median: 25 }]);
   });
 
+  it("compares the warmest cell only where the packs' recordings overlap, and never calls a pack without temperatures unremarkable", () => {
+    const h = 3_600_000;
+    // pack 0 recorded 06–07 h at 25 °C, pack 1 17–18 h at 35 °C: no common time, no comparison
+    const apart = [pack(0, null, [pd(0, { t_first: day0 + 6 * h, t_last: day0 + 7 * h })]), pack(1, null, [pd(0, { temp_max: 35, t_first: day0 + 17 * h, t_last: day0 + 18 * h })])];
+    expect(packRows(report({ packs: apart })).map((x) => [x.flags, x.unrated])).toEqual([[[], ["warm"]], [[], ["warm"]]]);
+    // overlapping by half the shorter span: compared
+    const half = [pack(0, null, [pd(0, { t_first: day0 + 6 * h, t_last: day0 + 8 * h })]), pack(1, null, [pd(0, { temp_max: 35, t_first: day0 + 7 * h, t_last: day0 + 18 * h })])];
+    expect(packRows(report({ packs: half }))[1].flags).toEqual([{ key: "warm", c: 35, median: 25 }]);
+    // a pack without any temperature: not rated, not unremarkable
+    const none = [pack(0, null, [pd(0, { temp_max: null })]), pack(1, null, [pd(0)]), pack(2, null, [pd(0)])];
+    expect(packRows(report({ packs: none }))[0].unrated).toEqual(["warm"]);
+    expect(packRows(report({ packs: none }))[1].unrated).toEqual([]);
+  });
+
   it("compares the warmest cell only over the days every pack has temperatures", () => {
     // pack 0 has a hot day nobody else recorded; over the shared days it is as warm as the other
     const a = [pd(0, { temp_max: 33 }), pd(1), pd(2)], b = [pd(1), pd(2)];
@@ -121,6 +135,8 @@ describe("health report", () => {
     // two rest values a day are no trend; single answers need 180 rest rows a day, minute maxima 30
     expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 2 }))] }))[0].restTrend).toBeUndefined();
     expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 50 }))] }))[0].restTrend).toBeUndefined();
+    // enough rest rows, but all within one clock hour: a short excerpt, no trend
+    expect(packRows(report({ packs: [pack(0, null, rising({ rest_hours: 1 }))] }))[0].restTrend).toBeUndefined();
     expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 50, spread_raw: false }))] }))[0].restTrend).toMatchObject({ dir: "up" });
     // minute maxima before, raw rows after the change: only the raw days, never across
     const change = [pd(0, { rest_p95: 40, spread_raw: false }), pd(1, { rest_p95: 40, spread_raw: false }), pd(2), pd(3), pd(4)];
