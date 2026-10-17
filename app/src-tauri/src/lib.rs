@@ -51,6 +51,8 @@ struct AppState {
     /// „Abbrechen“ while connecting: the check, the pack search after it and the other-bus probe stop before the next
     /// address (`connect_cancel`); cleared by the next connect and by disconnect.
     connect_cancel: Arc<AtomicBool>,
+    /// Counted up by every disconnect: a connect that started before it publishes nothing (or takes it down again).
+    connect_epoch: std::sync::atomic::AtomicU64,
     /// The installation of the monitor connection (None: „Nur ansehen“ or not connected).
     link: Arc<Mutex<Link>>,
     /// Reserved packs and installations under a structural operation; see `control.rs`.
@@ -285,6 +287,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         p.store(false, Ordering::SeqCst);
     }
     state.connect_cancel.store(false, Ordering::SeqCst);
+    let epoch = state.connect_epoch.load(Ordering::SeqCst);
     let key = endpoint.key();
     let (ep, bus, control) = match endpoint {
         EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), maint_store::ControlEndpoint::Serial { path }),
@@ -314,6 +317,10 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         if state.flashing.load(Ordering::SeqCst) {
             return Err(FLASHING.into());
         }
+        // „Trennen“ meanwhile: this connection is not set up
+        if state.connect_epoch.load(Ordering::SeqCst) != epoch {
+            return Err(CONNECT_CANCELLED.into());
+        }
         *slot = Some(conn);
     }
     *state.bus.lock().map_err(|e| e.to_string())? = Some(bus);
@@ -335,6 +342,11 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         h.connected(id, if can { "can" } else { "pack" });
         // RS485-1/2: nothing is recorded until a serial read shows no pack of another installation (`bank.rs`)
         h.hold_for((!can).then_some("pending"));
+    }
+    // „Trennen“ came after the connection was set: it ends again
+    if state.connect_epoch.load(Ordering::SeqCst) != epoch {
+        stop_monitor(&state)?;
+        return Err(CONNECT_CANCELLED.into());
     }
     Ok(Connected { linked, answered, gen })
 }
@@ -418,6 +430,7 @@ async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<()
     let _pending = control::begin_disconnect(&state.ops);
     state.memory_cancel.store(true, Ordering::SeqCst);
     state.connect_cancel.store(false, Ordering::SeqCst);
+    state.connect_epoch.fetch_add(1, Ordering::SeqCst);
     let ops = state.ops.clone();
     // waiting blocks: off the async runtime
     tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, Duration::from_secs(20))).await.map_err(|e| e.to_string())?;
@@ -425,11 +438,13 @@ async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<()
 }
 
 #[tauri::command]
-async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>) -> Result<Vec<(u8, DeviceInfo)>, String> {
+async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>, connecting: Option<bool>) -> Result<Vec<(u8, DeviceInfo)>, String> {
     // without addresses every DIP address 0..=15 is asked; with a fixed pack count only those
     let addresses = addresses.unwrap_or_else(|| (0..=15).collect());
+    // only the search of a connect stops on its „Abbrechen“ (not e.g. the calibration's device query)
     let cancel = state.connect_cancel.clone();
-    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(addresses.into_iter().take_while(|_| !cancel.load(Ordering::SeqCst)))))
+    let connecting = connecting.unwrap_or(false);
+    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(addresses.into_iter().take_while(|_| !(connecting && cancel.load(Ordering::SeqCst))))))
 }
 
 /// Read the master's system values once and send them like a polling round would (CAN socket bus only).

@@ -281,7 +281,8 @@ const tauriApi = {
   connectCancel: () => invoke<void>("connect_cancel"),
   disconnect: (lost = false) => invoke<void>("disconnect", { lost }),
   /** without addresses: search 0..15; with addresses: only read their device info */
-  scan: (addresses?: number[]) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null }),
+  /** `connecting`: the search of a connect, stopped by its „Abbrechen“ */
+  scan: (addresses?: number[], connecting = false) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null, connecting }),
   startPolling: (addresses: number[], intervalMs: number) => invoke<void>("start_polling", { addresses, intervalMs }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
   systemOnce: () => invoke<void>("system_once"),
