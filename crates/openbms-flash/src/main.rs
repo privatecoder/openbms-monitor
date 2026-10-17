@@ -272,6 +272,9 @@ fn run(cli: Cli) -> Result<()> {
                 result.wfd_reply_times.median.as_secs_f64() * 1000.0,
                 result.wfd_reply_times.max.as_secs_f64() * 1000.0,
             );
+            if let Some(e) = &result.log_error {
+                eprintln!("{}: {e}", lang.pick("Log unvollständig (Schreibfehler nach dem Löschen)", "log incomplete (write error after the erase)"));
+            }
         }
     }
     Ok(())

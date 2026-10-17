@@ -261,6 +261,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
                 </>
               )}
               {done.pending && flashed && <p className="text-sm text-alarm">{t("fw.pendingAfter", { pack: flashed.address })}</p>}
+              {done.log_error && <p className="text-sm text-alarm">{t("fw.logError", { err: done.log_error })}</p>}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>

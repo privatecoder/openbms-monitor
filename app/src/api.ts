@@ -206,7 +206,7 @@ export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "fi
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
  *  pack may hang in its bootloader and its record stays. */
-export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean }
+export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null }
 /** The right-bank check of a flash: "none" without an installation. */
 export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none" }
 

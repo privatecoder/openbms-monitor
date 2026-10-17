@@ -37,6 +37,43 @@ pub struct FlashResult {
     pub blocks: usize,
     pub app_returned: bool,
     pub wfd_reply_times: ReplyTimes,
+    /// The first log write or flush error after the confirmed erase: the flash went on, the log is incomplete.
+    pub log_error: Option<String>,
+}
+
+/// The log of a flash: until the erase is confirmed a write or flush error ends the flash like any other (the board
+/// still has its application). From then on (`lenient`) such an error no longer stops the bootloader steps, which
+/// would leave the board without an application: the first one is kept for the result, the steps go on.
+struct FlashLog<'a, W: Write> {
+    inner: &'a mut W,
+    lenient: bool,
+    error: Option<std::io::Error>,
+}
+
+impl<W: Write> FlashLog<'_, W> {
+    fn keep(&mut self, e: std::io::Error) -> std::io::Result<()> {
+        if !self.lenient {
+            return Err(e);
+        }
+        self.error.get_or_insert(e);
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for FlashLog<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.inner.write(buf) {
+            Err(e) => self.keep(e).map(|_| buf.len()),
+            ok => ok,
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.inner.flush() {
+            Err(e) => self.keep(e),
+            ok => ok,
+        }
+    }
 }
 
 /// Stage of a running flash, reported to the caller (the app shows it as progress).
@@ -387,12 +424,13 @@ fn uncertain(stage: &str, error: Error) -> Error {
     ))
 }
 
-/// The bootloader part of a flash: R F L, W F E, the data blocks, W F G. Returns the W F D reply times.
-fn boot_phase(
+/// The bootloader part of a flash: R F L, W F E, the data blocks, W F G. Returns the W F D reply times. Once W F E
+/// is confirmed, log errors no longer stop it (`FlashLog`).
+fn boot_phase<W: Write>(
     link: &mut impl Link,
     address: u8,
     frames: &[Vec<u8>],
-    log_file: &mut impl Write,
+    log_file: &mut FlashLog<'_, W>,
     options: Options,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Vec<Duration>> {
@@ -405,6 +443,7 @@ fn boot_phase(
     )?;
     progress(Progress::Erase);
     boot_exchange(link, &frames[1], log_file, options).map_err(|e| uncertain("W F E", e))?;
+    log_file.lenient = true;
     let mut wfd_times = Vec::with_capacity(total);
     for (index, frame) in frames[2..frames.len() - 1].iter().enumerate() {
         progress(Progress::Block { index, total });
@@ -436,6 +475,24 @@ pub fn flash_with_progress(
     address: u8,
     image: &Image,
     log_file: &mut impl Write,
+    options: Options,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<FlashResult> {
+    let mut log = FlashLog { inner: log_file, lenient: false, error: None };
+    let r = flash_steps(link, address, image, &mut log, options, progress);
+    let log_error = log.error.map(|e| e.to_string());
+    match (r, log_error) {
+        (Ok(r), log_error) => Ok(FlashResult { log_error, ..r }),
+        (Err(Error::Unexpected(m)), Some(le)) => Err(Error::Unexpected(format!("{m}; log write failed: {le}"))),
+        (Err(e), _) => Err(e),
+    }
+}
+
+fn flash_steps<W: Write>(
+    link: &mut impl Link,
+    address: u8,
+    image: &Image,
+    log_file: &mut FlashLog<'_, W>,
     options: Options,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<FlashResult> {
@@ -476,6 +533,7 @@ pub fn flash_with_progress(
         blocks: total,
         app_returned: true,
         wfd_reply_times,
+        log_error: None,
     })
 }
 
