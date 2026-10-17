@@ -8,7 +8,7 @@ import { InfoIcon } from "../help";
 import { useSettings } from "../installData";
 import { useDark } from "../history/Chart";
 import { cn, fmt } from "../lib/utils";
-import { HEAT_CLIP_MV, MIN_ROWS, MIN_STEPS, bottomOf, heatRgb, hexRgb, reasonArgs, signedMv, topOf } from "../cellAnalysis";
+import { HEAT_CLIP_MV, MIN_ROWS, MIN_STEPS, bottomOf, heatRgb, hexRgb, reasonText, signedMv, topOf } from "../cellAnalysis";
 import { BalancerTimeline } from "./BalancerTimeline";
 
 const DAY = 86_400_000;
@@ -19,7 +19,7 @@ const SLICES = 240;
 let keptPeriod: Period = "7";
 
 const CLASS_TONE: Record<CellResult["class"], string> = {
-  ok: "text-muted", soc_offset: "text-discharge", capacity: "text-alarm", ambiguous: "text-discharge", resistance: "text-alarm", measurement: "text-alarm", none: "text-muted",
+  ok: "text-muted", rest_ok: "text-muted", soc_offset: "text-discharge", capacity: "text-alarm", ambiguous: "text-discharge", resistance: "text-alarm", measurement: "text-alarm", none: "text-muted",
 };
 
 /** The cell analysis of a pack (`cell_analysis`) over a period of its recording: a heatmap of each cell's deviation from
@@ -100,7 +100,6 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
               </thead>
               <tbody>
                 {data.cells.map((c) => {
-                  const [rk, rv] = reasonArgs(c.reason, lang);
                   return (
                     <tr key={c.cell} className="border-b border-line align-top last:border-b-0">
                       <td className="py-2 pr-4 font-medium">{c.cell}</td>
@@ -116,7 +115,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
                       <td className="py-2 pr-4 text-right">{fmt(c.order, 1)}</td>
                       <td className="py-2">
                         <span className={cn("font-medium", CLASS_TONE[c.class], c.class === "ok" && "text-ink")}>{t(`cell.class.${c.class}`)}</span>
-                        <span className="block text-xs text-muted">{t(rk, rv)}{c.jumps > 0 && c.reason.key !== "jumps" ? `; ${t("cell.jumpsNote", { count: c.jumps })}` : ""}</span>
+                        <span className="block text-xs text-muted">{reasonText(t, c.reason, lang)}{c.jumps > 0 && c.reason.key !== "jumps" ? `; ${t("cell.jumpsNote", { count: c.jumps })}` : ""}</span>
                       </td>
                     </tr>
                   );

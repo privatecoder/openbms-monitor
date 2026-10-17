@@ -77,7 +77,7 @@ describe("health report", () => {
 
   it("adds the balancing bits per day and the cell analysis per pack", () => {
     const cell = (n: number, o: Partial<CellResult> = {}): CellResult => ({ cell: n, rest: 0.5, rest_rows: 300, load: 1, top: 2, bottom: -2, top_corr: 1, bottom_corr: -1,
-      r_mohm: 0.5, r_pct: 100, order: 2.5, jumps: 0, class: "ok", reason: { key: "within" }, ...o });
+      r_mohm: 0.5, r_pct: 100, steps: 12, order: 2.5, jumps: 0, class: "ok", reason: { key: "within" }, ...o });
     const a: CellAnalysis = { from: day0, to: day0 + DAY, cell_count: 2, rows: 900, incomplete: 3, minute_rows: 0, balancer_active: 10, balancer_unknown: 2, balancer: true,
       rest_rows: 300, top_rows: 40, bottom_rows: 0, load_rows: 200, bms_left_out: 7, rest_no_status: 0, steps: 12, r_median: 0.5, charges: 1, heat: [],
       cells: [cell(1), cell(2, { class: "capacity", reason: { key: "capacity", top: 31.25, bottom: -20 } })] };

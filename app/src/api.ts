@@ -217,9 +217,9 @@ export interface BalancerSlice { from: number; to: number; active: number; inact
 /** `balancer_timeline` (balancer.rs): measured is false while no device is read. */
 export interface BalancerTimeline { from: number; to: number; slices: BalancerSlice[]; total: BalancerSlice; devices: string[]; first_assigned: number | null; measured: boolean }
 /** `cell_analysis` (cell_analysis.rs): what the recorded raw rows say about each cell of a pack. */
-export type CellClass = "ok" | "soc_offset" | "capacity" | "ambiguous" | "resistance" | "measurement" | "none";
+export type CellClass = "ok" | "rest_ok" | "soc_offset" | "capacity" | "ambiguous" | "resistance" | "measurement" | "none";
 export type CellReason =
-  | { key: "within" } | { key: "within_no_r"; steps: number } | { key: "rest"; rest: number }
+  | { key: "within" } | { key: "partial"; top: boolean; bottom: boolean; r: boolean; steps: number } | { key: "rest_only"; rest: number } | { key: "rest"; rest: number }
   | { key: "same_sign"; top: number; bottom: number } | { key: "capacity"; top: number; bottom: number }
   | { key: "ambiguous"; top: number; bottom: number; steps: number } | { key: "resistance"; pct: number; steps: number }
   | { key: "offset"; rest: number; load: number } | { key: "jumps"; count: number } | { key: "no_rest"; rows: number }
@@ -229,7 +229,7 @@ export type CellReason =
  *  the cell's resistance (null without it); resistance in mΩ and % of the pack median; mean place passing 3.45 V. */
 export interface CellResult {
   cell: number; rest: number | null; rest_rows: number; load: number | null; top: number | null; bottom: number | null;
-  top_corr: number | null; bottom_corr: number | null; r_mohm: number | null; r_pct: number | null; order: number | null; jumps: number;
+  top_corr: number | null; bottom_corr: number | null; r_mohm: number | null; r_pct: number | null; steps: number; order: number | null; jumps: number;
   class: CellClass; reason: CellReason;
 }
 export interface CellAnalysis {
@@ -787,7 +787,7 @@ function demoBalancer(from: number, to: number, slices: number): BalancerTimelin
 function demoCells(pack: number, from: number, to: number, slices: number): CellAnalysis {
   const n = 16, hour = (t: number) => ((t / 3_600_000) % 24 + 24) % 24;
   const base = (k: number): Omit<CellResult, "cell"> => ({ rest: (k % 3) - 1, rest_rows: 4_000, load: (k % 3) - 1, top: 2 - (k % 4), bottom: (k % 4) - 2,
-    top_corr: 2 - (k % 4), bottom_corr: (k % 4) - 2, r_mohm: 0.42 + (k % 3) * 0.01, r_pct: 100 + ((k % 3) - 1) * 2, order: 4 + (k % 9), jumps: 0, class: "ok", reason: { key: "within" } });
+    top_corr: 2 - (k % 4), bottom_corr: (k % 4) - 2, r_mohm: 0.42 + (k % 3) * 0.01, r_pct: 100 + ((k % 3) - 1) * 2, steps: 212, order: 4 + (k % 9), jumps: 0, class: "ok", reason: { key: "within" } });
   const odd: Record<number, Partial<CellResult>> = pack === 3 ? {
     5: { top: 38, bottom: -27, top_corr: 36, bottom_corr: -26, order: 1.2, class: "capacity", reason: { key: "capacity", top: 36, bottom: -26 } },
     9: { r_mohm: 0.71, r_pct: 168, top: 21, bottom: -18, top_corr: 1, bottom_corr: -2, class: "resistance", reason: { key: "resistance", pct: 168, steps: 212 } },

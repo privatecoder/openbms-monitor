@@ -141,7 +141,7 @@ export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> =
       load_rows: a.load_rows, steps: a.steps, charges: a.charges, r_mohm: a.r_median }));
     for (const c of a.cells) out.push(line({ kind: "cell", pack: p.pack, cell: c.cell, class: c.class, reason: reasonCsv(c.reason), rest_rows: c.rest_rows,
       rest_mv: c.rest, load_mv: c.load, top_mv: c.top, top_corr_mv: c.top_corr, bottom_mv: c.bottom, bottom_corr_mv: c.bottom_corr,
-      r_mohm: c.r_mohm, r_pct: c.r_pct, order: c.order, jumps: c.jumps }));
+      r_mohm: c.r_mohm, r_pct: c.r_pct, steps: c.steps, order: c.order, jumps: c.jumps }));
   }
   for (const p of r.pairs) for (const d of p.days) out.push(line({ kind: "pair", pack: p.plus, partner: p.minus, date: localDate(d.day), samples: d.samples,
     share_pct: d.share, equalizing: d.equalizing, judged: d.judged, judged_minutes: d.judged_minutes, judged_share_pct: d.judged_share, marked: d.marked ? 1 : 0 }));

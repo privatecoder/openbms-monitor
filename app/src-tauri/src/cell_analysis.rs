@@ -8,12 +8,15 @@
 //! assigned external balancer is computed active (or not decidable) are left out of rest, top, bottom and load; a
 //! cell's rest values while the BMS reports its balancing bit are left out too.
 //!
-//! Two streaming passes, nothing per row is kept: the first finds the usual cell count, the poll periods and the load
-//! steps (resistance), the second the deviations (corrected by the resistance) into per-cell histograms, the heatmap,
-//! jumps and the order at the top. Medians come from the histograms (half-mV bins), so a month of answers stays out of
-//! memory.
+//! Load steps and jumps are formed only between rows free of external balancer activity (computed active or not
+//! decidable) and, per cell, free of the BMS's balancing bit, so balancing never reads as resistance or a contact fault.
+//!
+//! Three streaming passes, nothing per row is kept: the first (without the cell blobs) finds the poll periods and the
+//! usual cell count, the second the load steps (resistance), the third the deviations (corrected by the resistance),
+//! the heatmap, jumps and the order at the top. Medians come from fixed-bin histograms (half mV, 0.005 mΩ), so memory
+//! is bounded by the cell count, not by the length of the recording.
 
-use crate::balancer::{self, Activity, Devices, Periods, Row, Tracker};
+use crate::balancer::{self, Activity, Devices, Ext, Periods, Row};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -48,8 +51,11 @@ const JUMP_MV: i64 = 20;
 const JUMP_STEADY_MA: i64 = 5_000;
 /// jumps from which a cell is auffällig
 pub const JUMP_MIN: u32 = 3;
-/// heatmap clip is done by the UI; the histograms keep deviations within ± this (mV), beyond counts at the edge
+/// the deviation histograms keep ± this (mV) in half-mV bins, beyond counts at the edge (the heatmap clip is the UI's)
 const HIST_MV: i64 = 1_000;
+/// the resistance histograms: bins of this (mΩ) within ± R_SPAN bins (± 10 mΩ), beyond counts at the edge
+const R_BIN_MOHM: f64 = 0.005;
+const R_SPAN: i64 = 2_000;
 
 // ---------------------------------------------------------------------------------------------
 // classification
@@ -60,6 +66,8 @@ const HIST_MV: i64 = 1_000;
 pub enum Class {
     /// passend
     Ok,
+    /// Ruhewerte passend: only the rest values speak, nothing at top or bottom and no resistance
+    RestOk,
     /// Ladestand-Versatz
     SocOffset,
     /// Kapazität vermutlich kleiner
@@ -79,10 +87,12 @@ pub enum Class {
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(tag = "key", rename_all = "snake_case")]
 pub enum Reason {
-    /// everything available within the limits
+    /// everything within the limits: rest, resistance, top and bottom
     Within,
-    /// within the limits, but the resistance without a statement (too few load steps)
-    WithinNoR { steps: u32 },
+    /// within the limits for what is there; `top`/`bottom`/`r`: whether that figure is there (steps: the cell's)
+    Partial { top: bool, bottom: bool, r: bool, steps: u32 },
+    /// Ruhewerte passend: rest within the limits, no top, bottom or resistance to judge the rest by
+    RestOnly { rest: f64 },
     /// at rest off the median, nothing at top or bottom against it: SOC offset in the flat region (a measurement offset
     /// is told apart only with a charge over 3.40 V)
     Rest { rest: f64 },
@@ -166,38 +176,42 @@ pub fn classify(c: &Input) -> (Class, Reason) {
     if rest.abs() > REST_OK_MV {
         return (Class::SocOffset, Reason::Rest { rest });
     }
-    match c.r_rel {
-        Some(r) if (r - 1.0).abs() > R_OK => (Class::NoStatement, Reason::RSlight { pct: r * 100.0 }),
-        Some(_) => (Class::Ok, Reason::Within),
-        None => (Class::Ok, Reason::WithinNoR { steps: c.steps }),
+    match (c.r_rel, top.is_some(), bottom.is_some()) {
+        (Some(r), _, _) if (r - 1.0).abs() > R_OK => (Class::NoStatement, Reason::RSlight { pct: r * 100.0 }),
+        (Some(_), true, true) => (Class::Ok, Reason::Within),
+        (None, false, false) => (Class::RestOk, Reason::RestOnly { rest }),
+        (r, t, b) => (Class::Ok, Reason::Partial { top: t, bottom: b, r: r.is_some(), steps: c.steps }),
     }
 }
 
 // ---------------------------------------------------------------------------------------------
 // aggregation
 
-/// Deviations in half-mV bins within ± HIST_MV; the median without keeping the values.
-#[derive(Default, Clone)]
+/// Values in fixed integer bins within ± `span`; the median without keeping the values. Memory: 2 × span + 1 counters,
+/// allocated on the first value.
+#[derive(Clone)]
 struct Hist {
+    span: i64,
     bins: Vec<u32>,
     n: u32,
 }
 
 impl Hist {
-    const SPAN: i64 = 2 * HIST_MV;
+    fn new(span: i64) -> Hist {
+        Hist { span, bins: vec![], n: 0 }
+    }
 
-    /// `half`: deviation in half mV
-    fn add(&mut self, half: i64) {
+    fn add(&mut self, v: i64) {
         if self.bins.is_empty() {
-            self.bins = vec![0; (2 * Self::SPAN + 1) as usize];
+            self.bins = vec![0; (2 * self.span + 1) as usize];
         }
-        self.bins[(half.clamp(-Self::SPAN, Self::SPAN) + Self::SPAN) as usize] += 1;
+        self.bins[(v.clamp(-self.span, self.span) + self.span) as usize] += 1;
         self.n += 1;
     }
 
-    /// mV, None below MIN_ROWS
-    fn median(&self) -> Option<f64> {
-        if self.n < MIN_ROWS {
+    /// The median in bin units, None below `min` values.
+    fn median(&self, min: u32) -> Option<f64> {
+        if self.n < min.max(1) {
             return None;
         }
         let (lo, hi) = ((self.n - 1) / 2, self.n / 2);
@@ -206,7 +220,7 @@ impl Hist {
             if c == 0 {
                 continue;
             }
-            let v = i as i64 - Self::SPAN;
+            let v = i as i64 - self.span;
             if a.is_none() && seen + c > lo {
                 a = Some(v);
             }
@@ -216,8 +230,18 @@ impl Hist {
             }
             seen += c;
         }
-        Some((a? + b?) as f64 / 4.0)
+        Some((a? + b?) as f64 / 2.0)
     }
+}
+
+/// Deviations in half mV.
+fn dev_hist() -> Hist {
+    Hist::new(2 * HIST_MV)
+}
+
+/// mV from a deviation histogram, None below MIN_ROWS.
+fn dev_median(h: &Hist) -> Option<f64> {
+    h.median(MIN_ROWS).map(|v| v / 2.0)
 }
 
 /// Twice the row's median cell (mV), so an even count stays an integer.
@@ -237,11 +261,21 @@ fn median_f(v: &mut [f64]) -> Option<f64> {
     Some(if v.len().is_multiple_of(2) { (v[m - 1] + v[m]) / 2.0 } else { v[m] })
 }
 
-/// A raw row: one answer, not on a minute boundary where compaction puts its rows, without ranges that differ or
-/// balancing counts of more rows (an imported minute row keeps n = 1). Unlike `Row::single` a row without cells (no
-/// spread) or from before the range columns is raw too: it is counted, not taken for a minute.
+/// A raw row: one answer (n = 1, kept from an export's `samples` on import), without ranges that differ or balancing
+/// counts of more rows. The time on a minute boundary decides nothing: an answer polled on the full minute is raw. A row
+/// without cells (no spread) or from before the range columns is raw too: it is counted, not taken for a minute.
 fn raw(r: &Row) -> bool {
-    r.n == 1 && r.t % MINUTE_MS != 0 && r.bal_n.is_none_or(|n| n <= 1) && r.spread_lo == r.spread_hi && r.i_lo == r.i_hi
+    r.n == 1 && r.bal_n.is_none_or(|n| n <= 1) && r.spread_lo == r.spread_hi && r.i_lo == r.i_hi
+}
+
+/// Whether the BMS reported cell `k` (0-based) balancing in the row.
+fn bit(balancing: Option<i64>, k: usize) -> bool {
+    balancing.is_some_and(|b| k < 63 && b >> k & 1 == 1)
+}
+
+/// Whether the row is free of external balancer activity (none assigned, or computed inactive).
+fn free(ext: Option<Activity>) -> bool {
+    !matches!(ext, Some(Activity::Active | Activity::Unknown))
 }
 
 /// One pack row with its cells as stored (mV); None without cells.
@@ -265,18 +299,23 @@ fn each_line(db: &Connection, site: &str, pack: u8, from: i64, to: i64, mut f: i
     Ok(())
 }
 
+/// The rows of the span without the cell blobs, with their cell count (length of the blob), one at a time.
+fn each_head(db: &Connection, site: &str, pack: u8, from: i64, to: i64, mut f: impl FnMut(Row, usize)) -> Result<(), String> {
+    let sql = format!(
+        "SELECT {}, IFNULL(length(cells), 0) / 2 FROM pack WHERE site = (SELECT id FROM sites WHERE site = ?1) AND pack = ?2 AND t >= ?3 AND t <= ?4 ORDER BY t",
+        balancer::ROW_COLS
+    );
+    let mut st = db.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut rows = st.query(params![site, pack, from, to]).map_err(|e| e.to_string())?;
+    while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+        f(balancer::read_row(r).map_err(|e| e.to_string())?, r.get::<_, i64>(13).map_err(|e| e.to_string())? as usize);
+    }
+    Ok(())
+}
+
 /// The longest time (ms) a row still pairs with the one before in its session.
 fn gap_of(periods: &HashMap<i64, i64>, r: &Row) -> i64 {
     balancer::GAP_PERIODS * if r.single() { periods.get(&r.session).copied().unwrap_or(balancer::DEFAULT_PERIOD_MS) } else { MINUTE_MS }
-}
-
-/// Load-step candidates of the first pass: kept compact (ΔU per cell as i16), checked against the poll period once
-/// it is known.
-#[derive(Default)]
-struct Steps {
-    /// session, gap (ms), ΔI (mA), cell count
-    head: Vec<(i64, i64, i64, usize)>,
-    du: Vec<i16>,
 }
 
 /// One cell's result.
@@ -295,6 +334,8 @@ pub struct CellResult {
     pub bottom_corr: Option<f64>,
     /// ΔU/ΔI median over the load steps (mΩ) and as % of the pack median; None with fewer than MIN_STEPS steps
     pub r_mohm: Option<f64>,
+    /// load steps of this cell (the pack's minus those with its BMS bit at either end)
+    pub steps: u32,
     pub r_pct: Option<f64>,
     /// mean place when passing 3.45 V (1 = first) over `Analysis::charges` charges
     pub order: Option<f64>,
@@ -328,7 +369,7 @@ pub struct Analysis {
     /// rest values of a cell left out because the BMS balanced it; rest rows without a status (bits unknown)
     pub bms_left_out: u64,
     pub rest_no_status: u64,
-    /// load steps used for the resistance and the pack median (mΩ)
+    /// load steps free of external balancer activity, and the pack median of the cells' resistance (mΩ)
     pub steps: u32,
     pub r_median: Option<f64>,
     /// charges that passed 3.45 V (for the order)
@@ -362,110 +403,115 @@ fn finish_charge(c: Option<(Vec<Option<i64>>, bool)>, order_sum: &mut [u64], ord
 pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, devices: &Devices, slices: usize) -> Result<Analysis, String> {
     let to = to.max(from + 1);
     let mut out = Analysis { from, to, ..Default::default() };
+    let start = from - balancer::WARMUP_MS;
 
-    // pass 1: poll periods, the usual cell count, load-step candidates
+    // pass 1, without the blobs: poll periods and the usual cell count
     let mut periods = Periods::default();
     let mut counts: HashMap<usize, u64> = HashMap::new();
-    let mut steps = Steps::default();
-    let mut prev: Option<Line> = None;
-    each_line(db, site, pack, from - balancer::WARMUP_MS, to, |l| {
-        periods.add(&l.row);
-        if l.row.t >= from && raw(&l.row) {
-            if let Some(c) = &l.cells {
-                *counts.entry(c.len()).or_default() += 1;
-            }
-            if let (Some(p), Some(c), Some(i)) = (prev.as_ref().filter(|p| raw(&p.row) && p.row.session == l.row.session), &l.cells, l.row.current) {
-                if let (Some(pc), Some(pi)) = (p.cells.as_ref().filter(|pc| pc.len() == c.len()), p.row.current) {
-                    if (i - pi).abs() >= STEP_MA {
-                        steps.head.push((l.row.session, l.row.t - p.row.t, i - pi, c.len()));
-                        steps.du.extend(c.iter().zip(pc).map(|(a, b)| (a - b).clamp(i16::MIN as i64, i16::MAX as i64) as i16));
-                    }
-                }
-            }
+    each_head(db, site, pack, start, to, |row, count| {
+        periods.add(&row);
+        if row.t >= from && raw(&row) && count > 0 {
+            *counts.entry(count).or_default() += 1;
         }
-        prev = Some(l);
     })?;
     let periods = periods.finish();
     // the most frequent count; a tie goes to the larger
     let Some((&n, _)) = counts.iter().max_by_key(|(&k, &v)| (v, k)) else {
         // nothing to analyse; still count what is there
-        each_line(db, site, pack, from, to, |l| if raw(&l.row) { out.incomplete += 1 } else { out.minute_rows += 1 })?;
+        each_head(db, site, pack, from, to, |row, _| if raw(&row) { out.incomplete += 1 } else { out.minute_rows += 1 })?;
         return Ok(out);
     };
     out.cell_count = n;
 
-    // resistance per cell: ΔU/ΔI (mV/A = mΩ) over the steps within the poll period and with the usual count
-    let mut r_cells: Vec<Vec<f64>> = vec![vec![]; n];
-    let mut at = 0;
-    for &(session, gap, di, count) in &steps.head {
-        let du = &steps.du[at..at + count];
-        at += count;
-        if count != n || gap > balancer::GAP_PERIODS * periods.get(&session).copied().unwrap_or(balancer::DEFAULT_PERIOD_MS) {
-            continue;
+    // pass 2: load steps between consecutive raw rows of a session with the usual cells, both free of external
+    // balancer activity; a cell's step is left out when its BMS bit is set at either end. ΔU/ΔI (mV/A = mΩ) per cell
+    // into fixed bins.
+    let mut r_hist = vec![Hist::new(R_SPAN); n];
+    {
+        let mut ext = Ext::default();
+        // the row before (raw rows with the usual cells only; anything else breaks the pair)
+        struct Before {
+            t: i64,
+            session: i64,
+            current: Option<i64>,
+            cells: Vec<i64>,
+            balancing: Option<i64>,
+            /// free of external activity
+            free: bool,
         }
-        for (k, &d) in du.iter().enumerate() {
-            r_cells[k].push(d as f64 * 1000.0 / di as f64);
-        }
+        let mut before: Option<Before> = None;
+        each_line(db, site, pack, start, to, |l| {
+            let row = &l.row;
+            let gap = gap_of(&periods, row);
+            let act = ext.step(devices, pack, row, gap).map(|(_, a)| a);
+            let Some(cells) = l.cells.filter(|c| raw(row) && c.len() == n) else {
+                before = None;
+                return;
+            };
+            if let (Some(b), Some(i)) = (&before, row.current) {
+                if let Some(bi) = b.current.filter(|bi| row.t >= from && b.session == row.session && row.t - b.t <= gap && (i - bi).abs() >= STEP_MA && b.free && free(act)) {
+                    out.steps += 1;
+                    let di = (i - bi) as f64 / 1000.0;
+                    for (k, h) in r_hist.iter_mut().enumerate() {
+                        if !bit(b.balancing, k) && !bit(row.balancing, k) {
+                            h.add(((cells[k] - b.cells[k]) as f64 / di / R_BIN_MOHM).round() as i64);
+                        }
+                    }
+                }
+            }
+            before = Some(Before { t: row.t, session: row.session, current: row.current, cells, balancing: row.balancing, free: free(act) });
+        })?;
     }
-    drop(steps);
-    out.steps = r_cells.first().map_or(0, |v| v.len() as u32);
-    let r: Vec<Option<f64>> = if out.steps >= MIN_STEPS { r_cells.iter_mut().map(|v| median_f(v)).collect() } else { vec![None; n] };
-    drop(r_cells);
+    let r: Vec<Option<f64>> = r_hist.iter().map(|h| h.median(MIN_STEPS).map(|v| v * R_BIN_MOHM)).collect();
+    let cell_steps: Vec<u32> = r_hist.iter().map(|h| h.n).collect();
+    drop(r_hist);
     out.r_median = median_f(&mut r.iter().flatten().copied().collect::<Vec<_>>());
     // R_cell − R_median per cell (mΩ), for the correction of top and bottom
     let dr: Vec<Option<f64>> = r.iter().map(|x| x.zip(out.r_median).map(|(a, m)| a - m)).collect();
 
-    // pass 2: deviations, heatmap, jumps, order at the top
-    let (mut rest, mut load, mut top, mut bottom) = (vec![Hist::default(); n], vec![Hist::default(); n], vec![Hist::default(); n], vec![Hist::default(); n]);
-    let (mut top_c, mut bottom_c) = (vec![Hist::default(); n], vec![Hist::default(); n]);
+    // pass 3: deviations, heatmap, jumps, order at the top
+    let hists = || vec![dev_hist(); n];
+    let (mut rest, mut load, mut top, mut bottom, mut top_c, mut bottom_c) = (hists(), hists(), hists(), hists(), hists(), hists());
     let mut jumps = vec![0u32; n];
     let (mut order_sum, mut order_n) = (vec![0u64; n], 0u32);
     let slices = slices.min(2000);
     let width = (to - from) as f64 / slices.max(1) as f64;
     let mut heat = if slices > 0 { vec![vec![(0f64, 0u32); slices]; n] } else { vec![] };
-    let mut tracker = Tracker::default();
-    // the row before in time (any), with its deviations if it had the usual cells
-    let mut before: Option<(Row, Option<Vec<i64>>)> = None;
+    let mut ext = Ext::default();
+    // the row before in time (any): the row, its deviations if it had the usual cells, whether free of external activity
+    let mut before: Option<(Row, Option<Vec<i64>>, bool)> = None;
     // one charge towards the top: armed once the highest cell is below TOP_MV; first time each cell passed ORDER_MV;
     // spoiled if a balancer row fell into it
     let mut charge: Option<(Vec<Option<i64>>, bool)> = None;
-    each_line(db, site, pack, from - balancer::WARMUP_MS, to, |l| {
+    each_line(db, site, pack, start, to, |l| {
         let row = &l.row;
         let gap = gap_of(&periods, row);
-        let ext = match devices.at(pack, row.t) {
-            Some((_, rule)) => {
-                if row.t >= from {
-                    out.balancer = true;
-                }
-                Some(tracker.step(&rule, row, gap))
-            }
-            None => {
-                tracker = Tracker::default();
-                None
-            }
-        };
-        let paired = before.as_ref().filter(|(b, _)| b.session == row.session && row.t - b.t <= gap && raw(b));
-        let prev_i = paired.and_then(|(b, _)| b.current);
-        let prev_dev = paired.and_then(|(_, d)| d.clone());
+        let ext_now = ext.step(devices, pack, row, gap).map(|(_, a)| a);
+        if ext_now.is_some() && row.t >= from {
+            out.balancer = true;
+        }
+        let paired = before.as_ref().filter(|(b, _, _)| b.session == row.session && row.t - b.t <= gap && raw(b));
+        let prev_i = paired.and_then(|(b, _, _)| b.current);
+        let prev = paired.and_then(|(b, d, f)| d.clone().map(|d| (d, b.balancing, *f)));
         if !raw(row) {
             if row.t >= from {
                 out.minute_rows += 1;
             }
             finish_charge(charge.take(), &mut order_sum, &mut order_n);
-            before = Some((row.clone(), None));
+            before = Some((row.clone(), None, free(ext_now)));
             return;
         }
         let Some(cells) = l.cells.as_ref().filter(|c| c.len() == n) else {
             if row.t >= from {
                 out.incomplete += 1;
             }
-            before = Some((row.clone(), None));
+            before = Some((row.clone(), None, free(ext_now)));
             return;
         };
         let m2 = median2(cells);
         let dev: Vec<i64> = cells.iter().map(|c| 2 * c - m2).collect();
         if row.t < from {
-            before = Some((row.clone(), Some(dev)));
+            before = Some((row.clone(), Some(dev), free(ext_now)));
             return;
         }
         out.rows += 1;
@@ -476,17 +522,12 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 h[k].1 += 1;
             }
         }
-        let left_out = match ext {
-            Some(Activity::Active) => {
-                out.balancer_active += 1;
-                true
-            }
-            Some(Activity::Unknown) => {
-                out.balancer_unknown += 1;
-                true
-            }
-            _ => false,
-        };
+        match ext_now {
+            Some(Activity::Active) => out.balancer_active += 1,
+            Some(Activity::Unknown) => out.balancer_unknown += 1,
+            _ => {}
+        }
+        let left_out = !free(ext_now);
         let (hi, lo) = (*cells.iter().max().unwrap(), *cells.iter().min().unwrap());
         // a new charge towards the top once the highest cell is below it; a session change or gap ends one
         if paired.is_none() || hi < TOP_MV {
@@ -504,7 +545,7 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                         out.rest_no_status += 1;
                     }
                     for (k, &d) in dev.iter().enumerate() {
-                        if row.balancing.is_some_and(|b| k < 63 && b >> k & 1 == 1) {
+                        if bit(row.balancing, k) {
                             out.bms_left_out += 1;
                         } else {
                             rest[k].add(d);
@@ -539,17 +580,18 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 }
             }
             // jumps: a cell's deviation moves by JUMP_MV with a steady current, and no other cell does except a direct
-            // neighbour (a sense wire is shared by two cells)
-            if let (Some(pd), Some(pi)) = (&prev_dev, prev_i) {
-                if (ma - pi).abs() < JUMP_STEADY_MA {
+            // neighbour (a sense wire is shared by two cells); both rows free of external activity and of the cell's
+            // BMS bit, so balancing switching on or off is no jump
+            if let (Some((pd, pb, pfree)), Some(pi)) = (&prev, prev_i) {
+                if (ma - pi).abs() < JUMP_STEADY_MA && *pfree && !left_out {
                     let big: Vec<usize> = dev.iter().zip(pd).enumerate().filter(|(_, (a, b))| (*a - *b).abs() >= 2 * JUMP_MV).map(|(k, _)| k).collect();
                     if big.len() == 1 || (big.len() == 2 && big[1] == big[0] + 1) {
-                        big.iter().for_each(|&k| jumps[k] += 1);
+                        big.iter().filter(|&&k| !bit(*pb, k) && !bit(row.balancing, k)).for_each(|&k| jumps[k] += 1);
                     }
                 }
             }
         }
-        before = Some((row.clone(), Some(dev)));
+        before = Some((row.clone(), Some(dev), !left_out));
     })?;
     finish_charge(charge.take(), &mut order_sum, &mut order_n);
     out.charges = order_n;
@@ -558,15 +600,15 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
         .map(|k| {
             let r_rel = r[k].zip(out.r_median).filter(|(_, m)| *m > 0.0).map(|(a, m)| a / m);
             let input = Input {
-                rest: rest[k].median(),
+                rest: dev_median(&rest[k]),
                 rest_rows: rest[k].n,
-                load: load[k].median(),
-                top: top[k].median(),
-                bottom: bottom[k].median(),
-                top_corr: r_rel.and(top_c[k].median()),
-                bottom_corr: r_rel.and(bottom_c[k].median()),
+                load: dev_median(&load[k]),
+                top: dev_median(&top[k]),
+                bottom: dev_median(&bottom[k]),
+                top_corr: r_rel.and(dev_median(&top_c[k])),
+                bottom_corr: r_rel.and(dev_median(&bottom_c[k])),
                 r_rel,
-                steps: out.steps,
+                steps: cell_steps[k],
                 jumps: jumps[k],
             };
             let (class, reason) = classify(&input);
@@ -580,6 +622,7 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 top_corr: input.top_corr,
                 bottom_corr: input.bottom_corr,
                 r_mohm: r[k],
+                steps: cell_steps[k],
                 r_pct: r_rel.map(|x| x * 100.0),
                 order: (order_n > 0).then(|| order_sum[k] as f64 / order_n as f64),
                 jumps: jumps[k],
@@ -606,7 +649,9 @@ mod tests {
         use Class::*;
         let cases: Vec<(&str, Input, Class, Reason)> = vec![
             ("matching", input(1.0, 1.5, Some(4.0), Some(-3.0), Some(1.05)), Ok, Reason::Within),
-            ("matching, resistance unknown", input(1.0, 1.5, Some(4.0), Some(-3.0), None), Ok, Reason::WithinNoR { steps: 4 }),
+            ("matching, resistance unknown", input(1.0, 1.5, Some(4.0), Some(-3.0), None), Ok, Reason::Partial { top: true, bottom: true, r: false, steps: 4 }),
+            ("matching, no bottom", input(1.0, 1.5, Some(4.0), None, Some(1.0)), Ok, Reason::Partial { top: true, bottom: false, r: true, steps: 40 }),
+            ("rest only: never plain matching", input(1.0, 1.5, None, None, None), RestOk, Reason::RestOnly { rest: 1.0 }),
             ("SOC offset: high at both ends", input(3.0, 3.0, Some(30.0), Some(20.0), Some(1.0)), SocOffset, Reason::SameSign { top: 30.0, bottom: 20.0 }),
             ("SOC offset at rest only", input(-8.0, -9.0, None, None, Some(1.0)), SocOffset, Reason::Rest { rest: -8.0 }),
             ("smaller capacity, corrected", input(0.0, 0.0, Some(40.0), Some(-30.0), Some(1.1)), Capacity, Reason::Capacity { top: 40.0, bottom: -30.0 }),
@@ -637,18 +682,23 @@ mod tests {
 
     #[test]
     fn histogram_median_in_half_millivolts() {
-        let mut h = Hist::default();
+        let mut h = dev_hist();
         for v in [-3, 1, 1, 7] {
             for _ in 0..10 {
                 h.add(v);
             }
         }
-        assert_eq!(h.median(), Some(0.5));
+        assert_eq!(dev_median(&h), Some(0.5));
         h.add(1);
-        assert_eq!(h.median(), Some(0.5));
-        let mut few = Hist::default();
+        assert_eq!(dev_median(&h), Some(0.5));
+        let mut few = dev_hist();
         few.add(4);
-        assert_eq!(few.median(), None, "fewer than MIN_ROWS rows");
+        assert_eq!(dev_median(&few), None, "fewer than MIN_ROWS rows");
+        let mut r = Hist::new(R_SPAN);
+        (0..9).for_each(|_| r.add(100));
+        assert_eq!(r.median(MIN_STEPS), None, "fewer than MIN_STEPS steps");
+        r.add(9_999);
+        assert_eq!(r.median(MIN_STEPS).map(|v| v * R_BIN_MOHM), Some(0.5), "beyond the span counts at the edge");
         assert_eq!(median2(&[3300, 3310, 3320, 3400]), 6630);
         assert_eq!(places(&[Some(5), None, Some(3), Some(5)]), Some(vec![2, 4, 1, 2]));
     }
@@ -665,6 +715,7 @@ mod tests {
     struct Rec {
         c: Connection,
         t: i64,
+        pack: u8,
     }
 
     impl Rec {
@@ -674,9 +725,9 @@ mod tests {
             self.c
                 .execute(
                     "INSERT INTO pack(site, pack, t, session, n, current, cell_max, cell_min, cells, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n)
-                     VALUES(1, 4, ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?7, ?3, ?3, ?8, ?9, ?10)",
+                     VALUES(1, ?11, ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?7, ?3, ?3, ?8, ?9, ?10)",
                     params![self.t, session, ma, hi, lo, cells.map(|c| c.iter().flat_map(|&v| (v as u16).to_le_bytes()).collect::<Vec<u8>>()), spread, balancing,
-                        balancing.map(|b| i64::from(b != 0)), balancing.map(|_| 1)],
+                        balancing.map(|b| i64::from(b != 0)), balancing.map(|_| 1), self.pack],
                 )
                 .unwrap();
             self.t += STEP;
@@ -705,7 +756,7 @@ mod tests {
         crate::history::History::default().open(&path).unwrap();
         let c = Connection::open(&path).unwrap();
         c.execute_batch("INSERT INTO sites(id, site) VALUES(1, 'a'); INSERT INTO sessions(id, site, bus, source, first, last) VALUES(1, 'a', 'can', '', 0, 1), (2, 'a', 'can', '', 0, 1);").unwrap();
-        let mut rec = Rec { c, t: T0 };
+        let mut rec = Rec { c, t: T0, pack: 4 };
         let flat = [(3, 3), (4, 40)];
         // rest: 60 rows, cell 8 jumping 30 mV in ten of them
         for i in 0..60 {
@@ -795,4 +846,75 @@ mod tests {
         assert_eq!((short.cells[0].class, short.cells[0].reason), (Class::NoStatement, Reason::NoRest { rows: 20 }));
         assert!(analyse(&db, "nobody", 4, T0, end, &Devices::default(), 0).unwrap().cells.is_empty());
     }
+
+    fn fresh(name: &str) -> (std::path::PathBuf, Connection) {
+        let dir = std::env::temp_dir().join(format!("openbms-cells-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("history.sqlite");
+        crate::history::History::default().open(&path).unwrap();
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("INSERT INTO sites(id, site) VALUES(1, 'a'); INSERT INTO sessions(id, site, bus, source, first, last) VALUES(1, 'a', 'can', '', 0, 1);").unwrap();
+        (path, c)
+    }
+
+    /// Load steps 0 / 50 A where cell 3 reads 30 mV higher on the 50 A rows (moved by a balancer, not by its
+    /// resistance), then rest rows where cell 5 switches by 25 mV every row. `bits`: the BMS reports cells 3 and 5
+    /// balancing on exactly those rows.
+    fn balancing_pack(rec: &mut Rec, bits: bool) -> (i64, i64) {
+        let from = rec.t;
+        for i in 0..40 {
+            let (ma, moved) = if i % 2 == 1 { (50_000, true) } else { (0, false) };
+            rec.row(1, ma, Some(Rec::cells(3300, ma, &[(3, if moved { 30 } else { 0 })])), Some(if bits && moved { 1 << 2 } else { 0 }));
+        }
+        rec.gap();
+        for i in 0..40 {
+            let on = i % 2 == 1;
+            rec.row(1, 0, Some(Rec::cells(3300, 0, &[(5, if on { 25 } else { 0 })])), Some(if bits && on { 1 << 4 } else { 0 }));
+        }
+        (from, rec.t)
+    }
+
+    #[test]
+    fn balancing_is_neither_resistance_nor_a_jump() {
+        let (path, c) = fresh("balancing");
+        let mut rec = Rec { c, t: T0, pack: 1 };
+        let (from, to) = balancing_pack(&mut rec, false);
+        rec.pack = 2;
+        rec.t = T0;
+        balancing_pack(&mut rec, true);
+        let db = crate::history::reader(&path).unwrap();
+        // nothing known about balancing: cell 3's moves read as resistance, cell 5's switching as jumps
+        let plain = analyse(&db, "a", 1, from, to, &Devices::default(), 0).unwrap();
+        assert_eq!(plain.steps, 39);
+        assert_eq!((plain.cells[2].r_pct.map(f64::round), plain.cells[2].class), (Some(220.0), Class::Resistance));
+        assert_eq!((plain.cells[4].jumps, plain.cells[4].class), (39, Class::Measurement));
+        // an external balancer that works whenever the spread reaches 20 mV: no step and no jump has both ends free
+        let devices = Devices::parse(&json!({
+            "defs": [{ "id": "b", "name": "B", "kind": "active-balancer", "revs": [{ "from": 0, "trigger_mv": 20, "when": "always" }] }],
+            "assign": { "1": [{ "from": 0, "device": "b" }] },
+        }));
+        let ext = analyse(&db, "a", 1, from, to, &devices, 0).unwrap();
+        assert_eq!((ext.steps, ext.cells[2].r_mohm, ext.cells[4].jumps), (0, None, 0));
+        assert_ne!(ext.cells[2].class, Class::Resistance);
+        // the BMS bits: only the balanced cell's steps and jumps are left out
+        let bms = analyse(&db, "a", 2, from, to, &Devices::default(), 0).unwrap();
+        assert_eq!((bms.steps, bms.cells[2].steps, bms.cells[0].steps), (39, 0, 39));
+        assert_eq!((bms.cells[2].r_mohm, bms.cells[0].r_mohm), (None, Some(R)));
+        // its rest values with the bit set are left out too: too few left for a statement
+        assert_eq!((bms.cells[4].jumps, bms.cells[4].class), (0, Class::NoStatement));
+    }
+
+    #[test]
+    fn answers_on_the_full_minute_are_raw() {
+        let (path, c) = fresh("minute");
+        let mut rec = Rec { c, t: 100 * MINUTE_MS, pack: 7 };
+        for _ in 0..40 {
+            rec.row(1, 0, Some(Rec::cells(3300, 0, &[])), Some(0));
+            rec.t += MINUTE_MS - STEP;
+        }
+        let a = analyse(&crate::history::reader(&path).unwrap(), "a", 7, 0, rec.t, &Devices::default(), 0).unwrap();
+        assert_eq!((a.cell_count, a.rows, a.minute_rows, a.rest_rows), (CELLS, 40, 0, 39));
+        assert_eq!(a.cells[0].class, Class::RestOk);
+    }
 }
+
