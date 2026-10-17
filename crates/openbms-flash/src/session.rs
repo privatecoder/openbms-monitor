@@ -245,6 +245,17 @@ fn boot_exchange(
     log(log_file, "TX", bytes)?;
     let started = Instant::now();
     link.write_raw(bytes)?;
+    boot_answer(link, bytes, log_file, options, started)
+}
+
+/// The bootloader's answer to `bytes`, sent at `started`: read, timed, checked.
+fn boot_answer(
+    link: &mut impl Link,
+    bytes: &[u8],
+    log_file: &mut impl Write,
+    options: Options,
+    started: Instant,
+) -> Result<BootReply> {
     let answer = read_boot(link, log_file, options.ack_timeout, started);
     if let Ok((reply, elapsed)) = &answer {
         let command = std::str::from_utf8(&bytes[4..7]).unwrap_or("???");
@@ -424,8 +435,8 @@ fn uncertain(stage: &str, error: Error) -> Error {
     ))
 }
 
-/// The bootloader part of a flash: R F L, W F E, the data blocks, W F G. Returns the W F D reply times. Once W F E
-/// is confirmed, log errors no longer stop it (`FlashLog`).
+/// The bootloader part of a flash: R F L, W F E, the data blocks, W F G. Returns the W F D reply times. From the
+/// moment W F E is sent, log errors no longer stop it (`FlashLog`), its ACK's RX and timing lines included.
 fn boot_phase<W: Write>(
     link: &mut impl Link,
     address: u8,
@@ -442,8 +453,13 @@ fn boot_phase<W: Write>(
         "sending W F E; board is in update mode until application restart",
     )?;
     progress(Progress::Erase);
-    boot_exchange(link, &frames[1], log_file, options).map_err(|e| uncertain("W F E", e))?;
+    // W F E as `boot_exchange`, but tolerant of log errors once the frame goes out
+    link.clear_input().map_err(|e| uncertain("W F E", e))?;
+    log(log_file, "TX", &frames[1])?;
     log_file.lenient = true;
+    let started = Instant::now();
+    link.write_raw(&frames[1]).map_err(|e| uncertain("W F E", e))?;
+    boot_answer(link, &frames[1], log_file, options, started).map_err(|e| uncertain("W F E", e))?;
     let mut wfd_times = Vec::with_capacity(total);
     for (index, frame) in frames[2..frames.len() - 1].iter().enumerate() {
         progress(Progress::Block { index, total });

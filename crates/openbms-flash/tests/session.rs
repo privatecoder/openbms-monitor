@@ -380,6 +380,20 @@ fn a_log_error_before_the_erase_stops_the_flash_before_the_board_changes() {
 }
 
 #[test]
+fn a_log_error_on_the_erase_ack_no_longer_stops_the_flash() {
+    // fails from the line after W F E went out: the RX and timing lines of its ACK
+    let wfe: String = session::dry_run(&image()).unwrap()[1].iter().map(|b| format!("{b:02X}")).collect();
+    let after: &'static str = Box::leak(format!("TX {wfe}").into_boxed_str());
+    let mut sim = BootSim::new();
+    let mut log = FailingLog { text: String::new(), after };
+    let result = session::flash(&mut sim, 0, &image(), &mut log, fast()).unwrap();
+    assert!(sim.wrote_flash());
+    assert_eq!(result.blocks, 3);
+    assert!(result.log_error.is_some());
+    assert!(!log.text.contains("command=WFE"), "the ACK's timing line was not written");
+}
+
+#[test]
 fn a_log_error_after_the_confirmed_erase_no_longer_stops_the_flash() {
     let mut sim = BootSim::new();
     let mut log = FailingLog { text: String::new(), after: "command=WFE" };
