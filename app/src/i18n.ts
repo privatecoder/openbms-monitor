@@ -620,6 +620,7 @@ const resources = {
         masterHint: "Master (Adresse 0): Steht bei einer Anlage die alte BMS-Seriennummer als Master-Seriennummer, übernimmt die App nach dem Schreiben die neue, damit die Prüfung vor dem Flashen weiter passt.",
         masterUpdated: "Master-Seriennummer gespeichert für: {{names}}.",
         masterUnchecked: "Die gespeicherte Master-Seriennummer der Anlage wurde nicht aktualisiert (alter oder neuer Wert nicht lesbar); die Prüfung vor dem Flashen meldet dann eine andere Bank, „Seriennummer übernehmen“ behebt das.",
+        boardUnchecked: "Die neue Batterie-Seriennummer konnte nicht für die Platine gespeichert werden (Datenbankfehler): die Zuordnung ist ungeklärt; beim Master meldet „Master anhalten/freigeben“ dann einen anderen Master.",
       },
       dash: {
         empty: "Wähle links Gateway oder Adapter und verbinde dich mit der Batterie.",
@@ -1404,6 +1405,7 @@ const resources = {
         masterHint: "Master (address 0): if an installation has the old BMS serial number stored as its master serial, the app stores the new one after writing, so the check before flashing still matches.",
         masterUpdated: "Master serial stored for: {{names}}.",
         masterUnchecked: "The installation's stored master serial was not updated (old or new value not readable); the check before flashing then reports another bank, “take over the serial number” resolves it.",
+        boardUnchecked: "The new battery serial number could not be stored for the board (database error): the assignment is unclear; for the master, “halt/release master” then reports another master.",
       },
       dash: {
         empty: "Choose a gateway or adapter on the left and connect to the battery.",

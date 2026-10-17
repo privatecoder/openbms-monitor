@@ -851,6 +851,23 @@ impl Store {
         })
     }
 
+    /// The app's own String 1 write (0xA3) read back on a board known at this place (`bms`: its String 2 read right
+    /// before the write): the board keeps the new battery serial (empty or the placeholder clear it; not read changes
+    /// nothing). Returns whether a board at the place carried `bms`.
+    pub fn battery_written(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, now: i64) -> Result<bool, String> {
+        let Some(serial) = real(bms) else { return Ok(false) };
+        let value = match battery {
+            SerialValue::Set { value, .. } => Some(value.as_str()),
+            SerialValue::Empty | SerialValue::Placeholder { .. } => None,
+            SerialValue::Unavailable | SerialValue::NoAnswer => return Ok(false),
+        };
+        self.atomic(|s| {
+            let Some(b) = s.boards(inst, address)?.into_iter().find(|b| b.bms_serial == serial || b.aliases.iter().any(|a| a == serial)) else { return Ok(false) };
+            s.db.execute("UPDATE boards SET battery_serial = ?2, last_seen = ?3 WHERE id = ?1", params![b.id, value, now]).map_err(e)?;
+            Ok(true)
+        })
+    }
+
     /// The endpoint of a connection with this installation (`link_plan`) and its last connect. Returns whether the
     /// endpoint was linked just now.
     pub fn link_connection(&self, inst: &str, key: &str, control: ControlEndpoint, can_bus: bool, now: i64) -> Result<bool, String> {
@@ -1593,6 +1610,26 @@ mod tests {
         // a place without a board (placeholder before): the read-back serial identifies it from now on
         s.board_written(&a.id, 5, &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, &set("SYN-C"), 70).unwrap();
         assert_eq!(serials(&s, &a.id, 5), vec![("SYN-C".into(), vec![])]);
+    }
+
+    #[test]
+    fn the_apps_own_string_1_write_follows_on_the_known_board() {
+        let s = Store::open(&temp("battery-written")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.board_seen(&a.id, 0, &set("SYN-M"), &set("BANK-A"), 10).unwrap();
+        assert!(s.battery_written(&a.id, 0, &set("SYN-M"), &set("BANK-A-NEU"), 20).unwrap());
+        let b = s.current_board(&a.id, 0).unwrap().unwrap();
+        assert_eq!((b.battery_serial.as_deref(), b.last_seen), (Some("BANK-A-NEU"), 20));
+        // read back as the placeholder: cleared; not read: kept
+        assert!(s.battery_written(&a.id, 0, &set("SYN-M"), &SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, 30).unwrap());
+        assert_eq!(s.current_board(&a.id, 0).unwrap().unwrap().battery_serial, None);
+        s.battery_written(&a.id, 0, &set("SYN-M"), &set("BANK-B"), 40).unwrap();
+        assert!(!s.battery_written(&a.id, 0, &set("SYN-M"), &SerialValue::NoAnswer, 50).unwrap());
+        assert_eq!(s.current_board(&a.id, 0).unwrap().unwrap().battery_serial.as_deref(), Some("BANK-B"));
+        // another board, or no real String 2: nothing is claimed
+        assert!(!s.battery_written(&a.id, 0, &set("SYN-X"), &set("BANK-X"), 60).unwrap());
+        assert!(!s.battery_written(&a.id, 0, &SerialValue::Empty, &set("BANK-X"), 60).unwrap());
+        assert_eq!(s.current_board(&a.id, 0).unwrap().unwrap().battery_serial.as_deref(), Some("BANK-B"));
     }
 
     #[test]

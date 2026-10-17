@@ -296,16 +296,20 @@ pub fn follow_master_serial<'a>(installations: &'a [Installation], old: &SerialV
 /// A serial number write the BMS accepted: the value read back (or why that read failed) and the installations
 /// whose stored master serial followed it. `master_unchecked`: String 2 of the master, but the old value (or the
 /// store, or the new value) could not be read, so no installation's stored master serial was updated.
+/// `board_unchecked`: String 1 of a known board, but the database could not keep the new value for it (the check of
+/// the master behind the CAN socket then compares the old one).
 #[derive(Serialize, Debug)]
 pub struct SerialSet {
     pub value: Option<SerialValue>,
     pub read_error: Option<String>,
     pub master_updated: Vec<String>,
     pub master_unchecked: bool,
+    pub board_unchecked: bool,
 }
 
 /// Write a serial number (0xA3 battery, 0xA5 BMS) and read it back. String 2 of the master (address 0): an
-/// installation of this endpoint that stored the old value gets the new one. Device and database are not updated
+/// installation of this endpoint that stored the old value gets the new one. String 1 of a known board: the board
+/// keeps the value read back, in the same action (`same_master` compares it). Device and database are not updated
 /// atomically; a crash in between shows as a bank mismatch, which „Seriennummer übernehmen“ resolves.
 #[tauri::command]
 pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<Written<SerialSet>, String> {
@@ -318,10 +322,11 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
     let master = which == Which::Bms && address == 0;
     // String 2 before the write: whether the board keeps its identity under the new serial depends on it. Unread, the
     // app's own write could not be told from a board swap: no write then.
+    let pre = checked.read;
     let old = if which == Which::Bms {
-        match checked.read {
+        match &pre {
             SerialValue::NoAnswer | SerialValue::Unavailable => return Err(PRE_READ.into()),
-            v => Some(v),
+            v => Some(v.clone()),
         }
     } else {
         None
@@ -333,6 +338,14 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
         let before = old.clone().unwrap_or(SerialValue::NoAnswer);
         // the board was checked just before: recorded also while another pack of the connection is foreign
         for_link_checked(&state, &link, "board", |s, inst| s.board_written(inst, address, &before, new, now_ms()));
+    }
+    // the app's own String 1 write on a known board: kept for it, a store failure is reported
+    let mut board_unchecked = false;
+    if let (Which::Battery, false, Ok(new), Some(inst)) = (which, unchecked, &read, link.installation.as_deref()) {
+        if let Err(e) = crate::maint::with_store(&state, |s| s.battery_written(inst, address, &pre, new, now_ms())) {
+            eprintln!("board battery serial: {e:?}");
+            board_unchecked = true;
+        }
     }
     let mut master_updated = vec![];
     let mut master_unchecked = master && (old.is_none() || read.is_err());
@@ -357,8 +370,8 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
         }
     }
     let value = match read {
-        Ok(v) => SerialSet { value: Some(v), read_error: None, master_updated, master_unchecked },
-        Err(e) => SerialSet { value: None, read_error: Some(e), master_updated, master_unchecked },
+        Ok(v) => SerialSet { value: Some(v), read_error: None, master_updated, master_unchecked, board_unchecked },
+        Err(e) => SerialSet { value: None, read_error: Some(e), master_updated, master_unchecked, board_unchecked },
     };
     Ok(Written { value, unchecked })
 }
