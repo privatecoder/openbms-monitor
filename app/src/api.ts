@@ -189,10 +189,10 @@ export interface PackReport {
   /** counted increase and the time it spans (ms), the segments of the rate; null without counts */
   cycles_gained: number | null; cycles_span_ms: number | null;
 }
-/** Per pair and day: matched samples under load, the plus pack's share (%); `judged`: without the samples equalizing explains. */
+/** Per pair and day: matched samples under load, minutes with samples, the plus pack's share (%); `equalizing`: of them,
+ *  samples the states of charge may explain (information, they still count). */
 export interface PairDay {
-  day: number; samples: number; share: number | null; equalizing: number;
-  judged: number; judged_minutes: number; judged_share: number | null; marked: boolean;
+  day: number; samples: number; minutes: number; share: number | null; equalizing: number; marked: boolean;
 }
 export interface PairReport { plus: number; minus: number; days: PairDay[] }
 /** `spread_from`: first row with spread data in the period; `raw_from`: first raw row (pair figures start there). */
@@ -769,7 +769,7 @@ function demoReport(from: number, to: number, packs: number[], pairs: { plus: nu
       plus, minus,
       days: days.slice(-30).map((day, i) => {
         const share = plus === 0 ? 57 + wobble(plus, i) / 2 : 50 + wobble(plus, i) / 2;
-        return { day, samples: 900, share, equalizing: 60, judged: 840, judged_minutes: 140, judged_share: share, marked: Math.abs(share - 50) > 5 };
+        return { day, samples: 900, minutes: 140, share, equalizing: 60, marked: Math.abs(share - 50) > 5 };
       }),
     })),
   };

@@ -6,7 +6,9 @@
 //! NULL there and are left out. A minute row keeps the minute's largest spread, a different measure than single
 //! answers: a day with raw rows takes its percentiles from those alone, a day with only minute rows from the minute
 //! maxima, and says which (`spread_raw`). Pair shares need single answers a few seconds apart, so only raw rows count
-//! (`cell_analysis::raw`, by the row's contents, not its time); pair figures therefore cover the raw-data period only.
+//! (`cell_analysis::raw`, by the row's contents), and of those on the full minute only one with a row of the same pack
+//! less than a minute away: an old imported minute row is stored as one answer on the minute, its time rounded. Pair
+//! figures therefore cover the raw-data period only.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -17,7 +19,7 @@ const REST_MA: i64 = 2_000;
 const PAIR_MIN_A: i64 = 20;
 /// Two answers of a pair this close (ms) count as the same moment.
 const MATCH_MS: i64 = 3_000;
-/// SOC difference (points) from which a smaller share counts as equalizing (`pairs.ts` EQUALIZE_SOC).
+/// SOC difference (points) from which the states of charge may explain a smaller share (`pairs.ts` EQUALIZE_SOC).
 const EQUALIZE_SOC: f64 = 3.0;
 /// A day's share is marked outside 50 % ± this (points) over at least MARK_MINUTES minutes with samples (a minute
 /// counts with one sample in it, not as a minute observed throughout).
@@ -73,15 +75,13 @@ pub struct PackReport {
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct PairDay {
     pub day: i64,
-    /// matched samples under load (both currents the same way) and the plus pack's mean share of them (%)
+    /// matched samples under load (both currents the same way), the minutes with samples and the plus pack's mean
+    /// share of them (%)
     pub samples: u32,
+    pub minutes: u32,
     pub share: Option<f64>,
-    /// samples whose smaller share the states of charge explain (equalizing), left out of the judgement
+    /// of them, samples whose smaller share the states of charge may explain: information only, they still count
     pub equalizing: u32,
-    /// the rest: samples, minutes with samples, mean share of the plus pack (%)
-    pub judged: u32,
-    pub judged_minutes: u32,
-    pub judged_share: Option<f64>,
     /// share outside 50 % ± 5 points over at least 30 minutes
     pub marked: bool,
 }
@@ -340,23 +340,19 @@ struct PairAcc {
     samples: u32,
     sum: f64,
     equalizing: u32,
-    judged: u32,
-    judged_sum: f64,
     minutes: u32,
     last_minute: Option<i64>,
 }
 impl PairAcc {
     fn finish(&self, day: i64) -> PairDay {
-        let judged_share = (self.judged > 0).then(|| self.judged_sum / self.judged as f64 * 100.0);
+        let share = (self.samples > 0).then(|| self.sum / self.samples as f64 * 100.0);
         PairDay {
             day,
             samples: self.samples,
-            share: (self.samples > 0).then(|| self.sum / self.samples as f64 * 100.0),
+            minutes: self.minutes,
+            share,
             equalizing: self.equalizing,
-            judged: self.judged,
-            judged_minutes: self.minutes,
-            judged_share,
-            marked: self.minutes >= MARK_MINUTES && judged_share.is_some_and(|s| (s - 50.0).abs() > MARK_POINTS),
+            marked: self.minutes >= MARK_MINUTES && share.is_some_and(|s| (s - 50.0).abs() > MARK_POINTS),
         }
     }
 }
@@ -364,7 +360,14 @@ impl PairAcc {
 /// A pair's days: each raw plus-pack row with the minus-pack row nearest in time (at most MATCH_MS apart), both read
 /// in time order side by side. A sample counts with both currents the same way and their sum at least twice PAIR_MIN_A.
 fn pair_days(db: &Connection, site: i64, pair: Pair, days: &[i64]) -> Result<Vec<PairDay>, String> {
-    let sql = format!("SELECT t, current, soc FROM pack WHERE site = ?1 AND pack = ?2 AND t >= ?3 AND t < ?4 AND {} ORDER BY t", crate::cell_analysis::RAW_SQL);
+    // raw rows; one on the full minute only with a row of the pack less than a minute before or after it
+    let sql = format!(
+        "SELECT t, current, soc FROM (
+           SELECT t, current, soc, {} AS raw, LAG(t) OVER w AS pt, LEAD(t) OVER w AS nt FROM pack
+           WHERE site = ?1 AND pack = ?2 AND t >= ?3 - {MINUTE_MS} AND t < ?4 + {MINUTE_MS} WINDOW w AS (ORDER BY t))
+         WHERE raw AND t >= ?3 AND t < ?4 AND (t % {MINUTE_MS} <> 0 OR t - pt < {MINUTE_MS} OR nt - t < {MINUTE_MS}) ORDER BY t",
+        crate::cell_analysis::RAW_SQL
+    );
     let (mut sp, mut sm) = (db.prepare(&sql).map_err(e2s)?, db.prepare(&sql).map_err(e2s)?);
     let (lo, hi) = (days[0] - MATCH_MS, days[days.len() - 1] + MATCH_MS);
     let mut plus = sp.query(params![site, pair.plus, days[0], days[days.len() - 1]]).map_err(e2s)?;
@@ -404,20 +407,16 @@ fn pair_days(db: &Connection, site: i64, pair: Pair, days: &[i64]) -> Result<Vec
         let share = ia.abs() as f64 / (ia.abs() + ib.abs()) as f64;
         acc.samples += 1;
         acc.sum += share;
-        // the pack with the smaller share and the partner, by SOC (%)
+        let minute = a.0.div_euclid(MINUTE_MS);
+        if acc.last_minute != Some(minute) {
+            acc.minutes += 1;
+            acc.last_minute = Some(minute);
+        }
+        // the pack with the smaller share and the partner, by SOC (%): counted as a possible explanation, never left out
         let soc = |s: Option<i64>| s.map(|v| v as f64 / 10.0);
         let (mine, other) = if share < 0.5 { (soc(a.2), soc(b.2)) } else { (soc(b.2), soc(a.2)) };
-        let explained = share != 0.5 && mine.zip(other).is_some_and(|(m, o)| equalizes(total as f64, m, o));
-        if explained {
+        if share != 0.5 && mine.zip(other).is_some_and(|(m, o)| equalizes(total as f64, m, o)) {
             acc.equalizing += 1;
-        } else {
-            acc.judged += 1;
-            acc.judged_sum += share;
-            let minute = a.0.div_euclid(MINUTE_MS);
-            if acc.last_minute != Some(minute) {
-                acc.minutes += 1;
-                acc.last_minute = Some(minute);
-            }
         }
     }
     if let Some((i, acc)) = cur.take() {
@@ -527,14 +526,20 @@ mod tests {
     #[test]
     fn raw_rows_by_their_contents_not_the_clock() {
         let (path, c) = db("raw-clock");
-        // single answers polled on the full minute are raw
+        // single answers every 10 s, among them two on the full minute: raw
+        for k in 0..7 {
+            raw(&c, 1, 0, 5 * MINUTE_MS + k * 10_000, -30_000, 5);
+            raw(&c, 1, 1, 5 * MINUTE_MS + k * 10_000 + 1_000, -20_000, 5);
+        }
+        // an old imported minute row (one answer on the minute, no ranges) of each pack, a minute apart: its time is
+        // rounded, so it never pairs
         for k in 0..3 {
-            raw(&c, 1, 0, (5 + k) * MINUTE_MS, -30_000, 5);
-            raw(&c, 1, 1, (5 + k) * MINUTE_MS + 1_000, -20_000, 5);
+            row(&c, 1, 0, (60 + k) * MINUTE_MS, 1, -30_000, 500, None, None, None);
+            row(&c, 1, 1, (60 + k) * MINUTE_MS, 1, -10_000, 500, None, None, None);
         }
         let db = crate::history::reader(&path).unwrap();
         let r = report(&db, "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
-        assert_eq!((r.pairs[0].days[0].samples, r.raw_from, r.packs[0].days[0].spread_raw), (3, Some(5 * MINUTE_MS), true));
+        assert_eq!((r.pairs[0].days[0].samples, r.raw_from, r.packs[0].days[0].spread_raw), (7, Some(5 * MINUTE_MS), true));
         // the SQL test agrees with the cell analysis' one: a compacted minute, ranges that differ, balancing of more rows
         row(&c, 1, 2, 10 * MINUTE_MS, 6, 0, 500, None, Some((5, 5)), Some((0, 0)));
         row(&c, 1, 2, 11 * MINUTE_MS, 1, 0, 500, None, Some((5, 9)), Some((0, 0)));
@@ -609,13 +614,13 @@ mod tests {
         row(&c, 1, 1, 6 * 3_600_000, 6, -20_000, 500, None, None, None);
         let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
         let d = &r.pairs[0].days[0];
-        assert_eq!((d.samples, d.judged, d.equalizing, d.judged_minutes), (240, 240, 0, 40));
+        assert_eq!((d.samples, d.equalizing, d.minutes), (240, 0, 40));
         assert!((d.share.unwrap() - 60.0).abs() < 1e-9);
         assert!(d.marked, "10 points off over 40 minutes");
     }
 
     #[test]
-    fn a_share_the_states_of_charge_explain_is_not_marked() {
+    fn a_share_the_states_of_charge_may_explain_is_still_marked() {
         let (path, c) = db("equalize");
         for k in 0..240 {
             let t = 1_000 + k * 10_000;
@@ -625,8 +630,9 @@ mod tests {
         }
         let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
         let d = &r.pairs[0].days[0];
-        assert_eq!((d.samples, d.equalizing, d.judged, d.judged_share, d.marked), (240, 240, 0, None, false));
-        // charging the same way is not explained
+        // the measured split stays the finding; the states of charge are counted as a possible explanation
+        assert_eq!((d.samples, d.equalizing, d.marked), (240, 240, true));
+        // charging the same way does not fit the states of charge
         let (path, c) = db("equalize-charge");
         for k in 0..240 {
             let t = 1_000 + k * 10_000;
@@ -634,7 +640,7 @@ mod tests {
             row(&c, 1, 1, t + 1_000, 1, 20_000, 600, None, None, None);
         }
         let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[Pair { plus: 0, minus: 1 }]).unwrap();
-        assert!(r.pairs[0].days[0].marked);
+        assert_eq!((r.pairs[0].days[0].equalizing, r.pairs[0].days[0].marked), (0, true));
     }
 
     #[test]

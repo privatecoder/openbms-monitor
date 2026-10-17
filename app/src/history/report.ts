@@ -141,21 +141,21 @@ export function packRows(r: HealthReport): PackRow[] {
 
 export interface PairRow {
   plus: number; minus: number; share: number | null; samples: number; markedDays: number; trend?: Trend;
+  /** samples of the period whose smaller share the states of charge may explain (they count all the same) */
+  equalizing: number;
   /** the pack carrying more on the last marked day and its share (%) */
   flag?: { pack: number; share: number; days: number };
 }
-
-/** The share a pair day is judged by: without the samples equalizing explains, else all. */
-const dayShare = (d: { judged_share: number | null; share: number | null }) => d.judged_share ?? d.share;
 
 /** One row per pair: last share, its trend, the days marked and who carries more. */
 export function pairRows(r: HealthReport): PairRow[] {
   return r.pairs.map((p) => {
     const marked = p.days.filter((d) => d.marked);
-    const last = marked.length ? dayShare(marked[marked.length - 1]) : null;
+    const last = marked.length ? marked[marked.length - 1].share : null;
     return {
-      plus: p.plus, minus: p.minus, share: lastOf(p.days, dayShare), samples: p.days.reduce((a, d) => a + d.samples, 0),
-      markedDays: marked.length, trend: trend(p.days.map((d) => ({ day: d.day, v: dayShare(d) })), 2),
+      plus: p.plus, minus: p.minus, share: lastOf(p.days, (d) => d.share), samples: p.days.reduce((a, d) => a + d.samples, 0),
+      equalizing: p.days.reduce((a, d) => a + d.equalizing, 0),
+      markedDays: marked.length, trend: trend(p.days.map((d) => ({ day: d.day, v: d.share })), 2),
       flag: last === null ? undefined : last >= 50 ? { pack: p.plus, share: last, days: marked.length } : { pack: p.minus, share: 100 - last, days: marked.length },
     };
   });
@@ -171,7 +171,7 @@ export function localDate(ms: number) {
  *  and day, and with the cell analyses per pack one row for the pack's figures and one per cell. */
 export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> = {}): string {
   const cols = ["kind", "pack", "partner", "date", "rows", "spread_p50_mv", "spread_p95_mv", "rest_rows", "rest_p50_mv", "rest_p95_mv", "cycles",
-    "temp_max_c", "cycles_per_30d", "cycle_resets", "cycles_gained", "cycles_span_days", "samples", "share_pct", "equalizing", "judged", "judged_minutes", "judged_share_pct", "marked",
+    "temp_max_c", "cycles_per_30d", "cycle_resets", "cycles_gained", "cycles_span_days", "samples", "minutes", "share_pct", "equalizing", "marked",
     "bal_status_rows", "bal_rows", "bal_pct", "bal_cells",
     "cell", "class", "reason", "rest_mv", "load_mv", "top_mv", "top_corr_mv", "bottom_mv", "bottom_corr_mv", "r_mohm", "r_pct", "order", "jumps",
     "cell_count", "incomplete", "balancer_left_out", "bms_left_out", "top_rows", "bottom_rows", "load_rows", "steps", "charges"];
@@ -194,6 +194,6 @@ export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> =
       r_mohm: c.r_mohm, r_pct: c.r_pct, steps: c.steps, order: c.order, jumps: c.jumps }));
   }
   for (const p of r.pairs) for (const d of p.days) out.push(line({ kind: "pair", pack: p.plus, partner: p.minus, date: localDate(d.day), samples: d.samples,
-    share_pct: d.share, equalizing: d.equalizing, judged: d.judged, judged_minutes: d.judged_minutes, judged_share_pct: d.judged_share, marked: d.marked ? 1 : 0 }));
+    minutes: d.minutes, share_pct: d.share, equalizing: d.equalizing, marked: d.marked ? 1 : 0 }));
   return out.join("\n") + "\n";
 }
