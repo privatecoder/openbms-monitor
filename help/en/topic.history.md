@@ -10,6 +10,6 @@ related: topic.recording, value.share, topic.healthReport, topic.bmsHistory
 - **Zoom:** drag across a chart; all charts follow and show finer values, down to every poll. The cursor shows the same moment in every chart.
 - **Resolution:** at most about 1500 points per chart. Each point is the mean of its time slice; for cell extremes, cell difference and temperatures the extreme, so peaks do not disappear. Briefly missing values are bridged, longer outages stay visible as a gap.
 - **Messages:** below the charts are the messages in the span with start and end. Clicking the time zooms the charts to that moment.
-- **Export:** the span shown and the packs shown, as CSV (one row per pack and time with all cells; the master's values in a second file) or as JSON Lines (the earlier recording format, to pass on and import again). Times in UTC.
-- **Import:** JSON Lines recordings of earlier versions or exports, for the installation shown. Times already present are not overwritten, so importing twice does no harm.
+- **Export:** the span shown and the packs shown, as CSV (one row per pack and time with all cells; the master's values in a second file) or as JSON Lines (the earlier recording format, to pass on and import again; with the packs' messages and the cell extremes of compacted minutes). Times in UTC.
+- **Import:** JSON Lines recordings of earlier versions or exports, for the installation shown. Times and messages already present are neither overwritten nor doubled, so importing twice does no harm. Lines with an invalid pack address (not 0–15) are skipped and counted.
 - **Report:** the “Report” tab evaluates the recording over days and weeks (see Health report).
