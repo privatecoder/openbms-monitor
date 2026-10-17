@@ -169,7 +169,11 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     <td className="py-2 pr-4 text-right">{fmt(r.cycles, 0)}</td>
                     <td className={cn("py-2 pr-4 text-right", r.flags.some((f) => f.key === "cycles") && "font-medium text-discharge")}>{fmt(r.rate, 1)}</td>
                     <td className="py-2 pr-4 text-right">{fmt(r.tempMax, 1, "°C")}</td>
-                    <td className={cn("py-2", warn ? "text-discharge" : "text-muted")}>{r.flags.length ? r.flags.map(flagText).join("; ") : t("hist.rep.ok")}</td>
+                    <td className={cn("py-2", warn ? "text-discharge" : "text-muted")}>
+                      <span className="cursor-help" title={r.flags.length ? r.flags.map((f) => t(`hist.rep.flagTip.${f.key}`)).join("\n\n") : t("hist.rep.tip.packOk")}>
+                        {r.flags.length ? r.flags.map(flagText).join("; ") : t("hist.rep.ok")}
+                      </span>
+                    </td>
                   </tr>
                 );
               })}
@@ -202,16 +206,16 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     <td className="py-2">
                       {typeof a === "string" ? <span className="text-alarm">{t("hist.rep.cells.failed", { err: a })}</span>
                         : !off ? <span className="text-muted">{t("hist.rep.cells.noRaw")}</span>
-                        : off.all ? <span className="text-muted">{t("hist.rep.cells.allNone")}: {reasonText(t, off.all.reason, lang)}</span>
+                        : off.all ? <span className="cursor-help text-muted" title={t("hist.rep.tip.cellsAllNone")}>{t("hist.rep.cells.allNone")}: {reasonText(t, off.all.reason, lang)}</span>
                         : !off.cells.length ? (
-                          <span className="text-muted">{a.cells.some((c) => c.class === "rest_ok")
+                          <span className="cursor-help text-muted" title={t("hist.rep.tip.cellsQuiet")}>{a.cells.some((c) => c.class === "rest_ok")
                             ? t("hist.rep.cells.quiet", { ok: a.cells.filter((c) => c.class === "ok").length, rest: a.cells.filter((c) => c.class === "rest_ok").length })
                             : t("hist.rep.cells.allOk", { count: a.cells.length })}</span>
                         )
                         : (
                           <ul className="space-y-0.5">
                             {off.cells.map((c) => (
-                              <li key={c.cell}>
+                              <li key={c.cell} className="cursor-help" title={t(`cell.classTip.${c.class}`)}>
                                 <span className={cn("font-medium", c.class === "none" ? "text-muted" : "text-discharge")}>{t("hist.rep.cells.cell", { n: c.cell })}: {t(`cell.class.${c.class}`)}</span>
                                 <span className="text-muted"> ({reasonText(t, c.reason, lang)})</span>
                               </li>
@@ -251,8 +255,10 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                       <td className="py-2 pr-4 text-right">{fmt(r.samples, 0)}</td>
                       <td className={cn("py-2 pr-4 text-right", r.markedDays > 0 && "font-medium text-discharge")}>{fmt(r.markedDays, 0)}</td>
                       <td className={cn("py-2", r.flag ? "text-discharge" : "text-muted")}>
-                        {r.flag ? t("hist.rep.pairFlag", { pack: no(r.flag.pack), share: fmt(r.flag.share, 0), count: r.flag.days })
-                          : r.samples ? t("hist.rep.ok") : t("hist.rep.noSamples")}
+                        <span className="cursor-help" title={t(r.flag ? "hist.rep.tip.pairFlag" : r.samples ? "hist.rep.tip.pairOk" : "hist.rep.tip.pairNoSamples")}>
+                          {r.flag ? t("hist.rep.pairFlag", { pack: no(r.flag.pack), share: fmt(r.flag.share, 0), count: r.flag.days })
+                            : r.samples ? t("hist.rep.ok") : t("hist.rep.noSamples")}
+                        </span>
                       </td>
                     </tr>
                   );
