@@ -41,7 +41,7 @@ pub const MIN_STEPS: u32 = 10;
 pub const REST_OK_MV: f64 = 5.0;
 pub const R_OK: f64 = 0.20;
 pub const END_OK_MV: f64 = 15.0;
-/// Widerstand erhöht from this share of the median, and at least R_RES_MV over the median |ΔI| of the steps above the
+/// Widerstand erhöht from this share of the median, and more than R_RES_MV over the median |ΔI| of the steps above the
 /// median (mΩ): the cell voltages come in whole mV, so a step of a mV or two is the resolution, not the cell
 pub const R_HIGH: f64 = 1.30;
 pub const R_RES_MV: f64 = 2.0;
@@ -158,7 +158,7 @@ pub fn classify(c: &Input) -> (Class, Reason) {
         }
     }
     // high relative to the median and by more than the mV resolution allows over the steps' current
-    let resolved = c.r_above.zip(c.r_bound).is_some_and(|(a, b)| a >= b);
+    let resolved = c.r_above.zip(c.r_bound).is_some_and(|(a, b)| a > b);
     if let Some(r) = c.r_rel.filter(|&r| r >= R_HIGH && resolved) {
         return (Class::Resistance, Reason::Resistance { pct: r * 100.0, steps: c.steps });
     }
@@ -708,6 +708,10 @@ mod tests {
         assert_eq!(classify(&at20(0.28)).0, NoStatement);
         assert!(matches!(classify(&at20(0.28)).1, Reason::RSlight { .. }));
         assert_eq!(classify(&at20(0.32)).0, Resistance);
+        // exactly 2 mV per step is still the resolution (steps of 16 A: 0.125 mΩ; values exact in binary)
+        let at16 = |r: f64| Input { r_rel: Some(r / 0.25), r_above: Some(r - 0.25), r_bound: Some(0.125), ..input(0.0, 0.0, None, None, None) };
+        assert_eq!(classify(&at16(0.375)).0, NoStatement);
+        assert_eq!(classify(&at16(0.4)).0, Resistance);
     }
 
     #[test]
