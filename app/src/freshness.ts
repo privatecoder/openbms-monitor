@@ -40,9 +40,13 @@ export function current<T extends Timed>(e: T, now: number): T & { old: { teleme
   };
 }
 
-/** How many counted entries had their status left out as old (the dashboard's head says so beside the messages). */
-export function omittedStatus(entries: { old: { status: boolean } }[]): number {
-  return entries.filter((e) => e.old.status).length;
+/** The messages of the counted entries for the dashboard's head: their alarms, how many packs with fresh telemetry have
+ *  no fresh status (never read, failed or old: their protection state is unknown), and whether „Keine Meldungen“ may
+ *  show (only when every counted pack has a fresh status). */
+export function headMessages<A>(entries: { telemetry: unknown; status: { alarms: A[] } | null }[]): { alarms: A[]; missing: number; allKnown: boolean } {
+  const counted = entries.filter((e) => e.telemetry);
+  const missing = counted.filter((e) => !e.status).length;
+  return { alarms: entries.flatMap((e) => e.status?.alarms ?? []), missing, allKnown: missing === 0 };
 }
 
 /** The system values (CAN socket, Modbus) as kept by the store: the last ones, whether the last poll succeeded, when. */

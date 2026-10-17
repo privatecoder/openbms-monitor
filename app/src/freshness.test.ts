@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { current, freshSystem, omittedStatus, packFresh, staleAfter, STALE_FALLBACK_MS, type Timed } from "./freshness";
+import { current, freshSystem, headMessages, packFresh, staleAfter, STALE_FALLBACK_MS, type Timed } from "./freshness";
 import type { Status, SystemValues, Telemetry } from "./api";
 
 const tm = { soc: 50 } as unknown as Telemetry;
@@ -32,11 +32,16 @@ describe("freshness of a pack", () => {
   });
 });
 
-describe("the head's note on old statuses", () => {
-  it("counts the packs whose status was left out", () => {
+describe("the head's messages", () => {
+  it("counts every pack with fresh telemetry but no fresh status, also one whose status was never read", () => {
     const now = 2000;
-    const list = [current(entry(), now), current(entry({ statusOk: false }), now), current(entry({ statusUpdated: 0, status: null }), now)];
-    expect(omittedStatus(list)).toBe(1);
+    const list = [current(entry(), now), current(entry({ statusOk: false }), now), current(entry({ statusUpdated: 0, statusOk: false, status: null }), now)];
+    const h = headMessages(list);
+    expect(h.allKnown).toBe(false);
+    expect(h.missing).toBe(2);
+    // a pack without fresh telemetry is not counted at all
+    expect(headMessages([current(entry(), now), current(entry({ telemetryOk: false, statusOk: false }), now)])).toEqual({ alarms: [], missing: 0, allKnown: true });
+    expect(headMessages([current(entry(), now)]).allKnown).toBe(true);
   });
 });
 
