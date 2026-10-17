@@ -9,6 +9,11 @@ export type Period = (typeof PERIODS)[number];
 
 /** A pack counts cycles this much faster than the bank median before it is flagged. */
 export const CYCLE_RATE_ABOVE = 0.25;
+/** The counter counts whole cycles: a flag needs the bank median to have gained this many in the period and the pack
+ *  this many whole cycles more than the median, so one counter step never decides it. The rate itself needs 7 days
+ *  of counts (health.rs RATE_MIN_MS). */
+export const CYCLE_MEDIAN_GAIN_MIN = 8;
+export const CYCLE_ABOVE_MIN = 2;
 /** Rest spread (P95) flagged above this factor of the bank median and at least SPREAD_ABOVE_MV above it. */
 export const SPREAD_FACTOR = 1.5;
 export const SPREAD_ABOVE_MV = 10;
@@ -60,6 +65,8 @@ export type PackFlag =
 export interface PackRow {
   pack: number; restP50: number | null; restP95: number | null; loadP95: number | null; restTrend?: Trend;
   cycles: number | null; rate: number | null; tempMax: number | null; flags: PackFlag[];
+  /** counts recorded, but too short a span for a rate */
+  rateShort: boolean;
 }
 
 /** One row per pack: last values, the rest spread's trend and the flags against the bank. */
@@ -70,14 +77,21 @@ export function packRows(r: HealthReport): PackRow[] {
       pack: p.pack, restP50: lastOf(p.days, (d) => d.rest_p50), restP95: lastOf(p.days, (d) => d.rest_p95),
       loadP95: lastOf(p.days, (d) => d.spread_p95), restTrend: trend(p.days.map((d) => ({ day: d.day, v: d.rest_p95 })), 3),
       cycles: lastOf(p.days, (d) => d.cycles), rate: p.cycles_per_30d, tempMax: temps.length ? Math.max(...temps) : null,
-      flags: [] as PackFlag[], resets: p.cycle_resets,
+      flags: [] as PackFlag[], resets: p.cycle_resets, gained: p.cycles_gained, span: p.cycles_span_ms,
+      rateShort: p.cycles_per_30d === null && p.cycles_gained !== null,
     };
   });
   const val = (xs: (number | null)[]) => xs.filter((v): v is number => v !== null);
   const rateMed = median(val(rows.map((x) => x.rate))), restMed = median(val(rows.map((x) => x.restP95))), tempMed = median(val(rows.map((x) => x.tempMax)));
   const enough = (xs: (number | null)[]) => val(xs).length >= 2;
+  // cycles are compared only over the same window: every rated pack spans about the same time, no counter cleared
+  const rated = rows.filter((x) => x.rate !== null && x.gained !== null && x.span !== null);
+  const spans = rated.map((x) => x.span!), gainMed = median(rated.map((x) => x.gained!));
+  const cyclesComparable = rated.length >= 2 && rows.every((x) => x.resets === 0)
+    && Math.max(...spans) - Math.min(...spans) <= DAY && gainMed !== undefined && gainMed >= CYCLE_MEDIAN_GAIN_MIN;
   for (const x of rows) {
-    if (x.rate !== null && rateMed && enough(rows.map((y) => y.rate)) && x.rate > rateMed * (1 + CYCLE_RATE_ABOVE))
+    if (cyclesComparable && x.rate !== null && x.gained !== null && rateMed && x.rate > rateMed * (1 + CYCLE_RATE_ABOVE)
+      && x.gained - gainMed! >= CYCLE_ABOVE_MIN)
       x.flags.push({ key: "cycles", pct: Math.round((x.rate / rateMed - 1) * 100) });
     if (x.restP95 !== null && restMed !== undefined && enough(rows.map((y) => y.restP95))
       && x.restP95 > restMed * SPREAD_FACTOR && x.restP95 >= restMed + SPREAD_ABOVE_MV)
@@ -87,7 +101,7 @@ export function packRows(r: HealthReport): PackRow[] {
       x.flags.push({ key: "warm", c: x.tempMax, median: tempMed });
     if (x.resets > 0) x.flags.push({ key: "counterCleared", count: x.resets });
   }
-  return rows.map(({ resets: _, ...x }) => x);
+  return rows.map(({ resets: _r, gained: _g, span: _s, ...x }) => x);
 }
 
 export interface PairRow {
@@ -122,7 +136,7 @@ export function localDate(ms: number) {
  *  and day, and with the cell analyses per pack one row for the pack's figures and one per cell. */
 export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> = {}): string {
   const cols = ["kind", "pack", "partner", "date", "rows", "spread_p50_mv", "spread_p95_mv", "rest_rows", "rest_p50_mv", "rest_p95_mv", "cycles",
-    "temp_max_c", "cycles_per_30d", "cycle_resets", "samples", "share_pct", "equalizing", "judged", "judged_minutes", "judged_share_pct", "marked",
+    "temp_max_c", "cycles_per_30d", "cycle_resets", "cycles_gained", "cycles_span_days", "samples", "share_pct", "equalizing", "judged", "judged_minutes", "judged_share_pct", "marked",
     "bal_status_rows", "bal_rows", "bal_pct", "bal_cells",
     "cell", "class", "reason", "rest_mv", "load_mv", "top_mv", "top_corr_mv", "bottom_mv", "bottom_corr_mv", "r_mohm", "r_pct", "order", "jumps",
     "cell_count", "incomplete", "balancer_left_out", "bms_left_out", "top_rows", "bottom_rows", "load_rows", "steps", "charges"];
@@ -133,7 +147,8 @@ export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> =
     for (const d of p.days) out.push(line({ kind: "pack", pack: p.pack, date: localDate(d.day), rows: d.rows, spread_p50_mv: d.spread_p50, spread_p95_mv: d.spread_p95,
       rest_rows: d.rest_rows, rest_p50_mv: d.rest_p50, rest_p95_mv: d.rest_p95, cycles: d.cycles, temp_max_c: d.temp_max,
       bal_status_rows: d.bal_n, bal_rows: d.bal_rows, bal_pct: d.bal_n ? ((d.bal_rows ?? 0) / d.bal_n) * 100 : null, bal_cells: maskCells(d.bal_mask) }));
-    out.push(line({ kind: "pack_period", pack: p.pack, cycles_per_30d: p.cycles_per_30d, cycle_resets: p.cycle_resets }));
+    out.push(line({ kind: "pack_period", pack: p.pack, cycles_per_30d: p.cycles_per_30d, cycle_resets: p.cycle_resets,
+      cycles_gained: p.cycles_gained, cycles_span_days: p.cycles_span_ms === null ? null : p.cycles_span_ms / DAY }));
     const a = cells[p.pack];
     if (!a) continue;
     out.push(line({ kind: "cells_period", pack: p.pack, rows: a.rows, rest_rows: a.rest_rows, cell_count: a.cell_count, incomplete: a.incomplete,

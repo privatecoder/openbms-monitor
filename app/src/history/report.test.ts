@@ -11,7 +11,9 @@ const pairDay = (i: number, o: Partial<PairDay> = {}): PairDay => ({
   day: day0 + i * DAY, samples: 100, share: 50, equalizing: 0, judged: 100, judged_minutes: 60, judged_share: 50, marked: false, ...o,
 });
 const report = (o: Partial<HealthReport>): HealthReport => ({ from: day0, to: day0 + 10 * DAY, packs: [], pairs: [], spread_from: day0, raw_from: day0, ...o });
-const pack = (n: number, rate: number | null, days: PackDay[], resets = 0) => ({ pack: n, days, cycles_per_30d: rate, cycle_resets: resets });
+// a rate over 30 days of counts: the increase follows from it
+const pack = (n: number, rate: number | null, days: PackDay[], resets = 0, span = 30 * DAY) =>
+  ({ pack: n, days, cycles_per_30d: rate, cycle_resets: resets, cycles_gained: rate === null ? null : Math.round(rate * span / (30 * DAY)), cycles_span_ms: rate === null ? null : span });
 
 describe("health report", () => {
   it("periods end now; all starts with the recording", () => {
@@ -33,7 +35,7 @@ describe("health report", () => {
       packs: [
         pack(0, 10, flat), pack(1, 10, flat), pack(2, 13, flat),
         pack(3, 10, [0, 1, 2, 3].map((i) => pd(i, { rest_p95: 10 + i * 5, temp_max: i === 2 ? 33 : 25 }))),
-        pack(4, 10, flat, 1),
+        pack(4, 10, flat),
       ],
     });
     const rows = packRows(r);
@@ -41,8 +43,24 @@ describe("health report", () => {
     expect(rows[0].flags).toEqual([]);
     // 25 mV at rest against a median of 10 mV, rising by 15 mV, 8 K warmer
     expect(rows[3].flags).toEqual([{ key: "spread", mv: 25, median: 10 }, { key: "spreadRising", mv: 15 }, { key: "warm", c: 33, median: 25 }]);
-    expect(rows[4].flags).toEqual([{ key: "counterCleared", count: 1 }]);
     expect(rows[3]).toMatchObject({ restP50: 8, restP95: 25, loadP95: 30, cycles: 103, rate: 10, tempMax: 33 });
+  });
+
+  it("cycles: no flag from the counter's resolution, a cleared counter or different windows", () => {
+    const flat = [0, 1].map((i) => pd(i));
+    const flags = (packs: ReturnType<typeof pack>[]) => packRows(report({ packs })).map((x) => x.flags);
+    // the median gained 6 cycles in 30 days: 8 against 6 is +33 %, but too few counts to say
+    expect(flags([pack(0, 6, flat), pack(1, 6, flat), pack(2, 8, flat)])).toEqual([[], [], []]);
+    // the median gained 8, the pack 10: +25 % is not above 25 %; at 11 it is, and 3 whole cycles more
+    expect(flags([pack(0, 8, flat), pack(1, 8, flat), pack(2, 10, flat)])[2]).toEqual([]);
+    expect(flags([pack(0, 8, flat), pack(1, 8, flat), pack(2, 11, flat)])[2]).toEqual([{ key: "cycles", pct: 38 }]);
+    // over 6 days a median of 1 step and a pack of 2 would read as +100 %: the rate is not even shown
+    const short = { ...pack(2, null, flat), cycles_gained: 2, cycles_span_ms: 6 * DAY };
+    const rows = packRows(report({ packs: [{ ...pack(0, null, flat), cycles_gained: 1, cycles_span_ms: 6 * DAY }, short] }));
+    expect(rows.map((x) => [x.rate, x.rateShort, x.flags])).toEqual([[null, true, []], [null, true, []]]);
+    // a cleared counter anywhere, or windows more than a day apart: no comparison
+    expect(flags([pack(0, 8, flat), pack(1, 8, flat), pack(2, 11, flat, 1)])).toEqual([[], [], [{ key: "counterCleared", count: 1 }]]);
+    expect(flags([pack(0, 8, flat), pack(1, 8, flat), pack(2, 11, flat, 0, 20 * DAY)])[2]).toEqual([]);
   });
 
   it("no bank comparison with a single pack", () => {
@@ -69,9 +87,9 @@ describe("health report", () => {
     const lines = csv.trim().split("\n");
     expect(lines[0].startsWith("kind,pack,partner,date,rows,")).toBe(true);
     const tail = ",".repeat(26);
-    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,${tail}`);
-    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,12.35,0,,,,,,,${tail}`);
-    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,100,50,0,100,60,50,1${tail}`);
+    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,,,${tail}`);
+    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,12.35,0,12,30,,,,,,,${tail}`);
+    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,,,100,50,0,100,60,50,1${tail}`);
     expect(localDate(day0)).toBe("2030-01-01");
   });
 

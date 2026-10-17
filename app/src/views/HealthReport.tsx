@@ -167,7 +167,11 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     </td>
                     <td className="py-2 pr-4 text-right">{fmt(r.loadP95, 0, "mV")}</td>
                     <td className="py-2 pr-4 text-right">{fmt(r.cycles, 0)}</td>
-                    <td className={cn("py-2 pr-4 text-right", r.flags.some((f) => f.key === "cycles") && "font-medium text-discharge")}>{fmt(r.rate, 1)}</td>
+                    <td className={cn("py-2 pr-4 text-right", r.flags.some((f) => f.key === "cycles") && "font-medium text-discharge")}>
+                      {r.rateShort
+                        ? <HintNote help="topic.healthReport" items={[{ title: t("hist.rep.col.rate"), text: t("hist.rep.tip.rateShort") }]}>–</HintNote>
+                        : fmt(r.rate, 1)}
+                    </td>
                     <td className="py-2 pr-4 text-right">{fmt(r.tempMax, 1, "°C")}</td>
                     <td className={cn("py-2", warn ? "text-discharge" : "text-muted")}>
                       <HintNote help="topic.healthReport" items={r.flags.length ? r.flags.map((f) => ({ title: flagText(f), text: t(`hist.rep.flagTip.${f.key}`) })) : [{ title: t("hist.rep.ok"), text: t("hist.rep.tip.packOk") }]}>

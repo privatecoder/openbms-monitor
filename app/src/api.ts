@@ -182,7 +182,11 @@ export interface PackDay {
   /** BMS balancing bits of the day: OR (bit n = cell n+1), rows with a bit set of rows with a status; null without a status */
   bal_mask?: number | null; bal_rows?: number | null; bal_n?: number | null;
 }
-export interface PackReport { pack: number; days: PackDay[]; cycles_per_30d: number | null; cycle_resets: number }
+export interface PackReport {
+  pack: number; days: PackDay[]; cycles_per_30d: number | null; cycle_resets: number;
+  /** counted increase and the time it spans (ms), the segments of the rate; null without counts */
+  cycles_gained: number | null; cycles_span_ms: number | null;
+}
 /** Per pair and day: matched samples under load, the plus pack's share (%); `judged`: without the samples equalizing explains. */
 export interface PairDay {
   day: number; samples: number; share: number | null; equalizing: number;
@@ -752,6 +756,7 @@ function demoReport(from: number, to: number, packs: number[], pairs: { plus: nu
     from: days[0] ?? from, to, spread_from: days[0] ?? null, raw_from: days[Math.max(0, days.length - 30)] ?? null,
     packs: packs.map((a) => ({
       pack: a, cycle_resets: 0, cycles_per_30d: a === 8 ? 16.8 : 12 + (a % 3) * 0.4,
+      cycles_gained: Math.round((a === 8 ? 16.8 : 12 + (a % 3) * 0.4) * (days.length - 1) / 30), cycles_span_ms: Math.max(0, days.length - 1) * 86_400_000,
       days: days.map((day, i) => {
         const rest = 7 + (a % 3) + wobble(a, i) + (a === 5 ? Math.round(i * 0.35) : 0);
         return { day, rows: 17_000, spread_p50: rest + 6, spread_p95: rest + 22, rest_rows: 6_000, rest_p50: rest, rest_p95: rest + 3,
