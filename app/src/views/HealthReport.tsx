@@ -110,8 +110,7 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
   } else if (report && sel && "pair" in sel) {
     const p = report.pairs.find((x) => x.plus === sel.pair);
     if (p) chart = { title: t("hist.rep.chartPair", { p: `${no(p.plus)}/${no(p.minus)}` }), unit: "%", dec: 1, x: p.days.map((d) => d.day), lines: [
-      { label: t("hist.rep.l.judged"), color: dark ? "#3fb6bf" : "#0e7c86", values: p.days.map((d) => d.judged_share) },
-      { label: t("hist.rep.l.share"), color: dark ? "#e0a548" : "#b7791f", values: p.days.map((d) => d.share), dash: [6, 4] },
+      { label: t("hist.rep.l.share"), color: dark ? "#3fb6bf" : "#0e7c86", values: p.days.map((d) => d.share) },
       { label: "50 %", color: dark ? "#8a96a3" : "#7a8591", values: p.days.map(() => 50), width: 1 }] };
   }
 
@@ -262,7 +261,8 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                         {(() => {
                           const text = r.flag ? t("hist.rep.pairFlag", { pack: no(r.flag.pack), share: fmt(r.flag.share, 0), count: r.flag.days })
                             : r.samples ? t("hist.rep.ok") : t("hist.rep.noSamples");
-                          const tip = t(r.flag ? "hist.rep.tip.pairFlag" : r.samples ? "hist.rep.tip.pairOk" : "hist.rep.tip.pairNoSamples");
+                          const tip = t(r.flag ? "hist.rep.tip.pairFlag" : r.samples ? "hist.rep.tip.pairOk" : "hist.rep.tip.pairNoSamples")
+                            + (r.equalizing ? ` ${t("hist.rep.tip.pairEqualizing", { count: r.equalizing, total: r.samples })}` : "");
                           return <HintNote help="topic.healthReport" items={[{ title: text, text: tip }]}>{text}</HintNote>;
                         })()}
                       </td>

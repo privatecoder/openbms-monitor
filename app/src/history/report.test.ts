@@ -8,7 +8,7 @@ const pd = (i: number, o: Partial<PackDay> = {}): PackDay => ({
   day: day0 + i * DAY, rows: 100, spread_p50: 20, spread_p95: 30, spread_raw: true, rest_rows: 50, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
 });
 const pairDay = (i: number, o: Partial<PairDay> = {}): PairDay => ({
-  day: day0 + i * DAY, samples: 100, share: 50, equalizing: 0, judged: 100, judged_minutes: 60, judged_share: 50, marked: false, ...o,
+  day: day0 + i * DAY, samples: 100, minutes: 60, share: 50, equalizing: 0, marked: false, ...o,
 });
 const report = (o: Partial<HealthReport>): HealthReport => ({ from: day0, to: day0 + 10 * DAY, packs: [], pairs: [], spread_from: day0, raw_from: day0, ...o });
 // a rate over 30 days of counts: the increase follows from it
@@ -114,16 +114,16 @@ describe("health report", () => {
   it("names the pack that carries more on marked days", () => {
     const r = report({
       pairs: [
-        { plus: 0, minus: 1, days: [pairDay(0), pairDay(1, { judged_share: 58, share: 57, marked: true })] },
-        { plus: 2, minus: 3, days: [pairDay(0, { judged_share: 42, marked: true })] },
-        { plus: 4, minus: 5, days: [pairDay(0, { judged: 0, judged_share: null, share: 60, equalizing: 100 })] },
+        { plus: 0, minus: 1, days: [pairDay(0), pairDay(1, { share: 58, marked: true })] },
+        { plus: 2, minus: 3, days: [pairDay(0, { share: 42, marked: true })] },
+        { plus: 4, minus: 5, days: [pairDay(0, { share: 60, equalizing: 100, marked: true })] },
       ],
     });
     const rows = pairRows(r);
     expect(rows[0]).toMatchObject({ share: 58, samples: 200, markedDays: 1, flag: { pack: 0, share: 58, days: 1 } });
     expect(rows[1].flag).toEqual({ pack: 3, share: 58, days: 1 });
-    // all samples explained by equalizing: shown, never flagged
-    expect(rows[2]).toMatchObject({ share: 60, markedDays: 0, flag: undefined });
+    // samples the states of charge may explain still count; their number is kept as information
+    expect(rows[2]).toMatchObject({ share: 60, markedDays: 1, equalizing: 100, flag: { pack: 4, share: 60, days: 1 } });
   });
 
   it("writes one CSV with packs, their period values and pairs", () => {
@@ -131,9 +131,9 @@ describe("health report", () => {
     const lines = csv.trim().split("\n");
     expect(lines[0].startsWith("kind,pack,partner,date,rows,")).toBe(true);
     const tail = ",".repeat(26);
-    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,,,${tail}`);
-    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,12.35,0,12,30,,,,,,,${tail}`);
-    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,,,100,50,0,100,60,50,1${tail}`);
+    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,${tail}`);
+    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,12.35,0,12,30,,,,,${tail}`);
+    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,,,100,60,50,0,1${tail}`);
     expect(localDate(day0)).toBe("2030-01-01");
   });
 

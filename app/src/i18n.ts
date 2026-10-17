@@ -40,7 +40,8 @@ const resources = {
           tip: {
             rateShort: "Noch keine Rate: Der Zähler zählt nur ganze Zyklen, ein Schritt in ein, zwei Tagen sähe aus wie 25 je 30 Tage. Die Rate erscheint ab 7 Tagen Aufzeichnung des Zählers.",
             packOk: "Keine Prüfung schlägt an. Geprüft wird, je gegen den Median der übrigen Packs: Ruhe-Spreizung über dem 1,5-Fachen und 10 mV darüber (am letzten Tag mit Ruhewerten, ab 30 Ruhewerten), Ruhe-Spreizung steigt um 10 mV (aus mindestens 3 Tagen mit je 30 Ruhewerten), Zyklen über 25 % schneller (ab 7 Tagen und 8 Zyklen), wärmste Zelle 5 °C darüber (über die Tage, an denen alle Packs Werte haben), Zykluszähler gelöscht. Es ist ein Vergleich innerhalb der Bank: altern alle Packs gleich, schlägt nichts an.",
-            pairFlag: "Ein Pack trägt an markierten Tagen über 5 Prozentpunkte mehr als die Hälfte (je Tag mindestens 30 Minuten mit Messpunkten bei 40 A Paarstrom, beide Ströme in dieselbe Richtung; was vermutlich der Ladestand erklärt, zählt nicht). Meist liegt auf dem Weg des anderen Packs mehr Widerstand: Kabel, Busbar, Sicherung, Schalter, Stecker; die Widerstandsdiagnose grenzt das ein. Kein Befund über die Zellen; ein einzelner Tag nach einer Änderung an der Anlage sagt wenig.",
+            pairFlag: "Ein Pack trägt an markierten Tagen über 5 Prozentpunkte mehr als die Hälfte (je Tag mindestens 30 Minuten mit Messpunkten bei 40 A Paarstrom, beide Ströme in dieselbe Richtung; alle Messpunkte zählen, auch die, die der Ladestand erklären könnte). Meist liegt auf dem Weg des anderen Packs mehr Widerstand: Kabel, Busbar, Sicherung, Schalter, Stecker; die Widerstandsdiagnose grenzt das ein. Kein Befund über die Zellen; ein einzelner Tag nach einer Änderung an der Anlage sagt wenig.",
+            pairEqualizing: "{{count}} der {{total}} Messpunkte passen zu einem Ladestandsunterschied (mögliche Erklärung, sie zählen trotzdem).",
             pairOk: "Beide Packs tragen bei Last je etwa die Hälfte (innerhalb ±5 Prozentpunkte). Möglicher Hinweis sonst: „Pack … trägt … % bei Last“, wenn einer an mindestens einem Tag mehr trägt.",
             pairNoSamples: "Im Zeitraum keine Einzelwerte mit mindestens 40 A Paarstrom. Das sagt nichts über das Paar; es fehlte Last oder Aufzeichnung in voller Auflösung.",
             cellsQuiet: "Keine Zelle ist anders als „passend“ oder „Ruhewerte passend“. „Ruhewerte passend“ heißt nur: in Ruhe (und, falls gezeigt, beim Widerstand) unauffällig, die Kapazität ist nicht geprüft. Kapazität und Widerstand zeigen erst eine Ladung über 3,40 V, eine Entladung unter 3,15 V und Laststufen ab 20 A. Mögliche Einordnungen sonst: Ladestand-Versatz, Versatz in Ruhe, Kapazität vermutlich kleiner, mehrdeutig, Widerstand erhöht, auffällig (Messung/Kontakt?).",
@@ -56,7 +57,7 @@ const resources = {
           pairFlag_one: "Pack {{pack}} trägt {{share}} % bei Last (an 1 Tag)", pairFlag_other: "Pack {{pack}} trägt {{share}} % bei Last (an {{count}} Tagen)",
           trend: { up: "steigt", down: "fällt", flat: "gleichbleibend" },
           chartPack: "Spreizung von Pack {{p}} je Tag", chartPair: "Anteil des Plus-Packs von Paar {{p}} je Tag", day: "Tag",
-          l: { restP50: "Ruhe Median", restP95: "Ruhe P95", loadP95: "gesamt P95", judged: "ohne Ausgleich", share: "alle Messpunkte" },
+          l: { restP50: "Ruhe Median", restP95: "Ruhe P95", loadP95: "gesamt P95", share: "Anteil des Plus-Packs" },
           choose: "Eine Zeile anklicken, um ihren Verlauf zu sehen.",
           cells: {
             title: "Zellen", intro: "Je Pack die Zellen, die nicht „passend“ sind, aus der Zellanalyse der Einzelwerte im Zeitraum (Einzelheiten in den Packdetails).",
@@ -822,7 +823,8 @@ const resources = {
           tip: {
             rateShort: "No rate yet: the counter counts whole cycles only, one step in a day or two would read as 25 per 30 days. The rate appears from 7 days of counter recording.",
             packOk: "No check fires. Checked, each against the median of the other packs: rest spread above 1.5 times it and 10 mV above it (on the last day with rest values, from 30 rest values), rest spread rising by 10 mV (from at least 3 days with 30 rest values each), cycles more than 25 % faster (from 7 days and 8 cycles), warmest cell 5 °C above it (over the days all packs have values), cycle counter cleared. It is a comparison within the bank: if all packs age alike, nothing fires.",
-            pairFlag: "One pack carries more than 5 percentage points above half on flagged days (per day at least 30 minutes with samples at 40 A pair current, both currents the same way; what the state of charge likely explains does not count). Usually the other pack's path has more resistance: cable, busbar, fuse, switch, plug; the resistance diagnosis narrows it down. Not a finding about the cells; a single day after a change to the system says little.",
+            pairFlag: "One pack carries more than 5 percentage points above half on flagged days (per day at least 30 minutes with samples at 40 A pair current, both currents the same way; all samples count, also those the state of charge could explain). Usually the other pack's path has more resistance: cable, busbar, fuse, switch, plug; the resistance diagnosis narrows it down. Not a finding about the cells; a single day after a change to the system says little.",
+            pairEqualizing: "{{count}} of the {{total}} samples fit a difference in state of charge (a possible explanation, they count all the same).",
             pairOk: "Both packs carry about half each under load (within ±5 percentage points). Otherwise possible: “Pack … carries … % under load” when one carries more on at least one day.",
             pairNoSamples: "No single values with at least 40 A pair current in the period. That says nothing about the pair; load or full-resolution recording was missing.",
             cellsQuiet: "No cell is other than “matching” or “rest values matching”. “Rest values matching” only means unremarkable at rest (and, if shown, in resistance); the capacity is not checked. Capacity and resistance need a charge above 3.40 V, a discharge below 3.15 V and load steps from 20 A. Otherwise possible: SOC offset, offset at rest, capacity likely smaller, ambiguous, resistance higher, suspicious (measurement/contact?).",
@@ -838,7 +840,7 @@ const resources = {
           pairFlag_one: "Pack {{pack}} carries {{share}} % under load (on 1 day)", pairFlag_other: "Pack {{pack}} carries {{share}} % under load (on {{count}} days)",
           trend: { up: "rising", down: "falling", flat: "steady" },
           chartPack: "Spread of pack {{p}} per day", chartPair: "Share of the plus pack of pair {{p}} per day", day: "Day",
-          l: { restP50: "rest median", restP95: "rest P95", loadP95: "overall P95", judged: "without equalizing", share: "all samples" },
+          l: { restP50: "rest median", restP95: "rest P95", loadP95: "overall P95", share: "plus pack's share" },
           choose: "Click a row to see its course.",
           cells: {
             title: "Cells", intro: "Per pack the cells that are not “matching”, from the cell analysis of the single values in the period (details in the pack details).",
