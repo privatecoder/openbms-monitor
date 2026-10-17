@@ -5,7 +5,7 @@ import { localDate, packRows, pairRows, periodRange, reportCsv, trend } from "./
 const DAY = 86_400_000;
 const day0 = new Date(2030, 0, 1).getTime();
 const pd = (i: number, o: Partial<PackDay> = {}): PackDay => ({
-  day: day0 + i * DAY, rows: 100, spread_p50: 20, spread_p95: 30, spread_raw: true, rest_rows: 50, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
+  day: day0 + i * DAY, rows: 100, spread_p50: 20, spread_p95: 30, spread_raw: true, rest_rows: 200, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
 });
 const pairDay = (i: number, o: Partial<PairDay> = {}): PairDay => ({
   day: day0 + i * DAY, samples: 100, minutes: 60, share: 50, equalizing: 0, marked: false, ...o,
@@ -89,6 +89,25 @@ describe("health report", () => {
     expect(flags(kinds)).toEqual([[], [], [{ key: "spread", mv: 30, median: 10 }]]);
   });
 
+  it("compares on the latest day two packs have enough rest values, else says not rated", () => {
+    // yesterday 50 / 10 mV with enough rest values; today one rest value of pack 1 and none of pack 0
+    const packs = [pack(0, null, [pd(0, { rest_p95: 50 }), pd(1, { rest_p95: null, rest_p50: null, rest_rows: 0 })]), pack(1, null, [pd(0), pd(1, { rest_rows: 1 })])];
+    expect(packRows(report({ packs })).map((x) => [x.flags, x.unrated])).toEqual([[[{ key: "spread", mv: 50, median: 10 }], []], [[], []]]);
+    // a pack missing on that day is not rated, not unremarkable
+    const three = [...packs, pack(2, null, [pd(1, { rest_rows: 5 })])];
+    expect(packRows(report({ packs: three }))[2].unrated).toEqual(["spreadPack"]);
+    // a single pack: nothing to compare with
+    expect(packRows(report({ packs: [pack(0, null, [pd(0)])] }))[0].unrated).toEqual(["spread", "warm"]);
+  });
+
+  it("compares the warmest cell only on days every pack recorded at least half the usual rows", () => {
+    // pack 1 recorded only a short while that day: its maximum is no comparison for pack 0's whole day
+    const rows = packRows(report({ packs: [pack(0, null, [pd(0, { rows: 100, temp_max: 35 })]), pack(1, null, [pd(0, { rows: 10, temp_max: 25 })])] }));
+    expect(rows.map((x) => [x.flags, x.unrated])).toEqual([[[], ["warm"]], [[], ["warm"]]]);
+    const ok = packRows(report({ packs: [pack(0, null, [pd(0, { rows: 100, temp_max: 35 })]), pack(1, null, [pd(0, { rows: 60, temp_max: 25 })])] }));
+    expect(ok[0].flags).toEqual([{ key: "warm", c: 35, median: 25 }]);
+  });
+
   it("compares the warmest cell only over the days every pack has temperatures", () => {
     // pack 0 has a hot day nobody else recorded; over the shared days it is as warm as the other
     const a = [pd(0, { temp_max: 33 }), pd(1), pd(2)], b = [pd(1), pd(2)];
@@ -99,8 +118,10 @@ describe("health report", () => {
   it("a rest trend only from well-covered days of one kind", () => {
     const rising = (o: Partial<PackDay>) => [0, 1, 2].map((i) => pd(i, { rest_p95: 10 + i * 5, ...o }));
     expect(packRows(report({ packs: [pack(0, null, rising({}))] }))[0].restTrend).toMatchObject({ dir: "up", change: 10 });
-    // two rest values a day are no trend
+    // two rest values a day are no trend; single answers need 180 rest rows a day, minute maxima 30
     expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 2 }))] }))[0].restTrend).toBeUndefined();
+    expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 50 }))] }))[0].restTrend).toBeUndefined();
+    expect(packRows(report({ packs: [pack(0, null, rising({ rest_rows: 50, spread_raw: false }))] }))[0].restTrend).toMatchObject({ dir: "up" });
     // minute maxima before, raw rows after the change: only the raw days, never across
     const change = [pd(0, { rest_p95: 40, spread_raw: false }), pd(1, { rest_p95: 40, spread_raw: false }), pd(2), pd(3), pd(4)];
     expect(packRows(report({ packs: [pack(0, null, change)] }))[0].restTrend).toMatchObject({ dir: "flat", change: 0 });
@@ -131,9 +152,9 @@ describe("health report", () => {
     const lines = csv.trim().split("\n");
     expect(lines[0].startsWith("kind,pack,partner,date,rows,")).toBe(true);
     const tail = ",".repeat(26);
-    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,${tail}`);
-    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,12.35,0,12,30,,,,,${tail}`);
-    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,,,100,60,50,0,1${tail}`);
+    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,1,200,,10,100,25,,,,,,,,,${tail}`);
+    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,,12.35,0,12,30,,,,,${tail}`);
+    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,,,,100,60,50,0,1${tail}`);
     expect(localDate(day0)).toBe("2030-01-01");
   });
 
@@ -147,7 +168,7 @@ describe("health report", () => {
     const [head, ...rest] = csv.trim().split("\n");
     const cols = head.split(",");
     const rows = rest.map((l) => Object.fromEntries(l.split(",").map((v, i) => [cols[i], v])));
-    expect(rows[0]).toMatchObject({ kind: "pack", bal_status_rows: "20", bal_rows: "5", bal_pct: "25", bal_cells: "1 3" });
+    expect(rows[0]).toMatchObject({ kind: "pack", spread_raw: "1", bal_status_rows: "20", bal_rows: "5", bal_pct: "25", bal_cells: "1 3" });
     expect(rows[1]).toMatchObject({ kind: "pack", bal_status_rows: "", bal_pct: "", bal_cells: "" });
     expect(rows[3]).toMatchObject({ kind: "cells_period", pack: "7", rows: "900", cell_count: "2", incomplete: "3", balancer_left_out: "12", bms_left_out: "7", steps: "12" });
     expect(rows[5]).toMatchObject({ kind: "cell", pack: "7", cell: "2", class: "capacity", reason: "capacity top=31.25 bottom=-20", top_mv: "2", top_corr_mv: "1", r_pct: "100" });
