@@ -40,6 +40,9 @@ pub struct Telemetry {
     pub energy_discharged_kwh: Option<f64>,
 }
 
+/// Reserved bytes after the fixed part of a 0x42 answer that are still accepted (documented: 8).
+pub const RESERVED_MAX: usize = 32;
+
 impl Telemetry {
     /// Best available current: the regular value, or the idle current while idle.
     pub fn effective_current(&self) -> f64 {
@@ -68,9 +71,11 @@ impl Telemetry {
         if temps < 2 {
             return Err(Error::Layout("expected at least ambient and power temperature"));
         }
-        // the counts must fit the INFO length (fixed part 19 bytes, up to 8 reserved ones): an answer carries no CID2
+        // the counts must fit the INFO length: an answer carries no CID2. Fixed part 19 bytes, then the reserved fields:
+        // all documented versions 16.04.06–16.06.13 send four (8 bytes, Seplos-ASCII-Protokoll §5.1); up to 32 are
+        // accepted as reserve for one with more
         let base = 3 + 2 * cells + 1 + 2 * temps + 19;
-        if info.len() < base || info.len() > base + 8 {
+        if info.len() < base || info.len() > base + RESERVED_MAX {
             return Err(Error::Layout("0x42 length does not match its counts"));
         }
         let mut t = (0..temps).map(|_| r.u16().map(kelvin10_to_c)).collect::<Result<Vec<_>>>()?;
@@ -79,7 +84,10 @@ impl Telemetry {
         let current = f64::from(r.i16()?) / 100.0;
         let pack_voltage = f64::from(r.u16()?) / 100.0;
         let remaining_capacity_ah = f64::from(r.u16()?) / 100.0;
-        let _custom = r.u8()?;
+        // the number of user-defined values is 10 in every documented version: a second check against foreign layouts
+        if r.u8()? != 10 {
+            return Err(Error::Layout("0x42 user-defined count is not 10"));
+        }
         let full_capacity_ah = f64::from(r.u16()?) / 100.0;
         let soc = f64::from(r.u16()?) / 10.0;
         let rated_capacity_ah = f64::from(r.u16()?) / 100.0;

@@ -63,3 +63,43 @@ fn a_late_telemetry_answer_never_passes_as_status_nor_the_other_way() {
     longer.push(0);
     assert!(Status::parse(&longer).is_err());
 }
+
+/// A 0x42 INFO as documented for every version 16.04.06–16.06.13: M cells, 6 temperatures, the fixed part with 10
+/// user-defined values, then `reserved` bytes (documented: 8).
+fn telemetry_info(m: usize, reserved: usize) -> Vec<u8> {
+    let mut i = vec![0x00, 0x01, m as u8];
+    i.extend(std::iter::repeat_n([0x0D, 0x05], m).flatten());
+    i.push(6);
+    i.extend(std::iter::repeat_n([0x0B, 0x27], 6).flatten());
+    i.extend([0x00, 0x00, 0x14, 0xD6, 0x56, 0x9A, 0x0A, 0x6D, 0x60, 0x03, 0x17, 0x6D, 0x60, 0x00, 0x07, 0x03, 0xE8, 0x14, 0xD9]);
+    i.extend(std::iter::repeat_n(0u8, reserved));
+    i
+}
+
+/// A 0x44 INFO as documented: M cell bytes, 6 temperature bytes, current/voltage, 20 bit bytes, all set to `fill`.
+fn status_info(m: usize, fill: u8) -> Vec<u8> {
+    let mut i = vec![0x00, 0x01, m as u8];
+    i.extend(std::iter::repeat_n(fill, m));
+    i.push(6);
+    i.extend(std::iter::repeat_n(fill, 8));
+    i.push(20);
+    i.extend(std::iter::repeat_n(fill, 20));
+    i
+}
+
+#[test]
+fn every_documented_0x42_length_passes_and_no_0x44_passes_as_0x42() {
+    for m in 1..=32 {
+        let t = Telemetry::parse(&telemetry_info(m, 8)).unwrap_or_else(|e| panic!("{m} cells: {e}"));
+        assert_eq!(t.cell_voltages.len(), m);
+        // reserve: fewer or more reserved fields up to the limit
+        assert!(Telemetry::parse(&telemetry_info(m, 0)).is_ok());
+        assert!(Telemetry::parse(&telemetry_info(m, openbms_proto::telemetry::RESERVED_MAX)).is_ok());
+        assert!(Telemetry::parse(&telemetry_info(m, openbms_proto::telemetry::RESERVED_MAX + 2)).is_err());
+        for fill in [0x00, 0x01, 0x02, 0x0A, 0xF0, 0xFF] {
+            assert!(Telemetry::parse(&status_info(m, fill)).is_err(), "0x44 with {m} cells, bytes {fill:02X}");
+            assert!(Status::parse(&status_info(m, fill)).is_ok());
+            assert!(Status::parse(&telemetry_info(m, 8)).is_err(), "0x42 with {m} cells as 0x44");
+        }
+    }
+}
