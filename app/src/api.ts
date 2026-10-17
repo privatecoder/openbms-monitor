@@ -278,6 +278,7 @@ const tauriApi = {
   probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
   /** `lost`: the UI drops a dead link to reconnect (notifications keep watching for the lost connection) */
+  connectCancel: () => invoke<void>("connect_cancel"),
   disconnect: (lost = false) => invoke<void>("disconnect", { lost }),
   /** without addresses: search 0..15; with addresses: only read their device info */
   scan: (addresses?: number[]) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null }),
@@ -456,6 +457,7 @@ function demoApi(): typeof tauriApi {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
     connect: async () => ({ linked: false, answered: 0, gen: 0 }),
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
+    connectCancel: async () => {},
     disconnect: async () => { clearInterval(timer); },
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
       .map((s) => [s.address, demoProtocol.has(s.address) ? { ...s.device, can_protocol: demoProtocol.get(s.address)! } : s.device] as [number, DeviceInfo]),

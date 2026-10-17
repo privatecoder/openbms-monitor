@@ -48,6 +48,9 @@ struct AppState {
     memory_cancel: Arc<AtomicBool>,
     /// Asks the running pack search on the pack bus to stop before the next address (`maint_scan_cancel`).
     scan_cancel: Arc<AtomicBool>,
+    /// „Abbrechen“ while connecting: the check, the pack search after it and the other-bus probe stop before the next
+    /// address (`connect_cancel`); cleared by the next connect and by disconnect.
+    connect_cancel: Arc<AtomicBool>,
     /// The installation of the monitor connection (None: „Nur ansehen“ or not connected).
     link: Arc<Mutex<Link>>,
     /// Reserved packs and installations under a structural operation; see `control.rs`.
@@ -246,15 +249,17 @@ struct Connected {
 
 /// Ask once whether anything answers: on the CAN socket the master's Modbus values first, then 0x51 of 0..=15
 /// (the addresses to be polled first), stop at the first answer. Read-only.
-fn check_link(conn: &mut Connection, bus: Bus, first: &[u8]) -> Result<u8, openbms_transport::Probe> {
+fn check_link(conn: &mut Connection, bus: Bus, first: &[u8], cancel: &AtomicBool) -> Result<u8, openbms_transport::Probe> {
     if bus == Bus::CanSocketBus && conn.system_values().is_ok() {
         return Ok(0);
     }
-    let p = conn.probe(openbms_transport::probe_order(first));
+    let p = conn.probe(openbms_transport::probe_order(first).into_iter().take_while(|_| !cancel.load(Ordering::SeqCst)));
     p.answered.ok_or(p)
 }
 
 /// The error of a connect whose check found no pack: JSON, so the UI can explain it.
+const CONNECT_CANCELLED: &str = r#"{"code":"cancelled"}"#;
+
 fn no_answer_error(p: &openbms_transport::Probe) -> String {
     serde_json::json!({ "code": "no-answer", "noise": p.noise, "intra": p.intra }).to_string()
 }
@@ -279,6 +284,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
+    state.connect_cancel.store(false, Ordering::SeqCst);
     let key = endpoint.key();
     let (ep, bus, control) = match endpoint {
         EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), maint_store::ControlEndpoint::Serial { path }),
@@ -296,7 +302,12 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     conn.set_label(capture::label(&ep, bus));
     // nothing answers (wrong port, bus or baud rate, pack off or in the bootloader): the port is closed again,
     // nothing is linked or recorded
-    let answered = check_link(&mut conn, bus, &addresses.unwrap_or_default()).map_err(|p| no_answer_error(&p))?;
+    let checked = check_link(&mut conn, bus, &addresses.unwrap_or_default(), &state.connect_cancel);
+    // „Abbrechen“: the port is closed again, nothing is linked or recorded
+    if state.connect_cancel.swap(false, Ordering::SeqCst) {
+        return Err(CONNECT_CANCELLED.into());
+    }
+    let answered = checked.map_err(|p| no_answer_error(&p))?;
     {
         // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
         let mut slot = lock(&state.conn)?;
@@ -352,10 +363,21 @@ async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, 
     let ep = Endpoint::Serial { path, baud: other.baud() };
     let mut conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     conn.set_label(capture::label(&ep, other));
-    Ok(match check_link(&mut conn, other, &addresses.unwrap_or_default()) {
+    let checked = check_link(&mut conn, other, &addresses.unwrap_or_default(), &state.connect_cancel);
+    if state.connect_cancel.swap(false, Ordering::SeqCst) {
+        return Err(CONNECT_CANCELLED.into());
+    }
+    Ok(match checked {
         Ok(a) => OtherBus { answered: Some(a), noise: false, intra: false, pack_at_9600: other == Bus::CanSocketBus && conn.answers_parameters(a) },
         Err(p) => OtherBus { answered: None, noise: p.noise, intra: p.intra, pack_at_9600: false },
     })
+}
+
+/// „Abbrechen“ while connecting (`connect_cancel` in `AppState`).
+#[tauri::command]
+async fn connect_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    state.connect_cancel.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// Stop polling and drop the monitor's connection (also before a firmware update takes the port).
@@ -395,6 +417,7 @@ pub(crate) fn stop_monitor_and_tell(state: &AppState, app: &AppHandle) -> Result
 async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<(), String> {
     let _pending = control::begin_disconnect(&state.ops);
     state.memory_cancel.store(true, Ordering::SeqCst);
+    state.connect_cancel.store(false, Ordering::SeqCst);
     let ops = state.ops.clone();
     // waiting blocks: off the async runtime
     tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, Duration::from_secs(20))).await.map_err(|e| e.to_string())?;
@@ -405,7 +428,8 @@ async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<()
 async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>) -> Result<Vec<(u8, DeviceInfo)>, String> {
     // without addresses every DIP address 0..=15 is asked; with a fixed pack count only those
     let addresses = addresses.unwrap_or_else(|| (0..=15).collect());
-    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(addresses)))
+    let cancel = state.connect_cancel.clone();
+    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(addresses.into_iter().take_while(|_| !cancel.load(Ordering::SeqCst)))))
 }
 
 /// Read the master's system values once and send them like a polling round would (CAN socket bus only).
@@ -904,7 +928,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
