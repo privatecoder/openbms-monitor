@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PackEntry } from "../store";
 import { useSettings } from "../installData";
 import type { Pair } from "../pairs";
-import { innerMilliohm, outerMilliohm, smooth, zeroOffset, type Offset, type Reading, type RefPoint } from "./calc";
+import { innerMilliohm, outerMilliohm, resolutionMilliohm, smooth, zeroOffset, type Offset, type Reading, type RefPoint } from "./calc";
 
 /** Reference voltages: one busbar value, or one load-switch value per pair (keyed by the pair's plus pack). */
 export interface Refs { bus?: number; perPair: Record<number, number | undefined> }
@@ -32,31 +32,37 @@ export function refFor(addr: number, point: RefPoint, refs: Refs, pairs: Pair[])
   return pair ? refs.perPair[pair.plus] : undefined;
 }
 
-/** Zero offsets, measurement history and the live (smoothed) inner resistance per pack. */
+/** Zero offsets, measurement history and the live (smoothed) inner resistance per pack, with its resolution bound
+ *  smoothed the same way (each reading's bound at its own current), so both describe the same readings. */
 export function useDiag(scope: string | null, packs: Record<number, PackEntry>, pairs: Pair[]) {
   const { settings, save } = useSettings(scope);
   const raw = settings.diagnosis;
   const [saved, setSaved] = useState<Saved>(() => parseDiag(raw));
   const [inner, setInner] = useState<Record<number, number>>({});
+  const [innerBound, setInnerBound] = useState<Record<number, number>>({});
   const seen = useRef<Record<number, number>>({});
   // another installation, or its stored data arrived
   useEffect(() => { setSaved(parseDiag(raw)); }, [raw]);
-  useEffect(() => { setInner({}); seen.current = {}; }, [scope]);
+  useEffect(() => { setInner({}); setInnerBound({}); seen.current = {}; }, [scope]);
 
   const persist = (s: Saved) => { setSaved(s); save("diagnosis", s); };
 
   // smooth each new reading into the live inner resistance
   useEffect(() => {
-    const next = { ...inner };
+    const next = { ...inner }, nextBound = { ...innerBound };
     let changed = false;
     for (const p of Object.values(packs)) {
       const r = reading(p), off = saved.offsets[p.address];
       if (!r || !off || seen.current[p.address] === p.updated) continue;
       seen.current[p.address] = p.updated;
       const v = innerMilliohm(r, off);
-      if (v !== undefined) { next[p.address] = smooth(next[p.address], v); changed = true; }
+      if (v !== undefined) {
+        next[p.address] = smooth(next[p.address], v);
+        nextBound[p.address] = smooth(nextBound[p.address], resolutionMilliohm(r.current));
+        changed = true;
+      }
     }
-    if (changed) setInner(next);
+    if (changed) { setInner(next); setInnerBound(nextBound); }
   }, [packs, saved.offsets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Zero at rest; outer offsets for both reference points as far as their voltages were entered. A pack whose values
@@ -76,7 +82,7 @@ export function useDiag(scope: string | null, packs: Record<number, PackEntry>, 
         },
       };
     }
-    setInner({}); seen.current = {};
+    setInner({}); setInnerBound({}); seen.current = {};
     persist({ ...saved, offsets, zeroAt: now, zeroRefs: refs });
     return old;
   };
@@ -98,5 +104,5 @@ export function useDiag(scope: string | null, packs: Record<number, PackEntry>, 
   const clearHistory = () => persist({ ...saved, snapshots: [] });
   const hasOuter = (point: RefPoint) => Object.values(saved.offsets).some((o) => o.outer?.[point] !== undefined);
 
-  return { ...saved, inner, zero, measure, clearHistory, hasOuter };
+  return { ...saved, inner, innerBound, zero, measure, clearHistory, hasOuter };
 }

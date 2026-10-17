@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flagHigh, innerMilliohm, outerMilliohm, zeroOffset } from "./calc";
+import { flagHigh, innerMilliohm, outerMilliohm, resolutionMilliohm, smooth, zeroOffset } from "./calc";
 
 describe("resistance diagnosis", () => {
   const rest = { current: 0.1, pack_voltage: 53.00, port_voltage: 53.02 };
@@ -21,7 +21,7 @@ describe("resistance diagnosis", () => {
     expect(innerMilliohm({ current: 1, pack_voltage: 53, port_voltage: 53 }, off)).toBeUndefined();
     expect(outerMilliohm({ current: 10, pack_voltage: 53, port_voltage: 53 }, zeroOffset(rest), 53)).toBeUndefined();
   });
-  const at = (a: number) => ({ 0: a, 1: a, 2: a, 3: a, 4: a });
+  const at = (i: number) => { const b = resolutionMilliohm(i); return { 0: b, 1: b, 2: b, 3: b, 4: b }; };
   it("flags packs well above the median of the others", () => {
     expect([...flagHigh({ 0: 2, 1: 6, 2: 2.2, 3: 1.9, 4: undefined }, at(10))]).toEqual([1]);
     expect([...flagHigh({ 0: 0.2, 1: 0.5, 2: 0.2 }, at(10))]).toEqual([]);
@@ -33,6 +33,13 @@ describe("resistance diagnosis", () => {
     // at 3 A one 10 mV step is 3.3 mΩ, two voltages up to 6.7 mΩ: 4 mΩ above the others is within that
     expect([...flagHigh({ 0: 2, 1: 6, 2: 2.2, 3: 1.9 }, at(3))]).toEqual([]);
     expect([...flagHigh({ 0: 2, 1: 9, 2: 2.2, 3: 1.9 }, at(3))]).toEqual([1]);
-    expect([...flagHigh({ 0: 2, 1: 6, 2: 2.2, 3: 1.9 }, { 0: 10, 2: 10, 3: 10 })]).toEqual([]);
+    expect([...flagHigh({ 0: 2, 1: 6, 2: 2.2, 3: 1.9 }, { 0: 2, 2: 2, 3: 2 })]).toEqual([]);
+  });
+  it("checks a smoothed resistance against the bound smoothed the same way", () => {
+    // one 10 mV step at 3 A reads 3.3 mΩ, the next poll at 30 A reads 0: smoothed 2.3 mΩ against the others' 0
+    const r = smooth(smooth(undefined, 10 / 3), 0), bound = smooth(smooth(undefined, resolutionMilliohm(3)), resolutionMilliohm(30));
+    expect(r).toBeCloseTo(2.33, 2);
+    // against the 30 A bound alone (0.67 mΩ) it would be flagged; the smoothed bound (4.9 mΩ) keeps it quiet
+    expect([...flagHigh({ 0: 0, 1: r, 2: 0, 3: 0 }, { 0: bound, 1: bound, 2: bound, 3: bound })]).toEqual([]);
   });
 });
