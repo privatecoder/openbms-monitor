@@ -38,13 +38,14 @@ export function usePairs(scope: string | null) {
 }
 
 /**
- * judged: false while the load is too low for a statement (see PAIR_MIN_A).
- * equalizing: the smaller share fits the states of charge (lower SOC gives less when discharging, higher SOC takes
- * less when charging), so it is reported as likely equalizing instead of a weak pack (a likely explanation, not proof).
+ * judged: false while the load is too low for a statement (see PAIR_MIN_A) or the packs do not share a load.
+ * opposite: the two currents flow against each other (each over SHARE_MIN_A): the packs equalize, no split is judged.
+ * equalizing: next to a weak pack, its smaller share fits the states of charge (lower SOC gives less when discharging,
+ * higher SOC takes less when charging): a possible explanation shown beside the finding, never instead of it.
  * gap: output (port) voltage of the first minus the second pack in V, see PORT_GAP_V.
  */
 export interface PairCheck {
-  pair: Pair; total: number; share: number; judged: boolean; lowTotal: boolean; weak?: number;
+  pair: Pair; total: number; share: number; judged: boolean; lowTotal: boolean; weak?: number; opposite?: boolean;
   equalizing?: { pack: number; soc: [number, number] }; gap?: number; gapHigh?: boolean;
   /** how the gap behaves over the current, once known (see gapTrend) */
   trend?: ReturnType<typeof gapTrend>;
@@ -74,6 +75,9 @@ export const equalizes = (total: number, mine: number, other: number) =>
  * fuller pack look weak), so only a load well above it shows the resistances.
  */
 export const PAIR_MIN_A = 20;
+/** Load sharing needs both currents the same way, each above this (A). */
+export const SHARE_MIN_A = 1;
+const sharing = (a: number, b: number) => Math.abs(a) > SHARE_MIN_A && Math.abs(b) > SHARE_MIN_A && Math.sign(a) === Math.sign(b);
 
 /**
  * Pair currents: a low total against the other pairs points at the shared main cables; one pack
@@ -82,7 +86,8 @@ export const PAIR_MIN_A = 20;
  * lowTotal: total below 85 % of the median pair total (cleared above 90 %), but only when the stronger
  * pack is itself below normal; otherwise the weak pack alone explains the low total.
  * `prev` (the last result) provides the hysteresis so values near a threshold do not flicker.
- * Only judged when the median pack current is at least PAIR_MIN_A.
+ * Only judged when the median pack current is at least PAIR_MIN_A, and only pairs whose currents flow the same way
+ * (`sharing`); the medians are taken over those pairs.
  */
 export function checkPairs(
   pairs: Pair[], current: (a: number) => number | undefined, prev?: PairCheck[],
@@ -94,8 +99,9 @@ export function checkPairs(
     if (a === undefined || b === undefined) return [];
     return [{ pair, a, b, total: a + b }];
   });
-  const totals = rows.map((r) => Math.abs(r.total)).sort((x, y) => x - y);
-  const each = rows.flatMap((r) => [Math.abs(r.a), Math.abs(r.b)]).sort((x, y) => x - y);
+  const shared = rows.filter((r) => sharing(r.a, r.b));
+  const totals = shared.map((r) => Math.abs(r.total)).sort((x, y) => x - y);
+  const each = shared.flatMap((r) => [Math.abs(r.a), Math.abs(r.b)]).sort((x, y) => x - y);
   const mid = (s: number[]) => (s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2);
   // the true median: with an even count the mean of the two middle values (35 A and 1 A are 18 A, not 35 A)
   const loaded = each.length > 0 && mid(each) >= PAIR_MIN_A;
@@ -107,18 +113,17 @@ export function checkPairs(
     const pa = port?.(pair.plus), pb = port?.(pair.minus);
     const gap = pa !== undefined && pb !== undefined ? pa - pb : undefined;
     const gapHigh = gap !== undefined && Math.abs(gap) >= (was?.gapHigh ? PORT_GAP_V * 0.8 : PORT_GAP_V);
-    if (!loaded) return { pair, total, share, judged: false, lowTotal: false, gap, gapHigh };
-    const small = share < (was?.weak !== undefined || was?.equalizing ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
+    if (Math.abs(a) > SHARE_MIN_A && Math.abs(b) > SHARE_MIN_A && Math.sign(a) !== Math.sign(b))
+      return { pair, total, share, judged: false, lowTotal: false, opposite: true, gap, gapHigh };
+    if (!loaded || !sharing(a, b)) return { pair, total, share, judged: false, lowTotal: false, gap, gapHigh };
+    const small = share < (was?.weak !== undefined ? 0.75 : 0.7) ? (Math.abs(a) < Math.abs(b) ? pair.plus : pair.minus) : undefined;
     const sa = soc?.(pair.plus), sb = soc?.(pair.minus);
-    let weak = small, equalizing: PairCheck["equalizing"];
-    if (small !== undefined && sa !== undefined && sb !== undefined
-      && equalizes(total, small === pair.plus ? sa : sb, small === pair.plus ? sb : sa)) {
-      weak = undefined;
-      equalizing = { pack: small, soc: [sa, sb] };
-    }
+    const weak = small;
+    // the states of charge may explain the smaller share: said beside the finding, which stays
+    const equalizing: PairCheck["equalizing"] = small !== undefined && sa !== undefined && sb !== undefined
+      && equalizes(total, small === pair.plus ? sa : sb, small === pair.plus ? sb : sa) ? { pack: small, soc: [sa, sb] } : undefined;
     const below = totals.length > 1 && Math.abs(total) < m * (was?.lowTotal ? 0.9 : 0.85);
     // a strong partner at or above an average pack's share means the missing current is the weak pack's alone
-    // also when the smaller share is only equalizing: the partner then still carries a normal share
     const lowTotal = below && !(small !== undefined && hi >= (m / 2) * 0.85);
     return { pair, total, share, judged: true, lowTotal, weak, equalizing, gap, gapHigh };
   });
@@ -171,21 +176,24 @@ export interface PackSample { t: number; i: number; u: number }
 
 /**
  * A pair's live figures from time-paired answers only, so a value from much earlier is never set against a fresh one:
- * each answer of the plus pack in the last `windowMs` with the nearest of the minus pack within one polling round (the
- * larger median gap between consecutive answers of the two packs in the window, at least MATCH_MS; the packs are
- * polled one after the other, so partners can be most of a round apart). Means of current and output voltage per pack
- * over those pairs; undefined below PAIRED_MIN pairs.
+ * answers of the two packs in the last `windowMs` paired one to one within one polling round (the larger median gap
+ * between consecutive answers of the two packs in the window, at least MATCH_MS; the packs are polled one after the
+ * other, so partners can be most of a round apart), closest first, each answer used at most once. Means of current and
+ * output voltage per pack over those pairs; undefined below PAIRED_MIN pairs (that many different answers of each).
  */
 export function pairedMeans(plus: PackSample[], minus: PackSample[], now: number, windowMs: number): { a: number; b: number; ua: number; ub: number; n: number } | undefined {
   const inWindow = (s: PackSample[]) => s.filter((x) => now - x.t <= windowMs);
   const mine = inWindow(plus), others = inWindow(minus);
   const tol = Math.max(MATCH_MS, roundMs(mine) ?? 0, roundMs(others) ?? 0);
+  const cand: [number, number, number][] = [];
+  mine.forEach((x, i) => others.forEach((y, j) => { const d = Math.abs(y.t - x.t); if (d <= tol) cand.push([d, i, j]); }));
+  cand.sort((p, q) => p[0] - q[0]);
+  const usedA = new Set<number>(), usedB = new Set<number>();
   let n = 0, a = 0, b = 0, ua = 0, ub = 0;
-  for (const x of mine) {
-    let best: PackSample | undefined;
-    for (const y of others) if (Math.abs(y.t - x.t) <= tol && (!best || Math.abs(y.t - x.t) < Math.abs(best.t - x.t))) best = y;
-    if (!best) continue;
-    n++; a += x.i; b += best.i; ua += x.u; ub += best.u;
+  for (const [, i, j] of cand) {
+    if (usedA.has(i) || usedB.has(j)) continue;
+    usedA.add(i); usedB.add(j);
+    n++; a += mine[i].i; b += others[j].i; ua += mine[i].u; ub += others[j].u;
   }
   return n >= PAIRED_MIN ? { a: a / n, b: b / n, ua: ua / n, ub: ub / n, n } : undefined;
 }

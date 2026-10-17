@@ -318,8 +318,9 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
         {t("pairs.footer", { a: no(pair.plus), b: no(pair.minus), sum: check ? fmt(check.total, 1, "A") : "–" })}
         {check?.lowTotal && <>; {t("diag.pairLow")}</>}
         {check?.weak !== undefined && <>; {t("diag.pairWeak", { p: no(check.weak), bridge: check.weak === pair.minus ? "+" : "−" })}</>}
-        {check?.equalizing && <span className="text-muted">; {t("pairs.equalizing", { p: no(check.equalizing.pack), a: fmt(check.equalizing.soc[0], 1, "%"), b: fmt(check.equalizing.soc[1], 1, "%") })}</span>}
-        {check && !check.judged && <span className="text-muted/70">; {t("pairs.notJudged", { a: PAIR_MIN_A })}</span>}
+        {check?.equalizing && <span className="text-muted">; {t("pairs.equalizing", { d: fmt(Math.abs(check.equalizing.soc[0] - check.equalizing.soc[1]), 1), a: fmt(check.equalizing.soc[0], 1, "%"), b: fmt(check.equalizing.soc[1], 1, "%") })}</span>}
+        {check?.opposite && <span className="text-muted">; {t("pairs.opposite")}</span>}
+        {check && !check.judged && !check.opposite && <span className="text-muted/70">; {t("pairs.notJudged", { a: PAIR_MIN_A })}</span>}
         {!check && <span className="text-muted/70">; {t("pairs.noPaired", { n: PAIRED_MIN })}</span>}
         {check?.gap !== undefined && (
           <span className={check.gapHigh ? "text-alarm" : "text-muted"}>
