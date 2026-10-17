@@ -11,6 +11,7 @@ import type { Maint } from "../maintStore";
 import { reloadSettings } from "../installData";
 import { useCellDb } from "../cells/store";
 import { cellName } from "./CellAssign";
+import { DevicesPanel } from "./DevicesPanel";
 import { ExportRow, ImportPanel } from "./InstallationTransfer";
 import { MaintSetup } from "./MaintSetup";
 
@@ -19,7 +20,7 @@ const packNo = (a: number) => String(a).padStart(2, "0");
 const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
 /** The installations: everything the app keeps about a bank belongs to one (recording, boards, cell types, groups and
- *  pairs, diagnosis, parameter states, firmware logs). Rename, merge, archive, delete; per installation its packs. */
+ *  pairs, diagnosis, devices, parameter states, firmware logs). Rename, merge, archive, delete; per installation its packs. */
 export function Installations({ maint, connected, onParameters }: {
   maint: Maint;
   connected: boolean;
@@ -181,6 +182,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
       {expanded && (
         <div className="space-y-3">
           <Ports inst={inst} maint={maint} />
+          {view && <DevicesPanel installation={inst.id} places={view.places.map((p) => p.address)} />}
           {others.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-muted">{t("inst.mergeInto")}</span>

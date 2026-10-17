@@ -9,6 +9,7 @@ import { AlarmList, CellStrip, QUIET, Stat, StateMark, balancedCells, kw, median
 import { LiveIndicator, Tick } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
+import { BalancerTimeline } from "./BalancerTimeline";
 import { DatasheetPanel } from "./DatasheetPanel";
 
 export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEntry; bus: Bus | null; multi: boolean; onBack: () => void; scope: string | null; packs: Record<number, PackEntry> }) {
@@ -81,6 +82,8 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             </div>
             <p className="mt-3 text-sm text-muted">mV</p>
           </Panel>
+
+          <BalancerTimeline pack={p.address} scope={scope} />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <Panel className="p-5">

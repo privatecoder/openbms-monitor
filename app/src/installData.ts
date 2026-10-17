@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, isDemo, type InstallationSettings, type LegacyLocal, type SettingKey } from "./api";
 
-/** Settings an installation owns (cell type per place, groups, pairs, diagnosis, notifications), kept by the backend per installation.
+/** Settings an installation owns (cell type per place, groups, pairs, diagnosis, notifications, devices), kept by the backend per installation.
  *  With „Nur ansehen“ (scope null) and in the browser preview they live in memory for this session only. One cache for
  *  all components, so the dashboard, the pack detail and the editors show a change at once. */
-const EMPTY: InstallationSettings = { cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null };
+const EMPTY: InstallationSettings = { cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null };
 const cache = new Map<string, InstallationSettings>();
 const loading = new Set<string>();
 const subs = new Set<() => void>();
@@ -33,7 +33,7 @@ export function useSettings(scope: string | null) {
   useEffect(() => { load(scope); }, [scope]);
   const k = keyOf(scope);
   const loaded = cache.has(k);
-  /** A setting edited as a whole (groups, pairs, diagnosis, notifications). Not before the stored ones are loaded.
+  /** A setting edited as a whole (groups, pairs, diagnosis, notifications, devices). Not before the stored ones are loaded.
    *  Resolves to null, or to the backend's error (`errorKey`) after the setting was put back as stored. */
   const save = async (key: Exclude<SettingKey, "cell_types">, value: unknown): Promise<unknown> => {
     const cur = cache.get(k);

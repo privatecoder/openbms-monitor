@@ -22,7 +22,7 @@ export type ImportPreview = {
 export type ImportApplied = {
   target: string; target_name: string; recording_rows: number; recording_events: number; logs_copied: number; already: boolean;
   report: { boards_added?: number; snapshots_added?: number; logs_added?: number; logs_missing?: number;
-    not_taken?: { cell_types?: Record<string, string>; groups?: string | null; pairs?: string | null; diagnosis?: string | null }; master_serial_not_taken?: string | null };
+    not_taken?: { cell_types?: Record<string, string>; groups?: string | null; pairs?: string | null; diagnosis?: string | null; notifications?: string | null; devices?: string | null }; master_serial_not_taken?: string | null };
 };
 export type OpenImport = { export_id: string; installation: string; name: string; started: number };
 
@@ -206,8 +206,14 @@ export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; 
  *  text it was moved in from, „übernommen“) and `last_connect` are set by the backend. */
 export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean; legacy?: string | null; last_connect?: number | null }
 /** Settings an installation owns (JSON each, null: none). */
-export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown }
-export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications";
+export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown; devices: unknown }
+export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices";
+/** One slice of the balancer timeline (ms per state; time without a row is in none). External balancer computed:
+ *  active / inactive / unknown / unassigned. BMS as reported: bal (a minute row by its share) / idle / no_status;
+ *  cells: most cells at once in a single answer; minutes: minute rows that balanced (only their share is known). */
+export interface BalancerSlice { from: number; to: number; active: number; inactive: number; unknown: number; unassigned: number; bal: number; idle: number; no_status: number; cells: number; minutes: boolean }
+/** `balancer_timeline` (balancer.rs): measured is false while no device is read. */
+export interface BalancerTimeline { from: number; to: number; slices: BalancerSlice[]; total: BalancerSlice; devices: string[]; first_assigned: number | null; measured: boolean }
 /** The connection's installation and why notifications are off for it: CAN socket with the master not matched
  *  (`can_no_serial`: none stored for address 0 to compare), RS485-1/2 with no pack confirmed yet. */
 export interface NotifyStatus { installation: string | null; can_unchecked: boolean; can_no_serial: boolean; none_confirmed: boolean }
@@ -314,6 +320,9 @@ const tauriApi = {
     invoke<Series>("history_series", { site, from, to, packs, cellsPack, maxPoints }),
   healthReport: (site: string, from: number, to: number, pairs: { plus: number; minus: number }[]) =>
     invoke<HealthReport>("health_report", { site, from, to, pairs }),
+  /** both balancing lanes of a pack in `slices` parts of the span; `devices`: the installation's device setting */
+  balancerTimeline: (site: string, pack: number, from: number, to: number, devices: unknown, slices: number) =>
+    invoke<BalancerTimeline>("balancer_timeline", { site, pack, from, to, devices, slices }),
   historyExport: (site: string, from: number, to: number, packs: number[], format: "jsonl" | "csv", path: string) =>
     invoke<ExportStats>("history_export", { site, from, to, packs, format, path }),
   historyImport: (path: string, site: string) => invoke<ImportStats>("history_import", { path, site }),
@@ -507,6 +516,7 @@ function demoApi(): typeof tauriApi {
     },
     historySeries: async (_site, from, to, packs, cellsPack, maxPoints) => demoSeries(from, to, packs, cellsPack, maxPoints),
     healthReport: async (_site, from, to, pairs) => demoReport(from, to, (await load()).packs.map((p) => p.address), pairs),
+    balancerTimeline: async (_site, _pack, from, to, _devices, slices) => demoBalancer(from, to, slices),
     historyExport: async () => { throw new Error("preview"); },
     historyImport: async () => { throw new Error("preview"); },
     historyClear: async () => {},
@@ -632,7 +642,7 @@ function demoApi(): typeof tauriApi {
     maintCreateInstallation: async () => { throw new Error("desktop app only"); },
     // preview: no installations, nothing stored
     installationsMigrate: async () => [],
-    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null }),
+    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null }),
     setInstallationSetting: async () => {},
     setInstallationCellTypes: async () => {},
     installationOverview: async () => { throw new Error("desktop app only"); },
@@ -726,6 +736,20 @@ function demoReport(from: number, to: number, packs: number[], pairs: { plus: nu
       }),
     })),
   };
+}
+
+/** Preview: an external balancer that works in the afternoon (top of charge), the BMS balancing three cells near full. */
+function demoBalancer(from: number, to: number, slices: number): BalancerTimeline {
+  const width = (to - from) / Math.max(1, slices);
+  const hour = (t: number) => ((t / 3_600_000) % 24 + 24) % 24;
+  const list: BalancerSlice[] = Array.from({ length: slices }, (_, i) => {
+    const a = Math.round(from + i * width), b = Math.round(from + (i + 1) * width), ms = b - a, h = hour((a + b) / 2);
+    const on = h > 13 && h < 17, bms = h > 15 && h < 16.5;
+    return { from: a, to: b, active: on ? ms : 0, inactive: on ? 0 : ms, unknown: 0, unassigned: 0, bal: bms ? ms : 0, idle: bms ? 0 : ms, no_status: 0, cells: bms ? 3 : 0, minutes: false };
+  });
+  const total = list.reduce((s, x) => ({ ...s, active: s.active + x.active, inactive: s.inactive + x.inactive, bal: s.bal + x.bal, idle: s.idle + x.idle, cells: Math.max(s.cells, x.cells) }),
+    { from, to, active: 0, inactive: 0, unknown: 0, unassigned: 0, bal: 0, idle: 0, no_status: 0, cells: 0, minutes: false });
+  return { from, to, slices: list, total, devices: ["Demo 4 A"], first_assigned: from - 86_400_000, measured: false };
 }
 
 /** Preview: a day of a 12-pack bank (charging by day, discharging at night), pack 01 with a weak share. */
