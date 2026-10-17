@@ -1,0 +1,12 @@
+---
+title: Cell analysis
+short: Says per cell of a pack, from the recording, whether it matches, shows an SOC offset, likely less capacity, a higher resistance or a measurement/contact problem, and when the data allow no statement.
+related: topic.balancers, status.balancing, topic.healthReport, value.cell_voltages
+---
+- **Why:** 16 cell lines show that cells differ, not what it means. In the flat part of the LFP curve (about 3.30–3.35 V) differences of 5–15 mV come from internal resistance and state of charge; capacity shows only near full and near empty.
+- **Basis:** each cell against the middle cell (median) of the same poll. Single values only (the days at full resolution) and only polls with the pack's usual cell count; pairs of polls only within one connection.
+- **Four situations:** *rest* (this and the previous poll below 2 A), *top* (highest cell from 3.40 V while charging, plus the order in which the cells reach 3.45 V), *bottom* (lowest cell down to 3.15 V while discharging) and *load steps* (the current changes by at least 20 A between two polls: voltage step over current step per cell, in mΩ and % of the pack median).
+- **Correction:** a higher resistance lifts a cell while charging and lowers it while discharging, just like less capacity. Top and bottom are therefore corrected by the cell's own resistance (deviation − (R cell − R median) × current). Without enough load steps the pattern reads “ambiguous (resistance or capacity)”.
+- **Assessment:** *matching* (rest within ±5 mV, resistance ±20 %, top/bottom ±15 mV); *SOC offset* (top and bottom in the same direction, or off at rest only); *capacity likely smaller* (corrected high at the top and low at the bottom, both beyond 15 mV); *resistance higher* (from 130 % of the median over at least 10 load steps); *suspicious (measurement/contact?)* (the same offset at rest, under load and at the top, or at least three jumps of 20 mV no other cell shows). With too little data (fewer than 30 polls, fewer than 10 load steps) it says “no statement” with the reason.
+- **Balancers:** polls in which an entered external balancer is computed working (or that is not decidable) stay out of rest, top, bottom and load; so do the rest values of a cell the BMS is balancing. The analysis says how many.
+- **Display:** in the pack details a heatmap cells × time (±20 mV), below it the balancing timeline over the same span, below that the table per cell. In the health report the section “Cells” with the cells that do not match; the CSV holds all values.

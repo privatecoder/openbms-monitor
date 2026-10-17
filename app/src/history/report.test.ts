@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { HealthReport, PackDay, PairDay } from "../api";
+import type { CellAnalysis, CellResult, HealthReport, PackDay, PairDay } from "../api";
 import { localDate, packRows, pairRows, periodRange, reportCsv, trend } from "./report";
 
 const DAY = 86_400_000;
@@ -68,9 +68,26 @@ describe("health report", () => {
     const csv = reportCsv(report({ packs: [pack(7, 12.345, [pd(0, { rest_p50: null })])], pairs: [{ plus: 0, minus: 1, days: [pairDay(0, { marked: true })] }] }));
     const lines = csv.trim().split("\n");
     expect(lines[0].startsWith("kind,pack,partner,date,rows,")).toBe(true);
-    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,`);
-    expect(lines[2]).toBe("pack_period,7,,,,,,,,,,,12.35,0,,,,,,,");
-    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,100,50,0,100,60,50,1`);
+    const tail = ",".repeat(26);
+    expect(lines[1]).toBe(`pack,7,,${localDate(day0)},100,20,30,50,,10,100,25,,,,,,,,,${tail}`);
+    expect(lines[2]).toBe(`pack_period,7,,,,,,,,,,,12.35,0,,,,,,,${tail}`);
+    expect(lines[3]).toBe(`pair,0,1,${localDate(day0)},,,,,,,,,,,100,50,0,100,60,50,1${tail}`);
     expect(localDate(day0)).toBe("2030-01-01");
+  });
+
+  it("adds the balancing bits per day and the cell analysis per pack", () => {
+    const cell = (n: number, o: Partial<CellResult> = {}): CellResult => ({ cell: n, rest: 0.5, rest_rows: 300, load: 1, top: 2, bottom: -2, top_corr: 1, bottom_corr: -1,
+      r_mohm: 0.5, r_pct: 100, order: 2.5, jumps: 0, class: "ok", reason: { key: "within" }, ...o });
+    const a: CellAnalysis = { from: day0, to: day0 + DAY, cell_count: 2, rows: 900, incomplete: 3, minute_rows: 0, balancer_active: 10, balancer_unknown: 2, balancer: true,
+      rest_rows: 300, top_rows: 40, bottom_rows: 0, load_rows: 200, bms_left_out: 7, rest_no_status: 0, steps: 12, r_median: 0.5, charges: 1, heat: [],
+      cells: [cell(1), cell(2, { class: "capacity", reason: { key: "capacity", top: 31.25, bottom: -20 } })] };
+    const csv = reportCsv(report({ packs: [pack(7, null, [pd(0, { bal_mask: 0b101, bal_rows: 5, bal_n: 20 }), pd(1)])] }), { 7: a });
+    const [head, ...rest] = csv.trim().split("\n");
+    const cols = head.split(",");
+    const rows = rest.map((l) => Object.fromEntries(l.split(",").map((v, i) => [cols[i], v])));
+    expect(rows[0]).toMatchObject({ kind: "pack", bal_status_rows: "20", bal_rows: "5", bal_pct: "25", bal_cells: "1 3" });
+    expect(rows[1]).toMatchObject({ kind: "pack", bal_status_rows: "", bal_pct: "", bal_cells: "" });
+    expect(rows[3]).toMatchObject({ kind: "cells_period", pack: "7", rows: "900", cell_count: "2", incomplete: "3", balancer_left_out: "12", bms_left_out: "7", steps: "12" });
+    expect(rows[5]).toMatchObject({ kind: "cell", pack: "7", cell: "2", class: "capacity", reason: "capacity top=31.25 bottom=-20", top_mv: "2", top_corr_mv: "1", r_pct: "100" });
   });
 });
