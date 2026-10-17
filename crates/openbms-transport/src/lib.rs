@@ -253,7 +253,7 @@ impl Connection {
     }
 
     /// Send an ASCII request and return the answer for `address`. Interleaved intra-pack
-    /// frames (CID2 0x5A, master polling on the pack bus) are skipped.
+    /// frames (CID2 0x5A, master polling on the pack bus) and an exact echo of the request are skipped.
     pub fn ascii(&mut self, request: &[u8], address: u8) -> Result<Frame> {
         self.ascii_as(request, address, |_| true)
     }
@@ -281,6 +281,12 @@ impl Connection {
             if let Some(end) = pending.iter().position(|b| *b == b'\r') {
                 let line: Vec<u8> = pending.drain(..=end).collect();
                 let start = line.iter().position(|b| *b == b'~').unwrap_or(0);
+                // an adapter or gateway that echoes what it sent: the request itself is no answer
+                if line[start..] == *request {
+                    // not counted as received data: an echo alone is no garbled answer either
+                    self.rx.bytes = self.rx.bytes.saturating_sub(line.len());
+                    continue;
+                }
                 let parsed = frame::parse(&line[start..]);
                 if let Ok(f) = &parsed {
                     self.rx.frames += 1;
@@ -531,9 +537,10 @@ impl Connection {
         let saved = self.timeout;
         self.timeout = Duration::from_millis(300);
         self.rx = RxStats::default();
-        // any frame from that address proves it is reachable, also a refusal or an answer this version formats differently
+        // an answer from that address proves it is reachable, also an answer this version formats differently or a
+        // refusal with a BMS RTN code (01–09); an echo of the request is skipped, any other RTN proves nothing
         let answered = addresses.into_iter().find(|a| match DeviceInfo::request(*a) {
-            Ok(r) => matches!(self.ascii(&r, *a), Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(_)))),
+            Ok(r) => matches!(self.ascii(&r, *a), Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(0x01..=0x09)))),
             Err(_) => false,
         });
         self.timeout = saved;
@@ -747,6 +754,23 @@ mod tests {
         // and the other way round for 0x42
         let mut c = scripted(vec![(Telemetry::request(1).unwrap(), [STATUS1, TELE1].concat())]);
         assert_eq!(c.telemetry(1).unwrap().pack_voltage, 53.34);
+    }
+
+    #[test]
+    fn an_echo_of_the_request_is_no_answer() {
+        let req = DeviceInfo::request(0).unwrap();
+        // echo, then the pack's answer (a refusal here): reachable, the answer counts, not the echo
+        let mut c = scripted(vec![(req.clone(), [req.clone(), answer(0, 0x04, &[])].concat())]);
+        assert!(matches!(c.ascii(&req, 0), Err(Error::Proto(openbms_proto::Error::Rtn(0x04)))));
+        assert_eq!(c.probe([0]).answered, Some(0));
+        // echo only: nobody answers
+        let mut c = scripted(vec![(req.clone(), req.clone())]);
+        assert!(matches!(c.ascii(&req, 0), Err(Error::Timeout(_))));
+        let p = c.probe([0]);
+        assert_eq!((p.answered, p.noise), (None, false));
+        // an RTN that is no BMS code proves nothing
+        let mut c = scripted(vec![(req.clone(), answer(0, 0x51, &[]))]);
+        assert_eq!(c.probe([0]).answered, None);
     }
 
     #[test]
