@@ -7,7 +7,7 @@ import { useSettings } from "../installData";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { Segmented } from "../components/PackPicker";
-import { InfoIcon } from "../help";
+import { HintNote, InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { Chart, useDark, type Line } from "../history/Chart";
 import { exportName } from "../history/data";
@@ -170,9 +170,9 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     <td className={cn("py-2 pr-4 text-right", r.flags.some((f) => f.key === "cycles") && "font-medium text-discharge")}>{fmt(r.rate, 1)}</td>
                     <td className="py-2 pr-4 text-right">{fmt(r.tempMax, 1, "°C")}</td>
                     <td className={cn("py-2", warn ? "text-discharge" : "text-muted")}>
-                      <span className="cursor-help" title={r.flags.length ? r.flags.map((f) => t(`hist.rep.flagTip.${f.key}`)).join("\n\n") : t("hist.rep.tip.packOk")}>
+                      <HintNote help="topic.healthReport" items={r.flags.length ? r.flags.map((f) => ({ title: flagText(f), text: t(`hist.rep.flagTip.${f.key}`) })) : [{ title: t("hist.rep.ok"), text: t("hist.rep.tip.packOk") }]}>
                         {r.flags.length ? r.flags.map(flagText).join("; ") : t("hist.rep.ok")}
-                      </span>
+                      </HintNote>
                     </td>
                   </tr>
                 );
@@ -206,17 +206,17 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     <td className="py-2">
                       {typeof a === "string" ? <span className="text-alarm">{t("hist.rep.cells.failed", { err: a })}</span>
                         : !off ? <span className="text-muted">{t("hist.rep.cells.noRaw")}</span>
-                        : off.all ? <span className="cursor-help text-muted" title={t("hist.rep.tip.cellsAllNone")}>{t("hist.rep.cells.allNone")}: {reasonText(t, off.all.reason, lang)}</span>
+                        : off.all ? <HintNote className="text-muted" help="topic.cellAnalysis" items={[{ title: t("hist.rep.cells.allNone"), text: t("hist.rep.tip.cellsAllNone") }]}>{t("hist.rep.cells.allNone")}: {reasonText(t, off.all.reason, lang)}</HintNote>
                         : !off.cells.length ? (
-                          <span className="cursor-help text-muted" title={t("hist.rep.tip.cellsQuiet")}>{a.cells.some((c) => c.class === "rest_ok")
+                          <HintNote className="text-muted" help="topic.cellAnalysis" items={[{ title: t("cell.class.rest_ok"), text: t("hist.rep.tip.cellsQuiet") }]}>{a.cells.some((c) => c.class === "rest_ok")
                             ? t("hist.rep.cells.quiet", { ok: a.cells.filter((c) => c.class === "ok").length, rest: a.cells.filter((c) => c.class === "rest_ok").length })
-                            : t("hist.rep.cells.allOk", { count: a.cells.length })}</span>
+                            : t("hist.rep.cells.allOk", { count: a.cells.length })}</HintNote>
                         )
                         : (
                           <ul className="space-y-0.5">
                             {off.cells.map((c) => (
-                              <li key={c.cell} className="cursor-help" title={t(`cell.classTip.${c.class}`)}>
-                                <span className={cn("font-medium", c.class === "none" ? "text-muted" : "text-discharge")}>{t("hist.rep.cells.cell", { n: c.cell })}: {t(`cell.class.${c.class}`)}</span>
+                              <li key={c.cell}>
+                                <HintNote className={cn("font-medium", c.class === "none" ? "text-muted" : "text-discharge")} help="topic.cellAnalysis" items={[{ title: t(`cell.class.${c.class}`), text: t(`cell.classTip.${c.class}`) }]}>{t("hist.rep.cells.cell", { n: c.cell })}: {t(`cell.class.${c.class}`)}</HintNote>
                                 <span className="text-muted"> ({reasonText(t, c.reason, lang)})</span>
                               </li>
                             ))}
@@ -255,10 +255,12 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                       <td className="py-2 pr-4 text-right">{fmt(r.samples, 0)}</td>
                       <td className={cn("py-2 pr-4 text-right", r.markedDays > 0 && "font-medium text-discharge")}>{fmt(r.markedDays, 0)}</td>
                       <td className={cn("py-2", r.flag ? "text-discharge" : "text-muted")}>
-                        <span className="cursor-help" title={t(r.flag ? "hist.rep.tip.pairFlag" : r.samples ? "hist.rep.tip.pairOk" : "hist.rep.tip.pairNoSamples")}>
-                          {r.flag ? t("hist.rep.pairFlag", { pack: no(r.flag.pack), share: fmt(r.flag.share, 0), count: r.flag.days })
-                            : r.samples ? t("hist.rep.ok") : t("hist.rep.noSamples")}
-                        </span>
+                        {(() => {
+                          const text = r.flag ? t("hist.rep.pairFlag", { pack: no(r.flag.pack), share: fmt(r.flag.share, 0), count: r.flag.days })
+                            : r.samples ? t("hist.rep.ok") : t("hist.rep.noSamples");
+                          const tip = t(r.flag ? "hist.rep.tip.pairFlag" : r.samples ? "hist.rep.tip.pairOk" : "hist.rep.tip.pairNoSamples");
+                          return <HintNote help="topic.healthReport" items={[{ title: text, text: tip }]}>{text}</HintNote>;
+                        })()}
                       </td>
                     </tr>
                   );

@@ -4,7 +4,7 @@ import { Microscope } from "lucide-react";
 import { api, isDemo, type CellAnalysis, type CellResult } from "../api";
 import { Panel } from "../components/ui/card";
 import { Segmented } from "../components/PackPicker";
-import { InfoIcon } from "../help";
+import { HintNote, InfoIcon } from "../help";
 import { useSettings } from "../installData";
 import { useDark } from "../history/Chart";
 import { cn, fmt } from "../lib/utils";
@@ -131,7 +131,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
                       </td>
                       <td className="py-2 pr-4 text-right">{fmt(c.order, 1)}</td>
                       <td className="py-2">
-                        <span className={cn("cursor-help font-medium", CLASS_TONE[c.class], c.class === "ok" && "text-ink")} title={t(`cell.classTip.${c.class}`)}>{t(`cell.class.${c.class}`)}</span>
+                        <HintNote className={cn("font-medium", CLASS_TONE[c.class], c.class === "ok" && "text-ink")} help="topic.cellAnalysis" items={[{ title: t(`cell.class.${c.class}`), text: t(`cell.classTip.${c.class}`) }]}>{t(`cell.class.${c.class}`)}</HintNote>
                         {!(c.class === "none" && commonNone) && (
                           <span className="block text-xs text-muted">{reasonText(t, c.reason, lang)}{c.jumps > 0 && c.reason.key !== "jumps" ? `; ${t("cell.jumpsNote", { count: c.jumps })}` : ""}</span>
                         )}

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import { Info } from "lucide-react";
@@ -106,6 +106,42 @@ export function InfoIcon({ id, className }: { id: string; className?: string }) 
             {t("help.more")}
           </button>
         )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** A hint text that opens the help box on hover or click: what it means (one block per item) and a link to the help
+ * page. The text itself is the trigger, no icon, so tables keep their width. */
+export function HintNote({ items, help, children, className }: { items: { title: string; text: string }[]; help: string; children: ReactNode; className?: string }) {
+  const { t } = useTranslation();
+  const openHelp = useOpenHelp();
+  const [open, setOpen] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const show = () => { clearTimeout(timer.current); setOpen(true); };
+  const hide = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setOpen(false), 150); };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <span role="button" tabIndex={0} onMouseEnter={show} onMouseLeave={hide}
+          // a click (touch) opens it and keeps it open; it does not toggle the box hover already opened, nor select the row
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); show(); }}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(); } }}
+          className={`cursor-pointer decoration-dotted underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none ${className ?? ""}`}>
+          {children}
+        </span>
+      </PopoverTrigger>
+      <PopoverContent onMouseEnter={show} onMouseLeave={hide} onClick={(e) => e.stopPropagation()}>
+        {items.map((i) => (
+          <div key={i.title} className="mb-3 last:mb-0">
+            <div className="mb-1 font-display text-base font-semibold">{i.title}</div>
+            <p className="text-ink/80">{i.text}</p>
+          </div>
+        ))}
+        <button onClick={() => { setOpen(false); openHelp(help); }} className="mt-3 text-sm font-medium text-charge underline-offset-2 hover:underline">
+          {t("help.more")}
+        </button>
       </PopoverContent>
     </Popover>
   );
