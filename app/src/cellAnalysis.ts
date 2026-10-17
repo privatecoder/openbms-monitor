@@ -53,7 +53,7 @@ export function reasonText(t: (key: string, vals?: Record<string, unknown>) => s
   return t(key, { ...vals, missing });
 }
 
-/** Classes the report does not name: matching, or matching as far as the rest values go. */
+/** Classes the report does not name: matching, or matching as far as measured (counted apart in the summary). */
 export const QUIET_CLASSES: CellResult["class"][] = ["ok", "rest_ok"];
 
 /** The end values a cell is judged by: corrected where the resistance is known. */

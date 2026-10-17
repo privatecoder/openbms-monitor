@@ -68,8 +68,8 @@ const R_SPAN: i64 = 2_000;
 pub enum Class {
     /// passend
     Ok,
-    /// Ruhewerte passend: rest (and the resistance, if known) within the limits, nothing at top or bottom: capacity not
-    /// checked
+    /// passend, soweit gemessen: rest (and the resistance, if known) and the end recorded within the limits, but top or
+    /// bottom (or both) not recorded yet: capacity not fully checked
     RestOk,
     /// Ladestand-Versatz: the same sign at top and bottom
     SocOffset,
@@ -96,7 +96,7 @@ pub enum Reason {
     Within,
     /// within the limits for what is there; `top`/`bottom`/`r`: whether that figure is there (steps: the cell's)
     Partial { top: bool, bottom: bool, r: bool, steps: u32 },
-    /// Ruhewerte passend: rest within the limits, no top, bottom or resistance to judge the rest by
+    /// passend, soweit gemessen with only the rest: within the limits, no top, bottom or resistance to judge it by
     RestOnly { rest: f64 },
     /// at rest off the median, nothing at top or bottom against it: SOC offset in the flat region or a measurement
     /// offset (told apart only with a charge over 3.40 V)
@@ -124,7 +124,7 @@ pub enum Reason {
 }
 
 /// The figures of one cell the classification works on. `r_rel`: resistance / pack median, None with fewer than
-/// MIN_STEPS steps; `r_above`: resistance − pack median (mΩ), `r_bound`: R_RES_MV / median |ΔI| of the pack's steps
+/// MIN_STEPS steps; `r_above`: resistance − pack median (mΩ), `r_bound`: R_RES_MV / median |ΔI| of the cell's steps
 /// (mΩ); `top_corr`/`bottom_corr` only with `r_rel`. A situation with too few rows is None.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Input {
@@ -186,13 +186,13 @@ pub fn classify(c: &Input) -> (Class, Reason) {
     if rest.abs() > REST_OK_MV {
         return (Class::RestOffset, Reason::Rest { rest });
     }
-    // passend needs top or bottom: without either the capacity is not checked
+    // passend needs rest, top and bottom (the resistance as far as known); a missing end is passend, soweit gemessen
     match (c.r_rel, top.is_some(), bottom.is_some()) {
         (Some(r), _, _) if (r - 1.0).abs() > R_OK => (Class::NoStatement, Reason::RSlight { pct: r * 100.0 }),
         (Some(_), true, true) => (Class::Ok, Reason::Within),
+        (None, true, true) => (Class::Ok, Reason::Partial { top: true, bottom: true, r: false, steps: c.steps }),
         (None, false, false) => (Class::RestOk, Reason::RestOnly { rest }),
-        (Some(_), false, false) => (Class::RestOk, Reason::Partial { top: false, bottom: false, r: true, steps: c.steps }),
-        (r, t, b) => (Class::Ok, Reason::Partial { top: t, bottom: b, r: r.is_some(), steps: c.steps }),
+        (r, t, b) => (Class::RestOk, Reason::Partial { top: t, bottom: b, r: r.is_some(), steps: c.steps }),
     }
 }
 
@@ -442,8 +442,8 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
     // balancer activity; a cell's step is left out when its BMS bit is set at either end. ΔU/ΔI (mV/A = mΩ) per cell
     // into fixed bins.
     let mut r_hist = vec![Hist::new(R_SPAN); n];
-    // |ΔI| of the steps in 0.1 A bins (up to 500 A), for the resolution bound of the resistance
-    let mut di_hist = Hist::new(5_000);
+    // per cell |ΔI| of exactly its steps in 0.5 A bins (up to 500 A), for its resolution bound
+    let mut di_hist = vec![Hist::new(1_000); n];
     {
         let mut ext = Ext::default();
         // the row before (raw rows with the usual cells only; anything else breaks the pair)
@@ -469,10 +469,10 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 if let Some(bi) = b.current.filter(|bi| row.t >= from && b.session == row.session && row.t - b.t <= gap && (i - bi).abs() >= STEP_MA && b.free && free(act)) {
                     out.steps += 1;
                     let di = (i - bi) as f64 / 1000.0;
-                    di_hist.add((di.abs() * 10.0).round() as i64);
                     for (k, h) in r_hist.iter_mut().enumerate() {
                         if !bit(b.balancing, k) && !bit(row.balancing, k) {
                             h.add(((cells[k] - b.cells[k]) as f64 / di / R_BIN_MOHM).round() as i64);
+                            di_hist[k].add((di.abs() * 2.0).round() as i64);
                         }
                     }
                 }
@@ -487,7 +487,7 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
     // R_cell − R_median per cell (mΩ), for the correction of top and bottom
     let dr: Vec<Option<f64>> = r.iter().map(|x| x.zip(out.r_median).map(|(a, m)| a - m)).collect();
     // what the whole-mV cell voltages allow over the steps' median current (mΩ)
-    let r_bound = di_hist.median(1).filter(|&d| d > 0.0).map(|d| R_RES_MV / (d / 10.0));
+    let r_bound: Vec<Option<f64>> = di_hist.iter().map(|h| h.median(1).filter(|&d| d > 0.0).map(|d| R_RES_MV / (d / 2.0))).collect();
 
     // pass 3: deviations, heatmap, jumps, order at the top
     let hists = || vec![dev_hist(); n];
@@ -629,7 +629,7 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 bottom_corr: r_rel.and(dev_median(&bottom_c[k])),
                 r_rel,
                 r_above: dr[k],
-                r_bound,
+                r_bound: r_bound[k],
                 steps: cell_steps[k],
                 jumps: jumps[k],
             };
@@ -674,7 +674,8 @@ mod tests {
         let cases: Vec<(&str, Input, Class, Reason)> = vec![
             ("matching", input(1.0, 1.5, Some(4.0), Some(-3.0), Some(1.05)), Ok, Reason::Within),
             ("matching, resistance unknown", input(1.0, 1.5, Some(4.0), Some(-3.0), None), Ok, Reason::Partial { top: true, bottom: true, r: false, steps: 4 }),
-            ("matching, no bottom", input(1.0, 1.5, Some(4.0), None, Some(1.0)), Ok, Reason::Partial { top: true, bottom: false, r: true, steps: 40 }),
+            ("matching as far as measured: no bottom", input(1.0, 1.5, Some(4.0), None, Some(1.0)), RestOk, Reason::Partial { top: true, bottom: false, r: true, steps: 40 }),
+            ("matching as far as measured: no top", input(1.0, 1.5, None, Some(-4.0), None), RestOk, Reason::Partial { top: false, bottom: true, r: false, steps: 4 }),
             ("rest only: never plain matching", input(1.0, 1.5, None, None, None), RestOk, Reason::RestOnly { rest: 1.0 }),
             ("SOC offset: high at both ends", input(3.0, 3.0, Some(30.0), Some(20.0), Some(1.0)), SocOffset, Reason::SameSign { top: 30.0, bottom: 20.0 }),
             ("offset at rest only: SOC or measurement", input(-8.0, -9.0, None, None, Some(1.0)), RestOffset, Reason::Rest { rest: -8.0 }),
@@ -936,6 +937,30 @@ mod tests {
         assert_eq!((bms.cells[2].r_mohm, bms.cells[0].r_mohm), (None, Some(R)));
         // its rest values with the bit set are left out too: too few left for a statement
         assert_eq!((bms.cells[4].jumps, bms.cells[4].class), (0, Class::NoStatement));
+    }
+
+    #[test]
+    fn the_resolution_bound_of_a_cell_comes_from_its_own_steps() {
+        let (path, c) = fresh("bound");
+        let mut rec = Rec { c, t: T0, pack: 1 };
+        // 0.1 mΩ for every cell; cell 3 reads 1 mV more on a 20 A step (0.15 mΩ, 150 %)
+        let cells = |ma: i64, c3: i64| (1..=CELLS as i64).map(|k| 3300 + ma / 10_000 + if k == 3 { c3 } else { 0 }).collect::<Vec<_>>();
+        // steps of 100 A, cell 3 balancing throughout: they do not count for it
+        for i in 0..40 {
+            let ma = if i % 2 == 1 { 100_000 } else { 0 };
+            rec.row(1, ma, Some(cells(ma, 0)), Some(1 << 2));
+        }
+        rec.gap();
+        // steps of 20 A without balancing: cell 3's only steps, 1 mV more is within 2 mV per step (0.1 mΩ)
+        for i in 0..30 {
+            let ma = if i % 2 == 1 { 20_000 } else { 0 };
+            rec.row(1, ma, Some(cells(ma, if ma > 0 { 1 } else { 0 })), Some(0));
+        }
+        let to = rec.t;
+        let a = analyse(&crate::history::reader(&path).unwrap(), "a", 1, T0, to, &Devices::default(), 0).unwrap();
+        assert_eq!((a.cells[2].steps, a.cells[2].r_pct.map(f64::round)), (29, Some(150.0)));
+        // against the pack's 100 A steps the bound would be 0.02 mΩ and cell 3 „Widerstand erhöht“
+        assert_ne!(a.cells[2].class, Class::Resistance);
     }
 
     #[test]
