@@ -457,6 +457,7 @@ mod tests {
         s.set_cell_type(&i.id, 1, Some("{\"cell\":\"x\"}")).unwrap();
         s.set_groups(&i.id, Some("[1]")).unwrap();
         s.set_notifications(&i.id, Some(r#"{"enabled":true,"spread_mv":40,"lost_minutes":5}"#)).unwrap();
+        s.set_devices(&i.id, Some(r#"{"defs":[{"id":"d1","name":"A","kind":"active-balancer"}],"assign":{"1":[{"from":100,"device":"d1"}]}}"#)).unwrap();
         s.set_master_serial(&i.id, "SYN-M", 90).unwrap();
         s.add_log(Some(&i.id), Some(1), "flash", Some("16.06.13"), "a_pack1.log", 120).unwrap();
         (s, i.id)
@@ -484,6 +485,7 @@ mod tests {
         assert_eq!(again.snapshots, data.snapshots);
         assert_eq!(again.settings, data.settings);
         assert!(again.settings.notifications.as_deref().is_some_and(|n| n.contains("\"spread_mv\":40")));
+        assert!(again.settings.devices.as_deref().is_some_and(|d| d.contains("\"device\":\"d1\"")));
         assert_eq!(again.master_serial.as_deref(), Some("SYN-M"));
         assert_eq!(again.endpoints, Vec::<String>::new());
         assert!(dst.import_open_for(&id).unwrap());
@@ -556,12 +558,13 @@ mod tests {
         assert_eq!(dst.settings(&other.id).unwrap().groups.as_deref(), Some("[2]"));
         assert_eq!(st.report["not_taken"]["groups"], "[1]");
         assert!(dst.settings(&other.id).unwrap().notifications.is_some(), "the target had none: taken");
+        assert!(dst.settings(&other.id).unwrap().devices.is_some(), "the target had none: taken");
     }
 
     #[test]
     fn an_export_of_an_earlier_version_has_no_notification_settings() {
         let s: Settings = serde_json::from_value(serde_json::json!({ "cell_types": {}, "groups": "[1]", "pairs": null, "diagnosis": null })).unwrap();
-        assert_eq!((s.groups.as_deref(), s.notifications), (Some("[1]"), None));
+        assert_eq!((s.groups.as_deref(), s.notifications, s.devices), (Some("[1]"), None, None));
     }
 
     #[test]

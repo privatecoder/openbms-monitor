@@ -4,7 +4,7 @@
 //! A file of its own, so a pending bootloader record never depends on the recording.
 //!
 //! Installations own their data: boards per place (installation, pack address) identified by String 2, a place's cell
-//! type, groups and pairs, diagnosis and notification settings, parameter snapshots, a log index, the state of
+//! type, groups and pairs, diagnosis, notification and device settings, parameter snapshots, a log index, the state of
 //! installation imports, archived installations, the old site keys moved into installations of their own, and a log of
 //! every move.
 //!
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -120,6 +120,11 @@ fn pack_port_first(db: &Connection) -> rusqlite::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 6: the devices of an installation (JSON: definitions and assignments with their revisions, `balancer.rs`).
+fn device_settings(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch("CREATE TABLE devices(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -488,6 +493,7 @@ impl Store {
                 "DELETE FROM layout WHERE installation = ?1",
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM notifications WHERE installation = ?1",
+                "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
                 // its completed imports (an open one refused the delete): the same files can restore it later
                 "DELETE FROM import_status WHERE installation = ?1",
@@ -622,7 +628,7 @@ pub fn link_plan(inst: &Installation, key: &str, can_bus: bool) -> LinkPlan {
     }
 }
 
-/// Settings an installation owns as JSON texts: cell type per address, groups, pairs, diagnosis, notifications.
+/// Settings an installation owns as JSON texts: cell type per address, groups, pairs, diagnosis, notifications, devices.
 #[derive(Default, Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Settings {
     #[serde(default)]
@@ -636,6 +642,9 @@ pub struct Settings {
     /// absent in exports of earlier versions
     #[serde(default)]
     pub notifications: Option<String>,
+    /// absent in exports of earlier versions
+    #[serde(default)]
+    pub devices: Option<String>,
 }
 
 /// A stored parameter block and which board it belongs to: "current" (the newest board at the place), "previous"
@@ -968,7 +977,9 @@ impl Store {
     /// Everything of the installation's settings.
     pub fn settings(&self, inst: &str) -> Result<Settings, String> {
         let (groups, pairs) = self.layout(inst)?;
-        Ok(Settings { cell_types: self.cell_types(inst)?.into_iter().collect(), groups, pairs, diagnosis: self.diagnosis(inst)?, notifications: self.notifications(inst)? })
+        Ok(Settings { cell_types: self.cell_types(inst)?.into_iter().collect(), groups, pairs, diagnosis: self.diagnosis(inst)?, notifications: self.notifications(inst)?,
+            devices: self.devices(inst)?,
+        })
     }
 
     /// Add settings without overwriting: what the installation has already stays; what of `add` was not taken comes
@@ -1013,6 +1024,11 @@ impl Store {
             self.set_notifications(inst, add.notifications.as_deref())?;
         }
         kept.notifications = k;
+        let (take, k) = pick(&have.devices, &add.devices);
+        if take {
+            self.set_devices(inst, add.devices.as_deref())?;
+        }
+        kept.devices = k;
         Ok(kept)
     }
 
@@ -1126,6 +1142,7 @@ impl Store {
                 "DELETE FROM layout WHERE installation = ?1",
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM notifications WHERE installation = ?1",
+                "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM installations WHERE id = ?1",
             ] {
                 s.db.execute(sql, [source]).map_err(e)?;
@@ -1280,6 +1297,20 @@ impl Store {
 
     pub fn notifications(&self, inst: &str) -> Result<Option<String>, String> {
         self.db.query_row("SELECT data FROM notifications WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
+    }
+
+    /// Device settings (JSON); None removes them.
+    pub fn set_devices(&self, inst: &str, data: Option<&str>) -> Result<(), String> {
+        match data {
+            Some(d) => self.db.execute("INSERT OR REPLACE INTO devices(installation, data) VALUES (?1, ?2)", params![inst, d]),
+            None => self.db.execute("DELETE FROM devices WHERE installation = ?1", [inst]),
+        }
+        .map_err(e)?;
+        Ok(())
+    }
+
+    pub fn devices(&self, inst: &str) -> Result<Option<String>, String> {
+        self.db.query_row("SELECT data FROM devices WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
     }
 }
 
@@ -1449,6 +1480,10 @@ mod tests {
         assert_eq!(s.settings(&a.id).unwrap().notifications.as_deref(), Some(r#"{"enabled":true}"#));
         s.set_notifications(&a.id, None).unwrap();
         assert_eq!(s.notifications(&a.id).unwrap(), None);
+        s.set_devices(&a.id, Some(r#"{"defs":[]}"#)).unwrap();
+        assert_eq!(s.settings(&a.id).unwrap().devices.as_deref(), Some(r#"{"defs":[]}"#));
+        s.set_devices(&a.id, None).unwrap();
+        assert_eq!(s.devices(&a.id).unwrap(), None);
         drop(s);
         Store::open(&path).unwrap();
         assert!(crate::migrate::backups(&path).is_empty());
@@ -1617,7 +1652,9 @@ mod tests {
                  INSERT INTO installations(id, name, control, created) VALUES ('b', 'B', '{\"kind\":\"serial\",\"path\":\"/dev/cu.can\"}', 2);
                  INSERT INTO installation_links VALUES ('b', 'tcp:192.0.2.51:4196'), ('b', 'serial:/dev/cu.can');
                  INSERT INTO installations(id, name, control, created) VALUES ('c', 'C', NULL, 3);
-                 INSERT INTO installation_links VALUES ('c', 'serial:/dev/cu.p'), ('c', 'tcp:192.0.2.52:4196');",
+                 INSERT INTO installation_links VALUES ('c', 'serial:/dev/cu.p'), ('c', 'tcp:192.0.2.52:4196');
+                 -- of a later migration
+                 DROP TABLE devices;",
             )
             .unwrap();
             db.pragma_update(None, "user_version", 4).unwrap();
@@ -1728,6 +1765,8 @@ mod tests {
         s.set_pairs(&dst.id, Some("[2]")).unwrap();
         s.set_pairs(&src, Some("[3]")).unwrap();
         s.set_notifications(&src, Some(r#"{"enabled":true}"#)).unwrap();
+        s.set_devices(&src, Some(r#"{"defs":[1]}"#)).unwrap();
+        s.set_devices(&dst.id, Some(r#"{"defs":[2]}"#)).unwrap();
         s.add_param_snapshot(&src, 1, SnapshotKind::Read, &[1], 5).unwrap();
         s.add_log(Some(&src), Some(1), "flash", Some("16.06.13"), "f.log", 6).unwrap();
         assert_eq!(s.merge(&src, &src, Value::Null, 7), Err("merge-self".into()));
@@ -1739,6 +1778,9 @@ mod tests {
         assert_eq!(set.notifications.as_deref(), Some(r#"{"enabled":true}"#), "taken: the target had none");
         let n: i64 = s.db.query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "the source's row is gone");
+        assert_eq!(set.devices.as_deref(), Some(r#"{"defs":[2]}"#), "the target's own stay");
+        assert_eq!(d["not_taken"]["devices"], r#"{"defs":[1]}"#);
+        assert_eq!(s.db.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         let o = s.overview(&dst.id).unwrap();
         assert_eq!((o.counts.snapshots, o.counts.logs), (1, 1));
         assert_eq!(o.places[0].flash.as_ref().map(|l| l.release.as_deref()), Some(Some("16.06.13")));
@@ -1750,6 +1792,7 @@ mod tests {
         s.delete_installation(&dst.id).unwrap();
         assert!(s.assigned_logs().unwrap().is_empty());
         assert_eq!(s.db.query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(s.db.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(s.legacy_installation("gw:4196", 9).unwrap(), None, "moved before, installation gone");
     }
 
