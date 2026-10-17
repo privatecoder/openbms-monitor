@@ -496,10 +496,20 @@ pub fn after_flash(ok: bool, last: Option<Progress>, answers: impl FnOnce() -> b
     }
 }
 
-/// After the flash returned, before the pack port is closed: settle the pending record. Returns whether it stays
-/// (a record that cannot be cleared stays too).
-pub fn settle_pending(store: &Arc<Mutex<Option<Store>>>, pending: i64, address: u8, ok: bool, last: Option<Progress>, link: &mut Connection) -> bool {
-    match after_flash(ok, last, || bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6))) {
+/// After a failed flash: the pack at the address answers, and with String 2 stored in the record (`stored`) it is that
+/// board (`read`, asked only then). Without a stored serial the answer is enough, as before.
+pub fn answered_same(answers: bool, stored: Option<&str>, read: impl FnOnce() -> Option<String>) -> bool {
+    answers && stored.is_none_or(|s| read().as_deref() == Some(s))
+}
+
+/// After the flash returned, before the pack port is closed: settle the pending record (`stored`: its String 2).
+/// Returns whether it stays (a record that cannot be cleared stays too).
+pub fn settle_pending(store: &Arc<Mutex<Option<Store>>>, pending: i64, address: u8, stored: Option<&str>, ok: bool, last: Option<Progress>, link: &mut Connection) -> bool {
+    let answers = || {
+        let a = bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6));
+        answered_same(a, stored, || string2(link, address))
+    };
+    match after_flash(ok, last, answers) {
         AfterFlash::Clear(how) => with_store_arc(store, |s| s.clear_pending(pending, how, crate::history::now_ms())).is_err(),
         AfterFlash::Keep => true,
     }
@@ -887,6 +897,17 @@ mod tests {
         // no stored serial: as before; other records are `pending_refusal`'s
         assert!(pending_same_board(&[with(None)], key, 3, None).is_ok());
         assert!(pending_same_board(&[with(Some("SYN-3"))], key, 4, None).is_ok());
+    }
+
+    #[test]
+    fn a_failed_flash_clears_its_record_only_for_the_same_board() {
+        let read = |v: Option<&str>| { let v = v.map(String::from); move || v };
+        assert!(answered_same(true, None, || unreachable!()));
+        assert!(answered_same(true, Some("SYN-3"), read(Some("SYN-3"))));
+        assert!(!answered_same(true, Some("SYN-3"), read(Some("SYN-B"))));
+        assert!(!answered_same(true, Some("SYN-3"), read(None)));
+        assert!(!answered_same(false, Some("SYN-3"), || unreachable!()));
+        assert!(!answered_same(false, None, || unreachable!()));
     }
 
     #[test]

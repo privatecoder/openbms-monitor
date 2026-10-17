@@ -308,6 +308,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, target.as_deref(), crate::history::now_ms())).map_err(to_text)?;
     maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
     let store = state.maint.clone();
+    let stored = target.clone();
     std::thread::spawn(move || {
         let mut last = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -319,7 +320,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         // a panic inside the flash counts as a failure at the last reported stage
         let ok = matches!(result, Ok(Ok(_)));
         // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
-        let pending = maint::settle_pending(&store, pending, address, ok, last, &mut link);
+        let pending = maint::settle_pending(&store, pending, address, stored.as_deref(), ok, last, &mut link);
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
