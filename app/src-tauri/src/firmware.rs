@@ -214,8 +214,8 @@ pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String
     read_image(&path, allow_custom, self::lang(&lang)).map(|(_, info)| info)
 }
 
-/// Stops the monitor, then checks the target on the pack bus without resetting it. A pack that answers is no
-/// longer pending in its bootloader.
+/// Stops the monitor, then checks the target on the pack bus without resetting it. A pack that answers with the
+/// String 2 stored in its pending record is no longer pending in its bootloader.
 #[tauri::command]
 pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String, installation: Option<String>) -> Result<DeviceInfo, String> {
     let l = self::lang(&lang);
@@ -229,7 +229,11 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     let mut link = open_port(&key, l)?;
     let (mut log, _, _) = new_log(&app, &state, installation.as_deref(), address, "inspect", None)?;
     let info = session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))?;
-    let _ = maint::with_store(&state, |s| s.clear_answered(&key, &[address], crate::history::now_ms()));
+    // only the board that was flashed (its String 2 in the record) clears a pending record
+    if let Ok(pending) = maint::with_store(&state, |s| s.pending_on(&key)) {
+        let answered = maint::answered_with_serial(&pending, &[address], &mut link);
+        let _ = maint::with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()));
+    }
     Ok(info)
 }
 
@@ -279,6 +283,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let slot = FlashSlot(state.flashing.clone());
     stop_monitor(&state)?;
     let mut link = open_port(&key, l)?;
+    // String 2 of the target, kept with the pending record: only that board's answer clears it later
+    let mut target = None;
     let bank = match &inst {
         // a bus with traffic gets no 0xA4: the preflight refuses it anyway
         Some(_) if !bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?.quiet() => "unchecked",
@@ -290,15 +296,18 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
                 maint::Bank::Unchecked => "unchecked",
             };
             // the target itself: another board than the one stored for its address is not flashed
-            maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
+            target = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
             bank
         }
-        None => "none",
+        None => {
+            target = maint::string2(&mut link, address);
+            "none"
+        }
     };
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind
-    let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, crate::history::now_ms())).map_err(to_text)?;
+    let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, target.as_deref(), crate::history::now_ms())).map_err(to_text)?;
     maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
     let store = state.maint.clone();
     std::thread::spawn(move || {

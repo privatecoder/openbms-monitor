@@ -419,15 +419,28 @@ pub fn target_check(current: Option<&Board>, read: &SerialValue) -> Result<(), M
     }
 }
 
-/// Read String 2 of the flash target on the open pack bus link and check it (`target_check`).
-pub fn check_target_board(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, address: u8, link: &mut Connection) -> Result<(), MaintError> {
+/// Read String 2 of the flash target on the open pack bus link and check it (`target_check`). Returns the serial read,
+/// if real (kept with the pending record).
+pub fn check_target_board(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, address: u8, link: &mut Connection) -> Result<Option<String>, MaintError> {
     let read = match link.bms_serial(address) {
         Ok(v) => v,
         Err(e) if link_dead(&e.to_string()) => return Err(MaintError::Connection { message: e.to_string() }),
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(None),
     };
     let current = with_store_arc(store, |s| s.current_board(&inst.id, address))?;
-    target_check(current.as_ref(), &read)
+    target_check(current.as_ref(), &read)?;
+    Ok(real(&read).map(String::from))
+}
+
+/// String 2 of a pack on the open pack bus link, if read as a real serial.
+pub fn string2(link: &mut Connection, address: u8) -> Option<String> {
+    link.bms_serial(address).ok().as_ref().and_then(real).map(String::from)
+}
+
+/// The packs among `found` (answered 0x51) with an open record on `key`, each with its String 2 read now, for
+/// `Store::clear_answered`. Only pending packs are asked.
+pub fn answered_with_serial(pending: &[Pending], found: &[u8], link: &mut Connection) -> Vec<(u8, Option<String>)> {
+    pending.iter().filter(|p| found.contains(&p.pack)).map(|p| (p.pack, string2(link, p.pack))).collect()
 }
 
 /// The bootloader-pending rule on every open record: only the pending pack itself, at its own endpoint key, may be
@@ -618,7 +631,7 @@ pub fn scan_addresses(cancel: &std::sync::atomic::AtomicBool) -> impl Iterator<I
 
 /// One `0x51` scan of addresses 0–15 on the pack bus (when the bus became quiet, or the re-scan button); „Abbrechen“
 /// (`maint_scan_cancel`) stops it before the next address and the packs found so far are listed. A pending pack that
-/// answers is cleared; with an installation selected the master's serial number is compared.
+/// answers with the String 2 stored in its record is cleared; with an installation selected the master's serial number is compared.
 #[tauri::command]
 pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, installation: Option<String>, port: String) -> Result<PackScan, MaintError> {
     let key = pack_key(&port)?;
@@ -637,7 +650,10 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     let packs = link.scan(scan_addresses(&state.scan_cancel));
     let cancelled = state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst);
     let found: Vec<u8> = packs.iter().map(|(a, _)| *a).collect();
-    let cleared = with_store(&state, |s| s.clear_answered(&key, &found, crate::history::now_ms()))?;
+    // a pending pack clears only when the board that answers is the one flashed (its String 2)
+    let pending = with_store(&state, |s| s.pending_on(&key))?;
+    let answered = answered_with_serial(&pending, &found, &mut link);
+    let cleared = with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()))?;
     let bank = match &inst {
         Some(i) if found.contains(&0) => bank_view(&check_bank(&state.maint, i, &mut link)?),
         Some(_) => bank_view(&Bank::Unchecked),
@@ -731,7 +747,7 @@ mod tests {
     }
 
     fn pending(pack: u8) -> Pending {
-        Pending { id: 1, endpoint: "serial:/dev/p".into(), pack, release: "16.06.13".into(), since: 0 }
+        Pending { id: 1, endpoint: "serial:/dev/p".into(), pack, release: "16.06.13".into(), since: 0, bms_serial: None }
     }
 
     fn store_at(name: &str) -> Store {
@@ -750,7 +766,7 @@ mod tests {
         assert!(matches!(pack_endpoint("serial:/dev/cu.test").unwrap(), Endpoint::Serial { path, baud: 19_200 } if path == "/dev/cu.test"));
         // `firmware_start`: free, the record written before the restart, the flash breaks off after the erase
         pending_check(&store, &key, 3).unwrap();
-        with_store_arc(&store, |s| s.add_pending(&key, 3, "16.06.13", 1)).unwrap();
+        with_store_arc(&store, |s| s.add_pending(&key, 3, "16.06.13", None, 1)).unwrap();
         assert_eq!(after_flash(false, Some(Progress::Erase), || false), AfterFlash::Keep);
         // another pack on the same gateway is refused, also when its key arrives written in another case
         assert!(matches!(pending_check(&store, &key, 4), Err(MaintError::BootloaderPending { pack: 3, .. })));

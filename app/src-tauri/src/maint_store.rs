@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -125,6 +125,12 @@ fn pack_port_first(db: &Connection) -> rusqlite::Result<()> {
 /// 6: the devices of an installation (JSON: definitions and assignments with their revisions, `balancer.rs`).
 fn device_settings(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE devices(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
+}
+
+/// 7: the flash target's String 2 when its pending record was written (NULL: not read or no real serial), so only an
+/// answer of that same board clears the record by itself.
+fn pending_serial(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch("ALTER TABLE bootloader_pending ADD COLUMN bms_serial TEXT;")
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -267,6 +273,8 @@ pub struct Pending {
     pub pack: u8,
     pub release: String,
     pub since: i64,
+    /// String 2 of the target when the record was written, if read: only an answer of that board clears it by itself
+    pub bms_serial: Option<String>,
 }
 
 /// An installation whose last master read showed the marker on, for the banner.
@@ -552,10 +560,14 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
     }
 
-    /// Written before the restart into the bootloader, so a crash or power loss leaves it behind.
-    pub fn add_pending(&self, endpoint: &str, pack: u8, release: &str, now: i64) -> Result<i64, String> {
+    /// Written before the restart into the bootloader, so a crash or power loss leaves it behind. `bms_serial`: the
+    /// target's String 2, if read as a real serial.
+    pub fn add_pending(&self, endpoint: &str, pack: u8, release: &str, bms_serial: Option<&str>, now: i64) -> Result<i64, String> {
         self.db
-            .execute("INSERT INTO bootloader_pending(endpoint, pack, release, since) VALUES (?1, ?2, ?3, ?4)", params![endpoint, pack, release, now])
+            .execute(
+                "INSERT INTO bootloader_pending(endpoint, pack, release, since, bms_serial) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![endpoint, pack, release, now, bms_serial],
+            )
             .map_err(e)?;
         Ok(self.db.last_insert_rowid())
     }
@@ -567,20 +579,25 @@ impl Store {
         Ok(())
     }
 
-    /// Clear every record of these packs on the endpoint: they answered 0x51. Returns the packs cleared.
-    pub fn clear_answered(&self, endpoint: &str, packs: &[u8], now: i64) -> Result<Vec<u8>, String> {
+    /// Clear the records of packs on the endpoint that answered 0x51 (`answered`: address and the String 2 read now, if
+    /// real), only where the record stored a String 2 and the answer is that board: a pack of another bank at the same
+    /// address (a cable moved) never clears it. Returns the packs cleared.
+    pub fn clear_answered(&self, endpoint: &str, answered: &[(u8, Option<String>)], now: i64) -> Result<Vec<u8>, String> {
         let mut cleared = Vec::new();
-        for p in self.pending_on(endpoint)?.into_iter().filter(|p| packs.contains(&p.pack)) {
-            self.clear_pending(p.id, "answered", now)?;
-            cleared.push(p.pack);
+        for p in self.pending_on(endpoint)? {
+            let same = answered.iter().any(|(a, serial)| *a == p.pack && serial.is_some() && *serial == p.bms_serial);
+            if same {
+                self.clear_pending(p.id, "answered", now)?;
+                cleared.push(p.pack);
+            }
         }
         Ok(cleared)
     }
 
     fn pending_where(&self, filter: &str, arg: Option<&str>) -> Result<Vec<Pending>, String> {
-        let sql = format!("SELECT id, endpoint, pack, release, since FROM bootloader_pending WHERE cleared IS NULL {filter} ORDER BY id");
+        let sql = format!("SELECT id, endpoint, pack, release, since, bms_serial FROM bootloader_pending WHERE cleared IS NULL {filter} ORDER BY id");
         let mut stmt = self.db.prepare(&sql).map_err(e)?;
-        let map = |r: &rusqlite::Row| Ok(Pending { id: r.get(0)?, endpoint: r.get(1)?, pack: r.get(2)?, release: r.get(3)?, since: r.get(4)? });
+        let map = |r: &rusqlite::Row| Ok(Pending { id: r.get(0)?, endpoint: r.get(1)?, pack: r.get(2)?, release: r.get(3)?, since: r.get(4)?, bms_serial: r.get(5)? });
         let params: Vec<&str> = arg.into_iter().collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params), map).map_err(e)?.collect::<rusqlite::Result<Vec<_>>>();
         rows.map_err(e)
@@ -1423,14 +1440,14 @@ mod tests {
         assert_eq!(s.markers_on().unwrap(), vec![MarkerOn { installation: a.id.clone(), name: "A".into(), at: 2 }]);
         s.set_master_read(&a.id, "{}", false, 3).unwrap();
         assert!(s.markers_on().unwrap().is_empty());
-        let p = s.add_pending("serial:/dev/p", 3, "16.06.13", 4).unwrap();
+        let p = s.add_pending("serial:/dev/p", 3, "16.06.13", None, 4).unwrap();
         // open work: a pack on its endpoint may hang in its bootloader, or the marker was on
         assert_eq!(s.delete_installation(&a.id), Err("installation-busy".to_string()));
         s.clear_pending(p, "confirmed", 5).unwrap();
         s.set_master_read(&a.id, "{}", true, 6).unwrap();
         assert_eq!(s.delete_installation(&a.id), Err("installation-busy".to_string()));
         s.set_master_read(&a.id, "{}", false, 7).unwrap();
-        let p = s.add_pending("serial:/dev/other", 3, "16.06.13", 8).unwrap();
+        let p = s.add_pending("serial:/dev/other", 3, "16.06.13", None, 8).unwrap();
         s.delete_installation(&a.id).unwrap();
         assert!(s.installations().unwrap().is_empty());
         assert_eq!(s.master_read(&a.id).unwrap(), None);
@@ -1444,12 +1461,19 @@ mod tests {
         let path = temp("pending");
         let (p3, p5) = {
             let s = Store::open(&path).unwrap();
-            (s.add_pending("serial:/dev/p", 3, "16.06.13", 1).unwrap(), s.add_pending("serial:/dev/p", 5, "16.06.13", 2).unwrap())
+            (s.add_pending("serial:/dev/p", 3, "16.06.13", Some("SYN-3"), 1).unwrap(), s.add_pending("serial:/dev/p", 5, "16.06.13", None, 2).unwrap())
         };
         let s = Store::open(&path).unwrap();
         assert_eq!(s.pending_on("serial:/dev/p").unwrap().iter().map(|p| p.pack).collect::<Vec<_>>(), vec![3, 5]);
         assert!(s.pending_on("serial:/dev/q").unwrap().is_empty());
-        assert_eq!(s.clear_answered("serial:/dev/p", &[0, 1, 3], 3).unwrap(), vec![3]);
+        let ans = |a: u8, serial: Option<&str>| (a, serial.map(String::from));
+        // the same address answers with another board (a cable moved), or without a readable serial: kept
+        assert!(s.clear_answered("serial:/dev/p", &[ans(3, Some("SYN-OTHER")), ans(5, None)], 3).unwrap().is_empty());
+        assert!(s.clear_answered("serial:/dev/p", &[ans(3, None)], 3).unwrap().is_empty());
+        // a record without a stored serial is never cleared by an answer, only by the user
+        assert!(s.clear_answered("serial:/dev/p", &[ans(5, Some("SYN-5"))], 3).unwrap().is_empty());
+        assert_eq!(s.pending_on("serial:/dev/p").unwrap()[0].bms_serial.as_deref(), Some("SYN-3"));
+        assert_eq!(s.clear_answered("serial:/dev/p", &[ans(0, Some("SYN-0")), ans(3, Some("SYN-3"))], 3).unwrap(), vec![3]);
         assert_eq!(s.pending_on("serial:/dev/p").unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), vec![p5]);
         s.clear_pending(p5, "confirmed", 4).unwrap();
         assert!(s.all_pending().unwrap().is_empty());
@@ -1712,8 +1736,9 @@ mod tests {
                  INSERT INTO installation_links VALUES ('b', 'tcp:192.0.2.51:4196'), ('b', 'serial:/dev/cu.can');
                  INSERT INTO installations(id, name, control, created) VALUES ('c', 'C', NULL, 3);
                  INSERT INTO installation_links VALUES ('c', 'serial:/dev/cu.p'), ('c', 'tcp:192.0.2.52:4196');
-                 -- of a later migration
-                 DROP TABLE devices;",
+                 -- of later migrations
+                 DROP TABLE devices;
+                 ALTER TABLE bootloader_pending DROP COLUMN bms_serial;",
             )
             .unwrap();
             db.pragma_update(None, "user_version", 4).unwrap();
@@ -1742,7 +1767,7 @@ mod tests {
         s.save_installation(&Installation { control: None, ..a.clone() }).unwrap();
         s.save_installation(&a).unwrap();
         // an interrupted update on the RS485-1/2 port: neither replaced, nor moved back, nor dropped
-        s.add_pending("tcp:192.0.2.11:4196", 3, "16.06.13", 3).unwrap();
+        s.add_pending("tcp:192.0.2.11:4196", 3, "16.06.13", None, 3).unwrap();
         for eps in [vec!["serial:/dev/cu.test"], vec!["serial:/dev/cu.test", "tcp:192.0.2.11:4196"], vec![]] {
             let i = Installation { endpoints: eps.iter().map(|k| k.to_string()).collect(), ..a.clone() };
             assert_eq!(s.save_installation(&i), Err("pending-on-port".to_string()), "{eps:?}");
