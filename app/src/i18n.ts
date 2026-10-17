@@ -81,6 +81,7 @@ const resources = {
       },
       ds: {
         title: "Grenzen laut Datenblatt", change: "Zelltyp ändern", assign: "Zelltyp zuweisen",
+        stale: "Keine Bewertung: die Werte des Packs sind alt (vor {{s}} s).",
         unassigned: "Noch kein Zelltyp zugewiesen. Mit Zelltyp vergleicht die App Spannung, Temperatur und Strom dieses Packs mit dem Datenblatt der Zellen.",
         cellHigh: "Höchste Zelle", cellLow: "Niedrigste Zelle", tempCharge: "Temperatur fürs Laden", tempDischarge: "Temperatur fürs Entladen",
         chargeCurrent: "Ladestrom", dischargeCurrent: "Entladestrom",
@@ -635,6 +636,8 @@ const resources = {
         head: { charging: "Lädt mit {{p}}", discharging: "Entlädt mit {{p}}", standby: "Im Leerlauf", off: "Ausgeschaltet", unknown: "Wartet auf Daten" },
         sub: "{{v}} und {{a}} über {{n}} Packs",
         tank: "{{remain}} von {{total}} Ah",
+        valuesOld: "Werte alt: keine aktuelle Antwort seit {{s}} s", statusOldFor: "Status alt (vor {{s}} s): Schalter und Meldungen sind nicht aktuell",
+        statusOmitted_one: "1 Pack mit altem Status nicht berücksichtigt", statusOmitted_other: "{{count}} Packs mit altem Status nicht berücksichtigt",
         staleData: "keine aktuellen Daten (vor {{s}} s)", statusOld: "Status alt", systemOld: "Grenzen und Freigaben unbekannt: Systemwerte alt (vor {{s}} s)",
         chargeLimit: "Ladegrenze", dischargeLimit: "Entladegrenze", perCellMax: "max. {{v}} je Zelle", maxVCell: "max. {{v}} ({{c}} je Zelle)", minVCell: "min. {{v}} ({{c}} je Zelle)", perCellMin: "min. {{v}} je Zelle", cellsAllow: "Datenblatt erlaubt {{a}}", cellsAllowHint: "Summe über alle Packs: Ladestrom, den das Datenblatt der zugewiesenen Zellen bei der aktuellen Zelltemperatur dauerhaft erlaubt. Rot, wenn der Master mehr meldet.", cellsAllowDischargeHint: "Summe über alle Packs: Dauer-Entladestrom laut Datenblatt der zugewiesenen Zellen, innerhalb des Entlade-Temperaturbereichs (außerhalb 0). Rot, wenn der Master mehr meldet.", settings: "Einstellungen", atMaxV: "bei max. {{v}}", downToMinV: "bis min. {{v}}", otherTemps: "Umgebung max. in Pack {{pa}}", minIn: "min. {{v}} in Pack {{p}}", maxIn: "max. {{v}} in Pack {{p}}", coldHot: "Zellen: min. in Pack {{lo}}, max. in Pack {{hi}}", ambMosWhere: "MOSFET max. in Pack {{pm}}", medianShort: "vom Median {{v}}", tempRangeVal: "{{lo}}–{{hi}}", at: "{{a}} bei {{v}}", blocked: "gesperrt",
         cellRange: "Zelldifferenz", cellTempMax: "Zelle max.", cellRangeVal: "{{lo}} bis {{hi}}", tempRange: "Zelltemperatur", boardTemp: "Umgebung / MOSFET", boardTempVal: "{{amb}} / {{mos}}",
@@ -875,6 +878,7 @@ const resources = {
       },
       ds: {
         title: "Limits per datasheet", change: "Change cell type", assign: "Assign cell type",
+        stale: "Not rated: the pack's values are old ({{s}} s ago).",
         unassigned: "No cell type assigned yet. With a cell type the app compares this pack's voltage, temperature and current with the cells' datasheet.",
         cellHigh: "Highest cell", cellLow: "Lowest cell", tempCharge: "Temperature for charging", tempDischarge: "Temperature for discharging",
         chargeCurrent: "Charge current", dischargeCurrent: "Discharge current",
@@ -1429,6 +1433,8 @@ const resources = {
         head: { charging: "Charging at {{p}}", discharging: "Discharging at {{p}}", standby: "Idle", off: "Switched off", unknown: "Waiting for data" },
         sub: "{{v}} and {{a}} across {{n}} packs",
         tank: "{{remain}} of {{total}} Ah",
+        valuesOld: "Values old: no current answer for {{s}} s", statusOldFor: "Status old ({{s}} s ago): switches and messages are not current",
+        statusOmitted_one: "1 pack with an old status left out", statusOmitted_other: "{{count}} packs with an old status left out",
         staleData: "no current data ({{s}} s ago)", statusOld: "status old", systemOld: "limits and permissions unknown: system values old ({{s}} s ago)",
         chargeLimit: "Charge limit", dischargeLimit: "Discharge limit", perCellMax: "max. {{v}} per cell", maxVCell: "max. {{v}} ({{c}} per cell)", minVCell: "min. {{v}} ({{c}} per cell)", perCellMin: "min. {{v}} per cell", cellsAllow: "datasheet allows {{a}}", cellsAllowHint: "Sum over all packs: the charge current the assigned cells' datasheet allows continuously at the current cell temperature. Red if the master reports more.", cellsAllowDischargeHint: "Sum over all packs: the continuous discharge current per the assigned cells' datasheet, inside the discharge temperature range (0 outside). Red if the master reports more.", settings: "Settings", atMaxV: "at max. {{v}}", downToMinV: "down to min. {{v}}", otherTemps: "ambient max. in pack {{pa}}", minIn: "min. {{v}} in pack {{p}}", maxIn: "max. {{v}} in pack {{p}}", coldHot: "Cells: min. in pack {{lo}}, max. in pack {{hi}}", ambMosWhere: "MOSFET max. in pack {{pm}}", medianShort: "from median {{v}}", tempRangeVal: "{{lo}}–{{hi}}", at: "{{a}} at {{v}}", blocked: "blocked",
         cellRange: "Cell difference", cellTempMax: "Cell max.", cellRangeVal: "{{lo}} to {{hi}}", tempRange: "Cell temperature", boardTemp: "Ambient / MOSFET", boardTempVal: "{{amb}} / {{mos}}",

@@ -40,6 +40,11 @@ export function current<T extends Timed>(e: T, now: number): T & { old: { teleme
   };
 }
 
+/** How many counted entries had their status left out as old (the dashboard's head says so beside the messages). */
+export function omittedStatus(entries: { old: { status: boolean } }[]): number {
+  return entries.filter((e) => e.old.status).length;
+}
+
 /** The system values (CAN socket, Modbus) as kept by the store: the last ones, whether the last poll succeeded, when. */
 export interface SystemEntry { values: SystemValues | null; error: string | null; ok: boolean; updated: number }
 
