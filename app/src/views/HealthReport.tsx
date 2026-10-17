@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Download } from "lucide-react";
-import { api, isDemo, type CellAnalysis, type HealthReport as Report } from "../api";
+import { api, isDemo, type CellAnalysis, type HealthReport as Report, type PackDay } from "../api";
 import { reasonText, reportCells } from "../cellAnalysis";
 import { useSettings } from "../installData";
 import { Button } from "../components/ui/button";
@@ -103,10 +103,18 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
   let chart: { title: string; unit: string; dec: number; x: number[]; lines: Line[] } | null = null;
   if (report && sel && "pack" in sel) {
     const p = report.packs.find((x) => x.pack === sel.pack);
-    if (p) chart = { title: t("hist.rep.chartPack", { p: no(p.pack) }), unit: "mV", dec: 0, x: p.days.map((d) => d.day), lines: [
-      { label: t("hist.rep.l.restP50"), color: dark ? "#3fb6bf" : "#0e7c86", values: p.days.map((d) => d.rest_p50) },
-      { label: t("hist.rep.l.restP95"), color: dark ? "#7fa6e3" : "#3f6fb5", values: p.days.map((d) => d.rest_p95) },
-      { label: t("hist.rep.l.loadP95"), color: dark ? "#e0a548" : "#b7791f", values: p.days.map((d) => d.spread_p95), dash: [6, 4] }] };
+    if (p) {
+      // single answers and minute maxima are different measures: their own curves, never joined across the change
+      const of = (raw: boolean, f: (d: PackDay) => number | null) => p.days.map((d) => (d.spread_raw === raw ? f(d) : null));
+      const base: [string, string, (d: PackDay) => number | null, number[] | undefined][] = [
+        [t("hist.rep.l.restP50"), dark ? "#3fb6bf" : "#0e7c86", (d) => d.rest_p50, undefined],
+        [t("hist.rep.l.restP95"), dark ? "#7fa6e3" : "#3f6fb5", (d) => d.rest_p95, undefined],
+        [t("hist.rep.l.loadP95"), dark ? "#e0a548" : "#b7791f", (d) => d.spread_p95, [6, 4]]];
+      const minute = p.days.some((d) => !d.spread_raw && d.spread_p95 !== null);
+      chart = { title: t("hist.rep.chartPack", { p: no(p.pack) }), unit: "mV", dec: 0, x: p.days.map((d) => d.day), lines: [
+        ...base.map(([label, color, f, dash]) => ({ label, color, values: of(true, f), dash })),
+        ...(minute ? base.map(([label, color, f]) => ({ label: `${label} ${t("hist.rep.l.minute")}`, color, values: of(false, f), dash: [2, 3], width: 1 })) : [])] };
+    }
   } else if (report && sel && "pair" in sel) {
     const p = report.pairs.find((x) => x.plus === sel.pair);
     if (p) chart = { title: t("hist.rep.chartPair", { p: `${no(p.plus)}/${no(p.minus)}` }), unit: "%", dec: 1, x: p.days.map((d) => d.day), lines: [
@@ -173,8 +181,10 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     </td>
                     <td className="py-2 pr-4 text-right">{fmt(r.tempMax, 1, "°C")}</td>
                     <td className={cn("py-2", warn ? "text-discharge" : "text-muted")}>
-                      <HintNote help="topic.healthReport" items={r.flags.length ? r.flags.map((f) => ({ title: flagText(f), text: t(`hist.rep.flagTip.${f.key}`) })) : [{ title: t("hist.rep.ok"), text: t("hist.rep.tip.packOk") }]}>
-                        {r.flags.length ? r.flags.map(flagText).join("; ") : t("hist.rep.ok")}
+                      <HintNote help="topic.healthReport" items={[
+                        ...(r.flags.length ? r.flags.map((f) => ({ title: flagText(f), text: t(`hist.rep.flagTip.${f.key}`) })) : r.unrated.length ? [] : [{ title: t("hist.rep.ok"), text: t("hist.rep.tip.packOk") }]),
+                        ...r.unrated.map((k) => ({ title: t("hist.rep.unrated.title"), text: t(`hist.rep.unrated.${k}`) }))]}>
+                        {r.flags.length ? r.flags.map(flagText).join("; ") : r.unrated.length ? t("hist.rep.unrated.title") : t("hist.rep.ok")}
                       </HintNote>
                     </td>
                   </tr>

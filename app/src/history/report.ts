@@ -21,9 +21,12 @@ export const SPREAD_ABOVE_MV = 10;
 export const SPREAD_RISE_MV = 10;
 /** Warmest cell of the period this much (K) above the bank median. */
 export const WARM_ABOVE_C = 5;
-/** A day's rest P95 counts for the bank comparison and the trend from this many rest rows that day; the trend needs
- *  TREND_DAYS_MIN such days. */
+/** A day's rest P95 counts for the bank comparison from this many rest rows that day. */
 export const REST_ROWS_MIN = 30;
+/** A trend day needs this many rest rows: single answers (one every few seconds) 180, minute maxima 30; the trend
+ *  needs TREND_DAYS_MIN such days. */
+export const TREND_ROWS_RAW = 180;
+export const TREND_ROWS_MINUTE = 30;
 export const TREND_DAYS_MIN = 3;
 
 /** [from, to] of a period up to now; "all" from the start of the installation's recording. */
@@ -59,7 +62,7 @@ export function othersMedian<T>(all: T[], self: T, f: (x: T) => number): number 
 
 /** The days a pack's rest trend may use: of the kind (raw rows or minute maxima, health.rs `spread_raw`) of its last
  *  day with rest values and only after the last day of the other kind, never across the change; each with at least
- *  REST_ROWS_MIN rest rows. */
+ *  TREND_ROWS_RAW or TREND_ROWS_MINUTE rest rows. */
 export function trendDays(days: PackDay[]): PackDay[] {
   const spread = days.filter((d) => d.spread_p95 !== null);
   const rest = spread.filter((d) => d.rest_p95 !== null);
@@ -67,7 +70,7 @@ export function trendDays(days: PackDay[]): PackDay[] {
   const kind = rest[rest.length - 1].spread_raw;
   let i = spread.length;
   while (i > 0 && spread[i - 1].spread_raw === kind) i--;
-  const out = spread.slice(i).filter((d) => d.rest_p95 !== null && d.rest_rows >= REST_ROWS_MIN);
+  const out = spread.slice(i).filter((d) => d.rest_p95 !== null && d.rest_rows >= (d.spread_raw ? TREND_ROWS_RAW : TREND_ROWS_MINUTE));
   return out.length >= TREND_DAYS_MIN ? out : [];
 }
 
@@ -85,38 +88,67 @@ export type PackFlag =
   | { key: "warm"; c: number; median: number }
   | { key: "counterCleared"; count: number };
 
+/** A bank comparison that could not be made for a pack, said by the view (hist.rep.unrated.<key>): no day with two
+ *  packs of enough rest rows of one kind (`spread`), the pack not among them that day (`spreadPack`), no day every pack
+ *  recorded enough rows (`warm`). */
+export type Unrated = "spread" | "spreadPack" | "warm";
+
 export interface PackRow {
   pack: number; restP50: number | null; restP95: number | null; loadP95: number | null; restTrend?: Trend;
-  cycles: number | null; rate: number | null; tempMax: number | null; flags: PackFlag[];
+  cycles: number | null; rate: number | null; tempMax: number | null; flags: PackFlag[]; unrated: Unrated[];
   /** counts recorded, but too short a span for a rate */
   rateShort: boolean;
 }
 
-/** One row per pack: last values, the rest spread's trend and the flags against the other packs (each compared with
- *  the median of the others). The rest spread is compared only on the latest day with rest values in the bank, from
- *  packs with REST_ROWS_MIN rest rows that day and of one kind (raw rows when any has them); the warmest cell only over
- *  the days every pack with temperatures has some. */
-export function packRows(r: HealthReport): PackRow[] {
-  const restDay = Math.max(-Infinity, ...r.packs.flatMap((p) => p.days.filter((d) => d.rest_p95 !== null).map((d) => d.day)));
+/** The comparison day of the rest spread: the latest day on which at least two packs have REST_ROWS_MIN rest rows of
+ *  the same kind, with that kind (the one more packs have; raw rows on a tie). */
+function restDayOf(r: HealthReport): { day: number; raw: boolean } | undefined {
+  const byDay = new Map<number, { raw: number; minute: number }>();
+  for (const p of r.packs) for (const d of p.days) if (d.rest_p95 !== null && d.rest_rows >= REST_ROWS_MIN) {
+    const c = byDay.get(d.day) ?? { raw: 0, minute: 0 };
+    if (d.spread_raw) c.raw++; else c.minute++;
+    byDay.set(d.day, c);
+  }
+  const ok = [...byDay].filter(([, c]) => c.raw >= 2 || c.minute >= 2).sort((a, b) => b[0] - a[0]);
+  return ok.length ? { day: ok[0][0], raw: ok[0][1].raw >= ok[0][1].minute } : undefined;
+}
+
+/** The days the warmest cell is compared over: every pack with temperatures has one that day and at least half the
+ *  bank's median row count, so a short recording (one hour after load) is not set against a whole day. */
+function tempDaysOf(r: HealthReport): Set<number> {
   const withTemp = r.packs.filter((p) => p.days.some((d) => d.temp_max !== null));
-  const tempDays = new Set(withTemp[0]?.days.filter((d) => d.temp_max !== null).map((d) => d.day));
-  for (const p of withTemp) { const own = new Set(p.days.filter((d) => d.temp_max !== null).map((d) => d.day)); for (const d of tempDays) if (!own.has(d)) tempDays.delete(d); }
+  const days = new Set(r.packs.flatMap((p) => p.days.map((d) => d.day)));
+  const out = new Set<number>();
+  for (const day of days) {
+    const of = (p: HealthReport["packs"][number]) => p.days.find((d) => d.day === day);
+    const med = median(r.packs.map((p) => of(p)?.rows ?? 0)) ?? 0;
+    if (withTemp.every((p) => { const d = of(p); return d !== undefined && d.temp_max !== null && d.rows >= med / 2; })) out.add(day);
+  }
+  return out;
+}
+
+/** One row per pack: last values, the rest spread's trend and the flags against the other packs (each compared with
+ *  the median of the others). The rest spread is compared on `restDayOf` among the packs with enough rest rows of its
+ *  kind; the warmest cell over `tempDaysOf`. A comparison that cannot be made is listed in `unrated`, never read as
+ *  unremarkable. */
+export function packRows(r: HealthReport): PackRow[] {
+  const restDay = restDayOf(r);
+  const tempDays = tempDaysOf(r);
   const rows = r.packs.map((p) => {
     const temps = p.days.map((d) => d.temp_max).filter((v): v is number => v !== null);
     const common = p.days.filter((d) => d.temp_max !== null && tempDays.has(d.day)).map((d) => d.temp_max!);
-    const cmp = p.days.find((d) => d.day === restDay && d.rest_p95 !== null && d.rest_rows >= REST_ROWS_MIN);
+    const cmp = restDay && p.days.find((d) => d.day === restDay.day && d.rest_p95 !== null && d.rest_rows >= REST_ROWS_MIN && d.spread_raw === restDay.raw);
     return {
       pack: p.pack, restP50: lastOf(p.days, (d) => d.rest_p50), restP95: lastOf(p.days, (d) => d.rest_p95),
       loadP95: lastOf(p.days, (d) => d.spread_p95), restTrend: trend(trendDays(p.days).map((d) => ({ day: d.day, v: d.rest_p95 })), 3),
       cycles: lastOf(p.days, (d) => d.cycles), rate: p.cycles_per_30d, tempMax: temps.length ? Math.max(...temps) : null,
-      flags: [] as PackFlag[], resets: p.cycle_resets, gained: p.cycles_gained, span: p.cycles_span_ms,
+      flags: [] as PackFlag[], unrated: [] as Unrated[], resets: p.cycle_resets, gained: p.cycles_gained, span: p.cycles_span_ms,
       rateShort: p.cycles_per_30d === null && p.cycles_gained !== null,
       restCmp: cmp ? { v: cmp.rest_p95!, raw: cmp.spread_raw } : null, tempCmp: common.length ? Math.max(...common) : null,
     };
   });
   type Row = (typeof rows)[number];
-  const rawKind = rows.some((x) => x.restCmp?.raw);
-  const restRows = rows.filter((x) => x.restCmp !== null && x.restCmp.raw === rawKind);
+  const restRows = rows.filter((x) => x.restCmp !== null);
   const tempRows = rows.filter((x) => x.tempCmp !== null);
   // cycles are compared only over the same window: every rated pack spans about the same time, no counter cleared
   const rated = rows.filter((x) => x.rate !== null && x.gained !== null && x.span !== null);
@@ -130,10 +162,13 @@ export function packRows(r: HealthReport): PackRow[] {
     const restMed = othersMedian(restRows, x, (y: Row) => y.restCmp!.v);
     if (restRows.includes(x) && restMed !== undefined && x.restCmp!.v > restMed * SPREAD_FACTOR && x.restCmp!.v >= restMed + SPREAD_ABOVE_MV)
       x.flags.push({ key: "spread", mv: x.restCmp!.v, median: restMed });
+    if (!restDay) x.unrated.push("spread");
+    else if (!restRows.includes(x)) x.unrated.push("spreadPack");
     if (x.restTrend && x.restTrend.change >= SPREAD_RISE_MV) x.flags.push({ key: "spreadRising", mv: Math.round(x.restTrend.change) });
     const tempMed = othersMedian(tempRows, x, (y: Row) => y.tempCmp!);
     if (tempRows.includes(x) && tempMed !== undefined && x.tempCmp! >= tempMed + WARM_ABOVE_C)
       x.flags.push({ key: "warm", c: x.tempCmp!, median: tempMed });
+    if (x.tempMax !== null && (!tempRows.includes(x) || tempMed === undefined)) x.unrated.push("warm");
     if (x.resets > 0) x.flags.push({ key: "counterCleared", count: x.resets });
   }
   return rows.map(({ resets: _r, gained: _g, span: _s, restCmp: _c, tempCmp: _t, ...x }) => x);
@@ -170,7 +205,7 @@ export function localDate(ms: number) {
 /** The report as one CSV: a row per pack and day (with the BMS balancing bits), per pack the cycle rate, a row per pair
  *  and day, and with the cell analyses per pack one row for the pack's figures and one per cell. */
 export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> = {}): string {
-  const cols = ["kind", "pack", "partner", "date", "rows", "spread_p50_mv", "spread_p95_mv", "rest_rows", "rest_p50_mv", "rest_p95_mv", "cycles",
+  const cols = ["kind", "pack", "partner", "date", "rows", "spread_p50_mv", "spread_p95_mv", "spread_raw", "rest_rows", "rest_p50_mv", "rest_p95_mv", "cycles",
     "temp_max_c", "cycles_per_30d", "cycle_resets", "cycles_gained", "cycles_span_days", "samples", "minutes", "share_pct", "equalizing", "marked",
     "bal_status_rows", "bal_rows", "bal_pct", "bal_cells",
     "cell", "class", "reason", "rest_mv", "load_mv", "top_mv", "top_corr_mv", "bottom_mv", "bottom_corr_mv", "r_mohm", "r_pct", "order", "jumps",
@@ -179,7 +214,7 @@ export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> =
   const line = (o: Record<string, number | string | boolean | null | undefined>) => cols.map((c) => v(o[c])).join(",");
   const out = [cols.join(",")];
   for (const p of r.packs) {
-    for (const d of p.days) out.push(line({ kind: "pack", pack: p.pack, date: localDate(d.day), rows: d.rows, spread_p50_mv: d.spread_p50, spread_p95_mv: d.spread_p95,
+    for (const d of p.days) out.push(line({ kind: "pack", pack: p.pack, date: localDate(d.day), rows: d.rows, spread_p50_mv: d.spread_p50, spread_p95_mv: d.spread_p95, spread_raw: d.spread_raw ? 1 : 0,
       rest_rows: d.rest_rows, rest_p50_mv: d.rest_p50, rest_p95_mv: d.rest_p95, cycles: d.cycles, temp_max_c: d.temp_max,
       bal_status_rows: d.bal_n, bal_rows: d.bal_rows, bal_pct: d.bal_n ? ((d.bal_rows ?? 0) / d.bal_n) * 100 : null, bal_cells: maskCells(d.bal_mask) }));
     out.push(line({ kind: "pack_period", pack: p.pack, cycles_per_30d: p.cycles_per_30d, cycle_resets: p.cycle_resets,
