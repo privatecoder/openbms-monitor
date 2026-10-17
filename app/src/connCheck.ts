@@ -91,3 +91,15 @@ export function fillFields(inst: Pick<Installation, "control" | "endpoints"> | n
 }
 
 export { BAUD, other as otherBus, pad as padAddress };
+
+/** Before the chosen installation changes: a connect still running is cancelled and awaited (its own cancel path
+ *  closes what it opened), then a live connection ends. Only then does the choice change. */
+export async function endBeforeSwitch(o: { running: () => Promise<void> | null; cancel: () => void; live: () => boolean; disconnect: () => Promise<void> }): Promise<void> {
+  const r = o.running();
+  if (r) { o.cancel(); await r.catch(() => {}); }
+  if (o.live()) await o.disconnect().catch(() => {});
+}
+
+/** A connect that returns for another installation than the one chosen now (the choice changed meanwhile) must not
+ *  stay open. */
+export const connectedForOther = (connInst: string | null, chosen: string | null) => connInst !== chosen;

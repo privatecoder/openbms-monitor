@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { explain, fillFields, noAnswer, partialLine } from "./connCheck";
+import { connectedForOther, endBeforeSwitch, explain, fillFields, noAnswer, partialLine } from "./connCheck";
 
 const t = i18n.getFixedT("de");
 const none = { answered: null, noise: false, intra: false, pack_at_9600: false };
@@ -98,5 +98,28 @@ describe("sidebar fields after a change of installation or bus", () => {
     expect(fillFields({ control: can, endpoints: ["tcp:192.0.2.10:4196", "tcp:192.0.2.11:4196"] }, "pack", null, "bus")).toEqual({ kind: "tcp", target: "192.0.2.11:4196", bus: "pack", packs: null });
     // „Nur ansehen“: nothing changes
     expect(fillFields(null, "pack", null, "installation")).toBeNull();
+  });
+});
+
+describe("switching the installation while connecting", () => {
+  it("cancels the running connect and waits for it before the choice changes", async () => {
+    const steps: string[] = [];
+    let finish = () => {};
+    const run = new Promise<void>((r) => { finish = () => { steps.push("connect ended"); r(); }; });
+    const switching = endBeforeSwitch({ running: () => run, cancel: () => { steps.push("cancel"); setTimeout(finish, 5); }, live: () => false, disconnect: async () => { steps.push("disconnect"); } })
+      .then(() => steps.push("switch"));
+    await switching;
+    expect(steps).toEqual(["cancel", "connect ended", "switch"]);
+  });
+  it("ends a live connection, and does nothing without one", async () => {
+    const steps: string[] = [];
+    await endBeforeSwitch({ running: () => null, cancel: () => steps.push("cancel"), live: () => true, disconnect: async () => { steps.push("disconnect"); } });
+    await endBeforeSwitch({ running: () => null, cancel: () => steps.push("cancel"), live: () => false, disconnect: async () => { steps.push("disconnect"); } });
+    expect(steps).toEqual(["disconnect"]);
+  });
+  it("a connect that returns for another installation than the chosen one is closed", () => {
+    expect(connectedForOther("inst-a", "inst-b")).toBe(true);
+    expect(connectedForOther("inst-a", "inst-a")).toBe(false);
+    expect(connectedForOther(null, null)).toBe(false);
   });
 });

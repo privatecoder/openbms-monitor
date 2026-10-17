@@ -71,7 +71,9 @@ export function useMaint() {
   }, [loadLists]);
 
   const current = installations.find((i) => i.id === installation) ?? null;
-  return { installation, current, installations, loaded, alerts, alertsFailed, loadLists, switchTo, beforeSwitch, naming, setNaming, create };
+  /** The choice as of now, also before the next render (`switchTo` sets it first). */
+  const chosen = useCallback(() => installationRef.current, []);
+  return { installation, current, installations, loaded, alerts, alertsFailed, loadLists, switchTo, beforeSwitch, naming, setNaming, create, chosen };
 }
 
 export type Maint = ReturnType<typeof useMaint>;
