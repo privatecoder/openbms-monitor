@@ -4,8 +4,10 @@ import { Scale } from "lucide-react";
 import { api, isDemo, type BalancerSlice, type BalancerTimeline as Timeline } from "../api";
 import { InfoIcon } from "../help";
 import { useSettings } from "../installData";
-import { cn, fmt } from "../lib/utils";
+import { cn } from "../lib/utils";
 import { bmsMark, extMark, shares, type LaneMark } from "../balancerTimeline";
+import { sharePct } from "../timeAxis";
+import { TimeAxis } from "./TimeAxis";
 
 const DAY = 86_400_000;
 const SLICES = 240;
@@ -35,7 +37,7 @@ export function BalancerTimeline({ pack, scope, from, to }: { pack: number; scop
     return () => { alive = false; };
   }, [site, pack, from, to, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pct = (v: number | null) => fmt(v === null ? null : v * 100, 0, "%");
+  const pct = (v: number | null) => sharePct(v, i18n.language);
   const when = (ms: number) => new Date(ms).toLocaleString(i18n.language, to - from <= DAY ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" });
   const total = data?.total;
   const recorded = !!total && total.active + total.inactive + total.unknown + total.unassigned > 0;
@@ -55,7 +57,7 @@ export function BalancerTimeline({ pack, scope, from, to }: { pack: number; scop
             <Lane label={t("dev.tl.bms")} note={null} empty={null}
               slices={data.slices} mark={bmsMark}
               title={(sl, m) => `${when(sl.from)}–${when(sl.to)}: ${t(`dev.tl.legend.${m.state}`)}${m.state === "bal" ? ` ${pct(m.share)}${sl.cells ? `, ${t("dev.tl.cells", { count: sl.cells })}` : ""}` : ""}`} />
-            <div className="flex justify-between text-xs text-muted tabular-nums"><span>{when(data.from)}</span><span>{when(data.to)}</span></div>
+            <TimeAxis from={data.from} to={data.to} />
             <ul className="space-y-0.5 text-sm">
               {data.devices.length > 0 && <li className="text-muted">{t("dev.tl.device", { list: data.devices.join(", ") })}</li>}
               {assigned && <li>{t("dev.tl.share", { pct: pct(s!.active) })}{s!.unknown ? `; ${t("dev.tl.unknownShare", { pct: pct(s!.unknown) })}` : ""}</li>}
@@ -77,12 +79,17 @@ function Lane({ label, note, empty, slices, mark, title }: {
     <div className="space-y-1">
       <p className="flex flex-wrap items-baseline gap-x-2 text-sm"><span className="font-medium">{label}</span>{note && <span className="text-xs text-muted">{note}</span>}</p>
       {empty ? <p className="flex h-6 items-center rounded bg-sunken px-2 text-xs text-muted">{empty}</p> : (
-        <div className="flex h-6 overflow-hidden rounded border border-line">
+        <div className="no-record flex h-6 overflow-hidden rounded border border-line">
           {slices.map((sl, i) => {
             const m = mark(sl);
             // activity by its share, so a short run looks lighter than a full one
             const opacity = m.state === "active" || m.state === "bal" ? 0.35 + 0.65 * m.share : 1;
-            return <div key={i} className={cn("h-full flex-1", COLOR[m.state])} style={{ opacity }} title={title(sl, m)} />;
+            // a recorded slice covers the hatch of „nicht aufgezeichnet“ behind the lane
+            return (
+              <div key={i} className={cn("h-full flex-1", m.state !== "gap" && "bg-surface")} title={title(sl, m)}>
+                <div className={cn("h-full", COLOR[m.state])} style={{ opacity }} />
+              </div>
+            );
           })}
         </div>
       )}
@@ -96,7 +103,7 @@ function Legend() {
   return (
     <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
       {items.map(([c, k]) => <span key={k} className="inline-flex items-center gap-1.5"><span className={cn("h-2.5 w-2.5 rounded-sm", c)} />{k === "active" ? `${t("dev.tl.legend.active")} / ${t("dev.tl.legend.bal")}` : k === "noStatus" ? `${t("dev.tl.legend.none")} / ${t("dev.tl.legend.noStatus")}` : t(`dev.tl.legend.${k}`)}</span>)}
-      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm border border-line" />{t("dev.tl.legend.gap")}</span>
+      <span className="inline-flex items-center gap-1.5"><span className="no-record h-2.5 w-2.5 rounded-sm border border-line" />{t("dev.tl.legend.gap")}</span>
     </p>
   );
 }

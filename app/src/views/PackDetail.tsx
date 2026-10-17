@@ -83,8 +83,6 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             <p className="mt-3 text-sm text-muted">mV</p>
           </Panel>
 
-          <CellAnalysisPanel pack={p.address} scope={scope} />
-
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <Panel className="p-5">
               <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold"><Thermometer className="h-5 w-5 text-muted" aria-hidden />{t("dash.temp")}<InfoIcon id="value.temperatures" /></h2>
@@ -113,6 +111,8 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
               </div>
             </Panel>
           </div>
+
+          <CellAnalysisPanel pack={p.address} scope={scope} />
 
           <DatasheetPanel p={p} scope={scope} packs={packs} />
         </>

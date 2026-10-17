@@ -733,6 +733,7 @@ const resources = {
           r_slight: "Widerstand {{pct}} des Medians: außerhalb ±20 %, aber unter 130 %",
         },
         jumpsNote_one: "{{count}} Sprung", jumpsNote_other: "{{count}} Sprünge",
+        coverage: "Aufzeichnung in {{rec}} von {{span}}", hours: "{{n}} h", days: "{{n}} Tagen",
         sum: {
           rows: "{{rows}} Abfragen mit {{cells}} Zellen ausgewertet: Ruhe {{rest}}, oben {{top}}, unten {{bottom}}, unter Last {{load}}, {{steps}} Laststufen.",
           balancer_one: "1 Abfrage weggelassen, weil der externe Balancer laut Berechnung arbeitete oder das nicht entscheidbar war ({{unknown}}).",
@@ -742,6 +743,7 @@ const resources = {
           incomplete_one: "1 Abfrage ohne vollständige Zellwerte (nicht {{cells}} Zellen) weggelassen.", incomplete_other: "{{count}} Abfragen ohne vollständige Zellwerte (nicht {{cells}} Zellen) weggelassen.",
           minutes_one: "1 Minutenwert weggelassen: nur Einzelwerte zählen.", minutes_other: "{{count}} Minutenwerte weggelassen: nur Einzelwerte zählen.",
           order_one: "Platz bei 3,45 V aus 1 Ladung, 1 = zuerst.", order_other: "Platz bei 3,45 V: Mittel über {{count}} Ladungen, 1 = zuerst.",
+          noStatement: "Keine Aussage: {{reason}}.", noStatementCells: "Zellen ohne Aussage: {{reason}}.",
           rMedian: "Widerstand im Pack-Median {{r}} (Spannungs- durch Stromsprung, mit Verbindern und Messleitung).",
         },
       },
@@ -1485,6 +1487,7 @@ const resources = {
           r_slight: "resistance {{pct}} of the median: outside ±20 %, but below 130 %",
         },
         jumpsNote_one: "{{count}} jump", jumpsNote_other: "{{count}} jumps",
+        coverage: "Recorded in {{rec}} of {{span}}", hours: "{{n}} h", days: "{{n}} days",
         sum: {
           rows: "{{rows}} polls with {{cells}} cells analysed: rest {{rest}}, top {{top}}, bottom {{bottom}}, under load {{load}}, {{steps}} load steps.",
           balancer_one: "1 poll left out because the external balancer was computed working or that was not decidable ({{unknown}}).",
@@ -1494,6 +1497,7 @@ const resources = {
           incomplete_one: "1 poll without complete cell values (not {{cells}} cells) left out.", incomplete_other: "{{count}} polls without complete cell values (not {{cells}} cells) left out.",
           minutes_one: "1 minute value left out: only single values count.", minutes_other: "{{count}} minute values left out: only single values count.",
           order_one: "Place at 3.45 V from 1 charge, 1 = first.", order_other: "Place at 3.45 V: mean over {{count}} charges, 1 = first.",
+          noStatement: "No statement: {{reason}}.", noStatementCells: "Cells without a statement: {{reason}}.",
           rMedian: "Pack median resistance {{r}} (voltage step over current step, including connectors and sense wire).",
         },
       },

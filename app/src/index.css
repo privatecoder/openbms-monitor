@@ -111,3 +111,6 @@ body {
 .history-chart .u-legend .u-value { font-variant-numeric: tabular-nums; }
 .history-chart .u-legend .u-off > * { opacity: 0.35; }
 .history-chart .u-select { background: color-mix(in srgb, var(--charge) 18%, transparent); }
+
+/* Time without recording (heatmap, balancing lanes): a light hatch, never confused with a value. */
+.no-record { background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted) 35%, transparent) 0 1px, transparent 1px 5px); }
