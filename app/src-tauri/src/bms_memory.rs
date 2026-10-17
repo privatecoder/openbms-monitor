@@ -270,12 +270,14 @@ fn write_checked(state: &AppState, link: &Link, address: u8, base: Values, edite
         }
         Err(e) => {
             let e = e.to_string();
-            let read = read_parameters(state, link, address);
-            return match after_lost(read.as_ref().ok().map(|p| p.values()).as_ref(), &values, &fresh.values()) {
-                AfterLost::Written => {
-                    snapshot(state, link, address, SnapshotKind::Written, &block);
-                    Ok(ParamWrite::Written { read_back: read.ok(), read_error: None, unanswered: true })
-                }
+            // the comparison read keeps no `read` snapshot: „Vorherigen Stand“ stays the block read before the send
+            let read = with_link(&state.conn, &state.flashing, &state.link, link, |c| c.parameters(address));
+            let decided = after_lost(read.as_ref().ok().map(|p| p.values()).as_ref(), &values, &fresh.values());
+            if let Some(kind) = decided.snapshot() {
+                snapshot(state, link, address, kind, &block);
+            }
+            return match decided {
+                AfterLost::Written => Ok(ParamWrite::Written { read_back: read.ok(), read_error: None, unanswered: true }),
                 AfterLost::Unreached => Err(e),
                 AfterLost::Unclear => Ok(ParamWrite::Unclear { error: e }),
             };
@@ -298,6 +300,14 @@ pub enum AfterLost {
     Unreached,
     /// anything else, or not readable
     Unclear,
+}
+
+impl AfterLost {
+    /// The one snapshot a lost answer keeps: the block sent, once the read confirmed it. Never a `read` of the
+    /// comparison, which would become „Vorheriger Stand“ (`last_write`: the newest read before the write).
+    pub fn snapshot(&self) -> Option<SnapshotKind> {
+        matches!(self, AfterLost::Written).then_some(SnapshotKind::Written)
+    }
 }
 
 pub fn after_lost(read: Option<&Values>, sent: &Values, before: &Values) -> AfterLost {
@@ -489,6 +499,9 @@ mod tests {
         assert_eq!(after_lost(Some(&v(3600)), &sent, &before), AfterLost::Unreached);
         assert_eq!(after_lost(Some(&v(3500)), &sent, &before), AfterLost::Unclear);
         assert_eq!(after_lost(None, &sent, &before), AfterLost::Unclear);
+        // only a confirmed write keeps a snapshot, and never a `read`
+        assert_eq!(AfterLost::Written.snapshot(), Some(SnapshotKind::Written));
+        assert_eq!((AfterLost::Unreached.snapshot(), AfterLost::Unclear.snapshot()), (None, None));
         let j = serde_json::to_value(ParamWrite::Unclear { error: "timeout".into() }).unwrap();
         assert_eq!(j, serde_json::json!({ "kind": "unclear", "error": "timeout" }));
     }

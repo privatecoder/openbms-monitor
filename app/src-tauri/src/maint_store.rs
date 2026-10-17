@@ -1779,6 +1779,16 @@ mod tests {
     }
 
     #[test]
+    fn a_write_confirmed_after_a_lost_answer_keeps_the_read_before_as_previous() {
+        let s = Store::open(&temp("lost-answer")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        // the fresh read before the send, then (`AfterLost::snapshot`) only the block sent; the comparison read is none
+        s.add_param_snapshot(&a.id, 2, SnapshotKind::Read, &[60], 10).unwrap();
+        s.add_param_snapshot(&a.id, 2, crate::bms_memory::AfterLost::Written.snapshot().unwrap(), &[50], 11).unwrap();
+        assert_eq!(s.last_write(&a.id, 2).unwrap(), LastWrite { at: Some(11), previous: Some(vec![60]) });
+    }
+
+    #[test]
     fn the_previous_state_of_a_write_belongs_to_the_board() {
         let s = Store::open(&temp("lastwrite")).unwrap();
         let a = s.create_installation("A", None, vec![]).unwrap();
