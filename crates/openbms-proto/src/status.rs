@@ -164,7 +164,11 @@ impl Status {
         let ambient_temperature_limit = t.pop().unwrap();
         let current_limit = LimitState::from(r.u8()?);
         let pack_voltage_limit = LimitState::from(r.u8()?);
-        let _bit_count = r.u8()?;
+        let bit_count = usize::from(r.u8()?);
+        // the counts must give exactly this INFO: an answer carries no CID2, a late 0x42 answer must not pass as 0x44
+        if bit_count < 14 || info.len() != 3 + cells + 1 + temps + 3 + bit_count {
+            return Err(Error::Layout("0x44 length does not match its counts"));
+        }
         let ev = r.bytes(6)?;
         let switch_state = r.u8()?;
         let bal_lo = r.u8()?;

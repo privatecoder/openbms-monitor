@@ -50,3 +50,16 @@ fn status_frame_charging_no_alarms() {
     assert_eq!(s.balancing, 0);
     assert!(s.alarms.is_empty());
 }
+
+#[test]
+fn a_late_telemetry_answer_never_passes_as_status_nor_the_other_way() {
+    let tele = frame::parse(b"~2001460010960001100D050D050D060D050D050D070D060D060D060D060D060D060D060D060D070D07060B270B200B210B270B580B30000014D6569A0A6D6003176D60000703E814D9FFF3FF770359027FDDB1\r").unwrap();
+    let status = frame::parse(b"~20014600806200011000000000000000000000000000000000060000000000000000140000000000000300000200000000000000000002EB2F\r").unwrap();
+    assert!(Status::parse(&tele.info).is_err());
+    assert!(Telemetry::parse(&status.info).is_err());
+    // a status cut short or with a byte too many no longer parses either
+    assert!(Status::parse(&status.info[..status.info.len() - 1]).is_err());
+    let mut longer = status.info.clone();
+    longer.push(0);
+    assert!(Status::parse(&longer).is_err());
+}

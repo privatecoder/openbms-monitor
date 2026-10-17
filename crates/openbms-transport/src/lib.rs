@@ -255,19 +255,28 @@ impl Connection {
     /// Send an ASCII request and return the answer for `address`. Interleaved intra-pack
     /// frames (CID2 0x5A, master polling on the pack bus) are skipped.
     pub fn ascii(&mut self, request: &[u8], address: u8) -> Result<Frame> {
-        let r = self.ascii_exchange(request, address);
+        self.ascii_as(request, address, |_| true)
+    }
+
+    /// `ascii` for an answer whose layout can be checked: an answer carries no CID2, so a late answer to another
+    /// request (0x42 arriving while 0x44 waits) looks like ours. An RTN 00 frame that `fits` refuses is skipped and the
+    /// wait goes on within the same deadline; if none fits by then, the last one is returned (its parse error shows).
+    fn ascii_as(&mut self, request: &[u8], address: u8, fits: impl Fn(&[u8]) -> bool) -> Result<Frame> {
+        let r = self.ascii_exchange(request, address, &fits);
         self.note_failure(&r, address);
         r
     }
 
-    fn ascii_exchange(&mut self, request: &[u8], address: u8) -> Result<Frame> {
+    fn ascii_exchange(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool) -> Result<Frame> {
         self.drop_input()?;
         self.send(request)?;
         let deadline = Instant::now() + self.timeout;
         let mut pending = Vec::new();
+        // an answer of ours whose layout did not fit: returned only if no fitting one comes
+        let mut misfit: Option<Frame> = None;
         let result = loop {
             if Instant::now() > deadline {
-                break Err(Error::Timeout(self.timeout));
+                break misfit.take().ok_or(Error::Timeout(self.timeout));
             }
             if let Some(end) = pending.iter().position(|b| *b == b'\r') {
                 let line: Vec<u8> = pending.drain(..=end).collect();
@@ -284,6 +293,10 @@ impl Connection {
                         if f.rtn == 0x5A && request.get(7..9) != Some(b"5A") {
                             continue; // intra-pack answer of a slave to the master, not ours
                         }
+                        if f.rtn == 0x00 && !fits(&f.info) {
+                            misfit = Some(f);
+                            continue;
+                        }
                         break Ok(f);
                     }
                     _ => continue,
@@ -291,6 +304,7 @@ impl Connection {
             }
             match self.read_until(deadline, |b| b.contains(&b'\r')) {
                 Ok(chunk) => pending.extend(chunk),
+                Err(Error::Timeout(_)) if misfit.is_some() => break Ok(misfit.take().unwrap()),
                 Err(e) => break Err(e),
             }
         };
@@ -303,22 +317,22 @@ impl Connection {
     }
 
     pub fn telemetry(&mut self, address: u8) -> Result<Telemetry> {
-        let f = self.ascii(&Telemetry::request(address)?, address)?;
+        let f = self.ascii_as(&Telemetry::request(address)?, address, |i| Telemetry::parse(i).is_ok())?;
         Ok(Telemetry::parse(&f.info)?)
     }
 
     pub fn status(&mut self, address: u8) -> Result<Status> {
-        let f = self.ascii(&Status::request(address)?, address)?;
+        let f = self.ascii_as(&Status::request(address)?, address, |i| Status::parse(i).is_ok())?;
         Ok(Status::parse(&f.info)?)
     }
 
     pub fn device_info(&mut self, address: u8) -> Result<DeviceInfo> {
-        let f = self.ascii(&DeviceInfo::request(address)?, address)?;
+        let f = self.ascii_as(&DeviceInfo::request(address)?, address, |i| DeviceInfo::parse(i).is_ok())?;
         Ok(DeviceInfo::parse(&f.info)?)
     }
 
     pub fn parameters(&mut self, address: u8) -> Result<Parameters> {
-        let f = self.ascii(&Parameters::request(address)?, address)?;
+        let f = self.ascii_as(&Parameters::request(address)?, address, |i| Parameters::parse(i).is_ok())?;
         Ok(Parameters::parse(&f.info)?)
     }
 
@@ -714,6 +728,25 @@ mod tests {
     /// An answer frame: the request layout with RTN in place of CID2.
     fn answer(address: u8, rtn: u8, info: &[u8]) -> Vec<u8> {
         frame::encode_request(address, rtn, info).unwrap()
+    }
+
+    const TELE1: &[u8] = b"~2001460010960001100D050D050D060D050D050D070D060D060D060D060D060D060D060D060D070D07060B270B200B210B270B580B30000014D6569A0A6D6003176D60000703E814D9FFF3FF770359027FDDB1\r";
+    const STATUS1: &[u8] = b"~20014600806200011000000000000000000000000000000000060000000000000000140000000000000300000200000000000000000002EB2F\r";
+
+    #[test]
+    fn a_late_0x42_answer_is_skipped_while_0x44_waits_for_its_own() {
+        // the 0x42 answer of pack 1 arrives first, then the real 0x44 answer: the status is the real one
+        let both = [TELE1, STATUS1].concat();
+        let mut c = scripted(vec![(Status::request(1).unwrap(), both)]);
+        let s = c.status(1).unwrap();
+        assert_eq!(s.system_status, 0x02);
+        assert!(s.alarms.is_empty());
+        // only the 0x42 answer: no status made up from it, its layout error shows (not a timeout)
+        let mut c = scripted(vec![(Status::request(1).unwrap(), TELE1.to_vec())]);
+        assert!(matches!(c.status(1), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+        // and the other way round for 0x42
+        let mut c = scripted(vec![(Telemetry::request(1).unwrap(), [STATUS1, TELE1].concat())]);
+        assert_eq!(c.telemetry(1).unwrap().pack_voltage, 53.34);
     }
 
     #[test]
