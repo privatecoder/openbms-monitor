@@ -16,13 +16,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const MINUTE_MS: i64 = 60_000;
 /// |current| (mA) of the `when` conditions: charging above +1 A, discharging below −1 A
-const CHARGE_MA: i64 = 1_000;
+pub(crate) const CHARGE_MA: i64 = 1_000;
 /// a gap of more than this many poll periods ends the carried state
-const GAP_PERIODS: i64 = 3;
+pub(crate) const GAP_PERIODS: i64 = 3;
 /// poll period of a session without two single answers to measure it
-const DEFAULT_PERIOD_MS: i64 = 10_000;
+pub(crate) const DEFAULT_PERIOD_MS: i64 = 10_000;
 /// rows this long before the span only carry the state into it
-const WARMUP_MS: i64 = 6 * 3_600_000;
+pub(crate) const WARMUP_MS: i64 = 6 * 3_600_000;
 /// spread (mV) from which a definition without a readable trigger starts (the UI's default)
 const DEFAULT_TRIGGER_MV: i64 = 5;
 
@@ -347,31 +347,33 @@ pub struct Timeline {
     pub measured: bool,
 }
 
-const ROWS: &str = "SELECT t, session, n, current, cell_max, cell_min, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n FROM pack
-  WHERE site = (SELECT id FROM sites WHERE site = ?1) AND pack = ?2 AND t >= ?3 AND t <= ?4 ORDER BY t";
+/// The columns of a `Row`, in the order `read_row` takes them.
+pub(crate) const ROW_COLS: &str = "t, session, n, current, cell_max, cell_min, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n";
+
+/// A `Row` from the first 13 columns of a query that selects ROW_COLS first.
+pub(crate) fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
+    Ok(Row {
+        t: r.get(0)?,
+        session: r.get(1)?,
+        n: r.get(2)?,
+        current: r.get(3)?,
+        cell_max: r.get(4)?,
+        cell_min: r.get(5)?,
+        spread_lo: r.get(6)?,
+        spread_hi: r.get(7)?,
+        i_lo: r.get(8)?,
+        i_hi: r.get(9)?,
+        balancing: r.get(10)?,
+        bal_rows: r.get(11)?,
+        bal_n: r.get(12)?,
+    })
+}
 
 /// The rows of a pack in a span, in time order, one at a time to `f`.
 pub fn each_row(db: &Connection, site: &str, pack: u8, from: i64, to: i64, mut f: impl FnMut(Row)) -> Result<(), String> {
-    let mut st = db.prepare(ROWS).map_err(|e| e.to_string())?;
-    let rows = st
-        .query_map(params![site, pack, from, to], |r| {
-            Ok(Row {
-                t: r.get(0)?,
-                session: r.get(1)?,
-                n: r.get(2)?,
-                current: r.get(3)?,
-                cell_max: r.get(4)?,
-                cell_min: r.get(5)?,
-                spread_lo: r.get(6)?,
-                spread_hi: r.get(7)?,
-                i_lo: r.get(8)?,
-                i_hi: r.get(9)?,
-                balancing: r.get(10)?,
-                bal_rows: r.get(11)?,
-                bal_n: r.get(12)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
+    let sql = format!("SELECT {ROW_COLS} FROM pack WHERE site = (SELECT id FROM sites WHERE site = ?1) AND pack = ?2 AND t >= ?3 AND t <= ?4 ORDER BY t");
+    let mut st = db.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = st.query_map(params![site, pack, from, to], read_row).map_err(|e| e.to_string())?;
     for row in rows {
         f(row.map_err(|e| e.to_string())?);
     }

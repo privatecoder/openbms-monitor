@@ -716,7 +716,7 @@ fn blob_u16(vals: &[i64]) -> Vec<u8> {
 fn blob_i16(vals: &[i64]) -> Vec<u8> {
     vals.iter().flat_map(|&v| (v.clamp(i16::MIN as i64, i16::MAX as i64) as i16).to_le_bytes()).collect()
 }
-fn unblob_u16(b: &[u8]) -> Vec<i64> {
+pub(crate) fn unblob_u16(b: &[u8]) -> Vec<i64> {
     b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as i64).collect()
 }
 fn unblob_i16(b: &[u8]) -> Vec<i64> {
@@ -2179,7 +2179,8 @@ mod tests {
         let lines = [json!({ "t": 1_001, "pack": pack_update(3, 1.0, &[3.30, 3.31, 3.32], &[]) }), json!({ "t": 2_001, "pack": gap }), json!({ "t": 3_001, "pack": text })];
         std::fs::write(&file, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         assert_eq!(h.import(&file, "gw").unwrap().rows, 3);
-        let rows: Vec<(i64, Option<Vec<u8>>, Option<i64>, Option<i64>)> = reader(&path)
+        type CellRow = (i64, Option<Vec<u8>>, Option<i64>, Option<i64>);
+        let rows: Vec<CellRow> = reader(&path)
             .unwrap()
             .prepare("SELECT t, cells, cell_max, spread_hi FROM pack ORDER BY t")
             .unwrap()

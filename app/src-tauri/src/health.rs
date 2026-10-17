@@ -45,6 +45,11 @@ pub struct PackDay {
     pub cycles: Option<i64>,
     /// warmest cell of the day (°C)
     pub temp_max: Option<f64>,
+    /// the BMS's balancing bits of the day: OR of the rows (bit n = cell n+1), rows with a bit set out of rows with a
+    /// status (a minute row counts its own); None without any status
+    pub bal_mask: Option<i64>,
+    pub bal_rows: Option<i64>,
+    pub bal_n: Option<i64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -184,6 +189,9 @@ struct DayAcc {
     rest: Vec<i64>,
     cycles: Option<(i64, i64)>,
     temp_max: Option<i64>,
+    bal_mask: Option<i64>,
+    bal_rows: Option<i64>,
+    bal_n: Option<i64>,
 }
 impl DayAcc {
     fn finish(mut self, day: i64) -> PackDay {
@@ -199,6 +207,9 @@ impl DayAcc {
             rest_p95: pct(&self.rest, 0.95),
             cycles: self.cycles.map(|c| c.1),
             temp_max: self.temp_max.map(|v| v as f64 / 10.0),
+            bal_mask: self.bal_mask,
+            bal_rows: self.bal_rows,
+            bal_n: self.bal_n,
         }
     }
 }
@@ -207,7 +218,7 @@ impl DayAcc {
 fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(PackReport, Option<i64>, Option<i64>), String> {
     let mut st = db
         .prepare_cached(
-            "SELECT t, n, cycles, temp_max, spread_hi, i_lo, i_hi FROM pack WHERE site = ?1 AND pack = ?2 AND t >= ?3 AND t < ?4 ORDER BY t",
+            "SELECT t, n, cycles, temp_max, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n FROM pack WHERE site = ?1 AND pack = ?2 AND t >= ?3 AND t < ?4 ORDER BY t",
         )
         .map_err(e2s)?;
     let mut rows = st.query(params![site, pack, days[0], days[days.len() - 1]]).map_err(e2s)?;
@@ -241,6 +252,14 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
         }
         if let Some(v) = r.get::<_, Option<i64>>(3).map_err(e2s)? {
             acc.temp_max = Some(acc.temp_max.map_or(v, |m| m.max(v)));
+        }
+        if let Some(b) = r.get::<_, Option<i64>>(7).map_err(e2s)? {
+            acc.bal_mask = Some(acc.bal_mask.unwrap_or(0) | b);
+        }
+        for (sum, col) in [(&mut acc.bal_rows, 8), (&mut acc.bal_n, 9)] {
+            if let Some(v) = r.get::<_, Option<i64>>(col).map_err(e2s)? {
+                *sum = Some(sum.unwrap_or(0) + v);
+            }
         }
         let spread: Option<i64> = r.get(4).map_err(e2s)?;
         let (lo, hi): (Option<i64>, Option<i64>) = (r.get(5).map_err(e2s)?, r.get(6).map_err(e2s)?);
@@ -551,6 +570,23 @@ mod tests {
         // the period is clamped to the site's sessions
         assert_eq!(site_span(&db, "a", -5, 100 * DAY_MS).unwrap(), Some((0, 10 * DAY_MS + 1)));
         assert_eq!(site_span(&db, "nobody", 0, 1).unwrap(), None);
+    }
+
+    #[test]
+    fn the_balancing_bits_of_a_day() {
+        let (path, c) = db("balancing");
+        for (k, bits) in [Some(0b100), Some(0), None, Some(0b1)].into_iter().enumerate() {
+            raw(&c, 1, 0, 1_000 + k as i64 * 10_000, 0, 5);
+            c.execute("UPDATE pack SET balancing = ?1, bal_rows = ?2, bal_n = ?3 WHERE t = ?4", params![bits, bits.map(|b| i64::from(b != 0)), bits.map(|_| 1), 1_000 + k as i64 * 10_000]).unwrap();
+        }
+        // a minute row: bits of its rows ORed, 2 of 6 with a bit set
+        row(&c, 1, 0, 10 * MINUTE_MS, 6, 0, 500, None, Some((5, 5)), Some((0, 0)));
+        c.execute("UPDATE pack SET balancing = 8, bal_rows = 2, bal_n = 6 WHERE t = ?1", [10 * MINUTE_MS]).unwrap();
+        raw(&c, 1, 0, DAY_MS + 1_000, 0, 5);
+        let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(2), &[]).unwrap();
+        let d = &r.packs[0].days;
+        assert_eq!((d[0].bal_mask, d[0].bal_rows, d[0].bal_n), (Some(0b1101), Some(4), Some(9)));
+        assert_eq!((d[1].bal_mask, d[1].bal_rows, d[1].bal_n), (None, None, None), "no status: unknown, not 0");
     }
 
     #[test]
