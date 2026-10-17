@@ -1,0 +1,10 @@
+---
+title: Externe Balancer
+short: Aktive Balancer an den Packs eintragen; die App berechnet aus den Zellspannungen, wann sie arbeiten, und zeigt das neben dem Balancing des BMS.
+related: topic.installations, status.balancing, topic.history
+---
+- **Wozu:** Ein aktiver Balancer, der fest an einem Pack hängt (z. B. NEEY, Heltec, JK), schiebt Ladung zwischen den Zellen, sobald seine eigenen Bedingungen erfüllt sind, unabhängig vom passiven Balancing des BMS. Ohne ihn zu kennen, liest man seine Arbeit als Verhalten der Zellen.
+- **Eintragen:** Unter Anlagen auf der Karte der Anlage, Block „Geräte“: Name, Start ab Spreizung (höchste minus niedrigste Zelle, mV), Stopp unter Spreizung (leer: wie Start), höchste Zelle ab (leer: egal), Wann (immer, beim Laden über +1 A, nicht beim Entladen ab −1 A) und Balancierstrom (nur Anzeige). Eine Definition kann vielen Packs zugeordnet werden, jeder Pack hat höchstens eine.
+- **Berechnet, nicht gemessen:** Die App liest den Balancer nicht aus. Für jede aufgezeichnete Zeile gilt er als aktiv, wenn Wann und die Zellspannung passen und die Spreizung den Start erreicht; er bleibt aktiv, bis die Spreizung unter den Stopp fällt (innerhalb einer Verbindung, eine Lücke über drei Abfragen beginnt neu). Minutenwerte älterer Tage zählen nur, wo ihre Extremwerte eindeutig sind, sonst „unbekannt“.
+- **Zeitlich:** Jede Änderung der Werte oder der Zuordnung gilt ab ihrem Zeitpunkt; die Aufzeichnung davor wird weiter mit den damaligen Werten berechnet. Entfernen beendet die Zuordnungen jetzt.
+- **Verlauf in den Packdetails:** zwei Spuren über 24 h, 7 oder 30 Tage: „Externer Balancer (berechnet)“ und „BMS-Balancing (gemeldet)“ aus den Balancing-Bits des BMS, mit der Zahl der gleichzeitig balancierten Zellen. Aufzeichnungen vor dieser Version haben keine Bits („keine Daten“); Minutenwerte sagen nur „mindestens einmal balanciert“ und den Anteil.

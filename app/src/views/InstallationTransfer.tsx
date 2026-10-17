@@ -38,7 +38,7 @@ export function importResult(r: ImportApplied, name: string, t: (k: string, o?: 
   ];
   if (r.recording_rows || r.recording_events) parts.push(t("inst.imp.res.recording", { rows: r.recording_rows, events: r.recording_events }));
   const nt = r.report.not_taken;
-  const notTaken = !!(nt && (Object.keys(nt.cell_types ?? {}).length || nt.groups || nt.pairs || nt.diagnosis)) || !!r.report.master_serial_not_taken;
+  const notTaken = !!(nt && (Object.keys(nt.cell_types ?? {}).length || nt.groups || nt.pairs || nt.diagnosis || nt.notifications || nt.devices)) || !!r.report.master_serial_not_taken;
   return `${t("inst.imp.done", { name, list: parts.join(", ") })}${notTaken ? ` ${t("inst.imp.notTaken")}` : ""}`;
 }
 

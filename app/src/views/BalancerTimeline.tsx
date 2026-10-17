@@ -1,0 +1,118 @@
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Scale } from "lucide-react";
+import { api, isDemo, type BalancerSlice, type BalancerTimeline as Timeline } from "../api";
+import { Panel } from "../components/ui/card";
+import { Segmented } from "../components/PackPicker";
+import { InfoIcon } from "../help";
+import { useSettings } from "../installData";
+import { cn, fmt } from "../lib/utils";
+import { bmsMark, extMark, shares, type LaneMark } from "../balancerTimeline";
+
+const DAY = 86_400_000;
+const PERIODS = ["1", "7", "30"] as const;
+type Period = (typeof PERIODS)[number];
+const SLICES = 240;
+// kept while the app runs, like the report's period
+let keptPeriod: Period = "1";
+
+const COLOR: Record<LaneMark["state"], string> = {
+  active: "bg-charge", bal: "bg-charge", unknown: "bg-discharge", inactive: "bg-line", idle: "bg-line", none: "bg-sunken", noStatus: "bg-sunken", gap: "",
+};
+
+/** Balancing over time in the pack details: the external balancer (computed from the cells with its settings of the
+ *  time, never measured while it has no connection profile) and the BMS's own balancing (reported bits). From the
+ *  recording of the chosen installation (`balancer_timeline`). */
+export function BalancerTimeline({ pack, scope }: { pack: number; scope: string | null }) {
+  const { t, i18n } = useTranslation();
+  const { settings, loaded } = useSettings(scope);
+  const [period, setPeriodState] = useState<Period>(keptPeriod);
+  const setPeriod = (p: Period) => { keptPeriod = p; setPeriodState(p); };
+  const [data, setData] = useState<Timeline | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const site = scope ?? (isDemo ? "demo" : null);
+  const devicesKey = JSON.stringify(settings.devices ?? null);
+
+  useEffect(() => {
+    if (!site || !loaded) return;
+    let alive = true;
+    const load = () => {
+      const now = Date.now();
+      api.balancerTimeline(site, pack, now - Number(period) * DAY, now, settings.devices ?? null, SLICES)
+        .then((d) => { if (alive) { setData(d); setErr(null); } })
+        .catch((e) => alive && setErr(String(e)));
+    };
+    load();
+    // the recording grows while connected
+    const timer = window.setInterval(load, 60_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [site, pack, period, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pct = (v: number | null) => fmt(v === null ? null : v * 100, 0, "%");
+  const when = (ms: number) => new Date(ms).toLocaleString(i18n.language, period === "1" ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" });
+  const total = data?.total;
+  const recorded = !!total && total.active + total.inactive + total.unknown + total.unassigned > 0;
+  const assigned = !!total && total.active + total.inactive + total.unknown > 0;
+  const s = total ? shares(total) : null;
+
+  return (
+    <Panel className="p-5">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="flex items-center gap-1.5 font-display text-2xl font-semibold"><Scale className="h-5 w-5 text-muted" aria-hidden />{t("dev.tl.title")}<InfoIcon id="topic.balancers" /></h2>
+        <Segmented value={period} onChange={(v) => setPeriod(v as Period)} items={PERIODS.map((p) => [p, t(`dev.tl.period.${p}`)])} />
+      </div>
+      {!site ? <p className="text-sm text-muted">{t("dev.tl.needInst")}</p>
+        : err ? <p className="text-sm text-alarm">{err}</p>
+        : !data ? <p className="text-sm text-muted">{t("hist.loading")}</p>
+        : !recorded ? <p className="text-sm text-muted">{t("dev.tl.none")}</p> : (
+          <div className="space-y-3">
+            <Lane label={t("dev.tl.ext")} note={data.measured ? null : t("dev.tl.computed")} empty={!assigned && data.first_assigned === null ? t("dev.tl.noBalancer") : null}
+              slices={data.slices} mark={extMark} title={(sl, m) => `${when(sl.from)}–${when(sl.to)}: ${t(`dev.tl.legend.${m.state}`)}${m.state === "active" ? ` ${pct(m.share)}` : ""}`} />
+            <Lane label={t("dev.tl.bms")} note={null} empty={null}
+              slices={data.slices} mark={bmsMark}
+              title={(sl, m) => `${when(sl.from)}–${when(sl.to)}: ${t(`dev.tl.legend.${m.state}`)}${m.state === "bal" ? ` ${pct(m.share)}${sl.cells ? `, ${t("dev.tl.cells", { count: sl.cells })}` : ""}` : ""}`} />
+            <div className="flex justify-between text-xs text-muted tabular-nums"><span>{when(data.from)}</span><span>{when(data.to)}</span></div>
+            <ul className="space-y-0.5 text-sm">
+              {data.devices.length > 0 && <li className="text-muted">{t("dev.tl.device", { list: data.devices.join(", ") })}</li>}
+              {assigned && <li>{t("dev.tl.share", { pct: pct(s!.active) })}{s!.unknown ? `; ${t("dev.tl.unknownShare", { pct: pct(s!.unknown) })}` : ""}</li>}
+              {s!.bal !== null && <li>{t("dev.tl.shareBms", { pct: pct(s!.bal) })}{total!.cells ? `, ${t("dev.tl.cells", { count: total!.cells })}` : ""}</li>}
+              {total!.minutes && <li className="text-muted">{t("dev.tl.minutes")}</li>}
+              {!!s!.noStatus && <li className="text-muted">{t("dev.tl.noStatusShare", { pct: pct(s!.noStatus) })}</li>}
+            </ul>
+            <Legend />
+          </div>
+        )}
+    </Panel>
+  );
+}
+
+function Lane({ label, note, empty, slices, mark, title }: {
+  label: string; note: string | null; empty: string | null; slices: BalancerSlice[]; mark: (s: BalancerSlice) => LaneMark; title: (s: BalancerSlice, m: LaneMark) => string;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="flex flex-wrap items-baseline gap-x-2 text-sm"><span className="font-medium">{label}</span>{note && <span className="text-xs text-muted">{note}</span>}</p>
+      {empty ? <p className="flex h-6 items-center rounded bg-sunken px-2 text-xs text-muted">{empty}</p> : (
+        <div className="flex h-6 overflow-hidden rounded border border-line">
+          {slices.map((sl, i) => {
+            const m = mark(sl);
+            // activity by its share, so a short run looks lighter than a full one
+            const opacity = m.state === "active" || m.state === "bal" ? 0.35 + 0.65 * m.share : 1;
+            return <div key={i} className={cn("h-full flex-1", COLOR[m.state])} style={{ opacity }} title={title(sl, m)} />;
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Legend() {
+  const { t } = useTranslation();
+  const items: [string, string][] = [["bg-charge", "active"], ["bg-discharge", "unknown"], ["bg-line", "inactive"], ["bg-sunken", "noStatus"]];
+  return (
+    <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+      {items.map(([c, k]) => <span key={k} className="inline-flex items-center gap-1.5"><span className={cn("h-2.5 w-2.5 rounded-sm", c)} />{k === "active" ? `${t("dev.tl.legend.active")} / ${t("dev.tl.legend.bal")}` : k === "noStatus" ? `${t("dev.tl.legend.none")} / ${t("dev.tl.legend.noStatus")}` : t(`dev.tl.legend.${k}`)}</span>)}
+      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm border border-line" />{t("dev.tl.legend.gap")}</span>
+    </p>
+  );
+}
