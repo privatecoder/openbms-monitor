@@ -744,6 +744,9 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
     // export without them has none: its averaged cells would understate the spread. Older exports lack `samples`
     // too, so an imported row on the minute counts as a minute row.
     let merged = tm["samples"].as_i64().is_some_and(|n| n > 1) || (keep_existing && t % MINUTE_MS == 0);
+    // the answers a row stands for: an export carries them (`samples`), so an imported minute row stays a minute row
+    // and a single answer stays one, whatever its time; a live answer is one
+    let n = tm["samples"].as_i64().filter(|&n| n >= 1).unwrap_or(1);
     let range = |key: &str, scale: f64, own: Option<i64>| match tm.get(key) {
         Some(v) => scaled(v, scale),
         None if merged => None,
@@ -766,7 +769,7 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         .prepare_cached(&format!(
             "INSERT OR {} INTO pack(pack, t, session, n, current, soc, voltage, remaining, cycles, cell_max, cell_min,
                temp_max, temp_min, ambient, mosfet, cells, temps, site, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n)
-               VALUES(?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+               VALUES(?1, ?2, ?3, ?25, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             if keep_existing { "IGNORE" } else { "REPLACE" }
         ))?
         .execute(params![
@@ -794,6 +797,7 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         balancing,
         bal("balancing_rows", balancing.map(|b| i64::from(b != 0))),
         bal("balancing_n", balancing.map(|_| 1)),
+        n,
     ])?;
     Ok(changed > 0)
 }
@@ -2159,9 +2163,9 @@ mod tests {
         h.import(&old, "gw").unwrap();
         let rows = range_rows(&reader(&path).unwrap(), "SELECT t, n, spread_lo, spread_hi, i_lo, i_hi FROM pack ORDER BY t");
         assert_eq!(rows, vec![
-            // idle current 120 mA where the value reads 0
-            (0, Some(1), (Some(0), Some(20), Some(-20_000), Some(120))),
-            (5 * MINUTE_MS, Some(1), (None, None, None, None)),
+            // idle current 120 mA where the value reads 0; the answers of a minute row are kept (`samples`)
+            (0, Some(3), (Some(0), Some(20), Some(-20_000), Some(120))),
+            (5 * MINUTE_MS, Some(6), (None, None, None, None)),
             (6 * MINUTE_MS + 1, Some(1), (Some(20), Some(20), Some(1000), Some(1000))),
             (7 * MINUTE_MS, Some(1), (None, None, None, None)),
         ]);
@@ -2241,14 +2245,12 @@ mod tests {
         let merged = bal_rows(&path, "inst-b");
         assert_eq!(merged[..2], compacted[..]);
         assert_eq!(merged[2], (base + 3 * MINUTE_MS, 1, Some(0b10), Some(1), Some(1)));
-        // export and import: the same values, the minute row's counts included (an import stores n = 1, so the share
-        // of a minute is bal_rows / bal_n, never / n)
+        // export and import: the same values, the minute row's counts and its number of answers included
         let out = path.parent().unwrap().join("balancing.jsonl");
         export(&reader(&path).unwrap(), "inst-b", 0, i64::MAX, &[5], Format::Jsonl, &out).unwrap();
         h.clear(None).unwrap();
         h.import(&out, "inst-c").unwrap();
-        let without_n = |v: Vec<BalRow>| v.into_iter().map(|(t, _, b, r, n)| (t, b, r, n)).collect::<Vec<_>>();
-        assert_eq!(without_n(bal_rows(&path, "inst-c")), without_n(merged));
+        assert_eq!(bal_rows(&path, "inst-c"), merged);
     }
 
     #[test]
