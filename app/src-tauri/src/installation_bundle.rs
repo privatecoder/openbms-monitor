@@ -521,7 +521,8 @@ mod tests {
         let p = inspect(&b.store, &b.imports, &zip).unwrap();
         apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
         let db = history::reader(&b.dir.join("history.sqlite")).unwrap();
-        let rows: Vec<(i64, Option<i64>, Option<i64>, Option<i64>)> = db
+        type BalRow = (i64, Option<i64>, Option<i64>, Option<i64>);
+        let rows: Vec<BalRow> = db
             .prepare("SELECT t, balancing, bal_rows, bal_n FROM pack ORDER BY t")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
