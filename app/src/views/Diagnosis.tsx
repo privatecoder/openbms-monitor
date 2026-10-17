@@ -24,6 +24,10 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
   const [point, setPoint] = useState<RefPoint>("bus");
   const [restIn, setRestIn] = useState<Record<string, string>>({});
   const [nowIn, setNowIn] = useState<Record<string, string>>({});
+  // packs whose values were too old for the reference just entered, per step
+  const [staleZero, setStaleZero] = useState<number[]>([]);
+  const [staleNow, setStaleNow] = useState<number[]>([]);
+  const staleNote = (old: number[]) => old.length > 0 && <p className="text-xs text-discharge">{t("diag.stale", { packs: old.map(packNo).join(", ") })}</p>;
   const list = Object.values(packs).filter((p) => p.telemetry).sort((a, b) => a.address - b.address);
   const pairs = validPairs(allPairs, list.map((p) => p.address));
   const d = useDiag(scope, packs, pairs);
@@ -55,8 +59,10 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
   const atRest = list.length > 0 && maxAbs < REST_CURRENT_A;
   const loaded = list.filter((p) => Math.abs(p.telemetry!.current) >= MIN_CURRENT_A).length;
   const last = d.snapshots[0];
-  const innerFlags = flagHigh(d.inner);
-  const outerFlags = flagHigh(Object.fromEntries(Object.entries(last?.rows ?? {}).map(([a, r]) => [a, r.outer])));
+  const innerFlags = flagHigh(d.inner, Object.fromEntries(list.map((p) => [p.address, p.telemetry!.current])));
+  const outerOf = (s: typeof last) => flagHigh(Object.fromEntries(Object.entries(s?.rows ?? {}).map(([a, r]) => [a, r.outer])),
+    Object.fromEntries(Object.entries(s?.rows ?? {}).map(([a, r]) => [a, r.current])));
+  const outerFlags = outerOf(last);
   const time = (ms: number) => new Date(ms).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" });
   const pairRows = checkPairs(pairs, (a) => (packs[a]?.telemetry ? effectiveCurrent(packs[a].telemetry!) : undefined));
   const mOhm = (v: number | undefined) => (v === undefined ? "–" : fmt(v, 1, "mΩ"));
@@ -83,7 +89,7 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
           <p className="text-sm text-muted">{t("diag.step1Text")}</p>
           {refInputs(restIn, setRestIn, "53,20")}
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="primary" disabled={!atRest} onClick={() => d.zero(restRefs)}><RotateCcw className="h-4 w-4" />{t("diag.zero")}</Button>
+            <Button variant="primary" disabled={!atRest} onClick={() => setStaleZero(d.zero(restRefs))}><RotateCcw className="h-4 w-4" />{t("diag.zero")}</Button>
             <span className={cn("text-sm", atRest ? "text-ok" : "text-muted")}>
               {atRest ? t("diag.atRest") : t("diag.notAtRest", { a: fmt(maxAbs, 1, "A"), max: fmt(REST_CURRENT_A, 1, "A") })}
             </span>
@@ -91,6 +97,7 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
           <p className="text-xs text-muted">
             {d.zeroAt ? t("diag.zeroDone", { at: time(d.zeroAt), refs: [d.hasOuter("bus") && t("diag.point.bus"), d.hasOuter("switch") && t("diag.point.switch")].filter(Boolean).join(", ") || t("diag.noBus") }) : t("diag.zeroMissing")}
           </p>
+          {staleNote(staleZero)}
         </Panel>
 
         <Panel className="space-y-3 p-5">
@@ -99,10 +106,11 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
           {refInputs(nowIn, setNowIn, "53,30")}
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" disabled={!d.zeroAt || !d.hasOuter(point) || !nowComplete || loaded === 0}
-              onClick={() => { d.measure(point, nowRefs); setNowIn({}); }}>{t("diag.measure")}</Button>
+              onClick={() => { setStaleNow(d.measure(point, nowRefs)); setNowIn({}); }}>{t("diag.measure")}</Button>
             <span className="text-sm text-muted">{t("diag.loaded", { n: loaded, total: list.length })}</span>
           </div>
           {d.zeroAt && !d.hasOuter(point) && <p className="text-xs text-discharge">{t("diag.needBusRest")}</p>}
+          {staleNote(staleNow)}
         </Panel>
       </div>
 
@@ -183,7 +191,7 @@ export function Diagnosis({ packs, scope }: { packs: Record<number, PackEntry>; 
             </thead>
             <tbody>
               {d.snapshots.map((s) => {
-                const f = flagHigh(Object.fromEntries(Object.entries(s.rows).map(([a, r]) => [a, r.outer])));
+                const f = outerOf(s);
                 return (
                   <tr key={s.at} className="border-b border-line last:border-b-0">
                     <td className="py-1.5 pr-3">{time(s.at)}</td>

@@ -18,6 +18,10 @@ export const parseDiag = (v: unknown): Saved => {
   s.snapshots = Array.isArray(s.snapshots) ? s.snapshots.filter((x) => x.point && x.refs) : [];
   return s;
 };
+/** Pack values at most this old (ms) are taken together with a reference voltage entered now. */
+export const FRESH_MS = 10_000;
+const stale = (p: PackEntry, now: number) => now - p.updated > FRESH_MS;
+
 const reading = (p: PackEntry): Reading | undefined =>
   p.telemetry ? { current: p.telemetry.current, pack_voltage: p.telemetry.pack_voltage, port_voltage: p.telemetry.port_voltage } : undefined;
 
@@ -55,13 +59,15 @@ export function useDiag(scope: string | null, packs: Record<number, PackEntry>, 
     if (changed) setInner(next);
   }, [packs, saved.offsets]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Zero at rest; outer offsets for both reference points as far as their voltages were entered. */
-  const zero = (refs: Refs) => {
-    const offsets: Record<number, Offset> = {};
+  /** Zero at rest; outer offsets for both reference points as far as their voltages were entered. A pack whose values
+   *  are older than FRESH_MS gets no outer offset (the reference was measured now); returns those packs. */
+  const zero = (refs: Refs): number[] => {
+    const offsets: Record<number, Offset> = {}, old: number[] = [], now = Date.now();
     for (const p of Object.values(packs)) {
       const r = reading(p);
       if (!r) continue;
-      const bus = refFor(p.address, "bus", refs, pairs), sw = refFor(p.address, "switch", refs, pairs);
+      let bus = refFor(p.address, "bus", refs, pairs), sw = refFor(p.address, "switch", refs, pairs);
+      if ((bus !== undefined || sw !== undefined) && stale(p, now)) { old.push(p.address); bus = sw = undefined; }
       offsets[p.address] = {
         inner: zeroOffset(r).inner,
         outer: {
@@ -71,17 +77,22 @@ export function useDiag(scope: string | null, packs: Record<number, PackEntry>, 
       };
     }
     setInner({}); seen.current = {};
-    persist({ ...saved, offsets, zeroAt: Date.now(), zeroRefs: refs });
+    persist({ ...saved, offsets, zeroAt: now, zeroRefs: refs });
+    return old;
   };
 
-  const measure = (point: RefPoint, refs: Refs) => {
-    const rows: Snapshot["rows"] = {};
+  /** The outer resistance against the reference measured now; a pack whose values are older than FRESH_MS is left
+   *  out of the measurement. Returns those packs. */
+  const measure = (point: RefPoint, refs: Refs): number[] => {
+    const rows: Snapshot["rows"] = {}, old: number[] = [], now = Date.now();
     for (const p of Object.values(packs)) {
       const r = reading(p), off = saved.offsets[p.address], ref = refFor(p.address, point, refs, pairs);
       if (!r || !off) continue;
+      if (ref !== undefined && stale(p, now)) { old.push(p.address); continue; }
       rows[p.address] = { current: r.current, outer: ref === undefined ? undefined : outerMilliohm(r, off, ref, point), inner: innerMilliohm(r, off) };
     }
-    persist({ ...saved, snapshots: [{ at: Date.now(), point, refs, rows }, ...saved.snapshots].slice(0, 30) });
+    if (Object.keys(rows).length) persist({ ...saved, snapshots: [{ at: now, point, refs, rows }, ...saved.snapshots].slice(0, 30) });
+    return old;
   };
 
   const clearHistory = () => persist({ ...saved, snapshots: [] });
