@@ -41,8 +41,10 @@ pub const MIN_STEPS: u32 = 10;
 pub const REST_OK_MV: f64 = 5.0;
 pub const R_OK: f64 = 0.20;
 pub const END_OK_MV: f64 = 15.0;
-/// Widerstand erhöht from this share of the median
+/// Widerstand erhöht from this share of the median, and at least R_RES_MV over the median |ΔI| of the steps above the
+/// median (mΩ): the cell voltages come in whole mV, so a step of a mV or two is the resolution, not the cell
 pub const R_HIGH: f64 = 1.30;
+pub const R_RES_MV: f64 = 2.0;
 /// a constant offset: rest, under load and top (or bottom) within this (mV) of each other
 pub const OFFSET_TOL_MV: f64 = 5.0;
 /// a jump: the deviation of a cell changes by at least this (mV) between consecutive rows with a steady current
@@ -66,10 +68,13 @@ const R_SPAN: i64 = 2_000;
 pub enum Class {
     /// passend
     Ok,
-    /// Ruhewerte passend: only the rest values speak, nothing at top or bottom and no resistance
+    /// Ruhewerte passend: rest (and the resistance, if known) within the limits, nothing at top or bottom: capacity not
+    /// checked
     RestOk,
-    /// Ladestand-Versatz
+    /// Ladestand-Versatz: the same sign at top and bottom
     SocOffset,
+    /// Versatz in Ruhe (Ladestand oder Messung): off at rest, nothing at top or bottom to tell which
+    RestOffset,
     /// Kapazität vermutlich kleiner
     Capacity,
     /// mehrdeutig (Widerstand oder Kapazität)
@@ -93,8 +98,8 @@ pub enum Reason {
     Partial { top: bool, bottom: bool, r: bool, steps: u32 },
     /// Ruhewerte passend: rest within the limits, no top, bottom or resistance to judge the rest by
     RestOnly { rest: f64 },
-    /// at rest off the median, nothing at top or bottom against it: SOC offset in the flat region (a measurement offset
-    /// is told apart only with a charge over 3.40 V)
+    /// at rest off the median, nothing at top or bottom against it: SOC offset in the flat region or a measurement
+    /// offset (told apart only with a charge over 3.40 V)
     Rest { rest: f64 },
     /// high (or low) at the top and at the bottom
     SameSign { top: f64, bottom: f64 },
@@ -114,12 +119,13 @@ pub enum Reason {
     BottomOnly { bottom: f64 },
     /// keine Aussage: top and bottom fit no class (e.g. low at the top and high at the bottom)
     Pattern { top: f64, bottom: f64 },
-    /// keine Aussage: resistance outside ± 20 % but below 130 %
+    /// keine Aussage: resistance outside ± 20 % but below 130 %, or above it by less than the resolution (R_RES_MV)
     RSlight { pct: f64 },
 }
 
 /// The figures of one cell the classification works on. `r_rel`: resistance / pack median, None with fewer than
-/// MIN_STEPS steps; `top_corr`/`bottom_corr` only with `r_rel`. A situation with too few rows is None.
+/// MIN_STEPS steps; `r_above`: resistance − pack median (mΩ), `r_bound`: R_RES_MV / median |ΔI| of the pack's steps
+/// (mΩ); `top_corr`/`bottom_corr` only with `r_rel`. A situation with too few rows is None.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Input {
     pub rest: Option<f64>,
@@ -130,6 +136,8 @@ pub struct Input {
     pub top_corr: Option<f64>,
     pub bottom_corr: Option<f64>,
     pub r_rel: Option<f64>,
+    pub r_above: Option<f64>,
+    pub r_bound: Option<f64>,
     pub steps: u32,
     pub jumps: u32,
 }
@@ -149,7 +157,9 @@ pub fn classify(c: &Input) -> (Class, Reason) {
             return (Class::Measurement, Reason::Offset { rest, load });
         }
     }
-    if let Some(r) = c.r_rel.filter(|&r| r >= R_HIGH) {
+    // high relative to the median and by more than the mV resolution allows over the steps' current
+    let resolved = c.r_above.zip(c.r_bound).is_some_and(|(a, b)| a >= b);
+    if let Some(r) = c.r_rel.filter(|&r| r >= R_HIGH && resolved) {
         return (Class::Resistance, Reason::Resistance { pct: r * 100.0, steps: c.steps });
     }
     let off = |v: Option<f64>| v.is_some_and(|v| v.abs() > END_OK_MV);
@@ -174,12 +184,14 @@ pub fn classify(c: &Input) -> (Class, Reason) {
     }
     let Some(rest) = c.rest else { return (Class::NoStatement, Reason::NoRest { rows: c.rest_rows }) };
     if rest.abs() > REST_OK_MV {
-        return (Class::SocOffset, Reason::Rest { rest });
+        return (Class::RestOffset, Reason::Rest { rest });
     }
+    // passend needs top or bottom: without either the capacity is not checked
     match (c.r_rel, top.is_some(), bottom.is_some()) {
         (Some(r), _, _) if (r - 1.0).abs() > R_OK => (Class::NoStatement, Reason::RSlight { pct: r * 100.0 }),
         (Some(_), true, true) => (Class::Ok, Reason::Within),
         (None, false, false) => (Class::RestOk, Reason::RestOnly { rest }),
+        (Some(_), false, false) => (Class::RestOk, Reason::Partial { top: false, bottom: false, r: true, steps: c.steps }),
         (r, t, b) => (Class::Ok, Reason::Partial { top: t, bottom: b, r: r.is_some(), steps: c.steps }),
     }
 }
@@ -430,6 +442,8 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
     // balancer activity; a cell's step is left out when its BMS bit is set at either end. ΔU/ΔI (mV/A = mΩ) per cell
     // into fixed bins.
     let mut r_hist = vec![Hist::new(R_SPAN); n];
+    // |ΔI| of the steps in 0.1 A bins (up to 500 A), for the resolution bound of the resistance
+    let mut di_hist = Hist::new(5_000);
     {
         let mut ext = Ext::default();
         // the row before (raw rows with the usual cells only; anything else breaks the pair)
@@ -455,6 +469,7 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 if let Some(bi) = b.current.filter(|bi| row.t >= from && b.session == row.session && row.t - b.t <= gap && (i - bi).abs() >= STEP_MA && b.free && free(act)) {
                     out.steps += 1;
                     let di = (i - bi) as f64 / 1000.0;
+                    di_hist.add((di.abs() * 10.0).round() as i64);
                     for (k, h) in r_hist.iter_mut().enumerate() {
                         if !bit(b.balancing, k) && !bit(row.balancing, k) {
                             h.add(((cells[k] - b.cells[k]) as f64 / di / R_BIN_MOHM).round() as i64);
@@ -471,6 +486,8 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
     out.r_median = median_f(&mut r.iter().flatten().copied().collect::<Vec<_>>());
     // R_cell − R_median per cell (mΩ), for the correction of top and bottom
     let dr: Vec<Option<f64>> = r.iter().map(|x| x.zip(out.r_median).map(|(a, m)| a - m)).collect();
+    // what the whole-mV cell voltages allow over the steps' median current (mΩ)
+    let r_bound = di_hist.median(1).filter(|&d| d > 0.0).map(|d| R_RES_MV / (d / 10.0));
 
     // pass 3: deviations, heatmap, jumps, order at the top
     let hists = || vec![dev_hist(); n];
@@ -611,6 +628,8 @@ pub fn analyse(db: &Connection, site: &str, pack: u8, from: i64, to: i64, device
                 top_corr: r_rel.and(dev_median(&top_c[k])),
                 bottom_corr: r_rel.and(dev_median(&bottom_c[k])),
                 r_rel,
+                r_above: dr[k],
+                r_bound,
                 steps: cell_steps[k],
                 jumps: jumps[k],
             };
@@ -644,7 +663,9 @@ mod tests {
 
     fn input(rest: f64, load: f64, top: Option<f64>, bottom: Option<f64>, r_rel: Option<f64>) -> Input {
         // the correction exists only with a known resistance; here it changes nothing (R at the median)
-        Input { rest: Some(rest), rest_rows: 200, load: Some(load), top, bottom, top_corr: r_rel.and(top), bottom_corr: r_rel.and(bottom), r_rel, steps: if r_rel.is_some() { 40 } else { 4 }, jumps: 0 }
+        // R at the pack median 0.5 mΩ, steps of 40 A (2 mV / 40 A = 0.05 mΩ)
+        let r_above = r_rel.map(|r| (r - 1.0) * 0.5);
+        Input { rest: Some(rest), rest_rows: 200, load: Some(load), top, bottom, top_corr: r_rel.and(top), bottom_corr: r_rel.and(bottom), r_rel, r_above, r_bound: Some(0.05), steps: if r_rel.is_some() { 40 } else { 4 }, jumps: 0 }
     }
 
     #[test]
@@ -656,7 +677,8 @@ mod tests {
             ("matching, no bottom", input(1.0, 1.5, Some(4.0), None, Some(1.0)), Ok, Reason::Partial { top: true, bottom: false, r: true, steps: 40 }),
             ("rest only: never plain matching", input(1.0, 1.5, None, None, None), RestOk, Reason::RestOnly { rest: 1.0 }),
             ("SOC offset: high at both ends", input(3.0, 3.0, Some(30.0), Some(20.0), Some(1.0)), SocOffset, Reason::SameSign { top: 30.0, bottom: 20.0 }),
-            ("SOC offset at rest only", input(-8.0, -9.0, None, None, Some(1.0)), SocOffset, Reason::Rest { rest: -8.0 }),
+            ("offset at rest only: SOC or measurement", input(-8.0, -9.0, None, None, Some(1.0)), RestOffset, Reason::Rest { rest: -8.0 }),
+            ("rest and resistance fine, no ends: capacity not checked", input(0.0, 0.0, None, None, Some(1.0)), RestOk, Reason::Partial { top: false, bottom: false, r: true, steps: 40 }),
             ("smaller capacity, corrected", input(0.0, 0.0, Some(40.0), Some(-30.0), Some(1.1)), Capacity, Reason::Capacity { top: 40.0, bottom: -30.0 }),
             ("ambiguous without enough steps", input(0.0, 0.0, Some(30.0), Some(-30.0), None), Ambiguous, Reason::Ambiguous { top: 30.0, bottom: -30.0, steps: 4 }),
             ("higher resistance wins over the pattern", input(0.0, 0.0, Some(30.0), Some(-30.0), Some(1.5)), Resistance, Reason::Resistance { pct: 150.0, steps: 40 }),
@@ -681,6 +703,11 @@ mod tests {
         assert_eq!(classify(&c), (Ok, Reason::Within));
         // without the correction the same raw ends stay ambiguous
         assert_eq!(classify(&Input { top_corr: None, bottom_corr: None, r_rel: None, ..c }).0, Ambiguous);
+        // steps of 20 A: 2 mV are 0.1 mΩ; a median of 0.2 mΩ and the cell 0.28 mΩ (140 %) is within the resolution
+        let at20 = |r: f64| Input { r_rel: Some(r / 0.2), r_above: Some(r - 0.2), r_bound: Some(0.1), ..input(0.0, 0.0, None, None, None) };
+        assert_eq!(classify(&at20(0.28)).0, NoStatement);
+        assert!(matches!(classify(&at20(0.28)).1, Reason::RSlight { .. }));
+        assert_eq!(classify(&at20(0.32)).0, Resistance);
     }
 
     #[test]

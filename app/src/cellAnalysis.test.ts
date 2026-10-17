@@ -44,6 +44,10 @@ describe("cell analysis display", () => {
     expect(reportCells(analysis([cell(1), cell(2)]))).toEqual({ all: null, cells: [] });
     // matching as far as the rest values go is not noteworthy either
     expect(reportCells(analysis([cell(1), cell(2, { class: "rest_ok", reason: { key: "rest_only", rest: 1 } })]))).toEqual({ all: null, cells: [] });
+    // an offset at rest is named (state of charge or measurement); rest and resistance fine without the ends is quiet
+    const rest = cell(2, { class: "rest_offset", reason: { key: "rest", rest: 8 } });
+    expect(reportCells(analysis([cell(1), rest])).cells).toEqual([rest]);
+    expect(reportCells(analysis([cell(1), cell(2, { class: "rest_ok", reason: { key: "partial", top: false, bottom: false, r: true, steps: 20 } })])).cells).toEqual([]);
     const none = (n: number) => cell(n, { class: "none", reason: { key: "no_rest", rows: 3 } });
     expect(reportCells(analysis([none(1), none(2)]))).toEqual({ all: none(1), cells: [] });
     const mixed = [none(1), cell(2, { class: "none", reason: { key: "top_only", top: 20 } })];

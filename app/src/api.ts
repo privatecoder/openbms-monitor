@@ -223,7 +223,7 @@ export interface BalancerSlice { from: number; to: number; active: number; inact
 /** `balancer_timeline` (balancer.rs): measured is false while no device is read. */
 export interface BalancerTimeline { from: number; to: number; slices: BalancerSlice[]; total: BalancerSlice; devices: string[]; first_assigned: number | null; measured: boolean }
 /** `cell_analysis` (cell_analysis.rs): what the recorded raw rows say about each cell of a pack. */
-export type CellClass = "ok" | "rest_ok" | "soc_offset" | "capacity" | "ambiguous" | "resistance" | "measurement" | "none";
+export type CellClass = "ok" | "rest_ok" | "soc_offset" | "rest_offset" | "capacity" | "ambiguous" | "resistance" | "measurement" | "none";
 export type CellReason =
   | { key: "within" } | { key: "partial"; top: boolean; bottom: boolean; r: boolean; steps: number } | { key: "rest_only"; rest: number } | { key: "rest"; rest: number }
   | { key: "same_sign"; top: number; bottom: number } | { key: "capacity"; top: number; bottom: number }
