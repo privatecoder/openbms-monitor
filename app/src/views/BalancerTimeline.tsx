@@ -43,8 +43,8 @@ export function BalancerTimeline({ pack, scope }: { pack: number; scope: string 
         .catch((e) => alive && setErr(String(e)));
     };
     load();
-    // the recording grows while connected
-    const timer = window.setInterval(load, 60_000);
+    // the recording grows while connected; the long spans (a month of answers) only on a change
+    const timer = period === "1" ? window.setInterval(load, 60_000) : undefined;
     return () => { alive = false; clearInterval(timer); };
   }, [site, pack, period, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 

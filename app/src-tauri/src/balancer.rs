@@ -157,21 +157,37 @@ fn minute(rule: &Rule, row: &Row) -> Activity {
     }
 }
 
-/// The usual time between two answers per session: the median gap between its consecutive single rows.
-pub fn poll_periods(rows: &[Row]) -> HashMap<i64, i64> {
-    let mut gaps: HashMap<i64, Vec<i64>> = HashMap::new();
-    for w in rows.windows(2) {
-        if w[0].session == w[1].session && w[0].single() && w[1].single() && w[1].t > w[0].t {
-            gaps.entry(w[0].session).or_default().push(w[1].t - w[0].t);
-        }
-    }
-    gaps.into_iter()
-        .map(|(s, mut g)| {
-            g.sort_unstable();
-            (s, g[g.len() / 2])
-        })
-        .collect()
+/// The usual time between two answers per session: the median gap between its consecutive single rows. Fed row by row
+/// in time order, so a long span needs no list of its rows.
+#[derive(Default)]
+pub struct Periods {
+    gaps: HashMap<i64, Vec<i64>>,
+    /// session and time of the row before, if it was a single answer
+    last: Option<(i64, i64)>,
 }
+
+impl Periods {
+    pub fn add(&mut self, row: &Row) {
+        let single = row.single();
+        if let (true, Some((session, t))) = (single, self.last) {
+            if session == row.session && row.t > t {
+                self.gaps.entry(session).or_default().push(row.t - t);
+            }
+        }
+        self.last = single.then_some((row.session, row.t));
+    }
+
+    pub fn finish(self) -> HashMap<i64, i64> {
+        self.gaps
+            .into_iter()
+            .map(|(s, mut g)| {
+                g.sort_unstable();
+                (s, g[g.len() / 2])
+            })
+            .collect()
+    }
+}
+
 
 // ---------------------------------------------------------------------------------------------
 // devices
@@ -334,8 +350,8 @@ pub struct Timeline {
 const ROWS: &str = "SELECT t, session, n, current, cell_max, cell_min, spread_lo, spread_hi, i_lo, i_hi, balancing, bal_rows, bal_n FROM pack
   WHERE site = (SELECT id FROM sites WHERE site = ?1) AND pack = ?2 AND t >= ?3 AND t <= ?4 ORDER BY t";
 
-/// The rows of a pack in a span, in time order.
-pub fn rows(db: &Connection, site: &str, pack: u8, from: i64, to: i64) -> Result<Vec<Row>, String> {
+/// The rows of a pack in a span, in time order, one at a time to `f`.
+pub fn each_row(db: &Connection, site: &str, pack: u8, from: i64, to: i64, mut f: impl FnMut(Row)) -> Result<(), String> {
     let mut st = db.prepare(ROWS).map_err(|e| e.to_string())?;
     let rows = st
         .query_map(params![site, pack, from, to], |r| {
@@ -355,18 +371,22 @@ pub fn rows(db: &Connection, site: &str, pack: u8, from: i64, to: i64) -> Result
                 bal_n: r.get(12)?,
             })
         })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string());
-    rows
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        f(row.map_err(|e| e.to_string())?);
+    }
+    Ok(())
 }
 
+
 /// Both lanes of a pack over [from, to] in `n` equal slices. A row covers the time until the next row of its session,
-/// at most GAP_PERIODS poll periods (a minute row: minutes); after that one period.
+/// at most GAP_PERIODS poll periods (a minute row: minutes); after that one period. Two passes over the rows (poll
+/// periods, then the lanes), none kept: a month of answers stays out of memory.
 pub fn timeline(db: &Connection, site: &str, pack: u8, from: i64, to: i64, devices: &Devices, n: usize) -> Result<Timeline, String> {
     let to = to.max(from + 1);
-    let rows = rows(db, site, pack, from - WARMUP_MS, to)?;
-    let periods = poll_periods(&rows);
+    let mut periods = Periods::default();
+    each_row(db, site, pack, from - WARMUP_MS, to, |r| periods.add(&r))?;
+    let periods = periods.finish();
     let n = n.clamp(1, 2000);
     let width = (to - from) as f64 / n as f64;
     let edge = |i: usize| from + (i as f64 * width).round() as i64;
@@ -374,10 +394,11 @@ pub fn timeline(db: &Connection, site: &str, pack: u8, from: i64, to: i64, devic
     let mut total = Slice { from, to, ..Default::default() };
     let mut tracker = Tracker::default();
     let mut names = BTreeSet::new();
-    for (i, row) in rows.iter().enumerate() {
+    // a row is drawn once the next one tells where it ends
+    let mut draw = |row: &Row, next: Option<&Row>| {
         let span = if row.single() { periods.get(&row.session).copied().unwrap_or(DEFAULT_PERIOD_MS) } else { MINUTE_MS };
         let gap = GAP_PERIODS * span;
-        let end = rows.get(i + 1).filter(|x| x.session == row.session && x.t - row.t <= gap).map_or(row.t + span, |x| x.t);
+        let end = next.filter(|x| x.session == row.session && x.t - row.t <= gap).map_or(row.t + span, |x| x.t);
         let ext = match devices.at(pack, row.t) {
             Some((def, rule)) => {
                 if row.t >= from {
@@ -392,7 +413,7 @@ pub fn timeline(db: &Connection, site: &str, pack: u8, from: i64, to: i64, devic
         };
         let (a, b) = (row.t.max(from), end.min(to));
         if b <= a {
-            continue;
+            return;
         }
         total.add(b - a, ext, row);
         let mut k = (((a - from) as f64 / width) as usize).min(n - 1);
@@ -403,6 +424,16 @@ pub fn timeline(db: &Connection, site: &str, pack: u8, from: i64, to: i64, devic
             }
             k += 1;
         }
+    };
+    let mut prev: Option<Row> = None;
+    each_row(db, site, pack, from - WARMUP_MS, to, |r| {
+        if let Some(p) = prev.take() {
+            draw(&p, Some(&r));
+        }
+        prev = Some(r);
+    })?;
+    if let Some(p) = prev {
+        draw(&p, None);
     }
     Ok(Timeline { from, to, slices, total, devices: names.into_iter().collect(), first_assigned: devices.first_assigned(pack), measured: false })
 }
@@ -517,7 +548,9 @@ mod tests {
     #[test]
     fn poll_period_is_the_median_gap_of_single_answers() {
         let rows = [answer(0, 1, 0, 0), answer(5_000, 1, 0, 0), answer(10_000, 1, 0, 0), answer(60_000, 1, 0, 0), answer(0, 2, 0, 0), answer(2_000, 2, 0, 0)];
-        let p = poll_periods(&rows);
+        let mut p = Periods::default();
+        rows.iter().for_each(|r| p.add(r));
+        let p = p.finish();
         assert_eq!((p[&1], p[&2]), (5_000, 2_000));
     }
 
