@@ -286,7 +286,7 @@ export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked"
 /** `cancelled`: stopped by „Abbrechen“, `packs` holds what answered until then */
 export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean }
 /** A pack that may hang in its bootloader after an interrupted flash, per pack bus endpoint. */
-export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number }
+export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number; bms_serial?: string | null }
 export interface Alerts { markers: { installation: string; name: string; at: number }[]; pending: Pending[] }
 
 
