@@ -552,13 +552,15 @@ mod tests {
         assert_eq!(dst.import_maint(&data, "e1", "m", &Into::Merge { id: other.id.clone() }, &plan(&h, &|_| None), 200).unwrap_err(), "import-master-differs");
         dst.set_master_serial(&other.id, "SYN-M", 50).unwrap();
         dst.set_groups(&other.id, Some("[2]")).unwrap();
+        // devices stored but empty: as none, the bundle's are taken
+        dst.set_devices(&other.id, Some(r#"{"defs":[],"assign":{}}"#)).unwrap();
         let st = dst.import_maint(&data, "e2", "m", &Into::Merge { id: other.id.clone() }, &plan(&h, &|_| None), 200).unwrap();
         assert_eq!(st.target, other.id);
         // settings add, never overwrite
         assert_eq!(dst.settings(&other.id).unwrap().groups.as_deref(), Some("[2]"));
         assert_eq!(st.report["not_taken"]["groups"], "[1]");
         assert!(dst.settings(&other.id).unwrap().notifications.is_some(), "the target had none: taken");
-        assert!(dst.settings(&other.id).unwrap().devices.is_some(), "the target had none: taken");
+        assert!(dst.settings(&other.id).unwrap().devices.as_deref().is_some_and(|d| d.contains("\"device\":\"d1\"")), "the target's were empty: taken");
     }
 
     #[test]
