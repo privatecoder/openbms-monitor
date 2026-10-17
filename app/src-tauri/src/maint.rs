@@ -58,8 +58,8 @@ pub enum MaintError {
     Store { message: String },
     /// the master at this pack bus answers with another BMS serial number than the installation stored
     OtherBank { serial: String },
-    /// a pack on this pack bus endpoint may hang in its bootloader: no other address is flashed there
-    BootloaderPending { pack: u8 },
+    /// a pack may hang in its bootloader (`endpoint`: the key of its record): no other pack is flashed anywhere
+    BootloaderPending { pack: u8, endpoint: String },
 }
 
 impl From<DialogError> for MaintError {
@@ -430,17 +430,19 @@ pub fn check_target_board(store: &Arc<Mutex<Option<Store>>>, inst: &Installation
     target_check(current.as_ref(), &read)
 }
 
-/// The bootloader-pending rule: flashing another address than a pending pack on the same endpoint is refused.
-pub fn pending_refusal(pending: &[Pending], address: u8) -> Result<(), MaintError> {
-    match pending.iter().find(|p| p.pack != address) {
-        Some(p) => Err(MaintError::BootloaderPending { pack: p.pack }),
+/// The bootloader-pending rule on every open record: only the pending pack itself, at its own endpoint key, may be
+/// flashed again. Another address there, and every flash on another key, is refused: two names of one gateway (a DNS
+/// alias, its IP address) are different keys, and bootloader frames carry no pack address.
+pub fn pending_refusal(pending: &[Pending], key: &str, address: u8) -> Result<(), MaintError> {
+    match pending.iter().find(|p| p.endpoint != key || p.pack != address) {
+        Some(p) => Err(MaintError::BootloaderPending { pack: p.pack, endpoint: p.endpoint.clone() }),
         None => Ok(()),
     }
 }
 
-/// The pending rule on the stored records of one endpoint key (`firmware_start`).
+/// The pending rule on all stored records, for a flash at endpoint key `key` (`firmware_start`).
 pub fn pending_check(store: &Arc<Mutex<Option<Store>>>, key: &str, address: u8) -> Result<(), MaintError> {
-    with_store_arc(store, |s| s.pending_on(key)).and_then(|p| pending_refusal(&p, address))
+    with_store_arc(store, |s| s.all_pending()).and_then(|p| pending_refusal(&p, key, address))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -751,12 +753,17 @@ mod tests {
         with_store_arc(&store, |s| s.add_pending(&key, 3, "16.06.13", 1)).unwrap();
         assert_eq!(after_flash(false, Some(Progress::Erase), || false), AfterFlash::Keep);
         // another pack on the same gateway is refused, also when its key arrives written in another case
-        assert!(matches!(pending_check(&store, &key, 4), Err(MaintError::BootloaderPending { pack: 3 })));
-        assert!(matches!(pending_check(&store, &pack_key(" TCP:192.0.2.20:4196 ").unwrap(), 4), Err(MaintError::BootloaderPending { pack: 3 })));
+        assert!(matches!(pending_check(&store, &key, 4), Err(MaintError::BootloaderPending { pack: 3, .. })));
+        assert!(matches!(pending_check(&store, &pack_key(" TCP:192.0.2.20:4196 ").unwrap(), 4), Err(MaintError::BootloaderPending { pack: 3, .. })));
         pending_check(&store, &key, 3).unwrap();
-        // the record carries the key the UI compares with; other ports stay free; a bare path is no key
+        // the record carries the key the UI compares with; a bare path is no key
         assert_eq!(with_store_arc(&store, |s| s.all_pending()).unwrap()[0].endpoint, key);
-        pending_check(&store, "serial:/dev/cu.test", 4).unwrap();
+        // every other key is refused too, naming the open record's endpoint: another name of the same gateway is one
+        for other in ["serial:/dev/cu.test", "tcp:bms.example:4196"] {
+            for address in [3, 4] {
+                assert!(matches!(pending_check(&store, other, address), Err(MaintError::BootloaderPending { pack: 3, endpoint }) if endpoint == key));
+            }
+        }
         assert!(refused_with(pack_key("/dev/cu.test"), "no-port"));
         assert!(refused_with(pack_key(""), "no-port"));
     }
@@ -800,12 +807,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_pack_blocks_only_other_addresses_on_its_endpoint() {
-        assert!(pending_refusal(&[], 3).is_ok());
-        assert!(pending_refusal(&[pending(3)], 3).is_ok());
-        assert!(matches!(pending_refusal(&[pending(3)], 4), Err(MaintError::BootloaderPending { pack: 3 })));
-        let v = serde_json::to_value(MaintError::BootloaderPending { pack: 3 }).unwrap();
-        assert_eq!(v, serde_json::json!({ "kind": "bootloader-pending", "pack": 3 }));
+    fn a_pending_pack_blocks_every_flash_but_its_own_at_its_endpoint() {
+        assert!(pending_refusal(&[], "serial:/dev/p", 3).is_ok());
+        assert!(pending_refusal(&[pending(3)], "serial:/dev/p", 3).is_ok());
+        assert!(matches!(pending_refusal(&[pending(3)], "serial:/dev/p", 4), Err(MaintError::BootloaderPending { pack: 3, .. })));
+        assert!(matches!(pending_refusal(&[pending(3)], "serial:/dev/q", 3), Err(MaintError::BootloaderPending { pack: 3, .. })));
+        assert!(matches!(pending_refusal(&[pending(3)], "serial:/dev/q", 4), Err(MaintError::BootloaderPending { pack: 3, .. })));
+        let v = serde_json::to_value(MaintError::BootloaderPending { pack: 3, endpoint: "serial:/dev/p".into() }).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "bootloader-pending", "pack": 3, "endpoint": "serial:/dev/p" }));
     }
 
     #[test]

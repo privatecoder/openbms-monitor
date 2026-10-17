@@ -225,7 +225,7 @@ const resources = {
           timeout: "Der Master hat den neuen Zustand nicht rechtzeitig gemeldet (zuletzt Marker {{marker}}, {{slaves}} Slaves).",
           busy: "Eine andere Aktion läuft.", store: "Datenbank: {{text}}", text: "{{text}}",
           "other-bank": "An diesem Anschluss hängt eine andere Anlage (BMS-SN {{serial}}).",
-          "bootloader-pending": "Pack {{pack}} hängt an diesem Anschluss eventuell im Bootloader: kein anderes Pack flashen, bis es antwortet oder abgeklemmt ist.",
+          "bootloader-pending": "Pack {{pack}} an {{port}} hängt eventuell im Bootloader: kein anderes Pack flashen, an keinem Anschluss, bis es antwortet oder abgeklemmt ist.",
           refused: {
             "no-control-channel": "Keine CAN-Buchse eingerichtet.", "control-on-pack-bus": "Der Adapter der CAN-Buchse ist links auf RS485-1/2 verbunden. Links trennen oder auf die CAN-Buchse umstellen.",
             "halt-not-offered": "Anhalten geht nur bei einem bekannten Wartungs-Build mit Marker aus.",
@@ -1016,7 +1016,7 @@ const resources = {
           timeout: "The master did not report the new state in time (last marker {{marker}}, {{slaves}} slaves).",
           busy: "Another action is running.", store: "Database: {{text}}", text: "{{text}}",
           "other-bank": "Another installation hangs on this port (BMS SN {{serial}}).",
-          "bootloader-pending": "Pack {{pack}} on this port may hang in its bootloader: flash no other pack until it answers or is disconnected.",
+          "bootloader-pending": "Pack {{pack}} at {{port}} may hang in its bootloader: flash no other pack, on any port, until it answers or is disconnected.",
           refused: {
             "no-control-channel": "No CAN socket set up.", "control-on-pack-bus": "The CAN socket's adapter is connected on the left to RS485-1/2. Disconnect on the left or switch it to the CAN socket bus.",
             "halt-not-offered": "Halting works only for a known maintenance build with the marker off.",

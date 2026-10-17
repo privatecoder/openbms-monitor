@@ -160,7 +160,7 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
       case "rejected": return { key: "maint.err.rejected", params: { rtn: m.rtn.toString(16).padStart(2, "0") } };
       case "connection": case "store": return { key: `maint.err.${m.kind}`, params: { text: m.message } };
       case "other-bank": return { key: "maint.err.other-bank", params: { serial: m.serial } };
-      case "bootloader-pending": return { key: "maint.err.bootloader-pending", params: { pack: m.pack } };
+      case "bootloader-pending": return { key: "maint.err.bootloader-pending", params: { pack: m.pack, port: keyLabel(m.endpoint ?? "") } };
       default: return { key: `maint.err.${m.kind}` };
     }
   }
@@ -249,7 +249,7 @@ export function releaseFirst(master: MasterView | null, address: number, kind: F
 /** A pending bootloader record on this endpoint (`port`: its key) that refuses flashing `address` (another pack), or
  *  null. */
 export function pendingBlock(pending: Pending[], port: string, address: number): Pending | null {
-  return port ? pending.find((p) => p.endpoint === port && p.pack !== address) ?? null : null;
+  return port ? pending.find((p) => p.endpoint !== port || p.pack !== address) ?? null : null;
 }
 
 /** The text params of a refused save: the port of an open bootloader record of the installation ("pending-on-port"). */
@@ -265,7 +265,7 @@ export function flashBlocked(f: { image: FirmwareImage | null; quiet: boolean; b
   if (f.busy) return { key: "maint.packs.why.busy" };
   if (!f.quiet) return { key: "maint.packs.why.quiet" };
   const p = pendingBlock(f.pending, f.port, f.address);
-  if (p) return { key: "maint.err.bootloader-pending", params: { pack: p.pack } };
+  if (p) return { key: "maint.err.bootloader-pending", params: { pack: p.pack, port: keyLabel(p.endpoint) } };
   if (releaseFirst(f.master, f.address, f.image.kind)) return { key: "maint.packs.why.releaseFirst" };
   return null;
 }

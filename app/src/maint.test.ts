@@ -113,7 +113,7 @@ describe("backend errors", () => {
     expect(errorKey({ kind: "refused", reason: "release-master-first" })).toEqual({ key: "maint.err.refused.release-master-first" });
     expect(errorKey('{"kind":"no-answer"}')).toEqual({ key: "maint.err.no-answer" });
     expect(errorKey('{"kind":"other-bank","serial":"SN-B"}')).toEqual({ key: "maint.err.other-bank", params: { serial: "SN-B" } });
-    expect(errorKey({ kind: "bootloader-pending", pack: 3 })).toEqual({ key: "maint.err.bootloader-pending", params: { pack: 3 } });
+    expect(errorKey({ kind: "bootloader-pending", pack: 3, endpoint: "tcp:192.0.2.20:4196" })).toEqual({ key: "maint.err.bootloader-pending", params: { pack: 3, port: "192.0.2.20:4196" } });
     expect(errorKey("some plain text")).toEqual({ key: "maint.err.text", params: { text: "some plain text" } });
     expect(errorKey({ kind: "timeout", marker: true, slaves: 11 })).toEqual({ key: "maint.err.timeout", params: { marker: 1, slaves: 11 } });
   });
@@ -178,15 +178,16 @@ describe("flash per pack", () => {
     expect(flashBlocked({ ...ok, busy: true })?.key).toBe("maint.packs.why.busy");
     expect(flashBlocked({ ...ok, running: true })?.key).toBe("maint.packs.why.running");
   });
-  it("a pending pack on the same endpoint blocks every other address there, not itself and not other endpoints", () => {
+  it("a pending pack blocks every other address and every other endpoint, not itself at its endpoint", () => {
     expect(pendingBlock([pending(5)], "serial:/dev/p", 3)?.pack).toBe(5);
     expect(pendingBlock([pending(5)], "serial:/dev/p", 5)).toBeNull();
-    expect(pendingBlock([pending(5, "serial:/dev/q")], "serial:/dev/p", 3)).toBeNull();
+    expect(pendingBlock([pending(5, "serial:/dev/q")], "serial:/dev/p", 3)?.pack).toBe(5);
+    expect(pendingBlock([pending(5, "serial:/dev/q")], "serial:/dev/p", 5)?.pack).toBe(5);
     expect(pendingBlock([pending(5)], "", 3)).toBeNull();
     // a gateway: the record carries the key formed at the input, compared unchanged
     const gw = portKey("tcp", "192.0.2.20:4196");
     expect(pendingBlock([pending(5, "tcp:192.0.2.20:4196")], gw, 3)?.pack).toBe(5);
-    expect(flashBlocked({ ...ok, pending: [pending(5)] })).toEqual({ key: "maint.err.bootloader-pending", params: { pack: 5 } });
+    expect(flashBlocked({ ...ok, pending: [pending(5)] })).toEqual({ key: "maint.err.bootloader-pending", params: { pack: 5, port: "/dev/p" } });
   });
   it("C': a master with its marker on gets a non-maintenance image only after its release", () => {
     const on = master({ marker: "on", marker_word: "00000000", slaves: 0, may_halt: false, may_release: true });
