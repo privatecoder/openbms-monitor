@@ -68,6 +68,11 @@ impl Telemetry {
         if temps < 2 {
             return Err(Error::Layout("expected at least ambient and power temperature"));
         }
+        // the counts must fit the INFO length (fixed part 19 bytes, up to 8 reserved ones): an answer carries no CID2
+        let base = 3 + 2 * cells + 1 + 2 * temps + 19;
+        if info.len() < base || info.len() > base + 8 {
+            return Err(Error::Layout("0x42 length does not match its counts"));
+        }
         let mut t = (0..temps).map(|_| r.u16().map(kelvin10_to_c)).collect::<Result<Vec<_>>>()?;
         let power_temperature = t.pop().unwrap();
         let ambient_temperature = t.pop().unwrap();
