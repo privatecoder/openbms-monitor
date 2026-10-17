@@ -121,6 +121,30 @@ impl Tracker {
     }
 }
 
+/// The tracker of a pack under its assignments in time: the balancer and settings valid at each row (`Devices::at`), and
+/// a fresh (inactive) state whenever the device or its settings change, so a new balancer never inherits the state of
+/// the one before.
+#[derive(Default)]
+pub struct Ext {
+    tracker: Tracker,
+    current: Option<(String, Rule)>,
+}
+
+impl Ext {
+    /// The balancer assigned at the row and its activity; None: none assigned then.
+    pub fn step<'a>(&mut self, devices: &'a Devices, pack: u8, row: &Row, gap_ms: i64) -> Option<(&'a Def, Activity)> {
+        let Some((def, rule)) = devices.at(pack, row.t) else {
+            *self = Ext::default();
+            return None;
+        };
+        if self.current.as_ref().is_none_or(|(id, r)| *id != def.id || *r != rule) {
+            self.tracker = Tracker::default();
+            self.current = Some((def.id.clone(), rule));
+        }
+        Some((def, self.tracker.step(&rule, row, gap_ms)))
+    }
+}
+
 fn single(rule: &Rule, row: &Row, before: Activity) -> Activity {
     let (Some(ma), Some(hi), Some(lo)) = (row.current, row.cell_max, row.cell_min) else { return Activity::Unknown };
     if !rule.when_holds(ma) || rule.start_mv.is_some_and(|s| hi < s) {
@@ -157,8 +181,11 @@ fn minute(rule: &Rule, row: &Row) -> Activity {
     }
 }
 
-/// The usual time between two answers per session: the median gap between its consecutive single rows. Fed row by row
-/// in time order, so a long span needs no list of its rows.
+/// gaps kept per session for its poll period: memory stays at this many values per session, however long it runs
+const PERIOD_SAMPLE: usize = 1_000;
+
+/// The usual time between two answers per session: the median of the first PERIOD_SAMPLE gaps between its consecutive
+/// single rows. Fed row by row in time order, so a long span needs no list of its rows.
 #[derive(Default)]
 pub struct Periods {
     gaps: HashMap<i64, Vec<i64>>,
@@ -171,7 +198,10 @@ impl Periods {
         let single = row.single();
         if let (true, Some((session, t))) = (single, self.last) {
             if session == row.session && row.t > t {
-                self.gaps.entry(session).or_default().push(row.t - t);
+                let g = self.gaps.entry(session).or_default();
+                if g.len() < PERIOD_SAMPLE {
+                    g.push(row.t - t);
+                }
             }
         }
         self.last = single.then_some((row.session, row.t));
@@ -315,13 +345,20 @@ impl Slice {
             Some(Activity::Unknown) => self.unknown += ms,
             None => self.unassigned += ms,
         }
+        let rows = row.n.max(row.bal_n.unwrap_or(0));
         match (row.balancing, row.bal_n) {
-            (Some(b), Some(n)) if n > 1 => {
-                let on = (ms as f64 * row.bal_rows.unwrap_or(0).clamp(0, n) as f64 / n as f64).round() as i64;
+            // a minute row: only its answers with a status are known (bal_n of n), split by bal_rows; the rest of the
+            // minute has no data
+            (Some(b), Some(n)) if rows > 1 => {
+                let n = n.clamp(0, rows);
+                let known = (ms as f64 * n as f64 / rows as f64).round() as i64;
+                let on = if n > 0 { (known as f64 * row.bal_rows.unwrap_or(0).clamp(0, n) as f64 / n as f64).round() as i64 } else { 0 };
                 self.bal += on;
-                self.idle += ms - on;
+                self.idle += known - on;
+                self.no_status += ms - known;
                 self.minutes |= b != 0;
             }
+            (Some(_), None) if rows > 1 => self.no_status += ms,
             (Some(0), _) => self.idle += ms,
             (Some(b), _) => {
                 self.bal += ms;
@@ -394,25 +431,19 @@ pub fn timeline(db: &Connection, site: &str, pack: u8, from: i64, to: i64, devic
     let edge = |i: usize| from + (i as f64 * width).round() as i64;
     let mut slices: Vec<Slice> = (0..n).map(|i| Slice { from: edge(i), to: edge(i + 1), ..Default::default() }).collect();
     let mut total = Slice { from, to, ..Default::default() };
-    let mut tracker = Tracker::default();
+    let mut ext_state = Ext::default();
     let mut names = BTreeSet::new();
     // a row is drawn once the next one tells where it ends
     let mut draw = |row: &Row, next: Option<&Row>| {
         let span = if row.single() { periods.get(&row.session).copied().unwrap_or(DEFAULT_PERIOD_MS) } else { MINUTE_MS };
         let gap = GAP_PERIODS * span;
         let end = next.filter(|x| x.session == row.session && x.t - row.t <= gap).map_or(row.t + span, |x| x.t);
-        let ext = match devices.at(pack, row.t) {
-            Some((def, rule)) => {
-                if row.t >= from {
-                    names.insert(def.name.clone());
-                }
-                Some(tracker.step(&rule, row, gap))
+        let ext = ext_state.step(devices, pack, row, gap).map(|(def, a)| {
+            if row.t >= from {
+                names.insert(def.name.clone());
             }
-            None => {
-                tracker = Tracker::default();
-                None
-            }
-        };
+            a
+        });
         let (a, b) = (row.t.max(from), end.min(to));
         if b <= a {
             return;
@@ -595,6 +626,33 @@ mod tests {
         let mut s = Slice::default();
         let row = Row { balancing: Some(0b1010), bal_rows: Some(2), bal_n: Some(4), ..minute_row(0, (1, 2), (0, 0), (3_300, 3_302)) };
         s.add(60_000, None, &row);
-        assert_eq!((s.bal, s.idle, s.cells, s.minutes), (30_000, 30_000, 0, true));
+        // 4 of the 6 answers had a status: 40 s known, half of it balancing; 20 s without data
+        assert_eq!((s.bal, s.idle, s.no_status, s.cells, s.minutes), (20_000, 20_000, 20_000, 0, true));
+        // one status answer of ten (balancing): 10 % known, never the whole minute
+        let mut s = Slice::default();
+        let row = Row { n: 10, balancing: Some(0b1), bal_rows: Some(1), bal_n: Some(1), ..minute_row(0, (1, 2), (0, 0), (3_300, 3_302)) };
+        s.add(60_000, None, &row);
+        assert_eq!((s.bal, s.idle, s.no_status, s.cells), (6_000, 0, 54_000, 0));
+    }
+
+    #[test]
+    fn a_new_balancer_or_new_settings_start_inactive() {
+        let rev = |trigger: i64, stop: i64| json!([{ "from": 0, "trigger_mv": trigger, "stop_mv": stop, "when": "always" }]);
+        let d = Devices::parse(&json!({
+            "defs": [
+                { "id": "a", "name": "A", "kind": "active-balancer", "revs": [{ "from": 0, "trigger_mv": 5, "when": "always" }, { "from": 30_000, "trigger_mv": 10, "stop_mv": 5, "when": "always" }] },
+                { "id": "b", "name": "B", "kind": "active-balancer", "revs": rev(10, 5) },
+            ],
+            "assign": { "1": [{ "from": 0, "device": "a" }, { "from": 50_000, "device": "b" }] },
+        }));
+        let mut e = Ext::default();
+        let mut step = |t: i64, spread: i64| e.step(&d, 1, &answer(t, 1, spread, 0), 30_000).map(|(def, a)| (def.id.clone(), a));
+        assert_eq!(step(0, 7), Some(("a".into(), Active)));
+        assert_eq!(step(10_000, 7), Some(("a".into(), Active)));
+        // A's new revision (trigger 10, stop 5): 7 mV is in its band, but it never started under these settings
+        assert_eq!(step(30_000, 7), Some(("a".into(), Inactive)));
+        assert_eq!(step(40_000, 12), Some(("a".into(), Active)));
+        // B takes over at 7 mV: inside B's band too, but B has not started
+        assert_eq!(step(50_000, 7), Some(("b".into(), Inactive)));
     }
 }
