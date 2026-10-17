@@ -444,7 +444,7 @@ impl History {
         let site = self.link.as_ref().map(|l| l.0.clone()).unwrap_or_default();
         let Some(db) = self.db.as_ref() else { return };
         let r = (|| -> rusqlite::Result<bool> {
-            track_events(db, &mut self.open_events, session, t, address, update)?;
+            track_events(db, &mut self.open_events, session, t, address, update, None)?;
             if !due {
                 return Ok(false);
             }
@@ -748,11 +748,13 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         Some(0) | None => tm["idle_current_ma"].as_i64().or(Some(0)),
         c => c,
     };
-    let (cell_max, cell_min) = (cells.iter().flatten().max().copied(), cells.iter().flatten().min().copied());
+    let (own_max, own_min) = (cells.iter().flatten().max().copied(), cells.iter().flatten().min().copied());
     // an exported row carries its ranges (null for a minute row from before they were kept); a minute row of an
     // export without them has none: its averaged cells would understate the spread. Older exports lack `samples`
     // too, so an imported row on the minute counts as a minute row.
     let merged = tm["samples"].as_i64().is_some_and(|n| n > 1) || (keep_existing && t % MINUTE_MS == 0);
+    // a minute row's extremes come with its export (the minute's highest and lowest cell), not from its averaged cells
+    let (cell_max, cell_min) = if merged { (scaled(&tm["cell_max"], 1000.0).or(own_max), scaled(&tm["cell_min"], 1000.0).or(own_min)) } else { (own_max, own_min) };
     // the answers a row stands for: an export carries them (`samples`), so an imported minute row stays a minute row
     // and a single answer stays one, whatever its time; a live answer is one
     let n = tm["samples"].as_i64().filter(|&n| n >= 1).unwrap_or(1);
@@ -851,9 +853,11 @@ fn touch(db: &Connection, session: i64, site: &str, address: u8, t: i64) -> rusq
     Ok(())
 }
 
-/// Open an event for each new alarm of the pack, close the ones that are gone.
-fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, address: u8, update: &Value) -> rusqlite::Result<()> {
-    let Some(alarms) = update["status"]["alarms"].as_array() else { return Ok(()) };
+/// Open an event for each new alarm of the pack, close the ones that are gone. `import`: the site of an import, whose
+/// events are matched by (site, pack, key, start): a known one is neither added again nor changed (id 0 in `open`).
+/// Returns how many events were added.
+fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, address: u8, update: &Value, import: Option<&str>) -> rusqlite::Result<u64> {
+    let Some(alarms) = update["status"]["alarms"].as_array() else { return Ok(0) };
     let now: HashMap<String, String> = alarms
         .iter()
         .filter_map(|a| Some((a["id"].as_str().or(a["key"].as_str())?.to_string(), a["severity"].as_str().unwrap_or("").to_string())))
@@ -861,23 +865,58 @@ fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, ad
     let mine = open.entry(address).or_default();
     let gone: Vec<String> = mine.keys().filter(|k| !now.contains_key(*k)).cloned().collect();
     for k in gone {
-        if let Some(id) = mine.remove(&k) {
+        if let Some(id) = mine.remove(&k).filter(|&id| id != 0) {
             db.prepare_cached("UPDATE events SET end = ?2 WHERE id = ?1")?.execute(params![id, t])?;
         }
     }
+    let mut added = 0;
     for (k, sev) in now {
         if let std::collections::hash_map::Entry::Vacant(e) = mine.entry(k) {
+            if let Some(site) = import {
+                if known_event(db, site, address as i64, e.key(), t)?.is_some() {
+                    e.insert(0);
+                    continue;
+                }
+            }
             db.prepare_cached("INSERT INTO events(session, pack, key, severity, start) VALUES(?1, ?2, ?3, ?4, ?5)")?
                 .execute(params![session, address, e.key(), sev, t])?;
             e.insert(db.last_insert_rowid());
+            added += 1;
         }
     }
-    Ok(())
+    Ok(added)
+}
+
+/// An event of the site with this pack, key and start: its id and end.
+fn known_event(db: &Connection, site: &str, pack: i64, key: &str, start: i64) -> rusqlite::Result<Option<(i64, Option<i64>)>> {
+    db.prepare_cached("SELECT e.id, e.end FROM events e JOIN sessions s ON s.id = e.session WHERE s.site = ?1 AND e.pack = ?2 AND e.key = ?3 AND e.start = ?4")?
+        .query_row(params![site, pack, key, start], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+}
+
+/// One event line (pack, key, severity, start, end; the bundle's events.jsonl and the JSONL export's `event`) into
+/// `session`: a known one (site, pack, key, start) only gets a missing or later end. Returns whether it was added.
+fn import_event(db: &Connection, site: &str, session: i64, v: &Value) -> rusqlite::Result<bool> {
+    let (Some(pack), Some(key), Some(sev), Some(start)) = (v["pack"].as_i64(), v["key"].as_str(), v["severity"].as_str(), v["start"].as_i64()) else { return Ok(false) };
+    let end = v["end"].as_i64();
+    match known_event(db, site, pack, key, start)? {
+        // an event still open there or here: the end known now, or the later confirmed one
+        Some((id, have)) => {
+            if let Some(end) = end.filter(|e| have.is_none_or(|h| *e > h)) {
+                db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, end])?;
+            }
+            Ok(false)
+        }
+        None => {
+            db.execute("INSERT INTO events(session, pack, key, severity, start, end) VALUES(?1, ?2, ?3, ?4, ?5, ?6)", params![session, pack, key, sev, start, end])?;
+            Ok(true)
+        }
+    }
 }
 
 fn close_events(db: &Connection, open: &mut OpenEvents, t: i64) {
     for (_, m) in open.drain() {
-        for (_, id) in m {
+        for (_, id) in m.into_iter().filter(|&(_, id)| id != 0) {
             let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, t]);
         }
     }
@@ -1261,6 +1300,8 @@ enum Reduce {
 
 /// Value rows of the site `?1` (its key, so the primary key serves the query).
 const IN_SITE: &str = "site = (SELECT id FROM sites WHERE site = ?1)";
+/// The highest pack address (DIP 0..=15); an imported line with another is skipped.
+const MAX_PACK_ADDRESS: u64 = 15;
 
 /// The data for the charts: every requested pack and the master on a common grid of at most `max_points`.
 pub fn series(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], cells_pack: Option<u8>, max_points: usize) -> Result<Series, String> {
@@ -1437,7 +1478,7 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
     let mut ps = db
         .prepare(&format!(
             "SELECT t, pack, current, soc, voltage, remaining, cycles, ambient, mosfet, cells, temps, n, spread_lo, spread_hi, i_lo, i_hi,
-               balancing, bal_rows, bal_n FROM pack
+               balancing, bal_rows, bal_n, cell_max, cell_min FROM pack
              WHERE {in_site} AND pack IN ({pack_list}) AND t >= ?2 AND t <= ?3 ORDER BY t, pack"
         ))
         .map_err(e2s)?;
@@ -1461,6 +1502,8 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
             "current_lo": f(r.get(14)?, 1000.0), "current_hi": f(r.get(15)?, 1000.0),
             // the BMS's balancing bits as stored (null: no status); import takes them as they are
             "balancing": r.get::<_, Option<i64>>(16)?, "balancing_rows": r.get::<_, Option<i64>>(17)?, "balancing_n": r.get::<_, Option<i64>>(18)?,
+            // the extremes as stored: a minute row's are the minute's, not those of its averaged cells
+            "cell_max": f(r.get(19)?, 1000.0), "cell_min": f(r.get(20)?, 1000.0),
         });
         Ok((t, json!({ "t": t, "pack": { "address": a, "telemetry": tm, "status": null, "error": null } })))
     };
@@ -1498,6 +1541,21 @@ pub fn export(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], for
                     s = sr.next().map_err(e2s)?.map(sys_json).transpose().map_err(e2s)?;
                 }
                 stats.rows += 1;
+            }
+            // the events of these packs that touch the span, one line each ({"t": start, "event": {…}} as in a bundle's
+            // events.jsonl), so an import brings them back
+            let mut es = db
+                .prepare(&format!(
+                    "SELECT e.pack, e.key, e.severity, e.start, e.end FROM events e JOIN sessions s ON s.id = e.session
+                     WHERE s.site = ?1 AND e.pack IN ({pack_list}) AND e.start <= ?3 AND (e.end IS NULL OR e.end >= ?2) ORDER BY e.start, e.id"
+                ))
+                .map_err(e2s)?;
+            let mut er = es.query(params![site, from, to]).map_err(e2s)?;
+            while let Some(r) = er.next().map_err(e2s)? {
+                let start: i64 = r.get(3).map_err(e2s)?;
+                let ev = json!({ "pack": r.get::<_, i64>(0).map_err(e2s)?, "key": r.get::<_, String>(1).map_err(e2s)?, "severity": r.get::<_, String>(2).map_err(e2s)?,
+                    "start": start, "end": r.get::<_, Option<i64>>(4).map_err(e2s)? });
+                writeln!(w, "{}", json!({ "t": start, "event": ev })).map_err(io)?;
             }
             w.flush().map_err(io)?;
             stats.files.push(out.display().to_string());
@@ -1636,6 +1694,8 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
     let mut open = OpenEvents::new();
     let mut seen_packs = HashSet::new();
     let mut last_t = 0;
+    // events added from status lines, `event` lines and the events file: a session with any of them is kept
+    let mut events_added = 0;
     let lines: Box<dyn Iterator<Item = std::io::Result<String>>> = match file {
         Some(f) => Box::new(std::io::BufReader::new(std::fs::File::open(f).map_err(|e| format!("{}: {e}", f.display()))?).lines()),
         None => Box::new(std::iter::empty()),
@@ -1658,8 +1718,12 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
             tx.execute("UPDATE sessions SET bus = ?2 WHERE id = ?1", params![session, bus]).map_err(e2s)?;
             false
         } else if v["pack"].is_object() {
-            let a = v["pack"]["address"].as_u64().unwrap_or(0) as u8;
-            track_events(tx, &mut open, session, t, a, &v["pack"]).map_err(e2s)?;
+            // a pack address the protocol has (0..=15), else the line is skipped, never taken for pack 0
+            let Some(a) = v["pack"]["address"].as_u64().filter(|&a| a <= MAX_PACK_ADDRESS).map(|a| a as u8) else {
+                stats.skipped += 1;
+                continue;
+            };
+            events_added += track_events(tx, &mut open, session, t, a, &v["pack"], Some(site)).map_err(e2s)?;
             let w = insert_pack(tx, site_key, session, t, a, &v["pack"], true).map_err(e2s)?;
             if w {
                 seen_packs.insert(a);
@@ -1667,6 +1731,9 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
             w
         } else if v["system"].is_object() {
             insert_system(tx, site_key, session, t, &v["system"], true).map_err(e2s)?
+        } else if v["event"].is_object() {
+            events_added += u64::from(import_event(tx, site, session, &v["event"]).map_err(e2s)?);
+            false
         } else {
             stats.skipped += 1;
             false
@@ -1679,38 +1746,12 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
         last_t = last_t.max(t);
     }
     close_events(tx, &mut open, last_t);
-    let mut events_added = 0;
     if let Some(ev) = events {
         let io = |e: std::io::Error| format!("{}: {e}", ev.display());
         for line in std::io::BufReader::new(std::fs::File::open(ev).map_err(io)?).lines() {
             let line = line.map_err(io)?;
             let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-            let (Some(pack), Some(key), Some(sev), Some(start)) = (v["pack"].as_i64(), v["key"].as_str(), v["severity"].as_str(), v["start"].as_i64()) else { continue };
-            let end = v["end"].as_i64();
-            let known: Option<(i64, Option<i64>)> = tx
-                .query_row(
-                    "SELECT e.id, e.end FROM events e JOIN sessions s ON s.id = e.session WHERE s.site = ?1 AND e.pack = ?2 AND e.key = ?3 AND e.start = ?4",
-                    params![site, pack, key, start],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(e2s)?;
-            match known {
-                // an event still open there or here: the end known now, or the later confirmed one
-                Some((id, have)) => {
-                    if let Some(end) = end.filter(|e| have.is_none_or(|h| *e > h)) {
-                        tx.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, end]).map_err(e2s)?;
-                    }
-                }
-                None => {
-                    tx.execute(
-                        "INSERT INTO events(session, pack, key, severity, start, end) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![session, pack, key, sev, start, end],
-                    )
-                    .map_err(e2s)?;
-                    events_added += 1;
-                }
-            }
+            events_added += u64::from(import_event(tx, site, session, &v).map_err(e2s)?);
         }
     }
     tx.execute("UPDATE sessions SET first = ?2, last = ?3 WHERE id = ?1", params![session, stats.from, stats.to]).map_err(e2s)?;
@@ -2036,6 +2077,65 @@ mod tests {
         assert_eq!(std::fs::read_to_string(csv.with_file_name("s_master.csv")).unwrap(), "time_utc,current_a,soc_pct,voltage_v,charge_limit_a,discharge_limit_a,charge_voltage_v,highest_cell_v,lowest_cell_v
 1970-01-01T00:00:01.500Z,-12.5,50,53.2,150,200,56,3.34,3.3
 ");
+    }
+
+    #[test]
+    fn a_jsonl_export_brings_back_events_and_minute_extremes() {
+        let (path, mut h) = temp_db("jsonl-events");
+        h.set_settings(Settings { enabled: true, keep_full_days: 1, keep_minutes_days: 0, ..Settings::default() }).unwrap();
+        h.connected("gw", "can");
+        let base = 10 * DAY_MS;
+        // cell 1 goes 3.0 → 3.4 V within one minute, cell 2 stays 3.2 V; an alarm from the second to the fourth answer
+        for (i, c1) in [3.0, 3.1, 3.4, 3.2, 3.0].into_iter().enumerate() {
+            h.pack(base + i as i64 * 10_000, 2, &pack_update(2, 1.0, &[c1, 3.2], if (1..4).contains(&i) { &["cell_high"] } else { &[] }));
+        }
+        h.pack(base + 60_000, 2, &pack_update(2, 1.0, &[3.2, 3.2], &[]));
+        h.maintain(base + 2 * DAY_MS);
+        let rows = |p: &Path| -> Vec<(i64, i64, i64)> {
+            reader(p).unwrap().prepare("SELECT n, cell_max, cell_min FROM pack ORDER BY t").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        let events = |p: &Path| -> Vec<(String, i64, Option<i64>)> {
+            reader(p).unwrap().prepare("SELECT key, start, end FROM events ORDER BY start").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        let before = (rows(&path), events(&path));
+        assert_eq!(before.0[0], (5, 3400, 3000), "the minute keeps the extremes of its answers");
+        assert_eq!(before.1, vec![("cell_high".to_string(), base + 10_000, Some(base + 40_000))]);
+        let out = path.parent().unwrap().join("ev.jsonl");
+        export(&reader(&path).unwrap(), "gw", 0, base + DAY_MS, &[2], Format::Jsonl, &out).unwrap();
+        h.clear(None).unwrap();
+        let st = h.import(&out, "gw").unwrap();
+        assert_eq!((st.rows, st.events), (2, 1));
+        assert_eq!((rows(&path), events(&path)), before);
+        // the same file twice more: no second event
+        assert_eq!(h.import(&out, "gw").unwrap().events, 0);
+        assert_eq!(events(&path).len(), 1);
+    }
+
+    #[test]
+    fn a_jsonl_import_skips_bad_addresses_and_keeps_its_events_once() {
+        let (path, mut h) = temp_db("jsonl-import");
+        let file = path.parent().unwrap().join("old.jsonl");
+        let mut bad = vec![];
+        for a in [json!(256), json!(-1), json!(2.5), Value::Null] {
+            let mut u = pack_update(0, 1.0, &[3.3], &[]);
+            u["address"] = a;
+            bad.push(json!({ "t": 1_000, "pack": u }));
+        }
+        // an old recording: status lines with an alarm and no telemetry, and one measurement
+        let status = |t: i64, alarms: &[&str]| json!({ "t": t, "pack": { "address": 3, "telemetry": null, "status": { "alarms": alarms.iter().map(|k| json!({ "id": k, "severity": "alarm" })).collect::<Vec<_>>() }, "error": null } });
+        let mut lines = bad;
+        lines.extend([status(2_000, &["cell_high"]), status(3_000, &["cell_high"]), status(4_000, &[])]);
+        std::fs::write(&file, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let st = h.import(&file, "gw").unwrap();
+        assert_eq!((st.rows, st.skipped, st.events), (0, 4, 1));
+        let count = |sql: &str| -> i64 { reader(&path).unwrap().query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM pack"), 0, "no line taken for pack 0");
+        // the session with the imported event stays, so the event is found through it
+        assert_eq!(count("SELECT COUNT(*) FROM events e JOIN sessions s ON s.id = e.session WHERE s.site = 'gw' AND e.end = 4000"), 1);
+        // importing it twice more: the event once
+        h.import(&file, "gw").unwrap();
+        h.import(&file, "gw").unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM events"), 1);
     }
 
     /// The layout before per-site keys, as earlier versions created it.
