@@ -234,10 +234,11 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
 }
 
 /// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
-/// of this pack bus endpoint pending in its bootloader, and with `checks` (the installation's own RS485-1/2 port) a
-/// patched master with its marker on is released before a non-maintenance image (C'), the master's serial number
-/// matches (right bank) and the target's String 2 is the board stored for its address (when both are known). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an
-/// installation; its log is named and indexed with it on the installation's own port (`checks`), else „ohne Anlage“.
+/// pending in its bootloader, on any endpoint (`maint::pending_refusal`), and with `checks` (the installation's own
+/// RS485-1/2 port) a patched master with its marker on is released before a non-maintenance image (C'), the master's
+/// serial number matches (right bank) and the target's String 2 is the board stored for its address (when both are
+/// known). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an installation; its
+/// log is named and indexed with it on the installation's own port (`checks`), else „ohne Anlage“.
 /// Flashes on its own thread and returns at once. Refusals reach the UI as a JSON string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
