@@ -46,17 +46,20 @@ export const median = (xs: number[]) => {
   return s.length === 0 ? NaN : s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
+/** What the voltage resolution allows in one R at current `i` (mΩ): 2 × RESOLUTION_MV / |I| (6.7 mΩ at 3 A). */
+export const resolutionMilliohm = (i: number) => (2 * RESOLUTION_MV) / Math.abs(i);
+
 /**
  * Marks values that stand out against the other packs: more than 1.5 × the median of the others (with two packs: the
  * partner) and at least 1 mΩ above it (the second condition avoids flagging tiny absolute differences). The excess must
- * also exceed what the voltage resolution allows at the pack's current, 2 × RESOLUTION_MV / |I| (mΩ; 6.7 mΩ at 3 A),
- * so one 10 mV step is never read as a resistance. A pack without a known current is not flagged.
+ * also exceed the pack's resolution bound in mΩ (`resolutionMilliohm` of the measurement, or smoothed like the value
+ * it belongs to), so one 10 mV step is never read as a resistance. A pack without a bound is not flagged.
  */
-export function flagHigh(values: Record<number, number | undefined>, currents: Record<number, number | undefined>): Set<number> {
+export function flagHigh(values: Record<number, number | undefined>, bounds: Record<number, number | undefined>): Set<number> {
   const known = Object.entries(values).filter((e): e is [string, number] => e[1] !== undefined);
   return new Set(known.filter(([a, v]) => {
-    const m = median(known.filter(([b]) => b !== a).map(([, x]) => x)), i = currents[Number(a)];
-    return !Number.isNaN(m) && i !== undefined && i !== 0 && v > m * 1.5 && v - m >= 1 && v - m > (2 * RESOLUTION_MV) / Math.abs(i);
+    const m = median(known.filter(([b]) => b !== a).map(([, x]) => x)), bound = bounds[Number(a)];
+    return !Number.isNaN(m) && bound !== undefined && Number.isFinite(bound) && v > m * 1.5 && v - m >= 1 && v - m > bound;
   }).map(([a]) => Number(a)));
 }
 
