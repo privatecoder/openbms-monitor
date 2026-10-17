@@ -10,6 +10,8 @@
 
 /** Below this current a drop of 10 mV resolution says too little. */
 export const MIN_CURRENT_A = 3;
+/** The BMS's voltage resolution (mV); each R takes two voltages, so it can be off by twice this over the current. */
+export const RESOLUTION_MV = 10;
 /** "At rest" for the zero reading. */
 export const REST_CURRENT_A = 0.5;
 
@@ -45,13 +47,17 @@ export const median = (xs: number[]) => {
 };
 
 /**
- * Marks values that stand out against the other packs: more than 1.5 × the median and at
- * least 1 mΩ above it (the second condition avoids flagging tiny absolute differences).
+ * Marks values that stand out against the other packs: more than 1.5 × the median of the others (with two packs: the
+ * partner) and at least 1 mΩ above it (the second condition avoids flagging tiny absolute differences). The excess must
+ * also exceed what the voltage resolution allows at the pack's current, 2 × RESOLUTION_MV / |I| (mΩ; 6.7 mΩ at 3 A),
+ * so one 10 mV step is never read as a resistance. A pack without a known current is not flagged.
  */
-export function flagHigh(values: Record<number, number | undefined>): Set<number> {
+export function flagHigh(values: Record<number, number | undefined>, currents: Record<number, number | undefined>): Set<number> {
   const known = Object.entries(values).filter((e): e is [string, number] => e[1] !== undefined);
-  const m = median(known.map(([, v]) => v));
-  return new Set(known.filter(([, v]) => v > m * 1.5 && v - m >= 1).map(([a]) => Number(a)));
+  return new Set(known.filter(([a, v]) => {
+    const m = median(known.filter(([b]) => b !== a).map(([, x]) => x)), i = currents[Number(a)];
+    return !Number.isNaN(m) && i !== undefined && i !== 0 && v > m * 1.5 && v - m >= 1 && v - m > (2 * RESOLUTION_MV) / Math.abs(i);
+  }).map(([a]) => Number(a)));
 }
 
 /** Exponential smoothing; the 10 mV voltage resolution makes single readings jumpy. */
