@@ -658,6 +658,20 @@ fn marker_action(state: &AppState, installation: &str, action: Action) -> Result
     r
 }
 
+/// The master behind the CAN socket must be the installation's own, if its battery serial is stored: the CAN socket
+/// address may change while the marker is set (a gateway that moved), and a new address must never halt or release
+/// another bank. A master that shows another serial is refused; no readable serial decides nothing.
+fn same_master(state: &AppState, inst: &Installation) -> Result<(), MaintError> {
+    let stored = with_store(state, |s| Ok(s.current_board(&inst.id, 0)?.and_then(|b| b.battery_serial)))?;
+    let Some(stored) = stored else { return Ok(()) };
+    if let Ok(read @ SerialValue::Set { .. }) = with_control(state, inst, |c| c.master_battery_serial())? {
+        if !crate::notify::master_matches(Some(&stored), &read) {
+            return Err(refused("other-master"));
+        }
+    }
+    Ok(())
+}
+
 fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
@@ -665,6 +679,7 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> 
     let _op = crate::control::reserve_bus_wait(state).ok_or(MaintError::Busy)?;
     let _a = begin_action(state, if action == Action::Start { "halt" } else { "release" });
     let inst = self::installation(state, installation)?;
+    same_master(state, &inst)?;
     let m = read_master(state, &inst)?;
     let allowed = if action == Action::Start { m.may_halt() } else { m.may_release() };
     if !allowed {

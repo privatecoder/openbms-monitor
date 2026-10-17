@@ -239,9 +239,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         const base = [linkedNote, answeredNote, note].filter(Boolean).join(" ");
         setMsg(base);
         await api.startPolling(addrs, 2000);
+        stopIfCancelled();
         // serial numbers only of the packs that answered the device query; gaps are named
         const gen = serialGen.current;
-        api.scan(addrs).then((found) => {
+        api.scan(addrs, true).then((found) => {
           // a late answer of an earlier connection changes nothing
           if (gen !== serialGen.current) return;
           const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
@@ -250,7 +251,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         }).catch(() => { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); });
         return;
       }
-      const found = await api.scan();
+      const found = await api.scan(undefined, true);
       stopIfCancelled();
       if (retry && !found.length && bus !== "can") throw new Error(t("conn.none"));
       setMsg([linkedNote, answeredNote, note, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
@@ -258,6 +259,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       setSince(Date.now()); setLost(false);
       // on the CAN socket bus the system values are polled even if no pack answered
       if (found.length || bus === "can") await api.startPolling(found.map(([a]) => a), 2000);
+      stopIfCancelled();
       void readSerials(found.map(([a]) => a), linkGen);
     } catch (e) {
       // a cancelled wait never opened the port: nothing to close, no error
@@ -536,7 +538,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           </Button>
           {waiting ? <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>
             : busy && <Button variant="ghost" onClick={cancelConnect}>{t("conn.cancel")}</Button>}
-          {(connected || lost) && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
+          {(connected || lost) && !busy && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
