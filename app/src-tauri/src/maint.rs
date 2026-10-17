@@ -453,6 +453,22 @@ pub fn pending_refusal(pending: &[Pending], key: &str, address: u8) -> Result<()
     }
 }
 
+/// The one flash `pending_refusal` lets through, the pending pack again at its own key, only for that same board: a
+/// record with String 2 needs the target's String 2 (`read`, if real) to match. Another board refuses
+/// ("pending-other-pack"), an unreadable one too ("pending-unverified": the user clears the record by hand). A record
+/// without String 2 decides nothing.
+pub fn pending_same_board(pending: &[Pending], key: &str, address: u8, read: Option<&str>) -> Result<(), MaintError> {
+    for p in pending.iter().filter(|p| p.endpoint == key && p.pack == address) {
+        match (p.bms_serial.as_deref(), read) {
+            (None, _) => {}
+            (Some(s), Some(r)) if s == r => {}
+            (Some(_), Some(_)) => return Err(refused("pending-other-pack")),
+            (Some(_), None) => return Err(refused("pending-unverified")),
+        }
+    }
+    Ok(())
+}
+
 /// The pending rule on all stored records, for a flash at endpoint key `key` (`firmware_start`).
 pub fn pending_check(store: &Arc<Mutex<Option<Store>>>, key: &str, address: u8) -> Result<(), MaintError> {
     with_store_arc(store, |s| s.all_pending()).and_then(|p| pending_refusal(&p, key, address))
@@ -859,6 +875,18 @@ mod tests {
             SerialValue::Set { value: "SYN-CUT".into(), truncated: true }] {
             assert!(target_check(Some(&board), &v).is_ok());
         }
+    }
+
+    #[test]
+    fn the_pending_pack_is_flashed_again_only_as_the_same_board() {
+        let with = |serial: Option<&str>| Pending { bms_serial: serial.map(Into::into), ..pending(3) };
+        let key = "serial:/dev/p";
+        assert!(pending_same_board(&[with(Some("SYN-3"))], key, 3, Some("SYN-3")).is_ok());
+        assert!(refused_with(pending_same_board(&[with(Some("SYN-3"))], key, 3, Some("SYN-B")), "pending-other-pack"));
+        assert!(refused_with(pending_same_board(&[with(Some("SYN-3"))], key, 3, None), "pending-unverified"));
+        // no stored serial: as before; other records are `pending_refusal`'s
+        assert!(pending_same_board(&[with(None)], key, 3, None).is_ok());
+        assert!(pending_same_board(&[with(Some("SYN-3"))], key, 4, None).is_ok());
     }
 
     #[test]

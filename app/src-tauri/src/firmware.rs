@@ -299,6 +299,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // the target itself, also on another port than the installation's (manual tab): another board than the one stored
     // for its address is not flashed. Its String 2 goes with the pending record: only that board's answer clears it.
     let target = maint::check_target_board(&state.maint, &owner, address, &mut link).map_err(to_text)?;
+    // the pending pack again: only as the same board
+    let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
+    maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind
