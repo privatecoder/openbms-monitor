@@ -1,5 +1,6 @@
 /** Summaries, flags and CSV of the health report; the per-day aggregates come from the database (health.rs). */
-import type { HealthReport } from "../api";
+import type { CellAnalysis, HealthReport } from "../api";
+import { maskCells, reasonCsv } from "../cellAnalysis";
 
 const DAY = 86_400_000;
 
@@ -117,17 +118,30 @@ export function localDate(ms: number) {
   return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
 }
 
-/** The report as one CSV: a row per pack and day, per pack the cycle rate, a row per pair and day. */
-export function reportCsv(r: HealthReport): string {
+/** The report as one CSV: a row per pack and day (with the BMS balancing bits), per pack the cycle rate, a row per pair
+ *  and day, and with the cell analyses per pack one row for the pack's figures and one per cell. */
+export function reportCsv(r: HealthReport, cells: Record<number, CellAnalysis> = {}): string {
   const cols = ["kind", "pack", "partner", "date", "rows", "spread_p50_mv", "spread_p95_mv", "rest_rows", "rest_p50_mv", "rest_p95_mv", "cycles",
-    "temp_max_c", "cycles_per_30d", "cycle_resets", "samples", "share_pct", "equalizing", "judged", "judged_minutes", "judged_share_pct", "marked"];
+    "temp_max_c", "cycles_per_30d", "cycle_resets", "samples", "share_pct", "equalizing", "judged", "judged_minutes", "judged_share_pct", "marked",
+    "bal_status_rows", "bal_rows", "bal_pct", "bal_cells",
+    "cell", "class", "reason", "rest_mv", "load_mv", "top_mv", "top_corr_mv", "bottom_mv", "bottom_corr_mv", "r_mohm", "r_pct", "order", "jumps",
+    "cell_count", "incomplete", "balancer_left_out", "bms_left_out", "top_rows", "bottom_rows", "load_rows", "steps", "charges"];
   const v = (x: number | string | boolean | null | undefined) => (x === null || x === undefined ? "" : typeof x === "number" ? String(Math.round(x * 100) / 100) : String(x));
   const line = (o: Record<string, number | string | boolean | null | undefined>) => cols.map((c) => v(o[c])).join(",");
   const out = [cols.join(",")];
   for (const p of r.packs) {
     for (const d of p.days) out.push(line({ kind: "pack", pack: p.pack, date: localDate(d.day), rows: d.rows, spread_p50_mv: d.spread_p50, spread_p95_mv: d.spread_p95,
-      rest_rows: d.rest_rows, rest_p50_mv: d.rest_p50, rest_p95_mv: d.rest_p95, cycles: d.cycles, temp_max_c: d.temp_max }));
+      rest_rows: d.rest_rows, rest_p50_mv: d.rest_p50, rest_p95_mv: d.rest_p95, cycles: d.cycles, temp_max_c: d.temp_max,
+      bal_status_rows: d.bal_n, bal_rows: d.bal_rows, bal_pct: d.bal_n ? ((d.bal_rows ?? 0) / d.bal_n) * 100 : null, bal_cells: maskCells(d.bal_mask) }));
     out.push(line({ kind: "pack_period", pack: p.pack, cycles_per_30d: p.cycles_per_30d, cycle_resets: p.cycle_resets }));
+    const a = cells[p.pack];
+    if (!a) continue;
+    out.push(line({ kind: "cells_period", pack: p.pack, rows: a.rows, rest_rows: a.rest_rows, cell_count: a.cell_count, incomplete: a.incomplete,
+      balancer_left_out: a.balancer_active + a.balancer_unknown, bms_left_out: a.bms_left_out, top_rows: a.top_rows, bottom_rows: a.bottom_rows,
+      load_rows: a.load_rows, steps: a.steps, charges: a.charges, r_mohm: a.r_median }));
+    for (const c of a.cells) out.push(line({ kind: "cell", pack: p.pack, cell: c.cell, class: c.class, reason: reasonCsv(c.reason), rest_rows: c.rest_rows,
+      rest_mv: c.rest, load_mv: c.load, top_mv: c.top, top_corr_mv: c.top_corr, bottom_mv: c.bottom, bottom_corr_mv: c.bottom_corr,
+      r_mohm: c.r_mohm, r_pct: c.r_pct, order: c.order, jumps: c.jumps }));
   }
   for (const p of r.pairs) for (const d of p.days) out.push(line({ kind: "pair", pack: p.plus, partner: p.minus, date: localDate(d.day), samples: d.samples,
     share_pct: d.share, equalizing: d.equalizing, judged: d.judged, judged_minutes: d.judged_minutes, judged_share_pct: d.judged_share, marked: d.marked ? 1 : 0 }));

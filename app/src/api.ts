@@ -179,6 +179,8 @@ export interface Series {
 export interface PackDay {
   day: number; rows: number; spread_p50: number | null; spread_p95: number | null;
   rest_rows: number; rest_p50: number | null; rest_p95: number | null; cycles: number | null; temp_max: number | null;
+  /** BMS balancing bits of the day: OR (bit n = cell n+1), rows with a bit set of rows with a status; null without a status */
+  bal_mask?: number | null; bal_rows?: number | null; bal_n?: number | null;
 }
 export interface PackReport { pack: number; days: PackDay[]; cycles_per_30d: number | null; cycle_resets: number }
 /** Per pair and day: matched samples under load, the plus pack's share (%); `judged`: without the samples equalizing explains. */
@@ -214,6 +216,30 @@ export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "noti
 export interface BalancerSlice { from: number; to: number; active: number; inactive: number; unknown: number; unassigned: number; bal: number; idle: number; no_status: number; cells: number; minutes: boolean }
 /** `balancer_timeline` (balancer.rs): measured is false while no device is read. */
 export interface BalancerTimeline { from: number; to: number; slices: BalancerSlice[]; total: BalancerSlice; devices: string[]; first_assigned: number | null; measured: boolean }
+/** `cell_analysis` (cell_analysis.rs): what the recorded raw rows say about each cell of a pack. */
+export type CellClass = "ok" | "soc_offset" | "capacity" | "ambiguous" | "resistance" | "measurement" | "none";
+export type CellReason =
+  | { key: "within" } | { key: "within_no_r"; steps: number } | { key: "rest"; rest: number }
+  | { key: "same_sign"; top: number; bottom: number } | { key: "capacity"; top: number; bottom: number }
+  | { key: "ambiguous"; top: number; bottom: number; steps: number } | { key: "resistance"; pct: number; steps: number }
+  | { key: "offset"; rest: number; load: number } | { key: "jumps"; count: number } | { key: "no_rest"; rows: number }
+  | { key: "top_only"; top: number } | { key: "bottom_only"; bottom: number } | { key: "pattern"; top: number; bottom: number }
+  | { key: "r_slight"; pct: number };
+/** One cell: median deviation from the row median (mV) per situation, null with too few rows; top/bottom also corrected by
+ *  the cell's resistance (null without it); resistance in mΩ and % of the pack median; mean place passing 3.45 V. */
+export interface CellResult {
+  cell: number; rest: number | null; rest_rows: number; load: number | null; top: number | null; bottom: number | null;
+  top_corr: number | null; bottom_corr: number | null; r_mohm: number | null; r_pct: number | null; order: number | null; jumps: number;
+  class: CellClass; reason: CellReason;
+}
+export interface CellAnalysis {
+  from: number; to: number; cell_count: number; rows: number; incomplete: number; minute_rows: number;
+  balancer_active: number; balancer_unknown: number; balancer: boolean;
+  rest_rows: number; top_rows: number; bottom_rows: number; load_rows: number; bms_left_out: number; rest_no_status: number;
+  steps: number; r_median: number | null; charges: number; cells: CellResult[];
+  /** mean deviation (mV) per cell and slice of [from, to] */
+  heat: (number | null)[][];
+}
 /** The connection's installation and why notifications are off for it: CAN socket with the master not matched
  *  (`can_no_serial`: none stored for address 0 to compare), RS485-1/2 with no pack confirmed yet. */
 export interface NotifyStatus { installation: string | null; can_unchecked: boolean; can_no_serial: boolean; none_confirmed: boolean }
@@ -323,6 +349,9 @@ const tauriApi = {
   /** both balancing lanes of a pack in `slices` parts of the span; `devices`: the installation's device setting */
   balancerTimeline: (site: string, pack: number, from: number, to: number, devices: unknown, slices: number) =>
     invoke<BalancerTimeline>("balancer_timeline", { site, pack, from, to, devices, slices }),
+  /** the cell analysis of a pack from its raw rows; `slices` heatmap columns (0 = none) */
+  cellAnalysis: (site: string, pack: number, from: number, to: number, devices: unknown, slices: number) =>
+    invoke<CellAnalysis>("cell_analysis", { site, pack, from, to, devices, slices }),
   historyExport: (site: string, from: number, to: number, packs: number[], format: "jsonl" | "csv", path: string) =>
     invoke<ExportStats>("history_export", { site, from, to, packs, format, path }),
   historyImport: (path: string, site: string) => invoke<ImportStats>("history_import", { path, site }),
@@ -517,6 +546,7 @@ function demoApi(): typeof tauriApi {
     historySeries: async (_site, from, to, packs, cellsPack, maxPoints) => demoSeries(from, to, packs, cellsPack, maxPoints),
     healthReport: async (_site, from, to, pairs) => demoReport(from, to, (await load()).packs.map((p) => p.address), pairs),
     balancerTimeline: async (_site, _pack, from, to, _devices, slices) => demoBalancer(from, to, slices),
+    cellAnalysis: async (_site, pack, from, to, _devices, slices) => demoCells(pack, from, to, slices),
     historyExport: async () => { throw new Error("preview"); },
     historyImport: async () => { throw new Error("preview"); },
     historyClear: async () => {},
@@ -750,6 +780,27 @@ function demoBalancer(from: number, to: number, slices: number): BalancerTimelin
   const total = list.reduce((s, x) => ({ ...s, active: s.active + x.active, inactive: s.inactive + x.inactive, bal: s.bal + x.bal, idle: s.idle + x.idle, cells: Math.max(s.cells, x.cells) }),
     { from, to, active: 0, inactive: 0, unknown: 0, unassigned: 0, bal: 0, idle: 0, no_status: 0, cells: 0, minutes: false });
   return { from, to, slices: list, total, devices: ["Demo 4 A"], first_assigned: from - 86_400_000, measured: false };
+}
+
+/** Preview: a 16-cell pack; in pack 03 cell 5 has less capacity, cell 9 more resistance, cell 12 reads 40 mV high;
+ *  elsewhere cell 2 has an SOC offset. */
+function demoCells(pack: number, from: number, to: number, slices: number): CellAnalysis {
+  const n = 16, hour = (t: number) => ((t / 3_600_000) % 24 + 24) % 24;
+  const base = (k: number): Omit<CellResult, "cell"> => ({ rest: (k % 3) - 1, rest_rows: 4_000, load: (k % 3) - 1, top: 2 - (k % 4), bottom: (k % 4) - 2,
+    top_corr: 2 - (k % 4), bottom_corr: (k % 4) - 2, r_mohm: 0.42 + (k % 3) * 0.01, r_pct: 100 + ((k % 3) - 1) * 2, order: 4 + (k % 9), jumps: 0, class: "ok", reason: { key: "within" } });
+  const odd: Record<number, Partial<CellResult>> = pack === 3 ? {
+    5: { top: 38, bottom: -27, top_corr: 36, bottom_corr: -26, order: 1.2, class: "capacity", reason: { key: "capacity", top: 36, bottom: -26 } },
+    9: { r_mohm: 0.71, r_pct: 168, top: 21, bottom: -18, top_corr: 1, bottom_corr: -2, class: "resistance", reason: { key: "resistance", pct: 168, steps: 212 } },
+    12: { rest: 40, load: 41, top: 39, bottom: 40, top_corr: 39, bottom_corr: 40, class: "measurement", reason: { key: "offset", rest: 40, load: 41 } },
+  } : { 2: { rest: 7, top: 31, bottom: 19, top_corr: 30, bottom_corr: 19, class: "soc_offset", reason: { key: "same_sign", top: 30, bottom: 19 } } };
+  const cells = Array.from({ length: n }, (_, i) => ({ cell: i + 1, ...base(i + 1), ...odd[i + 1] }));
+  const width = (to - from) / Math.max(1, slices);
+  const heat = cells.map((c) => Array.from({ length: slices }, (_, j) => {
+    const h = hour(from + (j + 0.5) * width), top = h > 13 && h < 16, bottom = h > 4 && h < 6;
+    return top ? (c.top ?? 0) : bottom ? (c.bottom ?? 0) : (c.rest ?? 0);
+  }));
+  return { from, to, cell_count: n, rows: 240_000, incomplete: 12, minute_rows: 0, balancer_active: 9_000, balancer_unknown: 0, balancer: true,
+    rest_rows: 64_000, top_rows: 6_100, bottom_rows: 2_300, load_rows: 90_000, bms_left_out: 1_400, rest_no_status: 0, steps: 212, r_median: 0.42, charges: 6, cells, heat };
 }
 
 /** Preview: a day of a 12-pack bank (charging by day, discharging at night), pack 01 with a weak share. */

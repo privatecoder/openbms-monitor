@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Download } from "lucide-react";
-import { api, isDemo, type HealthReport as Report } from "../api";
+import { api, isDemo, type CellAnalysis, type HealthReport as Report } from "../api";
+import { reasonArgs, reportCells } from "../cellAnalysis";
+import { useSettings } from "../installData";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { Segmented } from "../components/PackPicker";
@@ -31,6 +33,10 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
   const [saved, setSaved] = useState<string | null>(null);
   const [sel, setSel] = useState<{ pack: number } | { pair: number } | null>(null);
   const pairKey = pairs.map((p) => `${p.plus}/${p.minus}`).join(",");
+  const { settings, loaded } = useSettings(site);
+  const devicesKey = JSON.stringify(settings.devices ?? null);
+  // the cell analysis per pack, one after the other once the report is there
+  const [cells, setCells] = useState<Record<number, CellAnalysis | string>>({});
 
   useEffect(() => {
     let alive = true;
@@ -43,6 +49,21 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
     return () => { alive = false; };
   }, [site, period, siteFrom, pairKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    setCells({});
+    if (!report || !loaded) return;
+    let alive = true;
+    (async () => {
+      for (const p of report.packs) {
+        if (!alive) return;
+        const r = await api.cellAnalysis(site, p.pack, report.from, report.to, settings.devices ?? null, 0).catch((e) => String(e));
+        if (alive) setCells((c) => ({ ...c, [p.pack]: r }));
+      }
+    })();
+    return () => { alive = false; };
+  }, [report, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cellsByPack = Object.fromEntries(Object.entries(cells).filter((e): e is [string, CellAnalysis] => typeof e[1] !== "string"));
+
   const packs = useMemo(() => (report ? packRows(report) : []), [report]);
   const pairList = useMemo(() => (report ? pairRows(report) : []), [report]);
   const date = (ms: number) => new Intl.DateTimeFormat(lang, { day: "2-digit", month: "2-digit", year: "numeric" }).format(ms);
@@ -50,7 +71,7 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
   const save = async () => {
     if (!report) return;
     setSaved(null); setErr(null);
-    const content = reportCsv(report), file = exportName(`${name}_report`, "csv");
+    const content = reportCsv(report, cellsByPack), file = exportName(`${name}_report`, "csv");
     try {
       if (isDemo) {
         const a = document.createElement("a");
@@ -149,6 +170,51 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
                     <td className={cn("py-2 pr-4 text-right", r.flags.some((f) => f.key === "cycles") && "font-medium text-discharge")}>{fmt(r.rate, 1)}</td>
                     <td className="py-2 pr-4 text-right">{fmt(r.tempMax, 1, "°C")}</td>
                     <td className={cn("py-2", warn ? "text-discharge" : "text-muted")}>{r.flags.length ? r.flags.map(flagText).join("; ") : t("hist.rep.ok")}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+
+      {report && report.packs.length > 0 && (
+        <Panel className="overflow-x-auto p-5">
+          <h3 className="mb-1 flex items-center gap-1.5 font-display text-lg font-semibold">{t("hist.rep.cells.title")}<InfoIcon id="topic.cellAnalysis" /></h3>
+          <p className="mb-2 max-w-3xl text-sm text-muted">{t("hist.rep.cells.intro")}</p>
+          {Object.keys(cells).length < report.packs.length && (
+            <p className="text-sm text-muted">{t("hist.rep.cells.loading", { done: Object.keys(cells).length, total: report.packs.length })}</p>
+          )}
+          <table className="w-full text-sm">
+            <thead className="text-left text-muted">
+              <tr className="border-b border-line">
+                <th className="py-2 pr-4 font-normal">{t("dash.pack")}</th>
+                <th className="py-2 font-normal">{t("hist.rep.cells.col.cells")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.packs.filter((p) => cells[p.pack] !== undefined).map((p) => {
+                const a = cells[p.pack];
+                const off = typeof a === "string" || !a.cell_count ? null : reportCells(a);
+                return (
+                  <tr key={p.pack} className="border-b border-line align-top last:border-b-0">
+                    <td className="py-2 pr-4 font-display text-lg font-semibold">{no(p.pack)}</td>
+                    <td className="py-2">
+                      {typeof a === "string" ? <span className="text-alarm">{t("hist.rep.cells.failed", { err: a })}</span>
+                        : !off ? <span className="text-muted">{t("hist.rep.cells.noRaw")}</span>
+                        : off.all ? <span className="text-muted">{t("hist.rep.cells.allNone")}: {t(...reasonArgs(off.all.reason, lang))}</span>
+                        : !off.cells.length ? <span className="text-muted">{t("hist.rep.cells.allOk", { count: a.cells.length })}</span>
+                        : (
+                          <ul className="space-y-0.5">
+                            {off.cells.map((c) => (
+                              <li key={c.cell}>
+                                <span className={cn("font-medium", c.class === "none" ? "text-muted" : "text-discharge")}>{t("hist.rep.cells.cell", { n: c.cell })}: {t(`cell.class.${c.class}`)}</span>
+                                <span className="text-muted"> ({t(...reasonArgs(c.reason, lang))})</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                    </td>
                   </tr>
                 );
               })}

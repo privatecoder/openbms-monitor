@@ -1,7 +1,7 @@
 ---
 title: Health report
 short: Evaluates the recording over weeks: cell spread at rest, cycles, warmest cell per pack and the current split within each pair.
-related: topic.history, topic.recording, topic.pairs
+related: topic.history, topic.recording, topic.pairs, topic.cellAnalysis
 ---
 - **Where:** History → Report, for the installation chosen in the sidebar, also without a connection. Period 7, 30 or 90 days up to now or everything; counted in calendar days of this PC's local time. Read only, nothing is written.
 - **Rest spread** (highest minus lowest cell) is the comparable number: under load the voltages sag differently and the spread grows without any cell ageing. At rest means: current between −2 and +2 A, for single values also in the poll before (a cell still recovers for a few seconds after load), for minute values throughout the minute; then the minute's largest spread counts. Shown are median and 95th percentile of the last day and the trend over the period. A pack is marked when its value is above 1.5 times the bank median and at least 10 mV above it, or rises by 10 mV or more in the period. Next to it is the spread over all values (95th percentile).
@@ -10,4 +10,5 @@ related: topic.history, topic.recording, topic.pairs
 - **Warmest cell:** the highest value in the period; marked from 5 K above the bank median.
 - **Pairs:** for the pairs set under Overview → Pairs. For each single value of the plus pack the report takes the nearest one of the minus pack, at most 3 s away, and counts it only when the pair carries at least 40 A together (20 A per pack as in the live comparison). Shown is the plus pack's mean share. If on a day it is more than 5 points away from 50 % over at least 30 minutes with samples, the day is marked; the row names the pack carrying more. Samples where the state of charge explains the smaller share (discharging, the emptier pack gives less; charging, the fuller pack takes less; from 3 points SOC difference) do not count, as in the live comparison.
 - **Pair figures from single values only:** minute values average the current and are no good for the comparison. Pair figures therefore exist only for the days in which the recording still keeps every poll (default 30 days, set under Recording). The pair's output voltage is not in the report: the recording holds the pack voltage, not the voltage at the output the live comparison uses.
-- **Course and export:** clicking a row shows its daily values as a chart. “Save as CSV” writes all daily values (one row per pack and day, per pack the cycle rate, one row per pair and day), dates in local time.
+- **Course and export:** clicking a row shows its daily values as a chart. “Save as CSV” writes all daily values (one row per pack and day with the BMS balancing bits, per pack the cycle rate, per pack the cell analysis with one row per cell, one row per pair and day), dates in local time.
+- **Cells:** per pack the cells the cell analysis does not find matching, with their assessment and the reason (details under cell analysis and in the pack details).

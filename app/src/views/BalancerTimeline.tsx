@@ -2,19 +2,13 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Scale } from "lucide-react";
 import { api, isDemo, type BalancerSlice, type BalancerTimeline as Timeline } from "../api";
-import { Panel } from "../components/ui/card";
-import { Segmented } from "../components/PackPicker";
 import { InfoIcon } from "../help";
 import { useSettings } from "../installData";
 import { cn, fmt } from "../lib/utils";
 import { bmsMark, extMark, shares, type LaneMark } from "../balancerTimeline";
 
 const DAY = 86_400_000;
-const PERIODS = ["1", "7", "30"] as const;
-type Period = (typeof PERIODS)[number];
 const SLICES = 240;
-// kept while the app runs, like the report's period
-let keptPeriod: Period = "1";
 
 const COLOR: Record<LaneMark["state"], string> = {
   active: "bg-charge", bal: "bg-charge", unknown: "bg-discharge", inactive: "bg-line", idle: "bg-line", none: "bg-sunken", noStatus: "bg-sunken", gap: "",
@@ -22,12 +16,11 @@ const COLOR: Record<LaneMark["state"], string> = {
 
 /** Balancing over time in the pack details: the external balancer (computed from the cells with its settings of the
  *  time, never measured while it has no connection profile) and the BMS's own balancing (reported bits). From the
- *  recording of the chosen installation (`balancer_timeline`). */
-export function BalancerTimeline({ pack, scope }: { pack: number; scope: string | null }) {
+ *  recording of the chosen installation (`balancer_timeline`), over the span the cell analysis above it shows
+ *  (`CellAnalysisPanel` owns the period, so both line up). */
+export function BalancerTimeline({ pack, scope, from, to }: { pack: number; scope: string | null; from: number; to: number }) {
   const { t, i18n } = useTranslation();
   const { settings, loaded } = useSettings(scope);
-  const [period, setPeriodState] = useState<Period>(keptPeriod);
-  const setPeriod = (p: Period) => { keptPeriod = p; setPeriodState(p); };
   const [data, setData] = useState<Timeline | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const site = scope ?? (isDemo ? "demo" : null);
@@ -36,31 +29,22 @@ export function BalancerTimeline({ pack, scope }: { pack: number; scope: string 
   useEffect(() => {
     if (!site || !loaded) return;
     let alive = true;
-    const load = () => {
-      const now = Date.now();
-      api.balancerTimeline(site, pack, now - Number(period) * DAY, now, settings.devices ?? null, SLICES)
-        .then((d) => { if (alive) { setData(d); setErr(null); } })
-        .catch((e) => alive && setErr(String(e)));
-    };
-    load();
-    // the recording grows while connected; the long spans (a month of answers) only on a change
-    const timer = period === "1" ? window.setInterval(load, 60_000) : undefined;
-    return () => { alive = false; clearInterval(timer); };
-  }, [site, pack, period, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    api.balancerTimeline(site, pack, from, to, settings.devices ?? null, SLICES)
+      .then((d) => { if (alive) { setData(d); setErr(null); } })
+      .catch((e) => alive && setErr(String(e)));
+    return () => { alive = false; };
+  }, [site, pack, from, to, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pct = (v: number | null) => fmt(v === null ? null : v * 100, 0, "%");
-  const when = (ms: number) => new Date(ms).toLocaleString(i18n.language, period === "1" ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" });
+  const when = (ms: number) => new Date(ms).toLocaleString(i18n.language, to - from <= DAY ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" });
   const total = data?.total;
   const recorded = !!total && total.active + total.inactive + total.unknown + total.unassigned > 0;
   const assigned = !!total && total.active + total.inactive + total.unknown > 0;
   const s = total ? shares(total) : null;
 
   return (
-    <Panel className="p-5">
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="flex items-center gap-1.5 font-display text-2xl font-semibold"><Scale className="h-5 w-5 text-muted" aria-hidden />{t("dev.tl.title")}<InfoIcon id="topic.balancers" /></h2>
-        <Segmented value={period} onChange={(v) => setPeriod(v as Period)} items={PERIODS.map((p) => [p, t(`dev.tl.period.${p}`)])} />
-      </div>
+    <section>
+      <h3 className="mb-3 flex items-center gap-1.5 font-display text-lg font-semibold"><Scale className="h-4 w-4 text-muted" aria-hidden />{t("dev.tl.title")}<InfoIcon id="topic.balancers" /></h3>
       {!site ? <p className="text-sm text-muted">{t("dev.tl.needInst")}</p>
         : err ? <p className="text-sm text-alarm">{err}</p>
         : !data ? <p className="text-sm text-muted">{t("hist.loading")}</p>
@@ -82,7 +66,7 @@ export function BalancerTimeline({ pack, scope }: { pack: number; scope: string 
             <Legend />
           </div>
         )}
-    </Panel>
+    </section>
   );
 }
 
