@@ -349,3 +349,46 @@ fn flash_with_progress_sends_the_same_frames_as_flash() {
     assert!(!plain.is_empty());
     assert_eq!(plain, tx(with));
 }
+
+/// A log that fails every write once `after` is in it and a line has ended behind it (flush never fails); with an
+/// empty `after` from the first write.
+struct FailingLog {
+    text: String,
+    after: &'static str,
+}
+
+impl std::io::Write for FailingLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let failing = self.text.find(self.after).is_some_and(|i| self.after.is_empty() || self.text[i..].contains('\n'));
+        if failing {
+            return Err(std::io::Error::other("disk full"));
+        }
+        self.text.push_str(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_log_error_before_the_erase_stops_the_flash_before_the_board_changes() {
+    let mut sim = BootSim::new();
+    let mut log = FailingLog { text: String::new(), after: "" };
+    assert!(session::flash(&mut sim, 0, &image(), &mut log, fast()).is_err());
+    assert!(!sim.wrote_flash());
+}
+
+#[test]
+fn a_log_error_after_the_confirmed_erase_no_longer_stops_the_flash() {
+    let mut sim = BootSim::new();
+    let mut log = FailingLog { text: String::new(), after: "command=WFE" };
+    let result = session::flash(&mut sim, 0, &image(), &mut log, fast()).unwrap();
+    assert!(sim.wrote_flash());
+    assert!(result.app_returned);
+    assert_eq!(result.blocks, 3);
+    assert!(result.log_error.as_deref().is_some_and(|e| e.contains("disk full")));
+    // a flash with a working log reports none
+    let ok = session::flash(&mut BootSim::new(), 0, &image(), &mut Vec::new(), fast()).unwrap();
+    assert!(ok.log_error.is_none());
+}

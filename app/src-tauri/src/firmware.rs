@@ -49,6 +49,8 @@ struct FirmwareDone {
     log: String,
     /// the pack may hang in its bootloader: its record stays (`bootloader-pending`)
     pending: bool,
+    /// a log write error after the confirmed erase: the flash went on, the log is incomplete
+    log_error: Option<String>,
 }
 
 /// What `firmware_start` checked before it began: the right-bank check ("match" | "stored" | "unchecked" |
@@ -313,12 +315,12 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None },
         };
         let state = app.state::<AppState>();
-        maint::event(&state, Some(&installation), &format!("flash done address={address} ok={} stage={:?} error={:?}", done.ok, done.stage, done.error));
+        maint::event(&state, Some(&installation), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?}", done.ok, done.stage, done.error, done.log_error));
         if let Some(id) = log_id {
             let result = if done.ok { "ok" } else if done.pending { "pending" } else { "failed" };
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));
