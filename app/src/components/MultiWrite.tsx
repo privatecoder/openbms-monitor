@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { TriangleAlert } from "lucide-react";
 import { errorText } from "../control";
-import type { Outcome } from "../multiWrite";
+import type { Outcome, SeriesEnd } from "../multiWrite";
 import type { Change } from "../paramWrite";
 import { cn } from "../lib/utils";
 import { useWriteTexts } from "./ParamEdit";
@@ -80,7 +80,7 @@ export function MultiConfirm({ changes, packs, skipped, capacity, reading, onCon
 /** A run's progress and result: one line per pack, „Abbrechen“ while it runs, and at a refusal with live switches
  *  the choice to go on (the pack's restore panel shows below). */
 export function SeriesPanel({ rows, current, paused, end, held, onCancel, onGoOn, onClose }: {
-  rows: Row[]; current: number | null; paused: number | null; end: "done" | "cancelled" | "link" | null;
+  rows: Row[]; current: number | null; paused: number | null; end: SeriesEnd | null;
   /** a restore of the paused pack is being written: going on or cancelling waits for it */
   held?: boolean;
   onCancel: () => void; onGoOn: () => void; onClose: () => void;
@@ -91,7 +91,7 @@ export function SeriesPanel({ rows, current, paused, end, held, onCancel, onGoOn
     <div className="space-y-2 rounded-md border border-line bg-surface p-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">
-          {end === null ? t("pw.multi.running", { n, of: rows.length }) : end === "link" ? t("pw.multi.endLink") : t("pw.multi.end")}
+          {end === null ? t("pw.multi.running", { n, of: rows.length }) : end === "link" ? t("pw.multi.endLink") : end === "unclear" ? t("pw.multi.endUnclear") : t("pw.multi.end")}
         </span>
         <span className="ml-auto flex gap-2">
           {end === null && paused === null && <Button size="sm" variant="ghost" onClick={onCancel}>{t("pw.multi.cancel")}</Button>}
@@ -126,7 +126,8 @@ function OutcomeText({ out }: { out?: Outcome }) {
   const { blockText } = useWriteTexts();
   if (!out) return null;
   switch (out.kind) {
-    case "written": return <>{t("pw.multi.res.written")}</>;
+    case "written": return <>{t(out.unanswered ? "pw.multi.res.writtenUnanswered" : "pw.multi.res.written")}</>;
+    case "unclear": return <>{t("pw.multi.res.unclear", { err: out.error })}</>;
     case "notTaken": return <>{t("pw.multi.res.notTaken", { list: [...out.params.map((i) => `P${i}`), ...out.switches.map((g) => t("pw.multi.switchByte", { g }))].join(", ") })}</>;
     case "unread": return <>{t("pw.multi.res.unread", { err: out.error })}</>;
     case "refused": return <>{t(out.refusal === "refused" ? "pw.multi.res.refused" : "pw.multi.res.invalid")}</>;

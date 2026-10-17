@@ -8,7 +8,7 @@ import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, type Parameters, type Source } from "../params";
 import { blockers, capacityEffects, changeOf, changes, fromRaw, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
-import { failure, outcomeOf, runSeries, type Outcome } from "../multiWrite";
+import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
 import { SerialLine } from "../components/SerialWrite";
@@ -103,7 +103,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [picking, setPicking] = useState(false);
   const [targets, setTargets] = useState<number[]>([]);
   const [confirm, setConfirm] = useState<{ plans: TargetPlan[]; skipped: Row[]; capacity: { resets: number[]; unknown: number[] } | null; reading: number | null } | null>(null);
-  const [runState, setRunState] = useState<{ rows: Row[]; current: number | null; paused: number | null; end: "done" | "cancelled" | "link" | null } | null>(null);
+  const [runState, setRunState] = useState<{ rows: Row[]; current: number | null; paused: number | null; end: SeriesEnd | null } | null>(null);
   const prepTicket = useRef(0);
   const cancelled = useRef(false);
   const resume = useRef<((goOn: boolean) => void) | null>(null);
@@ -281,10 +281,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         say({ text: t("pw.stale", { pack }), error: true });
       } else if (r.kind === "refused") {
         say({ text: t(r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
+      } else if (r.kind === "unclear") {
+        say({ text: t("pw.unclear", { err: r.error }), error: true });
       } else {
         if (r.read_back) {
           const n = out.kind === "notTaken" ? out.params.length + out.switches.length : 0;
-          say(n ? { text: t("pw.notTakenCount", { count: n }), error: true } : { text: t(restore ? "pw.restored" : "pw.done"), error: false });
+          say(n ? { text: t("pw.notTakenCount", { count: n }), error: true } : { text: t(restore ? "pw.restored" : "pw.done") + (r.unanswered ? ` ${t("pw.unanswered")}` : ""), error: false });
           // after restoring, the edit stays open on the stored state, so the values can be corrected
           if (restore) setEdit((e) => (e && e.address === a ? { ...e, base: rawsOf(r.read_back!), baseSwitches: [...r.read_back!.function_switches] } : e));
         } else say({ text: t("pw.unread", { err: r.read_error ?? "" }), error: true });
