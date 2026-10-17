@@ -31,7 +31,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
   const { settings, loaded } = useSettings(scope);
   const [period, setPeriodState] = useState<Period>(keptPeriod);
   const setPeriod = (p: Period) => { keptPeriod = p; setPeriodState(p); };
-  const [span, setSpan] = useState(() => { const now = Date.now(); return { from: now - Number(keptPeriod) * DAY, to: now }; });
+  const [span, setSpan] = useState<{ from: number; to: number } | null>(null);
   const [data, setData] = useState<CellAnalysis | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -47,7 +47,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
   }, [period]);
 
   useEffect(() => {
-    if (!site || !loaded) return;
+    if (!site || !loaded || !span) return;
     let alive = true;
     setBusy(true);
     api.cellAnalysis(site, pack, span.from, span.to, settings.devices ?? null, SLICES)
@@ -80,7 +80,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
           </section>
         )}
 
-      <BalancerTimeline pack={pack} scope={scope} from={span.from} to={span.to} />
+      {span && <BalancerTimeline pack={pack} scope={scope} from={span.from} to={span.to} />}
 
       {data && data.cell_count > 0 && (
         <section className="space-y-3">
