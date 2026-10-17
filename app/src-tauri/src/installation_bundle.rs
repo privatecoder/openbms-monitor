@@ -498,4 +498,36 @@ mod tests {
         let r = apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
         assert_eq!(r.recording_events, 1);
     }
+
+    #[test]
+    fn the_balancing_bits_go_through_the_zip() {
+        let a = env("bza");
+        let id = seeded(&a);
+        {
+            let mut h = a.history.lock().unwrap();
+            h.set_settings(history::Settings { enabled: true, ..Default::default() }).unwrap();
+            h.connected(&id, "can");
+            let answer = |bits: Option<u32>| {
+                serde_json::json!({ "address": 0, "telemetry": { "cell_voltages": [3.30, 3.31], "current": 2.0 },
+                  "status": bits.map(|b| serde_json::json!({ "alarms": [], "balancing": b })) })
+            };
+            for (i, bits) in [Some(0b100_0100), Some(0), None].into_iter().enumerate() {
+                h.pack(1000 + i as i64 * 1000, 0, &answer(bits));
+            }
+        }
+        let zip = a.dir.join("out.zip");
+        assert!(export(&a.store, Some(&a.dir.join("history.sqlite")), &a.logs, &id, &zip, true, 5000).unwrap().recording);
+        let b = env("bzb");
+        let p = inspect(&b.store, &b.imports, &zip).unwrap();
+        apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
+        let db = history::reader(&b.dir.join("history.sqlite")).unwrap();
+        let rows: Vec<(i64, Option<i64>, Option<i64>, Option<i64>)> = db
+            .prepare("SELECT t, balancing, bal_rows, bal_n FROM pack ORDER BY t")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![(1000, Some(0b100_0100), Some(1), Some(1)), (2000, Some(0), Some(0), Some(1)), (3000, None, None, None)]);
+    }
 }
