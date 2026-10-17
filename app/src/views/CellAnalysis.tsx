@@ -131,7 +131,7 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
                       </td>
                       <td className="py-2 pr-4 text-right">{fmt(c.order, 1)}</td>
                       <td className="py-2">
-                        <span className={cn("font-medium", CLASS_TONE[c.class], c.class === "ok" && "text-ink")}>{t(`cell.class.${c.class}`)}</span>
+                        <span className={cn("cursor-help font-medium", CLASS_TONE[c.class], c.class === "ok" && "text-ink")} title={t(`cell.classTip.${c.class}`)}>{t(`cell.class.${c.class}`)}</span>
                         {!(c.class === "none" && commonNone) && (
                           <span className="block text-xs text-muted">{reasonText(t, c.reason, lang)}{c.jumps > 0 && c.reason.key !== "jumps" ? `; ${t("cell.jumpsNote", { count: c.jumps })}` : ""}</span>
                         )}
