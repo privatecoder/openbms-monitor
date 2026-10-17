@@ -56,8 +56,11 @@ pub struct PackDay {
 pub struct PackReport {
     pub pack: u8,
     pub days: Vec<PackDay>,
-    /// cycles per 30 days over the period, without a rate across a counter drop
+    /// cycles per 30 days over the period, without a rate across a counter drop; None below RATE_MIN_MS of counts
     pub cycles_per_30d: Option<f64>,
+    /// the counted increase and the time it spans (ms), the same segments as the rate; None without any count
+    pub cycles_gained: Option<i64>,
+    pub cycles_span_ms: Option<i64>,
     /// times the counter dropped (cleared) in the period
     pub cycle_resets: u32,
 }
@@ -277,14 +280,25 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
         counts.extend(acc.cycles);
         out.push(acc.finish(days[i]));
     }
-    let (rate, resets) = cycle_rate(&counts);
-    Ok((PackReport { pack, days: out, cycles_per_30d: rate, cycle_resets: resets }, spread_from, raw_from))
+    let c = cycle_rate(&counts);
+    Ok((PackReport { pack, days: out, cycles_per_30d: c.rate, cycles_gained: c.gained, cycles_span_ms: c.span_ms, cycle_resets: c.resets }, spread_from, raw_from))
 }
 
-/// Cycles per 30 days from (time, count) points in time order, and the number of drops. A drop (counter cleared)
-/// starts a new segment; the rate is the counted increase over the time the segments span, never across a drop.
-/// None while the segments span less than a day.
-pub fn cycle_rate(points: &[(i64, i64)]) -> (Option<f64>, u32) {
+/// Least span of counts for a rate: the counter counts whole cycles, one step in a day or two reads as 25 per 30 days.
+pub const RATE_MIN_MS: i64 = 7 * DAY_MS;
+
+/// Cycles counted in a period: rate per 30 days, increase, span (ms) and drops.
+#[derive(Debug, PartialEq)]
+pub struct CycleRate {
+    pub rate: Option<f64>,
+    pub gained: Option<i64>,
+    pub span_ms: Option<i64>,
+    pub resets: u32,
+}
+
+/// Cycles from (time, count) points in time order. A drop (counter cleared) starts a new segment; the increase and
+/// the span add up over the segments, never across a drop. The rate is None while they span less than RATE_MIN_MS.
+pub fn cycle_rate(points: &[(i64, i64)]) -> CycleRate {
     let (mut gained, mut span, mut resets) = (0i64, 0i64, 0u32);
     let mut start: Option<(i64, i64)> = None;
     let mut last: Option<(i64, i64)> = None;
@@ -303,11 +317,10 @@ pub fn cycle_rate(points: &[(i64, i64)]) -> (Option<f64>, u32) {
         }
         last = Some((t, c));
     }
-    if let (Some((st, sc)), Some((lt, lc))) = (start, last) {
-        gained += lc - sc;
-        span += lt - st;
-    }
-    ((span >= DAY_MS).then(|| gained as f64 * 30.0 * DAY_MS as f64 / span as f64), resets)
+    let Some(((st, sc), (lt, lc))) = start.zip(last) else { return CycleRate { rate: None, gained: None, span_ms: None, resets } };
+    gained += lc - sc;
+    span += lt - st;
+    CycleRate { rate: (span >= RATE_MIN_MS).then(|| gained as f64 * 30.0 * DAY_MS as f64 / span as f64), gained: Some(gained), span_ms: Some(span), resets }
 }
 
 /// Raw rows of one pack: time, current (mA), SOC (‰).
@@ -484,10 +497,13 @@ mod tests {
     fn cycle_rate_is_split_at_a_counter_drop() {
         let d = DAY_MS;
         // 100 → 110 in 10 days, cleared, 2 → 11 in 9 days: 19 cycles in 19 days, nothing across the drop
-        let (rate, resets) = cycle_rate(&[(0, 100), (10 * d, 110), (11 * d, 2), (20 * d, 11)]);
-        assert_eq!(resets, 1);
-        assert!((rate.unwrap() - 30.0).abs() < 1e-9);
-        assert_eq!(cycle_rate(&[(0, 5), (d / 2, 6)]), (None, 0), "less than a day says nothing");
+        let c = cycle_rate(&[(0, 100), (10 * d, 110), (11 * d, 2), (20 * d, 11)]);
+        assert_eq!((c.resets, c.gained, c.span_ms), (1, Some(19), Some(19 * d)));
+        assert!((c.rate.unwrap() - 30.0).abs() < 1e-9);
+        // one step in a day or two is the counter's resolution, not a rate; from seven days there is one
+        assert_eq!(cycle_rate(&[(0, 5), (d + d / 5, 6)]), CycleRate { rate: None, gained: Some(1), span_ms: Some(d + d / 5), resets: 0 });
+        assert!((cycle_rate(&[(0, 5), (7 * d, 12)]).rate.unwrap() - 30.0).abs() < 1e-9);
+        assert_eq!(cycle_rate(&[]), CycleRate { rate: None, gained: None, span_ms: None, resets: 0 });
         // the same through the report: each day's last count
         let (path, c) = db("cycles");
         for (day, cycles) in [(0, 100), (1, 101), (2, 102), (3, 1), (4, 2)] {
@@ -498,8 +514,8 @@ mod tests {
         let p = &r.packs[0];
         assert_eq!(p.days.iter().map(|x| x.cycles.unwrap()).collect::<Vec<_>>(), vec![100, 101, 102, 1, 2]);
         assert_eq!(p.cycle_resets, 1);
-        // 2 cycles in 2 days, then 1 in 1 day: 30 per 30 days
-        assert!((p.cycles_per_30d.unwrap() - 30.0).abs() < 1e-9);
+        // 2 cycles in 2 days, then 1 in 1 day: 3 in 3 days, too short for a rate
+        assert_eq!((p.cycles_per_30d, p.cycles_gained, p.cycles_span_ms), (None, Some(3), Some(3 * d)));
         assert_eq!(p.days[0].temp_max, Some(25.0));
     }
 

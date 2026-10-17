@@ -38,7 +38,8 @@ const resources = {
             spreadRising: "Ruhe-Spreizung steigt im Zeitraum um {{mv}} mV", warm: "wärmste Zelle {{c}} °C, Median der Bank {{median}} °C",
             counterCleared_one: "Zykluszähler im Zeitraum gelöscht", counterCleared_other: "Zykluszähler im Zeitraum {{count}}-mal gelöscht" },
           tip: {
-            packOk: "Keine Prüfung schlägt an. Geprüft wird: Ruhe-Spreizung über dem 1,5-Fachen des Bank-Medians und 10 mV darüber, Ruhe-Spreizung steigt um 10 mV, Zyklen über 25 % schneller als der Median, wärmste Zelle 5 °C über dem Median, Zykluszähler gelöscht. Es ist ein Vergleich innerhalb der Bank: altern alle Packs gleich, schlägt nichts an.",
+            rateShort: "Noch keine Rate: Der Zähler zählt nur ganze Zyklen, ein Schritt in ein, zwei Tagen sähe aus wie 25 je 30 Tage. Die Rate erscheint ab 7 Tagen Aufzeichnung des Zählers.",
+            packOk: "Keine Prüfung schlägt an. Geprüft wird: Ruhe-Spreizung über dem 1,5-Fachen des Bank-Medians und 10 mV darüber, Ruhe-Spreizung steigt um 10 mV, Zyklen über 25 % schneller als der Median (ab 7 Tagen und 8 Zyklen), wärmste Zelle 5 °C über dem Median, Zykluszähler gelöscht. Es ist ein Vergleich innerhalb der Bank: altern alle Packs gleich, schlägt nichts an.",
             pairFlag: "Ein Pack trägt an markierten Tagen über 5 Prozentpunkte mehr als die Hälfte (je Tag mindestens 30 Minuten mit 40 A Paarstrom; was der Ladestand erklärt, zählt nicht). Meist liegt auf dem Weg des anderen Packs mehr Widerstand: Kabel, Busbar, Sicherung, Schalter, Stecker; die Widerstandsdiagnose grenzt das ein. Kein Befund über die Zellen; ein einzelner Tag nach einer Änderung an der Anlage sagt wenig.",
             pairOk: "Beide Packs tragen bei Last je etwa die Hälfte (innerhalb ±5 Prozentpunkte). Möglicher Hinweis sonst: „Pack … trägt … % bei Last“, wenn einer an mindestens einem Tag mehr trägt.",
             pairNoSamples: "Im Zeitraum keine Einzelwerte mit mindestens 40 A Paarstrom. Das sagt nichts über das Paar; es fehlte Last oder Aufzeichnung in voller Auflösung.",
@@ -48,7 +49,7 @@ const resources = {
           flagTip: {
             spread: "In Ruhe liegt mindestens eine Zelle neben den anderen (markiert ab dem 1,5-Fachen des Bank-Medians und mindestens 10 mV darüber). Welche, steht unter „Zellen“. In Ruhe ist das Ladestand oder Messung, keine lose Busbar: die wirkt nur unter Strom. Prüfen: in Ruhe mit dem Multimeter an der Zelle nachmessen.",
             spreadRising: "Die Ruhe-Spreizung wächst über den Zeitraum: das Balancing hält nicht mit, oder eine Zelle driftet. Welche, zeigen „Zellen“ und die Packdetails.",
-            cycles: "Der Pack zählt über 25 % schneller als der Median: er trägt mehr Strom (Kabel, Busbar, Paar prüfen) oder sein Zähler rechnet anders (Kapazitätseinstellung, Firmware). Bei kurzer Aufzeichnung ist die Rate noch grob.",
+            cycles: "Der Pack zählt über 25 % und mindestens 2 ganze Zyklen schneller als der Median (geprüft erst ab 7 Tagen, wenn der Median um 8 Zyklen gestiegen ist und kein Zähler gelöscht wurde): Er trägt mehr Strom (Kabel, Busbar, Paar prüfen) oder sein Zähler rechnet anders (Kapazitätseinstellung, Firmware).",
             warm: "Mindestens 5 °C wärmer als der Median der Bank: Lage im Schrank, Luftstrom, ein Pack, der mehr trägt, oder ein warmer Übergang (Busbar, Stecker).",
             counterCleared: "Der Zähler ist gesunken, etwa nach „Historie und Zähler löschen“. Über den Sprung rechnet der Bericht keine Rate.",
           },
@@ -817,7 +818,8 @@ const resources = {
             spreadRising: "rest spread rises by {{mv}} mV over the period", warm: "warmest cell {{c}} °C, bank median {{median}} °C",
             counterCleared_one: "cycle counter cleared in the period", counterCleared_other: "cycle counter cleared {{count}} times in the period" },
           tip: {
-            packOk: "No check fires. Checked: rest spread above 1.5 times the bank median and 10 mV above it, rest spread rising by 10 mV, cycles more than 25 % faster than the median, warmest cell 5 °C above the median, cycle counter cleared. It is a comparison within the bank: if all packs age alike, nothing fires.",
+            rateShort: "No rate yet: the counter counts whole cycles only, one step in a day or two would read as 25 per 30 days. The rate appears from 7 days of counter recording.",
+            packOk: "No check fires. Checked: rest spread above 1.5 times the bank median and 10 mV above it, rest spread rising by 10 mV, cycles more than 25 % faster than the median (from 7 days and 8 cycles), warmest cell 5 °C above the median, cycle counter cleared. It is a comparison within the bank: if all packs age alike, nothing fires.",
             pairFlag: "One pack carries more than 5 percentage points above half on flagged days (per day at least 30 minutes at 40 A pair current; what the state of charge explains does not count). Usually the other pack's path has more resistance: cable, busbar, fuse, switch, plug; the resistance diagnosis narrows it down. Not a finding about the cells; a single day after a change to the system says little.",
             pairOk: "Both packs carry about half each under load (within ±5 percentage points). Otherwise possible: “Pack … carries … % under load” when one carries more on at least one day.",
             pairNoSamples: "No single values with at least 40 A pair current in the period. That says nothing about the pair; load or full-resolution recording was missing.",
@@ -827,7 +829,7 @@ const resources = {
           flagTip: {
             spread: "At rest at least one cell sits apart from the others (flagged from 1.5 times the bank median and at least 10 mV above it). Which one is under “Cells”. At rest this is state of charge or measurement, not a loose busbar: that only shows under current. Check: measure the cell with a multimeter at rest.",
             spreadRising: "The rest spread grows over the period: balancing does not keep up, or a cell drifts. “Cells” and the pack details show which.",
-            cycles: "The pack counts more than 25 % faster than the median: it carries more current (check cables, busbar, pair) or its counter works differently (capacity setting, firmware). With a short recording the rate is still rough.",
+            cycles: "The pack counts more than 25 % and at least 2 whole cycles faster than the median (checked only from 7 days, once the median has gained 8 cycles and no counter was cleared): it carries more current (check cables, busbar, pair) or its counter works differently (capacity setting, firmware).",
             warm: "At least 5 °C warmer than the bank median: position in the cabinet, airflow, a pack carrying more, or a warm joint (busbar, plug).",
             counterCleared: "The counter went down, e.g. after “Clear history and counters”. The report computes no rate across the drop.",
           },
