@@ -153,26 +153,37 @@ export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" 
 /** The largest resistance (mΩ) an offset verdict cannot rule out: what would grow the gap by TREND_FLAT_V over the range. */
 export const offsetMaxMilliohm = (range: number) => (TREND_FLAT_V * 1000) / range;
 
-/** Two answers of a pair this close (ms) count as the same moment, as in the health report (health.rs MATCH_MS). */
+/** Least tolerance (ms) for two answers of a pair to count as the same moment (the health report's MATCH_MS). */
 export const MATCH_MS = 3_000;
 /** Time-paired samples a pair's live figures need within the window. */
-export const PAIRED_MIN = 5;
+export const PAIRED_MIN = 3;
+
+/** Median gap (ms) between consecutive answers of a pack: one polling round; undefined below two answers. */
+function roundMs(s: PackSample[]): number | undefined {
+  const gaps = s.slice(1).map((x, k) => x.t - s[k].t).sort((a, b) => a - b);
+  if (!gaps.length) return undefined;
+  const m = gaps.length >> 1;
+  return gaps.length % 2 ? gaps[m] : (gaps[m - 1] + gaps[m]) / 2;
+}
 
 /** One answer of a pack: time, current (A), output voltage (V). */
 export interface PackSample { t: number; i: number; u: number }
 
 /**
- * A pair's live figures from time-paired answers only, so a load step between two answers never reads as a split:
- * each answer of the plus pack in the last `windowMs` with the nearest of the minus pack within MATCH_MS. Means of
- * current and output voltage per pack over those pairs; undefined below PAIRED_MIN pairs.
+ * A pair's live figures from time-paired answers only, so a value from much earlier is never set against a fresh one:
+ * each answer of the plus pack in the last `windowMs` with the nearest of the minus pack within one polling round (the
+ * larger median gap between consecutive answers of the two packs in the window, at least MATCH_MS; the packs are
+ * polled one after the other, so partners can be most of a round apart). Means of current and output voltage per pack
+ * over those pairs; undefined below PAIRED_MIN pairs.
  */
 export function pairedMeans(plus: PackSample[], minus: PackSample[], now: number, windowMs: number): { a: number; b: number; ua: number; ub: number; n: number } | undefined {
   const inWindow = (s: PackSample[]) => s.filter((x) => now - x.t <= windowMs);
-  const others = inWindow(minus);
+  const mine = inWindow(plus), others = inWindow(minus);
+  const tol = Math.max(MATCH_MS, roundMs(mine) ?? 0, roundMs(others) ?? 0);
   let n = 0, a = 0, b = 0, ua = 0, ub = 0;
-  for (const x of inWindow(plus)) {
+  for (const x of mine) {
     let best: PackSample | undefined;
-    for (const y of others) if (Math.abs(y.t - x.t) <= MATCH_MS && (!best || Math.abs(y.t - x.t) < Math.abs(best.t - x.t))) best = y;
+    for (const y of others) if (Math.abs(y.t - x.t) <= tol && (!best || Math.abs(y.t - x.t) < Math.abs(best.t - x.t))) best = y;
     if (!best) continue;
     n++; a += x.i; b += best.i; ua += x.u; ub += best.u;
   }

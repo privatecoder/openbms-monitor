@@ -39,12 +39,14 @@ describe("pairs", () => {
     const a = [0, 1, 2, 3, 4, 5].map((k) => s(k * 10_000, 30)), b = [0, 1, 2, 3, 4, 5].map((k) => s(k * 10_000 + 1_000, 20, 53.45));
     expect(pairedMeans(a, b, 55_000, 60_000)).toMatchObject({ a: 30, b: 20, n: 6 });
     expect(pairedMeans(a, b, 55_000, 60_000)!.ua - pairedMeans(a, b, 55_000, 60_000)!.ub).toBeCloseTo(0.05);
-    // the partner 5 s away from each answer: never the same moment, no figures
-    expect(pairedMeans(a, b.map((x) => ({ ...x, t: x.t + 4_000 })), 60_000, 60_000)).toBeUndefined();
-    // one pack's last answer 55 s ago at 40 A, the other now at 20 A after a load step: not a split
-    expect(pairedMeans([s(5_000, 40)], [s(60_000, 20)], 60_000, 60_000)).toBeUndefined();
-    // four pairs are too few
-    expect(pairedMeans(a.slice(0, 4), b.slice(0, 4), 40_000, 60_000)).toBeUndefined();
+    // rounds of 12 s, the partner 11 s later in the polling order: within one round, paired
+    const r12 = [0, 1, 2, 3, 4].map((k) => s(k * 12_000, 30)), late = [0, 1, 2, 3, 4].map((k) => s(k * 12_000 + 11_000, 20));
+    expect(pairedMeans(r12, late, 59_000, 60_000)).toMatchObject({ a: 30, b: 20, n: 5 });
+    // one pack's last answer 55 s ago at 40 A, the other answering every 10 s at 20 A: not the same moment
+    const fresh = [1, 2, 3, 4, 5, 6].map((k) => s(k * 10_000, 20));
+    expect(pairedMeans([s(5_000, 40)], fresh, 60_000, 60_000)).toBeUndefined();
+    // two pairs are too few
+    expect(pairedMeans(a.slice(0, 2), b.slice(0, 2), 20_000, 60_000)).toBeUndefined();
   });
   it("takes the true median of an even count of pack currents", () => {
     // one pair at 35 A and 1 A: the median is 18 A, below the 20 A the check needs
