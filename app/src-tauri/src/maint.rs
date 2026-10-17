@@ -456,11 +456,12 @@ pub fn pending_refusal(pending: &[Pending], key: &str, address: u8) -> Result<()
 /// The one flash `pending_refusal` lets through, the pending pack again at its own key, only for that same board: a
 /// record with String 2 needs the target's String 2 (`read`, if real) to match. Another board refuses
 /// ("pending-other-pack"), an unreadable one too ("pending-unverified": the user clears the record by hand). A record
-/// without String 2 decides nothing.
+/// without String 2 cannot tell the board apart and refuses as well ("pending-unverified"): another pack at the same
+/// address must never pass a hanging bootloader; only the user's confirmation clears it.
 pub fn pending_same_board(pending: &[Pending], key: &str, address: u8, read: Option<&str>) -> Result<(), MaintError> {
     for p in pending.iter().filter(|p| p.endpoint == key && p.pack == address) {
         match (p.bms_serial.as_deref(), read) {
-            (None, _) => {}
+            (None, _) => return Err(refused("pending-unverified")),
             (Some(s), Some(r)) if s == r => {}
             (Some(_), Some(_)) => return Err(refused("pending-other-pack")),
             (Some(_), None) => return Err(refused("pending-unverified")),
@@ -496,10 +497,10 @@ pub fn after_flash(ok: bool, last: Option<Progress>, answers: impl FnOnce() -> b
     }
 }
 
-/// After a failed flash: the pack at the address answers, and with String 2 stored in the record (`stored`) it is that
-/// board (`read`, asked only then). Without a stored serial the answer is enough, as before.
+/// After a failed flash: the pack at the address answers and is the board of the record's String 2 (`stored`; `read`
+/// asked only then). Without a stored serial no answer proves the same board: the record stays for the user.
 pub fn answered_same(answers: bool, stored: Option<&str>, read: impl FnOnce() -> Option<String>) -> bool {
-    answers && stored.is_none_or(|s| read().as_deref() == Some(s))
+    answers && stored.is_some_and(|s| read().as_deref() == Some(s))
 }
 
 /// After the flash returned, before the pack port is closed: settle the pending record (`stored`: its String 2).
@@ -894,15 +895,18 @@ mod tests {
         assert!(pending_same_board(&[with(Some("SYN-3"))], key, 3, Some("SYN-3")).is_ok());
         assert!(refused_with(pending_same_board(&[with(Some("SYN-3"))], key, 3, Some("SYN-B")), "pending-other-pack"));
         assert!(refused_with(pending_same_board(&[with(Some("SYN-3"))], key, 3, None), "pending-unverified"));
-        // no stored serial: as before; other records are `pending_refusal`'s
-        assert!(pending_same_board(&[with(None)], key, 3, None).is_ok());
+        // no stored serial: the board cannot be told apart, refused whatever the target reports; other records are
+        // `pending_refusal`'s
+        assert!(refused_with(pending_same_board(&[with(None)], key, 3, None), "pending-unverified"));
+        assert!(refused_with(pending_same_board(&[with(None)], key, 3, Some("SYN-3")), "pending-unverified"));
         assert!(pending_same_board(&[with(Some("SYN-3"))], key, 4, None).is_ok());
     }
 
     #[test]
     fn a_failed_flash_clears_its_record_only_for_the_same_board() {
         let read = |v: Option<&str>| { let v = v.map(String::from); move || v };
-        assert!(answered_same(true, None, || unreachable!()));
+        // without a stored serial an answer proves nothing: the record stays
+        assert!(!answered_same(true, None, || unreachable!()));
         assert!(answered_same(true, Some("SYN-3"), read(Some("SYN-3"))));
         assert!(!answered_same(true, Some("SYN-3"), read(Some("SYN-B"))));
         assert!(!answered_same(true, Some("SYN-3"), read(None)));
