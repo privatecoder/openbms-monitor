@@ -58,6 +58,14 @@ describe("checkPack", () => {
     expect(ids(checkPack(plain, 1, tm([3.3], [-3]), -20)).tempCharge).toBe("near");
     expect(ids(checkPack(plain, 1, tm([3.3], [-3]), 20)).chargeCurrent).toBe("over");
   });
+  it("at a 0 A charge limit a small real charge current is a violation", () => {
+    // −1 °C, +0.4 A: no charging allowed, 9.6 Ah a day would still go in
+    expect(ids(checkPack(plain, 1, tm([3.3], [-1]), 0.4))).toMatchObject({ tempCharge: "over", chargeCurrent: "over" });
+    // one step of the resolution is not yet a charge current
+    expect(ids(checkPack(plain, 1, tm([3.3], [-1]), 0.1))).toMatchObject({ tempCharge: "near", chargeCurrent: "near" });
+    // inside the range the margin stays: 0.4 A over a 0.1C limit is near
+    expect(ids(checkPack(derated, 1, tm([3.3], [5]), 28.4)).chargeCurrent).toBe("near");
+  });
   it("compares the charge current with the derated limit", () => {
     const c = checkPack(derated, 1, tm([3.3], [8, 9]), 40).find((x) => x.id === "chargeCurrent")!;
     expect(c.level).toBe("over");

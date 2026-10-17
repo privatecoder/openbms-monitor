@@ -73,6 +73,9 @@ export const NEAR = { cellHigh: 0.05, cellLow: 0.2, temp: 5, current: 0.8 };
 
 /** Current from which the pack counts as charging or discharging for the temperature checks (A). */
 const FLOW_A = 0.5;
+/** Where charging is not allowed at all (limit 0 A, outside the charge range), a charge current from this (A, two
+ *  steps of the 0.1 A resolution) is a violation, not a margin. */
+export const CHARGE_AT_ZERO_A = 0.2;
 
 const level = (over: boolean, near: boolean): Level => (over ? "over" : near ? "near" : "ok");
 
@@ -103,13 +106,14 @@ export function checkPack(cell: Cell, parallel: number, tm: Telemetry, current: 
       const outside = lo < min || hi > max;
       out.push({ id, value: worst, limit: min, limit2: max, level: outside && flowing ? "over" : level(false, outside || lo < min + NEAR.temp || hi > max - NEAR.temp) });
     };
-    if (range) temp("tempCharge", range.min, range.max, current > FLOW_A);
+    if (range) temp("tempCharge", range.min, range.max, current >= CHARGE_AT_ZERO_A);
     if (t?.discharge_min_c !== undefined && t.discharge_max_c !== undefined) temp("tempDischarge", t.discharge_min_c, t.discharge_max_c, current < -FLOW_A);
   }
   const allowed = allowedChargeA(cell, parallel, temps, tm.soc);
   if (allowed !== undefined) {
     const a = Math.max(0, current);
-    out.push({ id: "chargeCurrent", value: a, limit: allowed, level: level(a > allowed + 0.5, a > allowed * NEAR.current) });
+    // at a 0 A limit no margin: any real charge current is a violation
+    out.push({ id: "chargeCurrent", value: a, limit: allowed, level: level(allowed === 0 ? a >= CHARGE_AT_ZERO_A : a > allowed + 0.5, a > allowed * NEAR.current) });
   }
   if (c?.max_continuous_discharge_a !== undefined) {
     const a = Math.max(0, -current), lim = c.max_continuous_discharge_a * parallel;
