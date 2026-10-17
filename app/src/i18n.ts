@@ -70,6 +70,7 @@ const resources = {
       },
       ca: {
         title: "Zelltypen", intro: "Welche Zellen in den Packs stecken. Damit vergleicht die App die Live-Werte mit dem Datenblatt.",
+        failed: "Nicht gespeichert, die gespeicherte Zuordnung gilt weiter: {{e}}",
         current: "Zuordnung", none: "Ohne Zelltyp: {{list}}", packsList: "Packs {{list}}", missing: "Zelltyp {{id}} nicht in der Datenbank",
         cell: "Zelltyp", choose: "Zelltyp wählen …", own: "eigener Eintrag", loading: "Zelldatenbank wird geladen …",
         parallel: "Zellen parallel",
@@ -867,6 +868,7 @@ const resources = {
       },
       ca: {
         title: "Cell types", intro: "Which cells are in the packs. With this the app compares the live values with the datasheet.",
+        failed: "Not saved, the stored assignment still applies: {{e}}",
         current: "Assignment", none: "Without cell type: {{list}}", packsList: "Packs {{list}}", missing: "Cell type {{id}} not in the database",
         cell: "Cell type", choose: "Choose cell type …", own: "own entry", loading: "Loading cell database …",
         parallel: "Cells in parallel",

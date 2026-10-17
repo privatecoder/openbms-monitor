@@ -17,10 +17,9 @@ export function parseAssignments(raw: Record<string, unknown>): Assignments {
 export function useAssignments(scope: string | null) {
   const { settings, saveCellTypes } = useSettings(scope);
   const assigned = parseAssignments(settings.cell_types);
-  /** Assign `a` to the packs, or remove their assignment with null; only these places change. */
-  const assign = (packs: number[], a: Assignment | null) => {
-    saveCellTypes(Object.fromEntries(packs.map((p) => [p, a])));
-  };
+  /** Assign `a` to the packs, or remove their assignment with null; only these places change. Resolves to null or the
+   *  backend's error (the shown assignment is then the stored one again). */
+  const assign = (packs: number[], a: Assignment | null) => saveCellTypes(Object.fromEntries(packs.map((p) => [p, a])));
   return { assigned, assign };
 }
 

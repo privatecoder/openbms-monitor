@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button";
 import { PackPicker, Segmented, packSections } from "../components/PackPicker";
 import { useGroups } from "../groups";
 import { InfoIcon } from "../help";
+import { errorKey } from "../maint";
 import { useCellDb } from "../cells/store";
 import { suggestParallel, useAssignments, type Assignment } from "../cells/packCheck";
 import { effectiveChargeRange } from "../cells/rules";
@@ -42,6 +43,7 @@ export function CellAssignSheet({ open, onOpenChange, scope, packs, preselect }:
   const [parallel, setParallel] = useState(1);
   const [chosen, setChosen] = useState<number[]>([]);
   const [done, setDone] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // on opening: the given packs (or all), and the cell type they already have
   useEffect(() => {
@@ -52,6 +54,7 @@ export function CellAssignSheet({ open, onOpenChange, scope, packs, preselect }:
     setCellId(first?.cell ?? "");
     setParallel(first?.parallel ?? 1);
     setDone(null);
+    setError(null);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const byId = useMemo(() => new Map(db.entries.map((e) => [e.cell.id, e.cell])), [db.entries]);
@@ -74,12 +77,17 @@ export function CellAssignSheet({ open, onOpenChange, scope, packs, preselect }:
   }
   const unassigned = present.filter((p) => !assigned[p]);
 
+  // the write's result: on an error the stored assignment is shown again, with the reason
+  const store = async (a: Assignment | null, ok: string) => {
+    setDone(null); setError(null);
+    const e = await assign(chosen, a);
+    if (e) { const k = errorKey(e); setError(t("ca.failed", { e: t(k.key, k.params) })); } else setDone(ok);
+  };
   const apply = () => {
     if (!cell) return;
-    assign(chosen, { cell: cell.id, parallel });
-    setDone(t("ca.assigned", { cell: cellName(cell), count: chosen.length }));
+    void store({ cell: cell.id, parallel }, t("ca.assigned", { cell: cellName(cell), count: chosen.length }));
   };
-  const clear = () => { assign(chosen, null); setDone(t("ca.removed", { count: chosen.length })); };
+  const clear = () => { void store(null, t("ca.removed", { count: chosen.length })); };
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -146,6 +154,7 @@ export function CellAssignSheet({ open, onOpenChange, scope, packs, preselect }:
               <Button variant="ghost" disabled={!chosen.some((a) => assigned[a])} onClick={clear}>{t("ca.remove")}</Button>
             </div>
             {done && <p className="text-sm text-ok">{done}</p>}
+            {error && <p className="text-sm text-alarm">{error}</p>}
           </div>
         </div>
       </SheetContent>
