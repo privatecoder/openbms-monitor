@@ -12,7 +12,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, connectCancelled, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -192,9 +192,18 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // „Abbrechen“ while connecting: the backend stops the check or the search before the next address, the UI between
   // its steps; whatever was opened is closed again
   const cancelRef = useRef(false);
+  // the running connect, for a switch of the installation meanwhile (`endBeforeSwitch`); whether a link is open
+  const running = useRef<Promise<void> | null>(null);
+  const linkOpen = useRef(false);
   const cancelConnect = () => { cancelRef.current = true; stopWaiting(); void api.connectCancel().catch(() => {}); };
   const stopIfCancelled = () => { if (cancelRef.current) throw new ConnectCancelled(); };
   const connect = async (retry = false, useBus: Bus = bus, inst?: string | null) => {
+    let done = () => {};
+    const p = new Promise<void>((r) => { done = r; });
+    running.current = p;
+    try { await connectOnce(retry, useBus, inst); } finally { if (running.current === p) running.current = null; done(); }
+  };
+  const connectOnce = async (retry: boolean, useBus: Bus, inst?: string | null) => {
     cancelRef.current = false;
     serialGen.current += 1;
     forgetBank();
@@ -209,7 +218,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
       const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      linkOpen.current = true;
       stopIfCancelled();
+      // the choice changed while connecting: this link belongs to the earlier one, it is closed again
+      if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
       if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, packs: packCount });
       // another port stored for this bus: offer to replace it (never stored without „Speichern“)
       const owner = maint.installations.find((i) => i.id === connInst.current) ?? null;
@@ -292,7 +304,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(() => { if (isDemo) connect(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const disconnect = async () => {
-    stopWaiting(); serialGen.current += 1; forgetBank();
+    stopWaiting(); serialGen.current += 1; forgetBank(); linkOpen.current = false;
     // a running pack action (a restart up to 15 s) ends first
     setMsg(t("conn.disconnectWait"));
     await api.disconnect();
@@ -304,13 +316,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const disconnectRef = useRef(disconnect);
   disconnectRef.current = disconnect;
   useEffect(() => {
-    maint.beforeSwitch.current = async () => { if (live.current) await disconnectRef.current().catch(() => {}); };
+    maint.beforeSwitch.current = () => endBeforeSwitch({
+      running: () => running.current, cancel: () => cancelRef.current || cancelConnect(),
+      live: () => live.current || linkOpen.current, disconnect: () => disconnectRef.current(),
+    });
     return () => { maint.beforeSwitch.current = null; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The UI forgets the link first: a backend call that hangs must not keep it showing "connected".
   const markLost = (text: string) => {
-    serialGen.current += 1; forgetBank();
+    serialGen.current += 1; forgetBank(); linkOpen.current = false;
     setLost(true);
     setMsg(text);
     setLastTry(Date.now());
