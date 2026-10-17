@@ -29,6 +29,9 @@ const MARK_POINTS: f64 = 5.0;
 const MARK_MINUTES: u32 = 30;
 const DAY_MS: i64 = 86_400_000;
 const MINUTE_MS: i64 = 60_000;
+/// quarter hours of a day for the temperature comparison
+const SLOT_MS: i64 = 15 * MINUTE_MS;
+const SLOTS: usize = 96;
 
 #[derive(Deserialize, Clone, Copy, Debug)]
 pub struct Pair {
@@ -41,23 +44,22 @@ pub struct PackDay {
     /// local midnight
     pub day: i64,
     pub rows: u32,
-    /// time of the day's first and last row (ms), for comparing packs only over overlapping spans
-    pub t_first: i64,
-    pub t_last: i64,
     /// cell spread in mV over the day's rows (median, 95th percentile); None without range data
     pub spread_p50: Option<i64>,
     /// whether the spread figures (all and rest) come from raw rows; false: from minute maxima (no raw row that day)
     pub spread_raw: bool,
     pub spread_p95: Option<i64>,
-    /// the same at rest only, and the number of distinct clock hours with rest values (of the kind taken)
+    /// the same at rest only, and the number of distinct clock minutes with rest values (of the kind taken)
     pub rest_rows: u32,
-    pub rest_hours: u32,
+    pub rest_minutes: u32,
     pub rest_p50: Option<i64>,
     pub rest_p95: Option<i64>,
     /// the day's last cycle count
     pub cycles: Option<i64>,
-    /// warmest cell of the day (°C)
+    /// warmest cell of the day (°C), and per quarter hour from local midnight (SLOTS of them, a DST day's extra hour in
+    /// the last) its maximum, None without a value: packs are compared only where all have one
     pub temp_max: Option<f64>,
+    pub temp_slots: Vec<Option<f64>>,
     /// the BMS's balancing bits of the day: OR of the rows (bit n = cell n+1), rows with a bit set out of rows with a
     /// status (a minute row counts its own); None without any status
     pub bal_mask: Option<i64>,
@@ -196,11 +198,10 @@ fn min_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 #[derive(Default)]
 struct DayAcc {
     rows: u32,
-    t_first: i64,
-    t_last: i64,
-    /// distinct hours with rest values, raw and minute rows apart: count and the last hour (rows come in time order)
-    rest_hours: (u32, Option<i64>),
-    rest_hours_min: (u32, Option<i64>),
+    /// distinct minutes with rest values, raw and minute rows apart: count and the last minute (rows come in time order)
+    rest_minutes: (u32, Option<i64>),
+    rest_minutes_min: (u32, Option<i64>),
+    temp_slots: Vec<Option<i64>>,
     all: Vec<i64>,
     rest: Vec<i64>,
     all_min: Vec<i64>,
@@ -215,23 +216,22 @@ impl DayAcc {
     fn finish(self, day: i64) -> PackDay {
         // raw rows when the day has any, else the minute maxima: the two never mix in one percentile
         let spread_raw = !self.all.is_empty();
-        let (mut all, mut rest, hours) = if spread_raw { (self.all, self.rest, self.rest_hours.0) } else { (self.all_min, self.rest_min, self.rest_hours_min.0) };
+        let (mut all, mut rest, minutes) = if spread_raw { (self.all, self.rest, self.rest_minutes.0) } else { (self.all_min, self.rest_min, self.rest_minutes_min.0) };
         all.sort_unstable();
         rest.sort_unstable();
         PackDay {
             day,
             rows: self.rows,
-            t_first: self.t_first,
-            t_last: self.t_last,
             spread_p50: pct(&all, 0.5),
             spread_p95: pct(&all, 0.95),
             spread_raw,
             rest_rows: rest.len() as u32,
-            rest_hours: hours,
+            rest_minutes: minutes,
             rest_p50: pct(&rest, 0.5),
             rest_p95: pct(&rest, 0.95),
             cycles: self.cycles.map(|c| c.1),
             temp_max: self.temp_max.map(|v| v as f64 / 10.0),
+            temp_slots: if self.temp_slots.is_empty() { vec![None; SLOTS] } else { self.temp_slots.iter().map(|v| v.map(|v| v as f64 / 10.0)).collect() },
             bal_mask: self.bal_mask,
             bal_rows: self.bal_rows,
             bal_n: self.bal_n,
@@ -270,16 +270,17 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
             cur = Some((d, DayAcc::default()));
         }
         let acc = &mut cur.as_mut().unwrap().1;
-        if acc.rows == 0 {
-            acc.t_first = t;
-        }
         acc.rows += 1;
-        acc.t_last = t;
         if let Some(c) = r.get::<_, Option<i64>>(2).map_err(e2s)? {
             acc.cycles = Some((t, c));
         }
         if let Some(v) = r.get::<_, Option<i64>>(3).map_err(e2s)? {
             acc.temp_max = Some(acc.temp_max.map_or(v, |m| m.max(v)));
+            if acc.temp_slots.is_empty() {
+                acc.temp_slots = vec![None; SLOTS];
+            }
+            let slot = &mut acc.temp_slots[((t - days[d]) / SLOT_MS).clamp(0, SLOTS as i64 - 1) as usize];
+            *slot = Some(slot.map_or(v, |m| m.max(v)));
         }
         if let Some(b) = r.get::<_, Option<i64>>(7).map_err(e2s)? {
             acc.bal_mask = Some(acc.bal_mask.unwrap_or(0) | b);
@@ -294,13 +295,13 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
         let at_rest = lo.zip(hi).is_some_and(|(lo, hi)| lo > -REST_MA && hi < REST_MA);
         if let Some(s) = spread {
             spread_from.get_or_insert(t);
-            let (all, rest, hours) = if raw { (&mut acc.all, &mut acc.rest, &mut acc.rest_hours) } else { (&mut acc.all_min, &mut acc.rest_min, &mut acc.rest_hours_min) };
+            let (all, rest, minutes) = if raw { (&mut acc.all, &mut acc.rest, &mut acc.rest_minutes) } else { (&mut acc.all_min, &mut acc.rest_min, &mut acc.rest_minutes_min) };
             all.push(s);
             if at_rest && (!raw || prev_rest) {
                 rest.push(s);
-                let hour = t.div_euclid(3_600_000);
-                if hours.1 != Some(hour) {
-                    *hours = (hours.0 + 1, Some(hour));
+                let minute = t.div_euclid(MINUTE_MS);
+                if minutes.1 != Some(minute) {
+                    *minutes = (minutes.0 + 1, Some(minute));
                 }
             }
         }
@@ -594,19 +595,20 @@ mod tests {
     }
 
     #[test]
-    fn a_day_knows_its_span_and_the_hours_with_rest_values() {
-        let (path, c) = db("hours");
-        // rest in two clock hours (30 answers each), load in between
-        for k in 0..30 {
-            raw(&c, 1, 0, 3_600_000 + 1_000 + k * 10_000, 0, 5);
-        }
-        raw(&c, 1, 0, 2 * 3_600_000, -50_000, 30);
-        for k in 0..30 {
-            raw(&c, 1, 0, 3 * 3_600_000 + 1_000 + k * 10_000, 0, 5);
+    fn a_day_knows_its_minutes_at_rest_and_its_quarter_hour_temperatures() {
+        let (path, c) = db("minutes");
+        // 200 answers at rest from 12:57 to 13:03: two clock hours touched, but only seven minutes
+        let t0 = 12 * 3_600_000 + 57 * MINUTE_MS;
+        for k in 0..200 {
+            raw(&c, 1, 0, t0 + k * 2_000, 0, 5);
         }
         let r = report(&crate::history::reader(&path).unwrap(), "a", &utc_days(1), &[]).unwrap();
         let d = &r.packs[0].days[0];
-        assert_eq!((d.t_first, d.t_last, d.rest_hours), (3_600_000 + 1_000, 3 * 3_600_000 + 1_000 + 29 * 10_000, 2));
+        assert_eq!((d.rest_rows, d.rest_minutes), (199, 7));
+        // temp_max 25.0 °C (the test rows) in the quarter hours 12:45 to 13:00, nothing elsewhere
+        assert_eq!(d.temp_slots.len(), 96);
+        assert_eq!((d.temp_slots[51], d.temp_slots[52], d.temp_slots[53]), (Some(25.0), Some(25.0), None));
+        assert_eq!(d.temp_slots.iter().flatten().count(), 2);
     }
 
     #[test]
