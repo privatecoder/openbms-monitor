@@ -24,6 +24,50 @@ function load(scope: string | null) {
   }).finally(() => { loading.delete(k); changed(); });
 }
 
+/** One write in flight at a time: a value given meanwhile waits, and of those waiting only the latest is written (each
+ *  value is the whole setting, built on the one before). Every call resolves with the error of the write that carried
+ *  its value (null when it went through); `idle` runs after the last write. */
+export function serialWriter<V>(write: (v: V) => Promise<unknown>, idle: () => void) {
+  let running = false;
+  let waiting: { v: V; done: ((e: unknown) => void)[] } | null = null;
+  const run = (v: V, done: ((e: unknown) => void)[]) => {
+    running = true;
+    write(v).then(() => null, (e) => e ?? "error").then((err) => {
+      done.forEach((d) => d(err));
+      const next = waiting;
+      waiting = null;
+      if (next) run(next.v, next.done);
+      else { running = false; idle(); }
+    });
+  };
+  return (v: V) => new Promise<unknown>((resolve) => {
+    if (!running) run(v, [resolve]);
+    else if (waiting) { waiting.v = v; waiting.done.push(resolve); }
+    else waiting = { v, done: [resolve] };
+  });
+}
+
+// `devices` keeps revisions in time: two writes racing could store an older whole value last. Per installation one write
+// at a time, and after the last one the stored value is read back into the cache.
+const deviceWriters = new Map<string, (v: unknown) => Promise<unknown>>();
+function deviceWriter(scope: string) {
+  let w = deviceWriters.get(scope);
+  if (!w) {
+    // a change given while the stored value is read back wins over it
+    let calls = 0;
+    const write = serialWriter((v: unknown) => api.setInstallationSetting(scope, "devices", v), () => {
+      const at = calls;
+      api.installationSettings(scope).then((s) => {
+        const cur = cache.get(scope);
+        if (cur && at === calls) { cache.set(scope, { ...cur, devices: s.devices }); changed(); }
+      }, (e) => console.error("devices read back:", e));
+    });
+    w = (v: unknown) => { calls++; return write(v); };
+    deviceWriters.set(scope, w);
+  }
+  return w;
+}
+
 /** After a merge or the move of the old data: read again from the backend. */
 export function reloadSettings() { cache.clear(); changed(); }
 
@@ -41,6 +85,11 @@ export function useSettings(scope: string | null) {
     cache.set(k, { ...cur, [key]: value });
     changed();
     if (!stored(scope)) return null;
+    if (key === "devices") {
+      const err = await deviceWriter(scope)(value);
+      if (err !== null) console.error("setting devices:", err);
+      return err;
+    }
     try {
       await api.setInstallationSetting(scope, key, value);
       return null;

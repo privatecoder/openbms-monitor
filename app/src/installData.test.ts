@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectLegacy, legacyKeys } from "./installData";
+import { collectLegacy, legacyKeys, serialWriter } from "./installData";
 import { parseGroups } from "./groups";
 import { parsePairs } from "./pairs";
 import { parseAssignments } from "./cells/packCheck";
@@ -36,5 +36,34 @@ describe("stored settings", () => {
     expect(d.offsets[1].outer).toEqual({ bus: 2 });
     expect(d.snapshots.map((x) => x.at)).toEqual([2]);
     expect(parseDiag("nope")).toEqual({ offsets: {}, snapshots: [] });
+  });
+});
+
+describe("serial writes", () => {
+  it("one write at a time, of the values given meanwhile only the latest, then idle", async () => {
+    const started: number[] = [], finish: ((ok: boolean) => void)[] = [];
+    let idle = 0;
+    const write = serialWriter((v: number) => { started.push(v); return new Promise<void>((res, rej) => finish.push((ok) => (ok ? res() : rej(new Error("no"))))); }, () => idle++);
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    const a = write(1), b = write(2), c = write(3);
+    expect(started).toEqual([1]);
+    finish[0](true);
+    expect(await a).toBeNull();
+    await tick();
+    // 2 was replaced by 3 while 1 was in flight: never written, it shares 3's result
+    expect(started).toEqual([1, 3]);
+    expect(idle).toBe(0);
+    finish[1](false);
+    const [rb, rc] = await Promise.all([b, c]);
+    expect(String(rb)).toContain("no");
+    expect(rc).toBe(rb);
+    await tick();
+    expect(idle).toBe(1);
+    const d = write(4);
+    expect(started).toEqual([1, 3, 4]);
+    finish[2](true);
+    expect(await d).toBeNull();
+    await tick();
+    expect(idle).toBe(2);
   });
 });
