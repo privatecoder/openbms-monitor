@@ -31,7 +31,11 @@ const DAY_MS: i64 = 86_400_000;
 const MINUTE_MS: i64 = 60_000;
 /// quarter hours of a day for the temperature comparison
 const SLOT_MS: i64 = 15 * MINUTE_MS;
-const SLOTS: usize = 96;
+
+/// Quarter hours of day `d`: its own length (92, 96 or 100 on a DST change), so each one is a distinct time.
+fn slots_of(days: &[i64], d: usize) -> usize {
+    ((days[d + 1] - days[d] + SLOT_MS - 1) / SLOT_MS) as usize
+}
 
 #[derive(Deserialize, Clone, Copy, Debug)]
 pub struct Pair {
@@ -56,8 +60,8 @@ pub struct PackDay {
     pub rest_p95: Option<i64>,
     /// the day's last cycle count
     pub cycles: Option<i64>,
-    /// warmest cell of the day (°C), and per quarter hour from local midnight (SLOTS of them, a DST day's extra hour in
-    /// the last) its maximum, None without a value: packs are compared only where all have one
+    /// warmest cell of the day (°C), and per quarter hour since local midnight (as many as the day has: 92, 96 or 100)
+    /// its maximum, None without a value: packs are compared only where all have one
     pub temp_max: Option<f64>,
     pub temp_slots: Vec<Option<f64>>,
     /// the BMS's balancing bits of the day: OR of the rows (bit n = cell n+1), rows with a bit set out of rows with a
@@ -231,7 +235,7 @@ impl DayAcc {
             rest_p95: pct(&rest, 0.95),
             cycles: self.cycles.map(|c| c.1),
             temp_max: self.temp_max.map(|v| v as f64 / 10.0),
-            temp_slots: if self.temp_slots.is_empty() { vec![None; SLOTS] } else { self.temp_slots.iter().map(|v| v.map(|v| v as f64 / 10.0)).collect() },
+            temp_slots: self.temp_slots.iter().map(|v| v.map(|v| v as f64 / 10.0)).collect(),
             bal_mask: self.bal_mask,
             bal_rows: self.bal_rows,
             bal_n: self.bal_n,
@@ -267,7 +271,7 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
                 counts.extend(acc.cycles);
                 out.push(acc.finish(days[i]));
             }
-            cur = Some((d, DayAcc::default()));
+            cur = Some((d, DayAcc { temp_slots: vec![None; slots_of(days, d)], ..DayAcc::default() }));
         }
         let acc = &mut cur.as_mut().unwrap().1;
         acc.rows += 1;
@@ -276,11 +280,10 @@ fn pack_report(db: &Connection, site: i64, pack: u8, days: &[i64]) -> Result<(Pa
         }
         if let Some(v) = r.get::<_, Option<i64>>(3).map_err(e2s)? {
             acc.temp_max = Some(acc.temp_max.map_or(v, |m| m.max(v)));
-            if acc.temp_slots.is_empty() {
-                acc.temp_slots = vec![None; SLOTS];
+            // milliseconds since the day's midnight: every quarter hour of the day its own slot, none folded into another
+            if let Some(slot) = acc.temp_slots.get_mut(((t - days[d]) / SLOT_MS) as usize) {
+                *slot = Some(slot.map_or(v, |m| m.max(v)));
             }
-            let slot = &mut acc.temp_slots[((t - days[d]) / SLOT_MS).clamp(0, SLOTS as i64 - 1) as usize];
-            *slot = Some(slot.map_or(v, |m| m.max(v)));
         }
         if let Some(b) = r.get::<_, Option<i64>>(7).map_err(e2s)? {
             acc.bal_mask = Some(acc.bal_mask.unwrap_or(0) | b);
@@ -609,6 +612,21 @@ mod tests {
         assert_eq!(d.temp_slots.len(), 96);
         assert_eq!((d.temp_slots[51], d.temp_slots[52], d.temp_slots[53]), (Some(25.0), Some(25.0), None));
         assert_eq!(d.temp_slots.iter().flatten().count(), 2);
+    }
+
+    #[test]
+    fn a_25_hour_day_has_100_distinct_quarter_hours() {
+        let (path, c) = db("dst");
+        // synthetic day boundaries: a 25-hour day (the clock turned back), then a 23-hour one
+        let days = [0, 25 * 3_600_000, 48 * 3_600_000];
+        // 23:50 and 24:50 after midnight: an hour apart, never the same quarter hour
+        raw(&c, 1, 0, 23 * 3_600_000 + 50 * MINUTE_MS, 0, 5);
+        raw(&c, 1, 1, 24 * 3_600_000 + 50 * MINUTE_MS, 0, 5);
+        raw(&c, 1, 0, 30 * 3_600_000, 0, 5);
+        let r = report(&crate::history::reader(&path).unwrap(), "a", &days, &[]).unwrap();
+        let (a, b) = (&r.packs[0].days, &r.packs[1].days[0]);
+        assert_eq!((a[0].temp_slots.len(), a[1].temp_slots.len()), (100, 92));
+        assert_eq!((a[0].temp_slots[95], a[0].temp_slots[99], b.temp_slots[95], b.temp_slots[99]), (Some(25.0), None, None, Some(25.0)));
     }
 
     #[test]
