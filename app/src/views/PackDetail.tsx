@@ -6,7 +6,8 @@ import type { PackEntry } from "../store";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { AlarmList, CellStrip, QUIET, Stat, StateMark, balancedCells, kw, median } from "../components/widgets";
-import { LiveIndicator, Tick } from "../components/live";
+import { LiveIndicator, Tick, useNow } from "../components/live";
+import { packFresh } from "../freshness";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { CellAnalysisPanel } from "./CellAnalysis";
@@ -15,6 +16,11 @@ import { DatasheetPanel } from "./DatasheetPanel";
 export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEntry; bus: Bus | null; multi: boolean; onBack: () => void; scope: string | null; packs: Record<number, PackEntry> }) {
   const { t } = useTranslation();
   const tm = p.telemetry, st = p.status;
+  // kept values stay visible, marked old when the last poll failed or is too old (freshness.ts)
+  const now = useNow();
+  const fresh = packFresh(p, now);
+  const age = (at: number) => Math.max(0, Math.round((now - at) / 1000));
+  const tmOld = !!tm && !fresh.telemetry, stOld = !!st && !fresh.status;
   const cells = tm?.cell_voltages ?? [];
   const center = median(cells);
   const hi = Math.max(...cells), lo = Math.min(...cells);
@@ -47,8 +53,10 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
         </div>
       </header>
 
+      {tmOld && <p className="font-medium text-alarm">{t("dash.valuesOld", { s: age(p.updated) })}</p>}
+      {stOld && <p className="font-medium text-discharge">{t("dash.statusOldFor", { s: age(p.statusUpdated) })}</p>}
       {!tm ? <p className="text-muted">{t("dash.noData")}</p> : (
-        <>
+        <div className={cn("space-y-8", tmOld && "opacity-60")}>
           <div className="grid grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-6">
             <Stat icon={BatteryMedium} label={t("dash.soc")} help="value.soc" value={fmt(tm.soc, 1, "%")} note={`${fmt(tm.remaining_capacity_ah, 1)} / ${fmt(tm.full_capacity_ah, 1, "Ah")}`} />
             <Stat icon={Zap} label={t("dash.voltage")} help="value.pack_voltage" value={fmt(tm.pack_voltage, 2, "V")} note={t("dash.port", { v: fmt(tm.port_voltage, 2, "V") })} />
@@ -92,7 +100,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
                 <Row k="MOSFET" v={<Tick value={tm.power_temperature}>{fmt(tm.power_temperature, 1, "°C")}</Tick>} />
               </dl>
             </Panel>
-            <Panel className="p-5">
+            <Panel className={cn("p-5", stOld && "opacity-60")}>
               <h2 className="mb-3 flex items-center gap-1.5 font-display text-xl font-semibold"><ToggleRight className="h-5 w-5 text-muted" aria-hidden />{t("dash.switches")}<InfoIcon id="status.mosfets" /></h2>
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5">
                 {switches.map(([k, on, I]) => (
@@ -104,7 +112,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
               </dl>
             </Panel>
             {/* lg: h-0 + min-h-full keeps the list out of the row height; the row follows the other two cards and the list scrolls */}
-            <Panel className="flex max-h-96 flex-col p-5 lg:h-0 lg:max-h-none lg:min-h-full">
+            <Panel className={cn("flex max-h-96 flex-col p-5 lg:h-0 lg:max-h-none lg:min-h-full", stOld && "opacity-60")}>
               <h2 className="mb-1 flex shrink-0 items-center gap-1.5 font-display text-xl font-semibold">{t("dash.alarms")}<InfoIcon id="topic.alarms" /></h2>
               <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
                 <AlarmList alarms={st?.alarms ?? []} />
@@ -115,7 +123,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
           <CellAnalysisPanel pack={p.address} scope={scope} />
 
           <DatasheetPanel p={p} scope={scope} packs={packs} />
-        </>
+        </div>
       )}
     </div>
   );

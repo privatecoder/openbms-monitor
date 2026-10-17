@@ -10,6 +10,8 @@ import { useCellDb } from "../cells/store";
 import { checkPack, standardChargeA, useAssignments, type Check, type Level } from "../cells/packCheck";
 import { CellAssignSheet, cellName, config } from "./CellAssign";
 import { cn, fmt } from "../lib/utils";
+import { useNow } from "../components/live";
+import { packFresh } from "../freshness";
 
 const tone: Record<Level, string> = { ok: "text-ok", near: "text-discharge", over: "text-alarm" };
 const icon = { ok: CircleCheck, near: CircleAlert, over: OctagonAlert };
@@ -22,7 +24,10 @@ export function DatasheetPanel({ p, scope, packs }: { p: PackEntry; scope: strin
   const [editing, setEditing] = useState(false);
   const a = assigned[p.address];
   const cell = a ? db.entries.find((e) => e.cell.id === a.cell)?.cell : undefined;
-  const tm = p.telemetry;
+  // no rating on old values: the kept telemetry of a failed or late poll is not the pack now
+  const now = useNow();
+  const old = !!p.telemetry && !packFresh(p, now).telemetry;
+  const tm = old ? null : p.telemetry;
   const checks = cell && tm ? checkPack(cell, a!.parallel, tm, effectiveCurrent(tm)) : [];
   const std = cell ? standardChargeA(cell, a!.parallel) : undefined;
   const coldest = tm?.cell_temperatures.length ? Math.min(...tm.cell_temperatures) : undefined;
@@ -44,11 +49,12 @@ export function DatasheetPanel({ p, scope, packs }: { p: PackEntry; scope: strin
     <Panel className="p-5">
       <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 className="flex items-center gap-1.5 font-display text-xl font-semibold"><FileText className="h-5 w-5 text-muted" aria-hidden />{t("ds.title")}<InfoIcon id="value.datasheet" /></h2>
-        {cell && <span className="text-muted">{cellName(cell)}, {config(tm?.cell_voltages.length, a!.parallel)}</span>}
+        {cell && <span className="text-muted">{cellName(cell)}, {config(p.telemetry?.cell_voltages.length, a!.parallel)}</span>}
         <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setEditing(true)}>{a ? t("ds.change") : t("ds.assign")}</Button>
       </div>
       {!a ? <p className="text-sm text-muted">{t("ds.unassigned")}</p>
         : !cell ? <p className="text-sm text-alarm">{db.loading ? t("ca.loading") : t("ca.missing", { id: a.cell })}</p>
+        : old ? <p className="text-sm font-medium text-discharge">{t("ds.stale", { s: Math.max(0, Math.round((now - p.updated) / 1000)) })}</p>
         : (
           <div className="grid grid-cols-[auto_auto_1fr_auto] items-baseline gap-x-6 gap-y-2 text-sm">
             {checks.map((c) => {

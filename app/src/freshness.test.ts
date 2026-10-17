@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { current, freshSystem, packFresh, staleAfter, STALE_FALLBACK_MS, type Timed } from "./freshness";
+import { current, freshSystem, omittedStatus, packFresh, staleAfter, STALE_FALLBACK_MS, type Timed } from "./freshness";
 import type { Status, SystemValues, Telemetry } from "./api";
 
 const tm = { soc: 50 } as unknown as Telemetry;
@@ -29,6 +29,14 @@ describe("freshness of a pack", () => {
     expect(c.old).toEqual({ telemetry: true, status: false });
     // nothing ever answered: nothing old either
     expect(current(entry({ telemetry: null, status: null, updated: 0, statusUpdated: 0 }), 2000).old).toEqual({ telemetry: false, status: false });
+  });
+});
+
+describe("the head's note on old statuses", () => {
+  it("counts the packs whose status was left out", () => {
+    const now = 2000;
+    const list = [current(entry(), now), current(entry({ statusOk: false }), now), current(entry({ statusUpdated: 0, status: null }), now)];
+    expect(omittedStatus(list)).toBe(1);
   });
 });
 
