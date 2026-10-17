@@ -5,7 +5,7 @@ import { localDate, packRows, pairRows, periodRange, reportCsv, trend } from "./
 const DAY = 86_400_000;
 const day0 = new Date(2030, 0, 1).getTime();
 const pd = (i: number, o: Partial<PackDay> = {}): PackDay => ({
-  day: day0 + i * DAY, rows: 100, spread_p50: 20, spread_p95: 30, rest_rows: 50, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
+  day: day0 + i * DAY, rows: 100, spread_p50: 20, spread_p95: 30, spread_raw: true, rest_rows: 50, rest_p50: 8, rest_p95: 10, cycles: 100 + i, temp_max: 25, ...o,
 });
 const pairDay = (i: number, o: Partial<PairDay> = {}): PairDay => ({
   day: day0 + i * DAY, samples: 100, share: 50, equalizing: 0, judged: 100, judged_minutes: 60, judged_share: 50, marked: false, ...o,

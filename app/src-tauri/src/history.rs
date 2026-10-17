@@ -2111,7 +2111,9 @@ mod tests {
         let days = &r.packs[0].days;
         // day 1: no spread, but the old row's cycles count
         assert_eq!((days[0].rows, days[0].spread_p95, days[0].cycles), (3, None, Some(40)));
-        assert_eq!((days[1].spread_p50, days[1].rest_p50, days[1].cycles), (Some(12), Some(12), Some(41)));
+        // day 2: the single answer is raw by its contents (one answer, equal ranges) although on the minute; at rest, but
+        // the row before it was not known at rest, so it counts for the spread only
+        assert_eq!((days[1].spread_p50, days[1].spread_raw, days[1].rest_p50, days[1].cycles), (Some(12), true, None, Some(41)));
         assert_eq!(r.spread_from, Some(b + DAY_MS));
     }
 

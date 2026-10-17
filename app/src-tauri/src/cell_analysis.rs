@@ -264,9 +264,12 @@ fn median_f(v: &mut [f64]) -> Option<f64> {
 /// A raw row: one answer (n = 1, kept from an export's `samples` on import), without ranges that differ or balancing
 /// counts of more rows. The time on a minute boundary decides nothing: an answer polled on the full minute is raw. A row
 /// without cells (no spread) or from before the range columns is raw too: it is counted, not taken for a minute.
-fn raw(r: &Row) -> bool {
+pub(crate) fn raw(r: &Row) -> bool {
     r.n == 1 && r.bal_n.is_none_or(|n| n <= 1) && r.spread_lo == r.spread_hi && r.i_lo == r.i_hi
 }
+
+/// `raw` as an SQL expression over the pack table's columns (the health report's pair rows and spread days).
+pub(crate) const RAW_SQL: &str = "(n = 1 AND IFNULL(bal_n, 0) <= 1 AND spread_lo IS spread_hi AND i_lo IS i_hi)";
 
 /// Whether the BMS reported cell `k` (0-based) balancing in the row.
 fn bit(balancing: Option<i64>, k: usize) -> bool {
