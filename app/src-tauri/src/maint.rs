@@ -660,16 +660,22 @@ fn marker_action(state: &AppState, installation: &str, action: Action) -> Result
 
 /// The master behind the CAN socket must be the installation's own, if its battery serial is stored: the CAN socket
 /// address may change while the marker is set (a gateway that moved), and a new address must never halt or release
-/// another bank. A master that shows another serial is refused; no readable serial decides nothing.
+/// another bank. With a stored serial only a set value that matches passes: another serial is refused, and so is a
+/// read that shows none (empty, the placeholder, not offered, a read error). Without a stored serial nothing is checked.
 fn same_master(state: &AppState, inst: &Installation) -> Result<(), MaintError> {
     let stored = with_store(state, |s| Ok(s.current_board(&inst.id, 0)?.and_then(|b| b.battery_serial)))?;
     let Some(stored) = stored else { return Ok(()) };
-    if let Ok(read @ SerialValue::Set { .. }) = with_control(state, inst, |c| c.master_battery_serial())? {
-        if !crate::notify::master_matches(Some(&stored), &read) {
-            return Err(refused("other-master"));
-        }
+    let read = with_control(state, inst, |c| c.master_battery_serial())?;
+    master_check(&stored, read.ok().as_ref())
+}
+
+/// `same_master` on a stored battery serial and the UART1 read (None: the read failed).
+pub fn master_check(stored: &str, read: Option<&SerialValue>) -> Result<(), MaintError> {
+    match read {
+        Some(read @ SerialValue::Set { .. }) if crate::notify::master_matches(Some(stored), read) => Ok(()),
+        Some(SerialValue::Set { .. }) => Err(refused("other-master")),
+        _ => Err(refused("master-serial-unreadable")),
     }
-    Ok(())
 }
 
 fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
@@ -779,6 +785,19 @@ mod tests {
         assert!(matches!(pending_refusal(&[pending(3)], 4), Err(MaintError::BootloaderPending { pack: 3 })));
         let v = serde_json::to_value(MaintError::BootloaderPending { pack: 3 }).unwrap();
         assert_eq!(v, serde_json::json!({ "kind": "bootloader-pending", "pack": 3 }));
+    }
+
+    #[test]
+    fn a_marker_action_needs_the_stored_master_serial_read_back() {
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        assert!(master_check("BANK-A", Some(&set("BANK-A"))).is_ok());
+        // the CAN socket may show only the first 22 characters
+        assert!(master_check("BANK-A-0123456789-ABCDEFG", Some(&SerialValue::Set { value: "BANK-A-0123456789-ABCD".into(), truncated: true })).is_ok());
+        assert!(refused_with(master_check("BANK-A", Some(&set("BANK-B"))), "other-master"));
+        for v in [SerialValue::Empty, SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, SerialValue::Unavailable, SerialValue::NoAnswer] {
+            assert!(refused_with(master_check("BANK-A", Some(&v)), "master-serial-unreadable"));
+        }
+        assert!(refused_with(master_check("BANK-A", None), "master-serial-unreadable"));
     }
 
     #[test]
