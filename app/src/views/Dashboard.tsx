@@ -2,11 +2,12 @@ import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Settings, Thermometer } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
-import { effectiveCurrent, packState, type PackState, type SystemUpdate, type Telemetry } from "../api";
+import { effectiveCurrent, packState, type PackState, type Telemetry } from "../api";
+import { current as counted, freshSystem, type SystemEntry } from "../freshness";
 import type { Cell } from "../cells/types";
 import type { PackEntry } from "../store";
 import { BalancingMark, CellStrip, MessagesMark, MessagesText, Stat, StateIcon, Tank, kw, median, socTone, stateTone } from "../components/widgets";
-import { LiveIndicator } from "../components/live";
+import { LiveIndicator, useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
@@ -20,7 +21,10 @@ import { cn, fmt } from "../lib/utils";
 // Pack (with messages), SOC, voltage, current, temperature, cycles, spread, deviation strip.
 const ROW = "grid grid-cols-[8rem_7.5rem_5.5rem_5.5rem_5.5rem_4rem_4.5rem_minmax(9rem,1fr)] items-center gap-x-6 whitespace-nowrap";
 
-export function Dashboard({ packs, system, scope, onOpen }: { packs: Record<number, PackEntry>; system: SystemUpdate | null; scope: string | null; onOpen: (a: number) => void }) {
+/** A pack as the dashboard counts it: old telemetry or status left out, `old` says which (freshness.ts). */
+type Viewed = PackEntry & { old: { telemetry: boolean; status: boolean } };
+
+export function Dashboard({ packs: stored, system, scope, onOpen }: { packs: Record<number, PackEntry>; system: SystemEntry | null; scope: string | null; onOpen: (a: number) => void }) {
   const { t } = useTranslation();
   const { groups, save } = useGroups(scope);
   const { pairs, save: savePairs } = usePairs(scope);
@@ -29,11 +33,16 @@ export function Dashboard({ packs, system, scope, onOpen }: { packs: Record<numb
   const [menu, setMenu] = useState(false);
   const db = useCellDb();
   const { assigned } = useAssignments(scope);
+  // sums, extremes, groups and rows only from fresh answers; a failed or late poll leaves the kept values out
+  const now = useNow();
+  const packs: Record<number, Viewed> = Object.fromEntries(Object.entries(stored).map(([a, p]) => [a, counted(p, now)]));
   const list = Object.values(packs).sort((a, b) => a.address - b.address);
   const live = list.filter((p) => p.telemetry);
   const allCells = live.flatMap((p) => p.telemetry!.cell_voltages);
   const center = median(allCells);
-  const s = system?.values;
+  // limits and permissions only from a fresh system poll; kept ones are shown as old
+  const s = freshSystem(system, now);
+  const systemOld = !s && !!system?.values;
 
   // Bank totals: from the master's system values, or summed from the packs (RS485-1/2 has no system values).
   const voltage = s?.voltage ?? (live.length ? live.reduce((x, p) => x + p.telemetry!.pack_voltage, 0) / live.length : NaN);
@@ -115,6 +124,11 @@ export function Dashboard({ packs, system, scope, onOpen }: { packs: Record<numb
                   )}
                 </>} />
             </>
+          ) : systemOld ? (
+            <>
+              <Stat icon={ArrowUpToLine} label={t("dash.chargeLimit")} help="value.charge_limits" value="–" tone="text-discharge" note={t("dash.systemOld", { s: Math.round((now - system!.updated) / 1000) })} />
+              <Stat icon={ArrowDownToLine} label={t("dash.dischargeLimit")} help="value.charge_limits" value="–" tone="text-discharge" note={t("dash.systemOld", { s: Math.round((now - system!.updated) / 1000) })} />
+            </>
           ) : <><div /><div /></>}
           <Stat icon={MoveVertical} label={t("dash.cellRange")} help="value.bank_cell_delta"
             value={cellLo && cellHi ? fmt((cellHi.v - cellLo.v) * 1000, 0, "mV") : "–"}
@@ -155,7 +169,7 @@ export function Dashboard({ packs, system, scope, onOpen }: { packs: Record<numb
           </Popover>
         </div>
         <RackList groups={arranged} packs={packs} center={center} multi={list.length > 1} onOpen={onOpen} pairs={validPairs(pairs, list.map((p) => p.address))} />
-        <CellAssignSheet open={cellTypes} onOpenChange={setCellTypes} scope={scope} packs={packs} />
+        <CellAssignSheet open={cellTypes} onOpenChange={setCellTypes} scope={scope} packs={stored} />
         <GroupEditor open={editing} onOpenChange={setEditing} groups={groups} packs={list.map((p) => p.address)} onSave={save} pairs={pairs} onSavePairs={savePairs} />
       </section>
     </div>
@@ -178,7 +192,7 @@ function aggregate(entries: PackEntry[]): Agg {
 }
 
 /** multi: more than one pack found, so address 0 is the master (a lone pack at 0 is standalone). */
-interface RackProps { groups: Group[]; packs: Record<number, PackEntry>; center: number; multi: boolean; onOpen: (a: number) => void; pairs: Pair[] }
+interface RackProps { groups: Group[]; packs: Record<number, Viewed>; center: number; multi: boolean; onOpen: (a: number) => void; pairs: Pair[] }
 
 function GroupSummary({ name, agg }: { name: string; agg: Agg }) {
   const { t } = useTranslation();
@@ -238,10 +252,10 @@ function RackList({ groups, packs, center, multi, onOpen, pairs }: RackProps) {
 }
 
 /** Rows of a group, with the two packs of a pair (both in this group) kept together: plus pack first. */
-function blocks(entries: PackEntry[], partner: Map<number, Pair>): { pair?: Pair; rows: PackEntry[] }[] {
+function blocks(entries: Viewed[], partner: Map<number, Pair>): { pair?: Pair; rows: Viewed[] }[] {
   const byAddr = new Map(entries.map((p) => [p.address, p]));
   const done = new Set<number>();
-  const out: { pair?: Pair; rows: PackEntry[] }[] = [];
+  const out: { pair?: Pair; rows: Viewed[] }[] = [];
   for (const p of entries) {
     if (done.has(p.address)) continue;
     const pair = partner.get(p.address);
@@ -335,8 +349,9 @@ function PairBlock({ pair, check, children }: { pair: Pair; check?: PairCheck; c
   );
 }
 
-function RackRow({ p, index, center, multi, onOpen }: { p: PackEntry; index: number; center: number; multi: boolean; onOpen: () => void }) {
+function RackRow({ p, index, center, multi, onOpen }: { p: Viewed; index: number; center: number; multi: boolean; onOpen: () => void }) {
   const { t } = useTranslation();
+  const now = useNow();
   const tm = p.telemetry, st = p.status;
   const cells = tm?.cell_voltages ?? [];
   const delta = cells.length ? (Math.max(...cells) - Math.min(...cells)) * 1000 : null;
@@ -352,7 +367,8 @@ function RackRow({ p, index, center, multi, onOpen }: { p: PackEntry; index: num
           <MessagesMark alarms={alarms} compact />
           <BalancingMark mask={st?.balancing} count={cells.length} />
         </span>
-        {(alarms?.length || (multi && p.address === 0)) ? (
+        {p.old.status ? <span className="text-xs font-medium text-discharge">{t("dash.statusOld")}</span>
+          : (alarms?.length || (multi && p.address === 0)) ? (
           <span className="text-xs text-muted">
             {alarms?.length ? <MessagesText alarms={alarms} /> : t("dash.master")}
           </span>
@@ -370,7 +386,9 @@ function RackRow({ p, index, center, multi, onOpen }: { p: PackEntry; index: num
       <span className="text-right">{temps.length ? fmt(Math.max(...temps), 1, "°C") : "–"}</span>
       <span className="text-right">{tm ? tm.cycles : "–"}</span>
       <span className={cn("text-right", delta !== null && delta >= 30 && "font-medium text-high")}>{fmt(delta, 0, "mV")}</span>
-      {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} /> : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
+      {tm ? <CellStrip cells={cells} center={center} balancing={st?.balancing} />
+        : p.old.telemetry ? <span className="text-sm font-medium text-alarm">{t("dash.staleData", { s: Math.max(0, Math.round((now - p.updated) / 1000)) })}</span>
+        : <span className="text-sm text-muted">{p.error ? t("dash.noData") : "…"}</span>}
     </button>
   );
 }
