@@ -730,14 +730,16 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
     if !tm.is_object() {
         return Ok(false);
     }
-    let cells: Vec<i64> = tm["cell_voltages"].as_array().map_or(vec![], |a| a.iter().filter_map(|v| scaled(v, 1000.0)).collect());
+    // cell positions are kept: a list with an entry that is no number stores no cells at all (NULL), never a shorter
+    // list whose cells would move up one place
+    let cells: Option<Vec<i64>> = tm["cell_voltages"].as_array().and_then(|a| a.iter().map(|v| scaled(v, 1000.0)).collect());
     let temps: Vec<i64> = tm["cell_temperatures"].as_array().map_or(vec![], |a| a.iter().filter_map(|v| scaled(v, 10.0)).collect());
     // like the live view: the 1 mA idle current where the regular value reads 0
     let current = match scaled(&tm["current"], 1000.0) {
         Some(0) | None => tm["idle_current_ma"].as_i64().or(Some(0)),
         c => c,
     };
-    let (cell_max, cell_min) = (cells.iter().max().copied(), cells.iter().min().copied());
+    let (cell_max, cell_min) = (cells.iter().flatten().max().copied(), cells.iter().flatten().min().copied());
     // an exported row carries its ranges (null for a minute row from before they were kept); a minute row of an
     // export without them has none: its averaged cells would understate the spread. Older exports lack `samples`
     // too, so an imported row on the minute counts as a minute row.
@@ -782,7 +784,7 @@ fn insert_pack(db: &Connection, site: i64, session: i64, t: i64, address: u8, up
         temps.iter().min(),
         scaled(&tm["ambient_temperature"], 10.0),
         scaled(&tm["power_temperature"], 10.0),
-        blob_u16(&cells),
+        cells.as_deref().map(blob_u16),
         blob_i16(&temps),
         site,
         range("spread_lo_mv", 1.0, spread),
@@ -2163,6 +2165,31 @@ mod tests {
             (6 * MINUTE_MS + 1, Some(1), (Some(20), Some(20), Some(1000), Some(1000))),
             (7 * MINUTE_MS, Some(1), (None, None, None, None)),
         ]);
+    }
+
+    #[test]
+    fn an_imported_row_with_a_cell_that_is_no_number_keeps_no_cells() {
+        let (path, mut h) = temp_db("cell-positions");
+        let dir = path.parent().unwrap();
+        let file = dir.join("gap.jsonl");
+        let mut gap = pack_update(3, 1.0, &[3.30, 3.31, 3.32], &[]);
+        gap["telemetry"]["cell_voltages"] = json!([3.30, null, 3.32]);
+        let mut text = gap.clone();
+        text["telemetry"]["cell_voltages"] = json!([3.30, "x", 3.32]);
+        let lines = [json!({ "t": 1_001, "pack": pack_update(3, 1.0, &[3.30, 3.31, 3.32], &[]) }), json!({ "t": 2_001, "pack": gap }), json!({ "t": 3_001, "pack": text })];
+        std::fs::write(&file, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        assert_eq!(h.import(&file, "gw").unwrap().rows, 3);
+        let rows: Vec<(i64, Option<Vec<u8>>, Option<i64>, Option<i64>)> = reader(&path)
+            .unwrap()
+            .prepare("SELECT t, cells, cell_max, spread_hi FROM pack ORDER BY t")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows[0], (1_001, Some(blob_u16(&[3300, 3310, 3320])), Some(3320), Some(20)));
+        // never shortened to two cells (cell 3 would read as cell 2): no cells, no extremes and no spread
+        assert_eq!(rows[1..], [(2_001, None, None, None), (3_001, None, None, None)]);
     }
 
     /// t, n, balancing, bal_rows, bal_n
