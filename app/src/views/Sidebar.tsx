@@ -501,7 +501,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         )}
             {stored && !fixed && (
               <p className="text-xs text-muted">
-                <button className="underline hover:text-ink" onClick={() => apply(fillFields(cur, bus, null, "bus"))}>{t("conn.useStored")}</button>
+                <button className="underline hover:text-ink" onClick={() => apply(fillFields(cur, bus, null, "bus"))}>{other ? t("conn.cancel") : t("conn.useStored")}</button>
               </p>
             )}
           </>
