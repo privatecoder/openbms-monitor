@@ -39,8 +39,8 @@ export function usePairs(scope: string | null) {
 
 /**
  * judged: false while the load is too low for a statement (see PAIR_MIN_A).
- * equalizing: the smaller share is explained by the states of charge (lower SOC gives less when discharging,
- * higher SOC takes less when charging), so it is reported as equalizing instead of a weak pack.
+ * equalizing: the smaller share fits the states of charge (lower SOC gives less when discharging, higher SOC takes
+ * less when charging), so it is reported as likely equalizing instead of a weak pack (a likely explanation, not proof).
  * gap: output (port) voltage of the first minus the second pack in V, see PORT_GAP_V.
  */
 export interface PairCheck {
@@ -96,8 +96,10 @@ export function checkPairs(
   });
   const totals = rows.map((r) => Math.abs(r.total)).sort((x, y) => x - y);
   const each = rows.flatMap((r) => [Math.abs(r.a), Math.abs(r.b)]).sort((x, y) => x - y);
-  const loaded = each.length > 0 && each[each.length >> 1] >= PAIR_MIN_A;
-  const m = totals.length ? (totals.length % 2 ? totals[totals.length >> 1] : (totals[totals.length / 2 - 1] + totals[totals.length / 2]) / 2) : NaN;
+  const mid = (s: number[]) => (s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2);
+  // the true median: with an even count the mean of the two middle values (35 A and 1 A are 18 A, not 35 A)
+  const loaded = each.length > 0 && mid(each) >= PAIR_MIN_A;
+  const m = totals.length ? mid(totals) : NaN;
   return rows.map(({ pair, a, b, total }) => {
     const lo = Math.min(Math.abs(a), Math.abs(b)), hi = Math.max(Math.abs(a), Math.abs(b));
     const share = hi ? lo / hi : 1;
@@ -131,10 +133,11 @@ export const TREND_FLAT_V = 0.02;
  * How a pair's output gap behaves over the current: a resistance in bridges or plugs makes it grow with
  * the current (and turn round between charging and discharging), a voltage measurement offset of one BMS
  * keeps it constant. Least-squares line gap = offset + slope × current over the samples (60 s means).
- * Example: 40–47 mV from −24 A to +35 A is an offset.
+ * Example: 40–47 mV from −24 A to +35 A is an offset. An offset only rules out a resistance that would have grown the
+ * gap by TREND_FLAT_V over the range: `range` (A) is returned so the view can say up to how many mΩ (20 mV / range).
  * undefined until the samples span TREND_MIN_RANGE_A.
  */
-export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" | "resistance"; offset: number; milliohm: number } | undefined {
+export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" | "resistance"; offset: number; milliohm: number; range: number } | undefined {
   if (samples.length < 10) return undefined;
   const is = samples.map((s) => s.i);
   const range = Math.max(...is) - Math.min(...is);
@@ -144,11 +147,34 @@ export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" 
   let sxy = 0, sxx = 0;
   for (const s of samples) { sxy += (s.i - mi) * (s.g - mg); sxx += (s.i - mi) ** 2; }
   const slope = sxx ? sxy / sxx : 0;
-  return { kind: Math.abs(slope) * range < TREND_FLAT_V ? "offset" : "resistance", offset: mg - slope * mi, milliohm: slope * 1000 };
+  return { kind: Math.abs(slope) * range < TREND_FLAT_V ? "offset" : "resistance", offset: mg - slope * mi, milliohm: slope * 1000, range };
 }
 
-/** Mean of each pack's current over the last `windowMs`, so the pair check follows the trend, not single polls. */
-export function windowMean(samples: { t: number; i: number }[], now: number, windowMs: number): number | undefined {
-  const s = samples.filter((x) => now - x.t <= windowMs);
-  return s.length ? s.reduce((sum, x) => sum + x.i, 0) / s.length : undefined;
+/** The largest resistance (mΩ) an offset verdict cannot rule out: what would grow the gap by TREND_FLAT_V over the range. */
+export const offsetMaxMilliohm = (range: number) => (TREND_FLAT_V * 1000) / range;
+
+/** Two answers of a pair this close (ms) count as the same moment, as in the health report (health.rs MATCH_MS). */
+export const MATCH_MS = 3_000;
+/** Time-paired samples a pair's live figures need within the window. */
+export const PAIRED_MIN = 5;
+
+/** One answer of a pack: time, current (A), output voltage (V). */
+export interface PackSample { t: number; i: number; u: number }
+
+/**
+ * A pair's live figures from time-paired answers only, so a load step between two answers never reads as a split:
+ * each answer of the plus pack in the last `windowMs` with the nearest of the minus pack within MATCH_MS. Means of
+ * current and output voltage per pack over those pairs; undefined below PAIRED_MIN pairs.
+ */
+export function pairedMeans(plus: PackSample[], minus: PackSample[], now: number, windowMs: number): { a: number; b: number; ua: number; ub: number; n: number } | undefined {
+  const inWindow = (s: PackSample[]) => s.filter((x) => now - x.t <= windowMs);
+  const others = inWindow(minus);
+  let n = 0, a = 0, b = 0, ua = 0, ub = 0;
+  for (const x of inWindow(plus)) {
+    let best: PackSample | undefined;
+    for (const y of others) if (Math.abs(y.t - x.t) <= MATCH_MS && (!best || Math.abs(y.t - x.t) < Math.abs(best.t - x.t))) best = y;
+    if (!best) continue;
+    n++; a += x.i; b += best.i; ua += x.u; ub += best.u;
+  }
+  return n >= PAIRED_MIN ? { a: a / n, b: b / n, ua: ua / n, ub: ub / n, n } : undefined;
 }
