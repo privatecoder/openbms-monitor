@@ -265,7 +265,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let key = maint::pack_key(&port).map_err(to_text)?;
     maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
     let owner = maint::installation(&state, &installation).map_err(to_text)?;
-    let inst = checks.then_some(owner);
+    let inst = checks.then(|| owner.clone());
     if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
         let master = maint::read_master(&state, i).unwrap_or(Master::Unknown);
         let kind = maint_kind(info.kind);
@@ -283,27 +283,22 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let slot = FlashSlot(state.flashing.clone());
     stop_monitor(&state)?;
     let mut link = open_port(&key, l)?;
-    // String 2 of the target, kept with the pending record: only that board's answer clears it later
-    let mut target = None;
     let bank = match &inst {
-        // a bus with traffic gets no 0xA4: the preflight refuses it anyway
-        Some(_) if !bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?.quiet() => "unchecked",
         Some(i) => {
-            let bank = match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
+            // traffic refuses at once: no 0xA4 checks skipped for a bus that is quiet only by the preflight
+            quiet_first(&bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?).map_err(|e| e.text(l))?;
+            match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
                 maint::Bank::Mismatch(serial) => return Err(to_text(maint::MaintError::OtherBank { serial })),
                 maint::Bank::Match => "match",
                 maint::Bank::Stored(_) => "stored",
                 maint::Bank::Unchecked => "unchecked",
-            };
-            // the target itself: another board than the one stored for its address is not flashed
-            target = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
-            bank
+            }
         }
-        None => {
-            target = maint::string2(&mut link, address);
-            "none"
-        }
+        None => "none",
     };
+    // the target itself, also on another port than the installation's (manual tab): another board than the one stored
+    // for its address is not flashed. Its String 2 goes with the pending record: only that board's answer clears it.
+    let target = maint::check_target_board(&state.maint, &owner, address, &mut link).map_err(to_text)?;
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind
@@ -340,6 +335,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let _ = app.emit("firmware-done", done);
     });
     Ok(FlashStarted { bank })
+}
+
+/// The first listen of a flash with checks: any traffic refuses, before any 0xA4.
+pub fn quiet_first(t: &bus::Traffic) -> openbms_flash::Result<()> {
+    if t.quiet() { Ok(()) } else { Err(openbms_flash::Error::BusBusy(t.bytes)) }
 }
 
 fn maint_kind(kind: &str) -> known::ImageKind {
@@ -393,6 +393,14 @@ mod tests {
     fn utc_stamp_handles_leap_day() {
         // 2024-02-29 23:59:59 UTC
         assert_eq!(utc_stamp(1_709_251_199), "20240229-235959Z");
+    }
+
+    #[test]
+    fn traffic_in_the_first_listen_refuses_the_flash() {
+        let mut t = bus::Traffic::default();
+        assert!(quiet_first(&t).is_ok());
+        t.bytes = 7;
+        assert!(matches!(quiet_first(&t), Err(openbms_flash::Error::BusBusy(7))));
     }
 
     #[test]
