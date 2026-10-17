@@ -510,28 +510,14 @@ impl History {
         }
     }
 
-    /// Delete all data of one installation, or everything (site None).
+    /// Delete all data of one installation, or everything (site None). The deletes run in one transaction, so a
+    /// failure (e.g. a full disk) leaves the recording as it was; checkpoint and VACUUM follow on their own: they only
+    /// give the space back, and a failure there loses nothing (the next clear or start tries again).
     pub fn clear(&mut self, site: Option<&str>) -> Result<(), String> {
         self.end_session(now_ms());
         let db = self.db.as_ref().ok_or("history database not open")?;
-        let e = |e: rusqlite::Error| e.to_string();
-        match site {
-            Some(s) => {
-                for table in ["pack", "system"] {
-                    db.execute(&format!("DELETE FROM {table} WHERE site = (SELECT id FROM sites WHERE site = ?1)"), [s]).map_err(e)?;
-                }
-                db.execute("DELETE FROM events WHERE session IN (SELECT id FROM sessions WHERE site = ?1)", [s]).map_err(e)?;
-                for table in ["site_packs", "sessions", "sites"] {
-                    db.execute(&format!("DELETE FROM {table} WHERE site = ?1"), [s]).map_err(e)?;
-                }
-                // a deleted installation's bundles can be imported again (a restore)
-                db.execute("DELETE FROM meta WHERE key LIKE 'import:%' AND value = ?1", [s]).map_err(e)?;
-            }
-            None => db
-                .execute_batch("DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites; DELETE FROM meta WHERE key LIKE 'import:%';")
-                .map_err(e)?,
-        }
-        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e)
+        clear_rows(db, site).map_err(e2s)?;
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e2s)
     }
 
     /// Give a site's recording, pack list and parameter snapshots another key (e.g. an installation id) in one
@@ -592,7 +578,6 @@ impl History {
         if !used {
             for table in ["sites", "sessions", "site_packs", "param_snapshots"] {
                 tx.execute(&format!("UPDATE {table} SET site = ?2 WHERE site = ?1"), params![old, new]).map_err(e2s)?;
-                tx.execute("UPDATE meta SET value = ?2 WHERE key LIKE 'import:%' AND value = ?1", params![old, new]).map_err(e2s)?;
             }
         } else {
             let new_id = site_id(&tx, new).map_err(e2s)?;
@@ -623,6 +608,8 @@ impl History {
             tx.execute("DELETE FROM site_packs WHERE site = ?1", [old]).map_err(e2s)?;
             tx.execute("UPDATE param_snapshots SET site = ?2 WHERE site = ?1", params![old, new]).map_err(e2s)?;
         }
+        // the import markers go with the rows (both ways): deleting `new` frees them for a restore of the same bundle
+        tx.execute("UPDATE meta SET value = ?2 WHERE key LIKE 'import:%' AND value = ?1", params![old, new]).map_err(e2s)?;
         // the counts with the move itself, so a repeat after an interruption still reports what moved
         if m != SiteMerge::default() {
             let prev = merge_record(&tx, old, new).map_err(e2s)?.unwrap_or_default();
@@ -701,6 +688,28 @@ impl History {
 
 fn e2s(e: rusqlite::Error) -> String {
     e.to_string()
+}
+
+/// The deletes of `History::clear` in one transaction.
+fn clear_rows(db: &Connection, site: Option<&str>) -> rusqlite::Result<()> {
+    let tx = db.unchecked_transaction()?;
+    match site {
+        Some(s) => {
+            for table in ["pack", "system"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE site = (SELECT id FROM sites WHERE site = ?1)"), [s])?;
+            }
+            tx.execute("DELETE FROM events WHERE session IN (SELECT id FROM sessions WHERE site = ?1)", [s])?;
+            for table in ["site_packs", "sessions", "sites"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE site = ?1"), [s])?;
+            }
+            // a deleted installation's bundles can be imported again (a restore)
+            tx.execute("DELETE FROM meta WHERE key LIKE 'import:%' AND value = ?1", [s])?;
+        }
+        None => tx.execute_batch(
+            "DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites; DELETE FROM meta WHERE key LIKE 'import:%';",
+        )?,
+    }
+    tx.commit()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1771,6 +1780,39 @@ mod tests {
         let out = dir.join("out.jsonl");
         assert_eq!(export_events(&db, "inst-a", &out).unwrap(), 1);
         assert_eq!(site_packs(&db, "inst-a").unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn a_bundle_merged_into_another_installation_and_deleted_can_be_restored() {
+        let (path, mut h) = temp_db("bundle-merge");
+        let values = path.parent().unwrap().join("v.jsonl");
+        std::fs::write(&values, format!("{}\n", json!({ "t": 1000, "pack": pack_update(1, 1.0, &[3.3, 3.31], &[]) }))).unwrap();
+        assert_eq!(h.import_bundle(Some(&values), None, "inst-a", "exp-1").unwrap().rows, 1);
+        // into an installation that already has a recording: the import marker moves with the rows
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("inst-b", "can");
+        h.pack(5000, 2, &pack_update(2, 1.0, &[3.3], &[]));
+        h.merge_site("inst-a", "inst-b").unwrap();
+        h.clear(Some("inst-b")).unwrap();
+        // the same bundle again (a restore): its rows come back
+        assert_eq!(h.import_bundle(Some(&values), None, "inst-a", "exp-1").unwrap().rows, 1);
+    }
+
+    #[test]
+    fn clearing_an_installation_deletes_all_of_it_or_nothing() {
+        let (path, mut h) = temp_db("clear-atomic");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("inst-a", "can");
+        h.pack(1000, 1, &pack_update(1, 1.0, &[3.3], &["cell_low"]));
+        h.system(1000, &system_update(1.0));
+        let count = |table: &str| -> i64 { reader(&path).unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap() };
+        // a delete that fails late (here a trigger on sessions, in practice a full disk): pack rows are still there
+        Connection::open(&path).unwrap().execute_batch("CREATE TRIGGER no_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'disk full'); END;").unwrap();
+        assert!(h.clear(Some("inst-a")).is_err());
+        assert_eq!((count("pack"), count("system"), count("events")), (1, 1, 1));
+        Connection::open(&path).unwrap().execute_batch("DROP TRIGGER no_delete;").unwrap();
+        h.clear(Some("inst-a")).unwrap();
+        assert_eq!((count("pack"), count("system"), count("events"), count("sessions")), (0, 0, 0, 0));
     }
 
     #[test]
