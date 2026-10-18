@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -131,6 +131,21 @@ fn device_settings(db: &Connection) -> rusqlite::Result<()> {
 /// answer of that same board clears the record by itself.
 fn pending_serial(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("ALTER TABLE bootloader_pending ADD COLUMN bms_serial TEXT;")
+}
+
+/// 8: whether a board's String 2 was recorded from raw bytes that stand for it alone (`serial::canonical`; 1/0, NULL:
+/// recorded before this was known), and since when a board is no longer at its place (`gone`, the user's or a read's
+/// verdict; NULL: there as far as known). The CAN socket writes only for a board recorded canonically.
+fn board_provenance(db: &Connection) -> rusqlite::Result<()> {
+    // idempotent: a column already there is kept as it is
+    let mut stmt = db.prepare("SELECT name FROM pragma_table_info('boards')")?;
+    let have = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (column, sql) in [("serial_canonical", "ALTER TABLE boards ADD COLUMN serial_canonical INTEGER"), ("gone", "ALTER TABLE boards ADD COLUMN gone INTEGER")] {
+        if !have.iter().any(|c| c == column) {
+            db.execute_batch(sql)?;
+        }
+    }
+    Ok(())
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -231,6 +246,18 @@ pub struct Board {
     pub last_seen: i64,
     /// earlier String 2 values the app itself wrote over, oldest first
     pub aliases: Vec<String>,
+}
+
+/// A place's current board as the CAN socket's identity check sees it (`Store::current_refs`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardRef {
+    pub address: u8,
+    pub id: i64,
+    pub bms_serial: String,
+    pub aliases: Vec<String>,
+    /// recorded from canonical raw bytes; None: before that was known
+    pub canonical: Option<bool>,
+    pub current_at: Option<i64>,
 }
 
 /// What a serial number read says about the board at a place.
@@ -782,18 +809,67 @@ impl Store {
     }
 
     /// The current board at a place (made current last, in this computer's time): the one the place's data belongs to
-    /// until another String 2 is read there.
+    /// until another String 2 is read there. None also when that board was marked no longer there (`board_gone`).
     pub fn current_board(&self, inst: &str, address: u8) -> Result<Option<Board>, String> {
-        Ok(self.boards(inst, address)?.into_iter().next())
+        let Some(b) = self.boards(inst, address)?.into_iter().next() else { return Ok(None) };
+        let gone: Option<i64> = self.db.query_row("SELECT gone FROM boards WHERE id = ?1", [b.id], |r| r.get(0)).map_err(e)?;
+        Ok(gone.is_none().then_some(b))
     }
 
-    /// A successful serial number read at a place (String 2 and String 1 as read).
+    /// The current boards of every place of an installation, with what the CAN socket's identity check needs.
+    pub fn current_refs(&self, inst: &str) -> Result<Vec<BoardRef>, String> {
+        let mut stmt = self.db.prepare("SELECT DISTINCT address FROM boards WHERE installation = ?1 ORDER BY address").map_err(e)?;
+        let addresses = stmt.query_map([inst], |r| r.get::<_, u8>(0)).map_err(e)?.collect::<rusqlite::Result<Vec<_>>>().map_err(e)?;
+        let mut out = vec![];
+        for address in addresses {
+            let Some(b) = self.current_board(inst, address)? else { continue };
+            let (canonical, current_at): (Option<bool>, Option<i64>) =
+                self.db.query_row("SELECT serial_canonical, current_at FROM boards WHERE id = ?1", [b.id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?;
+            out.push(BoardRef { address, id: b.id, bms_serial: b.bms_serial, aliases: b.aliases, canonical, current_at });
+        }
+        Ok(out)
+    }
+
+    /// A successful serial number read at a place (String 2 and String 1 as read). A new board row gets no provenance
+    /// (`board_seen_canonical` gives it).
     pub fn board_seen(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, now: i64) -> Result<BoardSeen, String> {
         self.installation(inst)?;
-        self.atomic(|s| s.seen_rows(inst, address, bms, battery, now))
+        self.atomic(|s| s.seen_rows(inst, address, bms, battery, None, now))
     }
 
-    fn seen_rows(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, now: i64) -> Result<BoardSeen, String> {
+    /// `board_seen` from a read whose raw String 2 was (`canonical`) or was not canonical: kept for a new board row
+    /// only. An existing row keeps its provenance; only an explicit confirmation raises it (`confirm_canonical`).
+    pub fn board_seen_canonical(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, canonical: bool, now: i64) -> Result<BoardSeen, String> {
+        self.installation(inst)?;
+        self.atomic(|s| s.seen_rows(inst, address, bms, battery, Some(canonical), now))
+    }
+
+    /// The user confirmed the board at a place from a fresh canonical String 2 (`serial`): its row stands for it from
+    /// now on. Returns whether the current board carried `serial`.
+    pub fn confirm_canonical(&self, inst: &str, address: u8, serial: &str) -> Result<bool, String> {
+        let Some(b) = self.current_board(inst, address)? else { return Ok(false) };
+        if b.bms_serial != serial {
+            return Ok(false);
+        }
+        self.db.execute("UPDATE boards SET serial_canonical = 1 WHERE id = ?1", [b.id]).map_err(e)?;
+        Ok(true)
+    }
+
+    /// The board `id` at a place is no longer there: only while it is still the current one with the same `current_at`
+    /// as checked, so a board taken over there meanwhile is never marked. Its history stays. Returns whether marked.
+    pub fn board_gone(&self, inst: &str, address: u8, id: i64, current_at: Option<i64>, now: i64) -> Result<bool, String> {
+        self.atomic(|s| {
+            if s.current_board(inst, address)?.map(|b| b.id) != Some(id) {
+                return Ok(false);
+            }
+            let n = s.db
+                .execute("UPDATE boards SET gone = ?2 WHERE id = ?1 AND current_at IS ?3 AND gone IS NULL", params![id, now, current_at])
+                .map_err(e)?;
+            Ok(n == 1)
+        })
+    }
+
+    fn seen_rows(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, canonical: Option<bool>, now: i64) -> Result<BoardSeen, String> {
         let Some(serial) = real(bms) else { return Ok(BoardSeen::Unclear) };
         // String 1 is changeable and only informational: kept as last read; not read leaves it as it was
         let battery = match battery {
@@ -807,7 +883,7 @@ impl Store {
                 if b.bms_serial != serial {
                     self.rename_board(&b, serial, now)?;
                 }
-                self.db.execute("UPDATE boards SET last_seen = ?2, current_at = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
+                self.db.execute("UPDATE boards SET last_seen = ?2, current_at = ?2, gone = NULL WHERE id = ?1", params![b.id, now]).map_err(e)?;
                 if let Some(bat) = battery {
                     self.db.execute("UPDATE boards SET battery_serial = ?2 WHERE id = ?1", params![b.id, bat]).map_err(e)?;
                 }
@@ -822,7 +898,7 @@ impl Store {
                         if b.bms_serial != serial {
                             self.rename_board(&b, serial, now)?;
                         }
-                        self.db.execute("UPDATE boards SET last_seen = ?2, current_at = ?2 WHERE id = ?1", params![b.id, now]).map_err(e)?;
+                        self.db.execute("UPDATE boards SET last_seen = ?2, current_at = ?2, gone = NULL WHERE id = ?1", params![b.id, now]).map_err(e)?;
                         if let Some(bat) = battery {
                             self.db.execute("UPDATE boards SET battery_serial = ?2 WHERE id = ?1", params![b.id, bat]).map_err(e)?;
                         }
@@ -830,8 +906,8 @@ impl Store {
                     None => {
                         self.db
                             .execute(
-                                "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen, current_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)",
-                                params![inst, address, serial, battery.flatten(), now],
+                                "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen, current_at, serial_canonical) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5, ?6)",
+                                params![inst, address, serial, battery.flatten(), now, canonical],
                             )
                             .map_err(e)?;
                     }
@@ -857,15 +933,26 @@ impl Store {
         let Some(after_serial) = real(after) else { return Ok(()) };
         self.atomic(|s| {
             if real(before).is_none() {
-                return s.seen_rows(inst, address, after, &SerialValue::NoAnswer, now).map(|_| ());
+                return s.seen_rows(inst, address, after, &SerialValue::NoAnswer, None, now).map(|_| ());
             }
-            s.seen_rows(inst, address, before, &SerialValue::NoAnswer, now)?;
+            s.seen_rows(inst, address, before, &SerialValue::NoAnswer, None, now)?;
             // the newest board now carries `before`
             match s.current_board(inst, address)? {
                 Some(b) if b.bms_serial != after_serial => s.rename_board(&b, after_serial, now),
                 _ => Ok(()),
             }
         })
+    }
+
+    /// `board_written`, and the board's provenance from the raw read-back (`after_canonical`): a new String 2 stands for
+    /// the board only when its raw bytes were canonical.
+    pub fn board_written_canonical(&self, inst: &str, address: u8, before: &SerialValue, after: &SerialValue, after_canonical: bool, now: i64) -> Result<(), String> {
+        self.board_written(inst, address, before, after, now)?;
+        let Some(serial) = real(after) else { return Ok(()) };
+        if let Some(b) = self.current_board(inst, address)?.filter(|b| b.bms_serial == serial) {
+            self.db.execute("UPDATE boards SET serial_canonical = ?2 WHERE id = ?1", params![b.id, after_canonical]).map_err(e)?;
+        }
+        Ok(())
     }
 
     /// The app's own String 1 write (0xA3) read back on a board known at this place (`bms`: its String 2 read right
@@ -946,6 +1033,17 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(e)?;
         Ok(rows)
+    }
+
+    /// Keep a parameter block of a place with exactly this String 2 (the CAN socket's checked identity of the block).
+    pub fn add_param_snapshot_serial(&self, inst: &str, address: u8, serial: &str, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
+        self.db
+            .execute(
+                "INSERT INTO param_snapshots(installation, address, bms_serial, at, kind, block) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![inst, address, serial, now, kind.as_str(), block],
+            )
+            .map_err(e)?;
+        Ok(self.db.last_insert_rowid())
     }
 
     /// Keep a parameter block of a place with the String 2 of its newest board (None: no board identified yet).
@@ -1383,6 +1481,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("maintenance.sqlite")
+    }
+
+    #[test]
+    fn board_provenance_gone_and_checked_snapshots() {
+        let s = Store::open(&temp("provenance")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        let none = SerialValue::NoAnswer;
+        let canon = |s: &Store, adr: u8| s.current_refs(&a.id).unwrap().into_iter().find(|r| r.address == adr).and_then(|r| r.canonical);
+        // a new row takes the read's provenance; without it (import, older code) it stays unknown
+        s.board_seen_canonical(&a.id, 1, &set("SYN-1"), &none, true, 10).unwrap();
+        s.board_seen(&a.id, 2, &set("SYN-2"), &none, 10).unwrap();
+        s.board_seen_canonical(&a.id, 3, &set("SYN-3"), &none, false, 10).unwrap();
+        assert_eq!((canon(&s, 1), canon(&s, 2), canon(&s, 3)), (Some(true), None, Some(false)));
+        // an existing row is never raised by a read, only by a confirmation of its current serial
+        s.board_seen_canonical(&a.id, 2, &set("SYN-2"), &none, true, 11).unwrap();
+        assert_eq!(canon(&s, 2), None);
+        assert!(!s.confirm_canonical(&a.id, 2, "SYN-X").unwrap());
+        assert!(s.confirm_canonical(&a.id, 2, "SYN-2").unwrap());
+        assert_eq!(canon(&s, 2), Some(true));
+        // a rename by the app takes the provenance of its raw read-back
+        s.board_written_canonical(&a.id, 1, &set("SYN-1"), &set("SYN-1B"), false, 12).unwrap();
+        assert_eq!((s.current_board(&a.id, 1).unwrap().unwrap().bms_serial.as_str(), canon(&s, 1)), ("SYN-1B", Some(false)));
+        // gone: only the checked row with its time; the place has no current board then, a new read brings one back
+        let r = s.current_refs(&a.id).unwrap().into_iter().find(|r| r.address == 3).unwrap();
+        assert!(!s.board_gone(&a.id, 3, r.id, Some(9), 20).unwrap(), "another time: taken over meanwhile");
+        assert!(s.board_gone(&a.id, 3, r.id, r.current_at, 20).unwrap());
+        assert!(s.current_board(&a.id, 3).unwrap().is_none());
+        assert!(!s.board_gone(&a.id, 3, r.id, r.current_at, 21).unwrap(), "once");
+        assert_eq!(s.boards(&a.id, 3).unwrap().len(), 1, "its history stays");
+        s.board_seen(&a.id, 3, &set("SYN-3"), &none, 30).unwrap();
+        assert_eq!(s.current_board(&a.id, 3).unwrap().map(|b| b.bms_serial), Some("SYN-3".into()));
+        // a snapshot with the checked serial, not the place's newest board
+        s.add_param_snapshot_serial(&a.id, 1, "SYN-CHECKED", SnapshotKind::Read, &[1, 2], 40).unwrap();
+        let serial: Option<String> = s.db.query_row("SELECT bms_serial FROM param_snapshots ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(serial.as_deref(), Some("SYN-CHECKED"));
     }
 
     #[test]
