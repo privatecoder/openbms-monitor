@@ -99,7 +99,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // another port or installation: nothing of the old one counts
-  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); wantScan.current = true; }, [port, inst?.id]);
+  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); setAskSlaves(null); setReleased(null); wantScan.current = true; }, [port, inst?.id]);
   useEffect(() => { if (flashTick) { setFlashed(true); setBack(false); wantScan.current = true; } }, [flashTick]);
   useEffect(() => { if (flashed && !running && live?.bus === "polling") { setFlashed(false); setBack(true); } }, [flashed, running, live?.bus]);
 
@@ -115,9 +115,19 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
     try { await f(); } catch (e) { const k = errorKey(e); setActionError({ text: t(k.key, k.params), serial: otherBank(e) }); }
     finally { setAction(null); void maint.loadLists(); }
   };
-  const marker = (release: boolean) => run(release ? "release" : "halt", async () => {
+  // the release waits for the master's DIP slave count: the one kept by the halt, else the user confirms it
+  const [askSlaves, setAskSlaves] = useState<number | null>(null);
+  const [released, setReleased] = useState<MasterView["polling"] | null>(null);
+  const marker = (release: boolean, confirmed: number | null = null) => run(release ? "release" : "halt", async () => {
     if (!inst) return;
-    const m = release ? await api.maintRelease(inst.id) : await api.maintHalt(inst.id);
+    setReleased(null);
+    if (release && confirmed === null && (await api.maintExpectedSlaves(inst.id)) === null) {
+      setAskSlaves(Math.max(0, packs.length - 1));
+      return;
+    }
+    const m = release ? await api.maintRelease(inst.id, confirmed) : await api.maintHalt(inst.id);
+    setAskSlaves(null);
+    if (release) setReleased(m.polling ?? null);
     setLive((l) => (l ? { ...l, master: m } : l));
   });
   const adopt = (serial: string) => run("adopt", async () => {
@@ -192,6 +202,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           : master?.may_halt && inst ? (
             <ActButton variant="primary" size="sm" spinning={action === "halt"} disabled={busy} onClick={() => marker(false)}>{t("maint.halt")}</ActButton>
           ) : <p>{t("maint.quiet.dip")}</p>}
+          {master && master.kind !== "patched" && <p className="text-muted">{t("maint.quiet.noPatch")}</p>}
           <p className="text-muted">{t("maint.quiet.hint")}</p>
         </div>
       )}
@@ -246,12 +257,25 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
         </div>
       )}
 
+      {released && <p className={released === "unverified" ? "text-discharge" : "text-ok"}>{t(`maint.done.polling.${released}`)}</p>}
       {/* done: give the bus back to the master */}
       {showDone(flashed, master) && !running && (
         <div className="space-y-2 border-t border-line pt-3">
           <h3 className="font-medium">{t("maint.done.title")}</h3>
           {master?.may_release && inst ? (
-            <ActButton variant="primary" size="sm" spinning={action === "release"} disabled={busy} onClick={() => marker(true)}>{t("maint.release")}</ActButton>
+            askSlaves === null ? (
+              <ActButton variant="primary" size="sm" spinning={action === "release"} disabled={busy} onClick={() => marker(true)}>{t("maint.release")}</ActButton>
+            ) : (
+              <div className="space-y-1">
+                <p>{t("maint.done.askSlaves")}</p>
+                <div className="flex items-center gap-2">
+                  <input type="number" min={0} max={15} value={askSlaves} onChange={(e) => setAskSlaves(Math.max(0, Math.min(15, Number(e.target.value) || 0)))}
+                    className="w-16 rounded border border-line bg-surface px-2 py-1" aria-label={t("maint.done.askSlaves")} />
+                  <ActButton variant="primary" size="sm" spinning={action === "release"} disabled={busy} onClick={() => marker(true, askSlaves)}>{t("maint.release")}</ActButton>
+                  <Button variant="ghost" size="sm" onClick={() => setAskSlaves(null)}>{t("maint.packs.cancel")}</Button>
+                </div>
+              </div>
+            )
           ) : <p>{t("maint.done.dip")}</p>}
           <p className="text-muted">{t("maint.done.hint")}</p>
         </div>

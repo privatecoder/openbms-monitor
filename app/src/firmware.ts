@@ -69,3 +69,12 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
   const fits = !after || image.release === after || image.release.startsWith(`${after}.`) || image.release.startsWith(`${after} `);
   return { from, to: fits ? image.release : `${image.release} (${t("fw.reports", { v: after })})` };
 }
+
+/** What the release bits of Group0 (`g0`) mean after a flash with the patch functions, which takes them over unchanged:
+ *  writing over the CAN socket (bit 0) and the maintenance start (bit 2) locked, or both allowed. */
+export function flashGateKeys(g0: number): string[] {
+  const write = (g0 & 1) === 1, start = (g0 & 4) === 4;
+  if (write && start) return ["fw.patch.ok"];
+  if (!write && !start) return ["fw.patch.bothLocked"];
+  return [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
+}

@@ -7,7 +7,7 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
+import { confirmationPhrase, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
 import { errorKey, keyParts, otherBank, packPortOf, packVersion, portKey, releaseFirst, type PortKind } from "../maint";
 import type { Maint } from "../maintStore";
 import { KindSelect, PortInput } from "./MaintSetup";
@@ -172,6 +172,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
+      {image?.kind === "maintenance" && <PatchImageNotes inst={inst?.id ?? null} port={mPort} start={address} release={image.release} locked={inputsLocked} />}
     </div>
   );
 
@@ -277,6 +278,54 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           )}
         </section>
       )}
+    </div>
+  );
+}
+
+/** Before flashing an image with the patch functions: the update way, and the target's release bits, which the flash
+ *  takes over unchanged (a fresh read on the pack bus, else the last stored block with its age, not checked). */
+function PatchImageNotes({ inst, port, start, release, locked }: { inst: string | null; port: string; start: number; release: string; locked: boolean }) {
+  const { t, i18n } = useTranslation();
+  const [address, setAddress] = useState(start);
+  const [fresh, setFresh] = useState<number | null | undefined>(undefined);
+  const [snap, setSnap] = useState<{ g0: number; at: number } | null>(null);
+  const [reading, setReading] = useState(false);
+  useEffect(() => setAddress(start), [start]);
+  useEffect(() => {
+    setFresh(undefined); setSnap(null);
+    if (!inst) return;
+    let alive = true;
+    api.installationSnapshots(inst).then((rows) => {
+      const r = rows.find((x) => x.address === address && x.parameters);
+      if (alive && r?.parameters) setSnap({ g0: r.parameters.function_switches[0], at: r.at });
+    }, () => {});
+    return () => { alive = false; };
+  }, [inst, address]);
+  const readNow = async () => {
+    setReading(true);
+    try { setFresh(await api.firmwareGroup0(port, address)); } catch { setFresh(null); } finally { setReading(false); }
+  };
+  const g0 = fresh ?? snap?.g0 ?? null;
+  const keys = g0 === null ? [] : flashGateKeys(g0);
+  return (
+    <div className="space-y-1 rounded-md border border-line p-3 text-sm">
+      <p className="flex items-center gap-1 font-medium">{t("fw.patch.title", { release })}<InfoIcon id="topic.patchGates" /></p>
+      <p className="text-muted">{t("fw.patch.update")}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 text-muted">{t("fw.address")}
+          <input type="number" min={0} max={15} value={address} disabled={locked} onChange={(e) => setAddress(Math.max(0, Math.min(15, Number(e.target.value) || 0)))}
+            className="w-16 rounded border border-line bg-surface px-2 py-1" />
+        </label>
+        <Button variant="ghost" size="sm" disabled={locked || reading || !port} onClick={() => void readNow()}>{t("fw.patch.readNow")}</Button>
+      </div>
+      {fresh !== undefined && fresh !== null && <p>{t("fw.patch.fresh", { value: fresh.toString(16).toUpperCase().padStart(2, "0") })}</p>}
+      {fresh === null && <p className="text-muted">{t("fw.patch.unread")}</p>}
+      {(fresh === undefined || fresh === null) && snap && (
+        <p className="text-discharge">{t("fw.patch.snapshot", { value: snap.g0.toString(16).toUpperCase().padStart(2, "0"), at: new Date(snap.at).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })}</p>
+      )}
+      {g0 === null && fresh !== undefined && !snap && <p className="text-muted">{t("fw.patch.none")}</p>}
+      {keys.map((k) => <p key={k} className={k === "fw.patch.ok" ? "text-ok" : "text-discharge"}>{t(k)}</p>)}
+      <p className="text-muted">{t("fw.patch.wayBack")}</p>
     </div>
   );
 }

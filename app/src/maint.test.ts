@@ -4,7 +4,7 @@ import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
 const tr = (key: string, params?: Record<string, unknown>) => (params ? `${key} ${JSON.stringify(params)}` : key);
-const master = (patch: Partial<MasterView>): MasterView => ({ kind: "maint", version: "16.06.13 MAINT 1.1", build_id: "fe381985bfff8ad0", marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...patch });
+const master = (patch: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...patch });
 const image = (kind: FirmwareImage["kind"]): FirmwareImage => ({ release: "16.06.13", device: "EMU1101", bytes: 1, blocks: 1, sha256: "ab", kind, custom: kind !== "original" });
 const pending = (pack: number, endpoint = "serial:/dev/p"): Pending => ({ id: pack, endpoint, pack, release: "16.06.13", since: 0 });
 
@@ -115,7 +115,8 @@ describe("backend errors", () => {
     expect(errorKey('{"kind":"other-bank","serial":"SN-B"}')).toEqual({ key: "maint.err.other-bank", params: { serial: "SN-B" } });
     expect(errorKey({ kind: "bootloader-pending", pack: 3, endpoint: "tcp:192.0.2.20:4196" })).toEqual({ key: "maint.err.bootloader-pending", params: { pack: 3, port: "192.0.2.20:4196" } });
     expect(errorKey("some plain text")).toEqual({ key: "maint.err.text", params: { text: "some plain text" } });
-    expect(errorKey({ kind: "timeout", marker: true, slaves: 11 })).toEqual({ key: "maint.err.timeout", params: { marker: 1, slaves: 11 } });
+    expect(errorKey({ kind: "timeout", marker: "on", slaves: 11 })).toEqual({ key: "maint.err.timeout", params: { marker: "on", slaves: 11 } });
+    expect(errorKey(JSON.stringify({ kind: "start-refused", reason: "start-not-allowed" }))).toEqual({ key: "maint.err.start.start-not-allowed" });
   });
   it("offers to take over the serial number only for an other-bank refusal", () => {
     expect(otherBank('{"kind":"other-bank","serial":"SN-B"}')).toBe("SN-B");
@@ -156,17 +157,19 @@ describe("live status", () => {
   it("shows the master's version, marker and slaves; a foreign marker word and an unknown build are alarms", () => {
     expect(masterLine(master({}), tr).tone).toBe("muted");
     expect(masterLine(master({ marker: "foreign", marker_word: "12345678" }), tr).tone).toBe("alarm");
-    expect(masterLine(master({ kind: "unknown-build", may_halt: false }), tr).tone).toBe("alarm");
+    expect(masterLine(master({ kind: "unknown-patch", caps: null, may_halt: false }), tr).tone).toBe("alarm");
+    // not listed, same capabilities: named by its version and base
+    expect(masterLine(master({ listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" }), tr).text).toContain('profile.unlisted {"patch":"1.6","base":"16.07.02"}');
     expect(masterLine(master({ kind: "unknown" }), tr).text).toBe("maint.live.masterUnknown");
   });
 });
 
 describe("flash per pack", () => {
   it("shows the master's full maintenance build, else the 0x51 version", () => {
-    expect(packVersion(0, "16.06", master({}))).toBe("16.06.13 MAINT 1.1");
+    expect(packVersion(0, "16.06", master({}))).toBe("16.06.13 MAINT 1.5");
     expect(packVersion(1, "16.06", master({}))).toBe("16.06");
-    expect(packVersion(0, "16.06", master({ kind: "legacy", version: null }))).toBe("16.06");
-    expect(packVersion(0, "16.06", master({ kind: "unknown-build" }))).toBe("16.06");
+    expect(packVersion(0, "16.06", master({ kind: "unknown-patch", caps: null }))).toBe("16.06");
+    expect(packVersion(0, "16.06", master({ kind: "no-0x64", version: null }))).toBe("16.06");
     expect(packVersion(0, "16.06", null)).toBe("16.06");
   });
 

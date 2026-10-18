@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
-import { effectiveCurrent, packState, type Bus } from "../api";
+import { api, effectiveCurrent, packState, type Bus, type SerialRead } from "../api";
+import { useProfile } from "../profile";
+import { errorText } from "../control";
 import { serialText } from "../serial";
 import type { PackEntry } from "../store";
 import { Button } from "../components/ui/button";
@@ -30,6 +33,13 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const switches: [string, boolean, LucideIcon][] = [["discharge", !!(sw & 1), ArrowDownFromLine], ["charge", !!(sw & 2), ArrowUpToLine], ["limiter", !!(sw & 4), ShieldHalf], ["heater", !!(sw & 8), Flame]];
   const current = tm ? effectiveCurrent(tm) : NaN;
   const balanced = new Set(balancedCells(live?.balancing, cells.length));
+  // CAN socket without String 1/2 from the master's profile: this pack can be asked over the binary service on request
+  const profile = useProfile();
+  const [asked, setAsked] = useState<SerialRead | { error: string } | null>(null);
+  useEffect(() => setAsked(null), [p.address, profile?.gen]);
+  const askable = bus === "can" && !!profile && !profile.master.caps?.uart1_identity;
+  const serials = asked && "bms" in asked ? asked : p.serials;
+  const askBinary = () => api.serialNumbers(p.address, true).then(setAsked, (e) => setAsked({ error: errorText(e, t) }));
 
   return (
     <div className="view-in mx-auto max-w-7xl space-y-8">
@@ -43,10 +53,13 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
           <p className="mt-1 text-muted">{[p.device?.device_name, p.device?.firmware_version && `Firmware ${p.device.firmware_version}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-4 text-sm text-muted">
             {(["battery", "bms"] as const).map((k) => {
-              const v = serialText(p.serials?.[k], k, bus, p.address === 0, t);
+              const v = serialText(serials?.[k], k, asked && "bms" in asked ? "pack" : bus, p.address === 0, t);
               return <span key={k}>{t(`sn.${k}`)}: <span className="text-ink" title={v.title}>{v.text}</span></span>;
             })}
             <InfoIcon id="topic.buses" />
+            {askable && <button className="underline" title={t("sn.askBinaryHint")} onClick={() => void askBinary()}>{t("sn.askBinary")}</button>}
+            {asked && "bms" in asked && asked.uart1 === false && <span>{t("sn.noBinary")}</span>}
+            {asked && "error" in asked && <span className="text-alarm">{asked.error}</span>}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">

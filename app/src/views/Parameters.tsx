@@ -22,6 +22,7 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
+import { gateBits, getProfile, selfLock, writeLocked } from "../profile";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -54,7 +55,7 @@ function commonAssignment(assigned: Record<number, Assignment>): Assignment | un
   return [...count.values()].sort((x, y) => y.n - x.n)[0]?.a;
 }
 
-/** Read the packs' parameters (RS485-1/2, or the CAN socket of a pack with the UART1 parameter patch), show the stored state of the chosen installation, or open BatteryMonitor
+/** Read the packs' parameters (RS485-1/2, or the CAN socket of a pack with the patched parameter service), show the stored state of the chosen installation, or open BatteryMonitor
  *  exports, and compare them side by side. Editing needs a connection with that installation. */
 export function ParametersView({ connected, bus, packs, installation }: { connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null }) {
   const { t, i18n } = useTranslation();
@@ -228,13 +229,33 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     catch (e) { setSaved({ error: String(e) }); }
   };
 
+  // „Dieses Pack hat die Patch-Funktionen“ for a CAN socket column, bound to String 2 read now; and taking a proof back
+  const withPatch = (c: Source, patch: Parameters["patch"]) =>
+    setSources((s) => s.map((x) => (x.id === c.id && x.read ? { ...x, read: { ...x.read, patch } } : x)));
+  const confirmPatch = async (c: Source) => {
+    const gen = getProfile()?.gen;
+    if (!installation || c.address === undefined || !c.read?.bms_serial || gen === undefined) return;
+    try { withPatch(c, await api.patchProofConfirm(installation.id, c.address, c.read.bms_serial, gen)); }
+    catch (e) { setNote({ address: c.address, note: { text: errorText(e, t), error: true } }); }
+  };
+  const revokePatch = async (c: Source) => {
+    if (!installation || c.address === undefined) return;
+    try { await api.patchProofRevoke(installation.id, c.address); withPatch(c, null); }
+    catch (e) { setNote({ address: c.address, note: { text: errorText(e, t), error: true } }); }
+  };
+
   const startEdit = (c: Source, from?: Parameters | null) => {
     if (!c.read || c.address === undefined) return;
     const a = c.address;
     const base = rawsOf(c.read), baseSwitches = [...c.read.function_switches];
     // „Vorherigen Stand“: that block, with P65 as now (it changes only when unlocked)
     const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
-    setEdit({ address: a, base, baseSwitches, raws, switches: from ? [...from.function_switches] : [...baseSwitches], text: {}, seriesUnlocked: false });
+    // the release bits of Group0 that this path does not change stay as the pack has them now (also from „Vorherigen Stand“)
+    const gate = gateBits(c.read.patch, c.path === "uart1");
+    const fixedMask = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4);
+    const keepMask = c.path === "uart1" || gate.named ? fixedMask : 0;
+    const switches = (from ? [...from.function_switches] : [...baseSwitches]).map((v, g) => (g === 0 ? (v & ~keepMask) | (baseSwitches[0] & keepMask) : v));
+    setEdit({ address: a, base, baseSwitches, raws, switches, text: {}, seriesUnlocked: false });
     editing.current = a;
     setNote(null); setPicking(false); setTargets([]); setRunState(null);
     setSources((s) => s.map((x) => (x.id === c.id ? { ...x, notTaken: undefined } : x)));
@@ -317,7 +338,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         rebaseEdit(a, r.fresh);
         say({ text: t("pw.stale", { pack }), error: true });
       } else if (r.kind === "refused") {
-        say({ text: t(r.switches_live === false ? "pw.refusedNothing" : r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
+        say({ text: t(r.refusal === "locked" ? "pw.locked" : r.switches_live === false ? "pw.refusedNothing" : r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
       } else if (r.kind === "unclear") {
         // CAN socket: acknowledged, but the read-back failed
         const unread = !!r.before && !r.read_back && !uart1Error(r.error);
@@ -428,7 +449,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // (the choice stays for later), so the table never empties because a column or the datasheet went away.
   const diffUsable = withValues >= 2 || (!!refCell && withValues >= 1);
   const filtered = onlyDiff && diffUsable;
-  const bitsOff = (g: number) => SWITCH_BITS[g].filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
+  // the release bits of Group0 (bits 0 and 2): shown once a column comes from the CAN socket's service or has a proven
+  // patch; named only when a column's patch is proven (before, they meant nothing)
+  const gatesNamed = cols.some((c) => !!c.read?.patch);
+  const gateRows = gatesNamed || cols.some((c) => c.path === "uart1");
+  const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2] : SWITCH_BITS[g]);
+  const bitsOff = (g: number) => bitsOf(g).filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
+  const gateBit = (g: number, b: number) => g === 0 && (b === 0 || b === 2);
   const nothingLeft = filtered && GROUPS.every((g) => !g.indices.some((i) => diffParams[i].size || outside.includes(i))) && diffSwitches.every((d) => !d.size);
   const lang = i18n.language;
   const editCol = cols.findIndex((c) => c.id === editId);
@@ -440,6 +467,14 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   }) : [];
   const takeOverSources = cols.filter((c) => c.id !== editId && c.values && c.switches && !c.error && (c.suspectFrom === undefined || c.suspectFrom === null))
     .map((c) => ({ id: c.id, label: c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label }));
+  // the edited column's patch: switching its CAN socket write release off explains the way back first
+  const editSource = cols.find((c) => c.id === editId);
+  const editPatch = editSource?.read?.patch;
+  const editWarning = !edit ? null
+    : writeLocked(editPatch, editSource?.path === "uart1", edit.baseSwitches[0]) ? t("pw.gate.locked")
+    : selfLock(editPatch, edit.baseSwitches[0], edit.switches[0])
+      ? `${t("pw.gate.selfLock")}${(edit.address === 0 ? (edit.switches[0] & 4) === 0 : getProfile()?.gates?.start === false) ? ` ${t("pw.gate.selfLockBoth")}` : ""}`
+    : null;
   const editable = (c: Source) => paramWritable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
   const candidates = edit ? packs.filter((a) => a !== edit.address).map((a) => ({ address: a, readable: !!targetRead(a) })) : [];
   const chosenTargets = targets.filter((a) => candidates.some((c) => c.address === a && c.readable));
@@ -571,6 +606,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                 {confirm && <MultiConfirm changes={editChanges} packs={[edit.address, ...confirm.plans.map((p) => p.address)]} skipped={confirm.skipped}
                   capacity={confirm.capacity} reading={confirm.reading} onConfirm={run} onCancel={cancelPrepare} />}
               </>}
+              warning={editWarning}
               onChange={(f) => setEdit((e) => e && f(e))} onTakeOver={takeOverFrom} onWrite={() => (chosenTargets.length ? prepare() : write(edit.address))}
               onRestore={(stored) => write(edit.address, stored)}
               onDiscard={() => { setEdit(null); setNote(null); setPicking(false); setTargets([]); }} />
@@ -615,6 +651,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                   )}
                   {cols.map((c) => (
                     <ColumnHead key={c.id} c={c} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                      onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
+                      onRevokePatch={c.kind === "pack" && installation && c.read?.patch && c.read.patch.source !== "master" ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
                   ))}
                 </tr>
@@ -663,18 +701,24 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                           <ValueCell key={c.id} c={c} off={diffSwitches[g].has(ci)} missed={c.notTaken?.switches.has(g)}>{c.switches ? c.switches[g].toString(16).toUpperCase().padStart(2, "0") : null}</ValueCell>
                         ))}
                       </tr>
-                      {(filtered ? bitsOff(g) : SWITCH_BITS[g])
+                      {(filtered ? bitsOff(g) : bitsOf(g))
                         .map((b) => {
                           const off = deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined)));
                           return (
                             <tr key={b}>
-                              <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />
+                              {gateBit(g, b) && !gatesNamed ? <NameCell id="topic.patchGates" label={t("par.gateUnnamed", { b })} sub={t("par.bit", { b })} />
+                                : <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />}
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
-                              {cols.map((c, ci) => c.id === editId && edit ? (
-                                <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy} onChange={(f) => setEdit((e) => e && f(e))} />
-                              ) : (
-                                <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)}>{c.switches ? <OnOff on={((c.switches[g] >> b) & 1) === 1} /> : null}</ValueCell>
-                              ))}
+                              {cols.map((c, ci) => {
+                                const gate = gateBit(g, b) ? gateBits(c.read?.patch, c.path === "uart1") : null;
+                                const fixed = gate && !(b === 0 ? gate.writeEditable : gate.startEditable);
+                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : b === 2 && fixed ? t("par.gateStartFixed") : undefined;
+                                return c.id === editId && edit ? (
+                                  <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
+                                ) : (
+                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{c.switches ? <OnOff on={((c.switches[g] >> b) & 1) === 1} /> : null}</ValueCell>
+                                );
+                              })}
                             </tr>
                           );
                         })}
@@ -689,10 +733,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   );
 }
 
-function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
+function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious, onConfirmPatch, onRevokePatch }: {
   c: Source; busy: boolean; onSave: () => void; onRemove: () => void;
   /** set when this pack column can be edited now; „Vorherigen Stand“ only after a write of this pack */
   onEdit?: () => void; onPrevious?: () => void;
+  /** a CAN socket column with a board identity and no proof: „Patch-Funktionen bestätigen“; a stored proof: take it back */
+  onConfirmPatch?: () => void; onRevokePatch?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const pending = c.kind === "pack" && !c.values && !c.error;
@@ -738,6 +784,18 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
       {c.stored?.unconfirmed && (
         <div className="text-xs whitespace-nowrap text-discharge" title={t("par.switchesUnconfirmed")}>{t("par.switchesUnconfirmedShort")}</div>
       )}
+      {c.read?.patch && (
+        <div className="flex items-center justify-end gap-1 text-xs whitespace-nowrap text-muted" title={t(`par.patch.source.${c.read.patch.source}`)}>
+          {c.read.patch.release}
+          {onRevokePatch && <button className="underline" disabled={busy} onClick={onRevokePatch}>{t("par.patch.revoke")}</button>}
+        </div>
+      )}
+      {writeLocked(c.read?.patch, c.path === "uart1", c.switches?.[0]) && (
+        <div className="text-xs whitespace-nowrap text-alarm" title={t("par.writeLockedHint")}>{t("par.writeLocked")}</div>
+      )}
+      {onConfirmPatch && (
+        <button className="text-xs whitespace-nowrap text-muted underline" disabled={busy} title={t("par.patch.confirmHint")} onClick={onConfirmPatch}>{t("par.patch.confirm")}</button>
+      )}
       {c.lastWritten && (
         <div className="text-xs whitespace-nowrap text-muted">
           {t("pw.lastWritten", { at: new Date(c.lastWritten).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })}
@@ -757,12 +815,12 @@ function GroupRow({ span, title, help, first }: { span: number; title: string; h
   );
 }
 
-function NameCell({ id, sub, original }: { id: string; sub: string; original?: string }) {
+function NameCell({ id, sub, original, label }: { id: string; sub: string; original?: string; label?: string }) {
   const e = useHelpEntry(id);
   return (
     <td className="sticky left-0 z-10 border-b border-line bg-surface px-4 py-1.5 group-hover:bg-sunken" title={original}>
       <div className="flex items-baseline gap-1.5">
-        <span className="whitespace-nowrap">{e?.title ?? id}</span><InfoIcon id={id} className="self-center" />
+        <span className="whitespace-nowrap">{label ?? e?.title ?? id}</span><InfoIcon id={id} className="self-center" />
         <span className="ml-auto pl-3 text-xs whitespace-nowrap text-muted">{sub}</span>
       </div>
     </td>

@@ -130,7 +130,7 @@ function OutcomeText({ out }: { out?: Outcome }) {
     case "unclear": return <>{t("pw.multi.res.unclear", { err: errorText(out.error, t) })}</>;
     case "notTaken": return <>{t("pw.multi.res.notTaken", { list: [...out.params.map((i) => `P${i}`), ...out.switches.map((g) => t("pw.multi.switchByte", { g }))].join(", ") })}</>;
     case "unread": return <>{t("pw.multi.res.unread", { err: out.error })}</>;
-    case "refused": return <>{t(out.refusal === "refused" ? "pw.multi.res.refused" : "pw.multi.res.invalid")}</>;
+    case "refused": return <>{t(out.refusal === "refused" ? "pw.multi.res.refused" : out.refusal === "locked" ? "pw.multi.res.locked" : "pw.multi.res.invalid")}</>;
     case "unreached": return <>{t("pw.multi.res.unreached", { err: errorText(out.error, t) })}</>;
     case "cancelled": return <>{t("pw.multi.res.cancelled")}</>;
     case "skipped": {
