@@ -43,9 +43,9 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
   }
 }
 
-/** „Hard-Stop: …“ of one pack: the image's own flag wins (a format-3 master, `flag` true/false); else a sighting in the
- *  pack's behaviour (`seen`: waiting for recharge with the charge MOSFET off, with its date); else unknown. Never from a
- *  version number or a flash, and never „not seen“. */
+/** „Hard-Stop: …“ of one pack: the image's own flag wins (a format-3 master, `flag` true/false); else a stored sighting
+ *  in the pack's behaviour (`seen`: waiting for recharge with the charge MOSFET off, no other visible block) shows „an
+ *  (beobachtet am …)“; else unknown. Never from a version number or a flash, and never „not seen“. */
 export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSeen | undefined, t: T, lang = "de"): string {
   const at = (ms: number) => new Date(ms).toLocaleDateString(lang);
   const state = flag === true ? t("profile.hardStopOn") : flag === false ? t("profile.hardStopOff")

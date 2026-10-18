@@ -195,7 +195,8 @@ pub const CHARGE_BLOCKS: [(usize, u8); 9] = [
 
 /// One fresh 0x44 status shows the hard-stop behaviour: waiting for intermittent recharge (event 6 bit 1) with the charge
 /// MOSFET off, no other visible charge-blocking cause (`CHARGE_BLOCKS`), the current limiter and the heater off and the
-/// pack not switched off. A hint, never a hard-stop property: invisible charge blocks remain (`CHARGE_BLOCKS`). Waiting with the MOSFET on proves nothing
+/// pack not switched off. Shown as „an (beobachtet am …)“; invisible charge blocks remain a residual uncertainty
+/// (`CHARGE_BLOCKS`). Waiting with the MOSFET on proves nothing
 /// against it (the firmware closes it again after 10 s of its own discharge over 10 A).
 pub fn hard_stop_observation(status: &openbms_proto::Status) -> bool {
     let other = CHARGE_BLOCKS.iter().any(|&(i, mask)| status.events[i] & mask != 0);
