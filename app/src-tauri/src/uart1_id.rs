@@ -210,10 +210,11 @@ pub(crate) struct Facts {
     pub group0: crate::profile::Group0,
 }
 
-/// What a write's port session came to, and what the store keeps of it afterwards.
-#[derive(Debug, Default)]
-pub(crate) struct Session {
-    pub result: Option<Result<ParamWrite, String>>,
+/// What a write's port session came to, and what the store keeps of it afterwards (`T`: the parameter write's outcome,
+/// or that of a power or clock command).
+#[derive(Debug)]
+pub(crate) struct Session<T = ParamWrite> {
+    pub result: Option<Result<T, String>>,
     /// the checked String 2 the snapshots carry
     pub serial: Option<String>,
     pub snaps: Vec<(SnapshotKind, Vec<u8>)>,
@@ -221,6 +222,12 @@ pub(crate) struct Session {
     pub gone: Vec<BoardRef>,
     /// the target is not (yet) one to write to: noted for „Übernehmen“
     pub unconfirmed: Option<(String, Why, Option<Other>)>,
+}
+
+impl<T> Default for Session<T> {
+    fn default() -> Self {
+        Session { result: None, serial: None, snaps: vec![], gone: vec![], unconfirmed: None }
+    }
 }
 
 /// The exchanges of `write_checked` inside the port session; snapshots are collected, the store gets them after.
@@ -255,47 +262,47 @@ fn elsewhere(r: &BoardRef) -> String {
     serde_json::json!({ "kind": "uart1", "error": "elsewhere", "address": r.address, "board": r.id, "at": r.current_at }).to_string()
 }
 
-/// The port session of a write: master check, String 2 of the target (and of other places that list the same board),
-/// the strict identity, then fresh read, write, acknowledgement and read-back (`write_checked`). Only device I/O and
-/// comparisons; `facts` came from the store before.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expected: Option<&str>, facts: &Facts, base: Values, edited: Values, restore: bool) -> Session {
-    let mut out = Session::default();
-    let refuse = |out: &mut Session, e: String| out.result = Some(Err(e));
+/// What the target's fresh String 2 must equal: the String 2 read with the edited column (a parameter write; None: the
+/// column carries none).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Expected<'a> {
+    Column(Option<&'a str>),
+}
+
+/// What the identity check found: the target's checked String 2, or the refusal (nothing went to the target); either
+/// way the places shown to be gone on the way and an unconfirmed target for „Übernehmen“.
+#[derive(Debug)]
+pub(crate) struct IdCheck {
+    pub serial: Result<String, String>,
+    pub gone: Vec<BoardRef>,
+    pub unconfirmed: Option<(String, Why, Option<Other>)>,
+}
+
+/// The strict identity of a target before anything that changes it (design r5/r7): the master behind the CAN socket is
+/// the installation's, the fresh String 2 is canonical and the expected one, the current board of this address, and of
+/// no other address (other places that list it are asked). Only device I/O and comparisons; `facts` came from the store.
+pub(crate) fn identity(dev: &mut impl Dev, inst: &str, address: u8, expected: Expected, facts: &Facts) -> IdCheck {
+    let mut out = IdCheck { serial: Err(String::new()), gone: vec![], unconfirmed: None };
+    let refuse = |mut out: IdCheck, e: String| {
+        out.serial = Err(e);
+        out
+    };
     match dev.master() {
-        Ok(read) if crate::bms_memory::master_blocks(facts.master.as_deref(), &read) => {
-            refuse(&mut out, uart1_refusal("other-master"));
-            return out;
-        }
-        Err(e) if broken(&e) => {
-            refuse(&mut out, e.to_string());
-            return out;
-        }
+        Ok(read) if crate::bms_memory::master_blocks(facts.master.as_deref(), &read) => return refuse(out, uart1_refusal("other-master")),
+        Err(e) if broken(&e) => return refuse(out, e.to_string()),
         _ => {}
     }
     let raw = match dev.serial(address, uart1::CMD_STRING2) {
         Ok(raw) => raw,
-        Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0x81))) => {
-            refuse(&mut out, uart1_refusal("no-identity"));
-            return out;
-        }
-        Err(e) if broken(&e) => {
-            refuse(&mut out, e.to_string());
-            return out;
-        }
-        Err(_) => {
-            refuse(&mut out, uart1_refusal("no-answer"));
-            return out;
-        }
+        Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0x81))) => return refuse(out, uart1_refusal("no-identity")),
+        Err(e) if broken(&e) => return refuse(out, e.to_string()),
+        Err(_) => return refuse(out, uart1_refusal("no-answer")),
     };
-    let Some(serial) = serial::canonical(&raw) else {
-        refuse(&mut out, uart1_refusal("unchecked"));
-        return out;
-    };
+    let Some(serial) = serial::canonical(&raw) else { return refuse(out, uart1_refusal("unchecked")) };
     // (b): the board the edited column was read from
-    if expected != Some(serial.as_str()) {
-        refuse(&mut out, uart1_refusal("changed"));
-        return out;
+    match expected {
+        Expected::Column(e) if e != Some(serial.as_str()) => return refuse(out, uart1_refusal("changed")),
+        _ => {}
     }
     let s = bank::strict(&serial, address, &facts.refs);
     match s.here {
@@ -305,35 +312,40 @@ pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expecte
             let bms = SerialValue::Set { value: serial.clone(), truncated: false };
             let view = bank::IdentityView::of(&bank::Identity::Unconfirmed { why, other: other.clone() }, address, &bms);
             out.unconfirmed = Some((serial, why, other));
-            refuse(&mut out, bank::refusal(&view, None));
-            return out;
+            return refuse(out, bank::refusal(&view, None));
         }
     }
     // (d): another place lists the same board as current; only another canonical String 2 there clears it
     for r in &s.elsewhere {
         match dev.serial(r.address, uart1::CMD_STRING2) {
             Ok(other) => match serial::canonical(&other) {
-                Some(o) if o == serial => {
-                    refuse(&mut out, serde_json::json!({ "kind": "uart1", "error": "duplicate", "address": r.address }).to_string());
-                    return out;
-                }
+                Some(o) if o == serial => return refuse(out, serde_json::json!({ "kind": "uart1", "error": "duplicate", "address": r.address }).to_string()),
                 Some(_) => out.gone.push(r.clone()),
-                None => {
-                    refuse(&mut out, elsewhere(r));
-                    return out;
-                }
+                None => return refuse(out, elsewhere(r)),
             },
-            Err(e) if broken(&e) => {
-                refuse(&mut out, e.to_string());
-                return out;
-            }
+            Err(e) if broken(&e) => return refuse(out, e.to_string()),
             // 0x81 or no answer: not checkable, the user decides
-            Err(_) => {
-                refuse(&mut out, elsewhere(r));
-                return out;
-            }
+            Err(_) => return refuse(out, elsewhere(r)),
         }
     }
+    out.serial = Ok(serial);
+    out
+}
+
+/// The port session of a write: the strict identity (`identity`, against the column's String 2), then fresh read,
+/// write, acknowledgement and read-back (`write_checked`). Only device I/O and comparisons; `facts` came from the store
+/// before.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expected: Option<&str>, facts: &Facts, base: Values, edited: Values, restore: bool) -> Session {
+    let id = identity(dev, inst, address, Expected::Column(expected), facts);
+    let mut out = Session { gone: id.gone, unconfirmed: id.unconfirmed, ..Default::default() };
+    let serial = match id.serial {
+        Ok(s) => s,
+        Err(e) => {
+            out.result = Some(Err(e));
+            return out;
+        }
+    };
     let mut io = SessionIo { dev, address, snaps: vec![] };
     out.result = Some(write_checked(&mut io, address, base, edited, restore, facts.group0));
     out.snaps = io.snaps;
@@ -385,7 +397,7 @@ fn with_gen(e: String, gen: u64) -> String {
 
 /// After the port session: the places shown to be gone (only the rows checked, with their time), the snapshots with the
 /// checked String 2, and an unconfirmed target for „Übernehmen“.
-fn keep(state: &AppState, link: &Link, address: u8, session: &Session) {
+pub(crate) fn keep<T>(state: &AppState, link: &Link, address: u8, session: &Session<T>) {
     let now = now_ms();
     for g in &session.gone {
         for_link(state, link, "board gone", |s, inst| s.board_gone(inst, g.address, g.id, g.current_at, now));
@@ -719,13 +731,13 @@ mod tests {
         let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
         bank::after_read(&state, &link, 2, &bank::Identity::Unconfirmed { why: Why::Foreign, other: None }, &set("SYN-B2"), &SerialValue::NoAnswer);
         assert!(bank::foreign(&state, link.gen));
-        let session = Session { result: None, serial: Some("SYN-1".into()), snaps: vec![(SnapshotKind::Read, block(1, 3600).block)], ..Default::default() };
+        let session: Session = Session { result: None, serial: Some("SYN-1".into()), snaps: vec![(SnapshotKind::Read, block(1, 3600).block)], ..Default::default() };
         keep(&state, &link, 1, &session);
         let rows = crate::maint::with_store(&state, |s| s.latest_snapshots(&a)).unwrap();
         assert_eq!(rows.iter().map(|r| r.address).collect::<Vec<_>>(), [1]);
         // a session of a connection replaced meanwhile keeps nothing
         crate::new_link(&state, Some(a.clone()));
-        keep(&state, &link, 3, &Session { serial: Some("SYN-3".into()), snaps: vec![(SnapshotKind::Read, block(3, 3600).block)], ..Default::default() });
+        keep(&state, &link, 3, &Session::<ParamWrite> { serial: Some("SYN-3".into()), snaps: vec![(SnapshotKind::Read, block(3, 3600).block)], ..Default::default() });
         assert_eq!(crate::maint::with_store(&state, |s| s.latest_snapshots(&a)).unwrap().len(), 1);
     }
 
