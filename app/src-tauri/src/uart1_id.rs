@@ -342,8 +342,19 @@ pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expect
     })?;
     keep(state, link, address, &session);
     match session.result {
-        Some(r) => r.map(|value| bank::Written { value, unchecked: false }),
+        Some(r) => r.map(|value| bank::Written { value, unchecked: false }).map_err(|e| with_gen(e, link.gen)),
         None => Err("no result".into()),
+    }
+}
+
+/// An `elsewhere` refusal names the link generation its finding came from: „nicht mehr vorhanden“ applies only there.
+fn with_gen(e: String, gen: u64) -> String {
+    match serde_json::from_str::<serde_json::Value>(&e) {
+        Ok(mut v) if v["kind"] == "uart1" && v["error"] == "elsewhere" => {
+            v["gen"] = serde_json::json!(gen);
+            v.to_string()
+        }
+        _ => e,
     }
 }
 
@@ -370,14 +381,18 @@ fn keep(state: &AppState, link: &Link, address: u8, session: &Session) {
 /// `address` that a write found still listed (its String 2 not checkable there) is no longer current. Only that row
 /// with that time, so a board taken over there meanwhile stays.
 #[tauri::command]
-pub async fn bank_mark_gone(state: tauri::State<'_, AppState>, installation: String, address: u8, board: i64, at: Option<i64>) -> Result<bool, String> {
-    mark_gone(&state, &installation, address, board, at)
+pub async fn bank_mark_gone(state: tauri::State<'_, AppState>, installation: String, address: u8, board: i64, at: Option<i64>, gen: u64) -> Result<bool, String> {
+    mark_gone(&state, &installation, address, board, at, gen)
 }
 
-fn mark_gone(state: &AppState, installation: &str, address: u8, board: i64, at: Option<i64>) -> Result<bool, String> {
+/// `gen`: the connection the finding came from; after a reconnect the place may answer again, so it is asked anew.
+fn mark_gone(state: &AppState, installation: &str, address: u8, board: i64, at: Option<i64>, gen: u64) -> Result<bool, String> {
     let link = link_now(state);
     if link.installation.as_deref() != Some(installation) {
         return Err("the connection belongs to another installation than the one chosen; connect again".into());
+    }
+    if link.gen != gen {
+        return Err(crate::LINK_CHANGED.into());
     }
     crate::maint::with_store(state, |s| s.board_gone(installation, address, board, at, now_ms())).map_err(|e| format!("{e:?}"))
 }
@@ -649,9 +664,17 @@ mod tests {
     }
 
     #[test]
-    fn marking_gone_needs_the_connections_installation() {
+    fn marking_gone_needs_the_connections_installation_and_generation() {
         let state = AppState::default();
         crate::new_link(&state, Some("a".into()));
-        assert!(mark_gone(&state, "b", 4, 1, None).unwrap_err().contains("another installation"));
+        let gen = link_now(&state).gen;
+        assert!(mark_gone(&state, "b", 4, 1, None, gen).unwrap_err().contains("another installation"));
+        // a finding of an earlier connection of the same installation
+        crate::new_link(&state, Some("a".into()));
+        assert_eq!(mark_gone(&state, "a", 4, 1, None, gen).unwrap_err(), crate::LINK_CHANGED);
+        // the refusal names its generation; others pass unchanged
+        let e: serde_json::Value = serde_json::from_str(&with_gen(elsewhere(&board(4, "SYN-1", Some(true))), 7)).unwrap();
+        assert_eq!((e["error"].as_str(), e["gen"].as_u64()), (Some("elsewhere"), Some(7)));
+        assert_eq!(with_gen(uart1_refusal("changed"), 7), uart1_refusal("changed"));
     }
 }

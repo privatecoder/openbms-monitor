@@ -396,7 +396,7 @@ const tauriApi = {
   /** `serial`: the String 2 read with the edited column (CAN socket); the write checks the pack still has it. */
   writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean, serial?: string | null) => written(address, invoke<{ value: ParamWrite; unchecked: boolean }>("write_parameters", { address, base, edited, restore, serial: serial ?? null, installation: chosen })),
   /** After the user confirmed it: the board row at `address` a CAN socket write found still listed is no longer there. */
-  bankMarkGone: (address: number, board: number, at: number | null) => invoke<boolean>("bank_mark_gone", { installation: chosen, address, board, at }),
+  bankMarkGone: (address: number, board: number, at: number | null, gen: number) => invoke<boolean>("bank_mark_gone", { installation: chosen, address, board, at, gen }),
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
   /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
   setSerial: (address: number, which: "battery" | "bms", text: string) => written(address, invoke<{ value: SerialSet; unchecked: boolean }>("set_serial", { address, which, text, installation: chosen })),

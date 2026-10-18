@@ -91,7 +91,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const paramWritable = writable || (connected && bus === "can" && !!installation);
   // a CAN socket write that found the same board still listed at another address it could not check there: the
   // explicit, confirmed „no longer there“ for that entry
-  const [gone, setGone] = useState<{ address: number; board: number; at: number | null; armed: boolean } | null>(null);
+  // `gen`: the connection the finding came from (the action is refused on another one, and dropped on a link change)
+  const [gone, setGone] = useState<{ address: number; board: number; at: number | null; gen: number; armed: boolean } | null>(null);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
   const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, ctl: false, multi: false });
@@ -126,7 +127,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     // another installation: its read and stored columns go (they describe its packs); opened exports stay
     if (keptLink.split("|")[0] !== site) { setSources((s) => s.filter((x) => x.kind === "file")); setStoredNote(null); }
     keptLink = link;
-    setSources(unlink); setEdit(null); setNote(null);
+    setSources(unlink); setEdit(null); setNote(null); setGone(null);
     // a run waiting at a refusal ends; one being prepared is dropped
     resume.current?.(false); if (confirm) cancelPrepare(); setPicking(false); setTargets([]);
   }, [link]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -309,7 +310,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       if (!r) {
         say({ text: writeError(error, t, (err) => t("pw.error", { err })), error: true });
         const u = uart1Error(error);
-        if (u?.error === "elsewhere" && u.address !== undefined && u.board !== undefined) setGone({ address: u.address, board: u.board, at: u.at ?? null, armed: false });
+        if (u?.error === "elsewhere" && u.address !== undefined && u.board !== undefined && u.gen !== undefined) setGone({ address: u.address, board: u.board, at: u.at ?? null, gen: u.gen, armed: false });
       }
       else if (r.kind === "stale") {
         // nothing written: the column shows the pack now, the user's changes stay on top of it
@@ -590,9 +591,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                     <span className="text-discharge">{t("uart1.markGoneConfirm", { pack: packNo(gone.address) })}</span>
                     <Button size="sm" onClick={() => {
                       const g = gone; setGone(null);
-                      api.bankMarkGone(g.address, g.board, g.at).then(
+                      api.bankMarkGone(g.address, g.board, g.at, g.gen).then(
                         (done) => setNote({ address: g.address, note: { text: t(done ? "uart1.markedGone" : "uart1.markGoneChanged", { pack: packNo(g.address) }), error: !done } }),
-                        (e) => setNote({ address: g.address, note: { text: String(e), error: true } }));
+                        (e) => setNote({ address: g.address, note: { text: errorText(e, t), error: true } }));
                     }}>{t("uart1.markGoneYes")}</Button>
                     <Button size="sm" variant="ghost" onClick={() => setGone(null)}>{t("uart1.markGoneNo")}</Button>
                   </>}
