@@ -131,6 +131,30 @@ pub fn parse_ascii_serial(info: &[u8]) -> Result<SerialValue> {
     Ok(classify_bytes(&info[..LEN]))
 }
 
+/// `parse_ascii_serial`, and whether the raw bytes are canonical (`canonical`): the value as before, plus the one
+/// fact that tells two boards apart that the trimmed text would make equal.
+pub fn parse_ascii_serial_canonical(info: &[u8]) -> Result<(SerialValue, bool)> {
+    let v = parse_ascii_serial(info)?;
+    Ok((v, canonical(&info[..LEN]).is_some()))
+}
+
+/// A serial that can stand for a board on its own: the raw 30 bytes are printable ASCII (0x21..=0x7E, spaces only
+/// inside), padded only at the end with spaces, NUL or 0xFF, not empty and not the placeholder. Then the text is
+/// unique for these bytes. Leading padding, other bytes or a lossy decoding give None.
+pub fn canonical(raw: &[u8]) -> Option<String> {
+    if raw.len() != LEN {
+        return None;
+    }
+    let end = raw.iter().rposition(|c| !is_pad(*c)).map_or(0, |i| i + 1);
+    let body = &raw[..end];
+    let first_ok = body.first().is_some_and(|b| (0x21..=0x7E).contains(b));
+    if !first_ok || !body.iter().all(|b| (0x20..=0x7E).contains(b)) {
+        return None;
+    }
+    let text = std::str::from_utf8(body).ok()?;
+    (!text.starts_with(PLACEHOLDER_PREFIX)).then(|| text.to_string())
+}
+
 /// Battery serial number from the master's input registers 0x0000.. (high byte first).
 pub fn battery_from_input_regs(regs: &[u16]) -> Result<SerialValue> {
     if regs.len() < MODBUS_SERIAL_REGS {
@@ -148,6 +172,24 @@ pub fn battery_from_input_regs(regs: &[u16]) -> Result<SerialValue> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn canonical_serials_have_trailing_padding_only() {
+        let pad = |t: &[u8], p: u8| { let mut v = t.to_vec(); v.resize(LEN, p); v };
+        assert_eq!(canonical(&pad(b"SYN-0001", b' ')).as_deref(), Some("SYN-0001"));
+        assert_eq!(canonical(&pad(b"SYN 0001", 0)).as_deref(), Some("SYN 0001"));
+        assert_eq!(canonical(&pad(b"SYN-0001", 0xFF)).as_deref(), Some("SYN-0001"));
+        // leading padding, a byte outside printable ASCII, empty, the placeholder: not canonical
+        for raw in [pad(b" SYN-0001", b' '), pad(b"\0SYN-0001", b' '), pad(b"SYN-\xFE01", b' '), pad(b"", b' '), pad(b"EMU110110S-XXXX-2024", b' '), pad(b"SYN\x01", b' ')] {
+            assert_eq!(canonical(&raw), None, "{raw:02X?}");
+        }
+        assert_eq!(canonical(b"SHORT"), None);
+        // the pack bus parser keeps its value and tells the provenance beside it
+        let (v, c) = parse_ascii_serial_canonical(&pad(b" SYN-0001", b' ')).unwrap();
+        assert_eq!((v, c), (SerialValue::Set { value: "SYN-0001".into(), truncated: false }, false));
+        let (v, c) = parse_ascii_serial_canonical(&pad(b"SYN-0001", b' ')).unwrap();
+        assert_eq!((v, c), (SerialValue::Set { value: "SYN-0001".into(), truncated: false }, true));
+    }
+
     use super::*;
     use crate::frame;
 

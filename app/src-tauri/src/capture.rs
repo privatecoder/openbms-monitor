@@ -238,6 +238,8 @@ fn uart1_name(cmd: u8, l: Lang) -> String {
     let name = match cmd {
         uart1::CMD_READ => l.pick("Parameter lesen", "read parameters"),
         uart1::CMD_WRITE => l.pick("Parameter schreiben", "write parameters"),
+        uart1::CMD_STRING1 => l.pick("Batterie-Seriennummer lesen", "read battery serial number"),
+        uart1::CMD_STRING2 => l.pick("BMS-Seriennummer lesen", "read BMS serial number"),
         _ => l.pick("Befehl", "command"),
     };
     format!("UART1: {name} (55/{cmd:02X})")
@@ -259,6 +261,11 @@ fn uart1_rx(bytes: &[u8], address: u8, cmd: u8, l: Lang) -> (String, String, Str
             match l {
                 Lang::De => format!("Antwort: Parameter, {len} Byte"),
                 Lang::En => format!("answer: parameters, {len} bytes"),
+            }
+        } else if fc == uart1::CMD_STRING1 || fc == uart1::CMD_STRING2 {
+            match l {
+                Lang::De => format!("Antwort: Seriennummer, {len} Byte"),
+                Lang::En => format!("answer: serial number, {len} bytes"),
             }
         } else if fc == uart1::CMD_WRITE {
             l.pick("Quittung: übernommen", "acknowledged: taken").into()
