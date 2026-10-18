@@ -436,6 +436,10 @@ pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, ed
             if let Some(kind) = decided.snapshot() {
                 io.snapshot(kind, &block);
             }
+            // the CAN socket (a checked board): a read that shows neither block is what the pack holds now
+            if let (true, AfterLost::Unclear, Ok(p)) = (uart1, &decided, &read) {
+                io.snapshot(SnapshotKind::Read, &p.block);
+            }
             return match decided {
                 AfterLost::Written => Ok(ParamWrite::Written { read_back: read.ok(), read_error: None, unanswered: true, before: uart1.then_some(fresh) }),
                 AfterLost::Unreached => Err(e),
@@ -464,7 +468,9 @@ pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, ed
             io.snapshot(SnapshotKind::Read, &p.block);
             ParamWrite::Written { read_back: Some(p), read_error: None, unanswered: false, before: Some(fresh) }
         }
-        Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e), unanswered: false, before: Some(fresh) },
+        // acknowledged, but nothing confirms it (a late answer of an earlier exchange looks the same): open, the series
+        // stops
+        Err(e) => ParamWrite::UnclearRead { error: e, read_back: None, before: fresh },
     })
 }
 
@@ -814,6 +820,32 @@ mod tests {
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(other_name)], Sent::Ack);
         assert!(matches!(write_checked(&mut f, 2, base, edited, false).unwrap(), ParamWrite::Written { .. }));
+    }
+
+    #[test]
+    fn uart1_acknowledged_without_a_read_back_is_unclear_ascii_stays_written() {
+        let b = block(6);
+        let (base, edited) = edit(&b, 3650);
+        let mut f = Fake::new(true, vec![Ok(b.clone()), Err("no answer")], Sent::Ack);
+        let r = write_checked(&mut f, 6, base.clone(), edited.clone(), false).unwrap();
+        assert!(matches!(&r, ParamWrite::UnclearRead { read_back: None, before, .. } if before.block == b), "{r:?}");
+        assert_eq!(f.kept, [SnapshotKind::Read], "no written");
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Err("timeout")], Sent::Ack);
+        assert!(matches!(write_checked(&mut f, 6, base, edited, false).unwrap(), ParamWrite::Written { read_back: None, .. }));
+    }
+
+    #[test]
+    fn a_lost_uart1_answer_and_another_read_keeps_that_read() {
+        let b = block(7);
+        let (base, edited) = edit(&b, 3650);
+        let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(with_p0(&b, 3640))], Sent::Lost("timeout".into()));
+        let r = write_checked(&mut f, 7, base.clone(), edited.clone(), false).unwrap();
+        assert!(matches!(&r, ParamWrite::UnclearRead { read_back: Some(p), .. } if p.parameters[0].raw == 3640));
+        assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Read], "the read before and the one seen now, no written");
+        // RS485-1/2 as before: the comparison read is not kept
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(with_p0(&b, 3640))], Sent::Lost("timeout".into()));
+        assert!(matches!(write_checked(&mut f, 7, base, edited, false).unwrap(), ParamWrite::Unclear { .. }));
+        assert_eq!(f.kept, [SnapshotKind::Read]);
     }
 
     #[test]
