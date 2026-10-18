@@ -1,4 +1,4 @@
-import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, Pending } from "./api";
+import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, PackProbeView, Pending } from "./api";
 import { patchName } from "./profile";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
@@ -274,4 +274,16 @@ export function flashBlocked(f: { image: FirmwareImage | null; quiet: boolean; b
 /** „Fertig“ is shown after at least one flash in this panel, or while the master reports its marker on. */
 export function showDone(flashed: boolean, master: MasterView | null): boolean {
   return flashed || master?.marker === "on";
+}
+
+/** The pack list's version: with the pack's own 64/03 (proven) „Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop
+ *  aus)“; else the 0x51 version with „ohne Patch-Funktionen“ (another MNT) or „Patch nicht geprüft“. Never inferred from
+ *  0x51 or from a refusal on the pack bus. */
+export function packVersionText(firmware: string, probe: PackProbeView | undefined, t: T): string {
+  if (probe?.state === "proven" && probe.version) {
+    const [base, maint] = probe.version.split(" MAINT ");
+    const hard = t(probe.hard_stop === true ? "profile.hardStopOn" : probe.hard_stop === false ? "profile.hardStopOff" : "profile.hardStopUnknown");
+    return t("maint.packs.versionFull", { base, patch: probe.listed?.split(" MAINT ")[1] ?? maint ?? "", build: probe.build_id ? `${probe.build_id.slice(0, 8)}…` : "?", hard });
+  }
+  return t(probe?.state === "negative" ? "maint.packs.versionNoPatch" : "maint.packs.versionUnchecked", { version: firmware });
 }

@@ -705,6 +705,9 @@ pub struct PackScan {
     cleared: Vec<u8>,
     /// stopped by „Abbrechen“: `packs` holds what answered until then
     cancelled: bool,
+    /// each pack's own 64/03 as far as known (the pack bus cannot give it: UART0 answers RTN 04): a live finding of the
+    /// installation's current CAN socket link, else a short read over its control channel; missing: not checked
+    identities: Vec<crate::profile::PackProbeView>,
 }
 
 /// Addresses 0–15 until `cancel` is set: checked before each address, so a cancelled search ends after the one
@@ -727,7 +730,7 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     let _op = crate::control::reserve_bus_wait(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
     if state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true });
+        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true, identities: vec![] });
     }
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &key)?;
@@ -743,7 +746,38 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
         Some(_) => bank_view(&Bank::Unchecked),
         None => BankView { state: "none", serial: None },
     };
-    Ok(PackScan { packs, bank, cleared, cancelled })
+    drop(link);
+    let identities = match &inst {
+        Some(i) if !cancelled => pack_identities(&state, i, &found),
+        _ => vec![],
+    };
+    Ok(PackScan { packs, bank, cleared, cancelled, identities })
+}
+
+/// The full version of the found packs for the pack list: from live 64/03 findings of the installation's current CAN
+/// socket link, the others by a short read-only addressed 64/03 (600 ms each) over its control channel when that is
+/// reachable. Nothing is inferred from 0x51 or from a refusal on the pack bus; a pack without answer stays unchecked.
+fn pack_identities(state: &AppState, inst: &Installation, found: &[u8]) -> Vec<crate::profile::PackProbeView> {
+    use openbms_flash::maint::policy::PackFinding;
+    let link = crate::link_now(state);
+    let mine = link.installation.as_deref() == Some(inst.id.as_str());
+    let mut out: Vec<(u8, PackFinding)> = found.iter().filter_map(|a| mine.then(|| crate::bank::live(state, link.gen, *a)).flatten().map(|f| (*a, f))).collect();
+    let ask: Vec<u8> = found.iter().copied().filter(|a| !out.iter().any(|(b, _)| b == a)).collect();
+    if !ask.is_empty() && inst.control.is_some() {
+        let read = with_control(state, inst, |c| -> Result<Vec<(u8, PackFinding)>, openbms_flash::Error> {
+            let mut v = vec![];
+            for a in &ask {
+                let answer = dialog::probe_pack(c, &SystemClock::new(), *a, crate::profile::PACK_PROBE)?;
+                v.push((*a, PackFinding::of(answer)));
+            }
+            Ok(v)
+        });
+        if let Ok(Ok(v)) = read {
+            out.extend(v);
+        }
+    }
+    out.sort_by_key(|(a, _)| *a);
+    out.iter().map(|(a, f)| crate::profile::probe_view(*a, f)).collect()
 }
 
 /// „Abbrechen“ of the pack search: it stops before the next address.
@@ -1220,6 +1254,28 @@ mod tests {
         let b = s.create_installation("B", None, vec![]).unwrap();
         s.set_master_read_keep_marker(&b.id, "{}", 4).unwrap();
         assert!(!s.marker_last_on(&b.id).unwrap());
+    }
+
+    #[test]
+    fn the_pack_list_takes_live_findings_of_its_own_link_and_infers_nothing() {
+        use openbms_flash::maint::dialog::PackAnswer;
+        use openbms_flash::maint::policy::PackFinding;
+        let state = AppState::default();
+        let s = store_at("identities");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let b = s.create_installation("B", None, vec![]).unwrap();
+        *state.maint.lock().unwrap() = Some(s);
+        crate::new_link(&state, Some(a.id.clone()));
+        let link = crate::link_now(&state);
+        crate::bank::begin(&state, link.gen, false, None);
+        let info = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop: Some(false) };
+        crate::bank::set_live(&state, link.gen, 1, PackFinding::of(PackAnswer::Info(info)));
+        // no control channel: only what the link found; pack 2 stays unchecked
+        let v = pack_identities(&state, &a, &[1, 2]);
+        assert_eq!(v.iter().map(|p| (p.address, p.state)).collect::<Vec<_>>(), vec![(1, "proven")]);
+        assert_eq!(v[0].version.as_deref(), Some("16.06.13 MAINT 1.5"));
+        // the link belongs to another installation: its findings do not count here
+        assert!(pack_identities(&state, &b, &[1, 2]).is_empty());
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, releaseFirst, showDone, storedPort, type Tone } from "../maint";
+import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, packVersionText, releaseFirst, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -238,7 +238,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
                 <li key={a} className="space-y-1 rounded-md border border-line p-2">
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="font-medium">{name}</span>
-                    <span className="text-muted">{version ? t("maint.packs.version", { version }) : t("maint.packs.silent")}</span>
+                    <span className="text-muted">{version ? packVersionText(version, scan?.identities?.find((x) => x.address === a), t) : t("maint.packs.silent")}</span>
                     {/* one button in a fixed place: the backend checks quiet bus, target and installation, then flashes */}
                     {d && <ActButton variant="secondary" size="sm" className="ml-auto" spinning={(action === "flash" || running) && target === a} disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => flash(a, version)}>{t("maint.packs.flash")}</ActButton>}
                   </div>
