@@ -864,7 +864,7 @@ fn touch(db: &Connection, session: i64, site: &str, address: u8, t: i64) -> rusq
 
 /// Open an event for each new alarm of the pack, close the ones that are gone. `import`: the site of an import, whose
 /// events are matched by (site, pack, key, start): a known one is not added again, it is followed under its negated id
-/// and gets a later end when the alarm is seen to go (never an earlier one, and none at the end of the file).
+/// and gets a later end when the alarm is seen to go or is still on at the end of the file (never an earlier one).
 /// Returns how many events were added.
 fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, address: u8, update: &Value, import: Option<&str>) -> rusqlite::Result<u64> {
     let Some(alarms) = update["status"]["alarms"].as_array() else { return Ok(0) };
@@ -938,8 +938,14 @@ fn import_event(db: &Connection, site: &str, session: i64, v: &Value) -> rusqlit
 
 fn close_events(db: &Connection, open: &mut OpenEvents, t: i64) {
     for (_, m) in open.drain() {
-        for (_, id) in m.into_iter().filter(|&(_, id)| id > 0) {
-            let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, t]);
+        for (_, id) in m {
+            if id > 0 {
+                let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, t]);
+            } else if id < 0 {
+                // a known event of an import still on at the end of the file: its end at least that time, like a new
+                // one (an open one stays open, nothing is shortened)
+                let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1 AND end IS NOT NULL AND end < ?2", params![-id, t]);
+            }
         }
     }
 }
@@ -2214,6 +2220,11 @@ mod tests {
         h.import(&first, "inst-a").unwrap();
         let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
         assert_eq!(end, Some(606 * m));
+        // a file whose last line still shows it on, after the stored end: the end moves to that last time
+        let later = write("p3.jsonl", &[status(600 * m, &["cell_high"]), status(610 * m, &["cell_high"])]);
+        assert_eq!(h.import(&later, "inst-a").unwrap().events, 0);
+        let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(end, Some(610 * m));
     }
 
     #[test]
