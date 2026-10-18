@@ -22,7 +22,7 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { gateBits, gateRowLabel, getProfile, selfLock, useProfile, writeLocked } from "../profile";
+import { cutoffBits, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { controlHint, controlMode, powerLocked, powerRtc } from "../power";
 import { StatusLine } from "../components/Section";
@@ -262,11 +262,10 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     const base = rawsOf(c.read), baseSwitches = [...c.read.function_switches];
     // „Vorherigen Stand“: that block, with P65 as now (it changes only when unlocked)
     const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
-    // the release bits of Group0 that this path does not change stay as the pack has them now (also from „Vorherigen Stand“)
-    const gate = gateBits(c.read.patch, c.path === "uart1");
-    const fixedMask = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4) | (gate.powerEditable ? 0 : 8);
-    const keepMask = c.path === "uart1" || gate.named ? fixedMask : 0;
-    const switches = (from ? [...from.function_switches] : [...baseSwitches]).map((v, g) => (g === 0 ? (v & ~keepMask) | (baseSwitches[0] & keepMask) : v));
+    // the patch bits of Group0 that this path does not change stay as the pack has them now (also from „Vorherigen
+    // Stand“), the lock state (bit 5) always
+    const keep = keepMask(c.read.patch, c.path === "uart1", baseSwitches[0]);
+    const switches = (from ? [...from.function_switches] : [...baseSwitches]).map((v, g) => (g === 0 ? (v & ~keep) | (baseSwitches[0] & keep) : v));
     setEdit({ address: a, base, baseSwitches, raws, switches, text: {}, seriesUnlocked: false });
     editing.current = a;
     setNote(null); setPicking(false); setTargets([]); setRunState(null);
@@ -348,9 +347,21 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       else if (r.kind === "stale") {
         // nothing written: the column shows the pack now, the user's changes stay on top of it
         rebaseEdit(a, r.fresh);
-        say({ text: t("pw.stale", { pack }), error: true });
+        say({ text: t(r.lock_changed ? "pw.lockChanged" : "pw.stale", { pack }), error: true });
+      } else if (r.kind === "refused" && r.refusal === "locked") {
+        // E3: the pack changed since the read (a protected bit, the write release); its state now, the edit on top of it
+        say({ text: t("pw.locked"), error: true });
+        const l = linkNow(), before = e0?.baseSwitches[0] ?? sentSwitches[0];
+        try {
+          const p = await api.parameters(a);
+          if (linkNow() === l) {
+            replace(packCol(p, a, l, path)); seen(a, p);
+            if (!restore) rebaseEdit(a, p);
+            say({ text: `${t("pw.lockedRead")}${lockChanged(before, p.function_switches[0]) ? ` ${t("pw.lockChanged", { pack })}` : ""}`, error: true });
+          }
+        } catch { /* the hint to read again stays */ }
       } else if (r.kind === "refused") {
-        say({ text: t(r.refusal === "locked" ? "pw.locked" : r.switches_live === false ? "pw.refusedNothing" : r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
+        say({ text: t(r.switches_live === false ? "pw.refusedNothing" : r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
       } else if (r.kind === "unclear") {
         // CAN socket: acknowledged, but the read-back failed
         const unread = !!r.before && !r.read_back && !uart1Error(r.error);
@@ -463,13 +474,15 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const filtered = onlyDiff && diffUsable;
   // the release bits of Group0 (bits 0, 2 and 3): shown once a column comes from the CAN socket's service or has a proven
   // patch; named only when a column's patch is proven (before, they meant nothing). Bit 3 only where a proven pack may
-  // have the power and clock service (its image flag set or not known)
+  // have the power and clock service (its image flag set or not known), bits 4 and 5 (extended off, the lock state) only
+  // where one may have the stored pack cutoff
   const gateLabel = gateRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
   const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
   const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
-  const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2, ...(powerRow ? [3] : [])] : SWITCH_BITS[g]);
+  const cutoffRow = cols.some((c) => c.read?.patch && c.read.patch.caps.pack_cutoff !== false);
+  const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2, ...(powerRow ? [3] : []), ...(cutoffRow ? [4, 5] : [])] : SWITCH_BITS[g]);
   const bitsOff = (g: number) => bitsOf(g).filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
-  const gateBit = (g: number, b: number) => g === 0 && (b === 0 || b === 2 || b === 3);
+  const gateBit = (g: number, b: number) => g === 0 && b !== 1 && b <= 5;
   const nothingLeft = filtered && GROUPS.every((g) => !g.indices.some((i) => diffParams[i].size || outside.includes(i))) && diffSwitches.every((d) => !d.size);
   const lang = i18n.language;
   const editCol = cols.findIndex((c) => c.id === editId);
@@ -730,18 +743,25 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                               {cols.map((c, ci) => {
                                 const gate = gateBit(g, b) ? gateBits(c.read?.patch, c.path === "uart1") : null;
-                                const fixed = gate && !(b === 0 ? gate.writeEditable : b === 2 ? gate.startEditable : gate.powerEditable);
+                                const cut = gate && b >= 4 ? cutoffBits(c.read?.patch, c.path === "uart1", c.read?.function_switches[0]) : null;
+                                // bit 5 is status only, never editable
+                                const fixed = gate && !(b === 0 ? gate.writeEditable : b === 2 ? gate.startEditable : b === 3 ? gate.powerEditable : b === 4 ? cut!.cutoffEditable : false);
+                                // bits 4 and 5 of a proven column read inverted: on = bit 0
+                                const inverted = invertedBit(g, b, !!gate?.named);
                                 // the meaning only in proven columns; the shared row stays neutral in a mixed table
-                                const meaning = gate?.named && (b !== 3 || gate.power !== false) ? helpTitle(`switch.0.${b}`, lang) : undefined;
-                                // bit 3 acts only in a build with the power and clock service
+                                const meaning = gate?.named && (b !== 3 || gate.power !== false) && (b < 4 || cut!.cutoff !== false) ? helpTitle(`switch.0.${b}`, lang) : undefined;
+                                // bit 3 acts only in a build with the power and clock service, bits 4 and 5 with the pack cutoff
                                 const power = b !== 3 || !gate?.named ? null : gate.power === false ? t("par.gatePowerAbsent") : gate.power === null ? t("par.gatePowerUnknown") : null;
+                                const cutoff = !cut || !gate?.named ? null : cut.cutoff === false ? t("par.gateCutoffAbsent") : cut.cutoff === null ? t("par.gateCutoffUnknown") : null;
                                 // on a slave, bit 2 is the master's start release, stored here: it acts only at address 0
                                 const slaveStart = b === 2 && gate?.named && c.address !== undefined && c.address !== 0 ? t("par.gateStartMasterOnly") : null;
-                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, b === 2 && fixed ? t("par.gateStartFixed") : null, b === 3 && fixed && gate.power !== false ? t("par.gatePowerFixed") : null].filter(Boolean).join(" · ");
+                                const fixedWhy = !fixed ? null : b === 2 ? t("par.gateStartFixed") : b === 3 && gate.power !== false ? t("par.gatePowerFixed")
+                                  : b === 4 && cut!.cutoff !== false ? t("par.gateCutoffFixed") : b === 5 ? t("par.gateLockFixed") : null;
+                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, inverted ? t("par.gateInverted") : null, fixedWhy].filter(Boolean).join(" · ");
                                 return c.id === editId && edit ? (
-                                  <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
+                                  <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
-                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{c.switches ? <OnOff on={((c.switches[g] >> b) & 1) === 1} /> : null}</ValueCell>
+                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{c.switches ? <OnOff on={switchOn(c.switches[g], b, inverted)} /> : null}</ValueCell>
                                 );
                               })}
                             </tr>
@@ -817,6 +837,9 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious, onConfirmPa
       )}
       {writeLocked(c.read?.patch, c.path === "uart1", c.switches?.[0]) && (
         <div className="text-xs whitespace-nowrap text-alarm" title={t("par.writeLockedHint")}>{t("par.writeLocked")}</div>
+      )}
+      {packLockActive(c.read?.patch, c.read?.function_switches[0]) && (
+        <div className="text-xs font-semibold whitespace-nowrap text-alarm" title={t("par.packLockHint")}>{t("par.packLock")}</div>
       )}
       {onConfirmPatch && (
         <button className="text-xs whitespace-nowrap text-muted underline" disabled={busy} title={t("par.patch.confirmHint")} onClick={onConfirmPatch}>{t("par.patch.confirm")}</button>

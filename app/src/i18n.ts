@@ -525,6 +525,12 @@ const resources = {
         gateUnproven: "Die Patch-Version dieses Packs ist nicht belegt: Das Bit wird nicht gedeutet und beim Schreiben über die CAN-Buchse so belassen, wie es im Pack steht.",
         gateStartMasterOnly: "Wartungsstart-Freigabe (wirkt nur am Master 0); hier nur gespeichert",
         gateStartFixed: "Die Wartungsstart-Freigabe lässt sich über die CAN-Buchse nicht ändern (das Pack würde das ganze Schreiben ablehnen); nur über RS485-1/2 oder am Display.",
+        gateCutoffUnknown: "Wirkt nur in Builds mit Packsperre (MAINT 1.6); ob dieses Pack einen solchen hat, zeigt seine Versionsabfrage über die CAN-Buchse.",
+        gateCutoffAbsent: "Dieser Build hat die gespeicherte Packsperre nicht: Das Bit hat hier keine Funktion.",
+        gateCutoffFixed: "Über die CAN-Buchse nur änderbar, wenn das Pack die Packsperre (MAINT 1.6) auf dieser Verbindung belegt hat und Schreiben dort erlaubt ist (Bit 0); sonst über RS485-1/2 oder am Display.",
+        gateLockFixed: "Nur Status, nie bearbeitbar: Gezieltes Ein an dieses Pack löst die Sperre; Parameterimporte und Wiederherstellen lösen sie nicht.",
+        gateInverted: "Angezeigt umgekehrt: an = Bit 0",
+        packLock: "Packsperre aktiv", packLockHint: "Individuelle Packsperre gespeichert (Funktionsschalter 0, Bit 5 = 0): Lade- und Entladepfad bleiben gesperrt, auch über Neustarts. Freigeben nur mit gezieltem Ein an dieses Pack (Steuern).",
         writeLocked: "Schreiben gesperrt", writeLockedHint: "Die Schreibfreigabe über die CAN-Buchse (Funktionsschalter 0, Bit 0) ist aus: Das Pack nimmt dort nichts an. Entsperren nur über RS485-1/2 oder am Display.",
         patch: {
           source: { live: "Belegt durch die eigene Firmwarekennung des Packs (64/03) auf dieser Verbindung; nicht zurücknehmbar", master: "Belegt durch die Firmwarekennung des Masters auf dieser Verbindung", flash: "Belegt: von der App mit diesem Image geflasht (an die BMS-Seriennummer gebunden)", user: "Belegt durch deine Bestätigung (an die BMS-Seriennummer gebunden)" },
@@ -678,7 +684,8 @@ const resources = {
         noBinary: "Das Pack bietet die Seriennummer über die CAN-Buchse nicht an (0x81).",
       },
       pw: {
-        locked: "Nicht geschrieben (E3): Das Pack hat Schreiben über die CAN-Buchse gesperrt oder die Startfreigabe hätte sich geändert. Der Stand hat sich seit dem Lesen geändert: Parameter neu lesen.",
+        locked: "Nicht geschrieben (E3): Das Pack hat Schreiben über die CAN-Buchse gesperrt oder ein geschütztes Bit (Startfreigabe, Sperre von Ein/Aus und Uhr, Packsperre) hätte sich geändert. Der Stand hat sich seit dem Lesen geändert: Parameter neu lesen.",
+        lockedRead: "Nicht geschrieben (E3): Das Pack hat Schreiben über die CAN-Buchse gesperrt oder ein geschütztes Bit hätte sich geändert. Die Spalte zeigt den frisch gelesenen Stand, deine Änderungen bleiben.",
         gate: {
           locked: "Schreiben über die CAN-Buchse ist an diesem Pack gesperrt (Funktionsschalter 0, Bit 0): Die App sendet nichts. Entsperren über RS485-1/2 oder am Display.",
           selfLock: "Damit sperrst du das Schreiben über die CAN-Buchse an diesem Pack. Lesen geht weiter; entsperren lässt es sich nur über RS485-1/2 (bei einer Bank mit angehaltenem Master oder im Einzelbetrieb) oder am Display.",
@@ -698,6 +705,7 @@ const resources = {
           fix: "Nennkapazität auf {{full}} Ah setzen", otherLink: "die Spalte gehört zu einer früheren Verbindung, erst neu lesen",
         },
         stale: "Pack {{pack}} hat sich seit dem Lesen geändert. Nichts geschrieben; die Spalte zeigt den aktuellen Stand, deine Änderungen bleiben. Prüfen und erneut schreiben.",
+        lockChanged: "Sperrzustand hat sich geändert: Pack {{pack}} wurde seit dem Lesen gesperrt oder freigegeben. Nichts geschrieben; die Spalte zeigt den aktuellen Stand, deine Änderungen bleiben. Prüfen und erneut schreiben.",
         done: "Geschrieben und zurückgelesen: alle Werte übernommen.", restored: "Gespeicherter Stand wieder geschrieben und zurückgelesen.",
         notTakenCount_one: "Geschrieben, aber 1 Wert nicht übernommen (rot markiert).", notTakenCount_other: "Geschrieben, aber {{count}} Werte nicht übernommen (rot markiert).",
         notTaken: "nicht übernommen", unread: "Geschrieben; Rücklesen fehlgeschlagen ({{err}}). Die Packs neu lesen.",
@@ -729,7 +737,7 @@ const resources = {
           res: {
             written: "geschrieben und rückgelesen", writtenUnanswered: "geschrieben (Antwort fehlte, Rücklesen bestätigt)",
             unclear: "Ergebnis ungeklärt: bitte Parameter neu lesen ({{err}})", notTaken: "nicht übernommen: {{list}}", unread: "geschrieben; Rücklesen fehlgeschlagen ({{err}})",
-            refused: "abgelehnt (RTN 06: Werte nicht plausibel)", invalid: "abgelehnt (RTN 04: Block-Kennung)", locked: "abgelehnt (E3: Schreiben gesperrt oder Startfreigabe geändert; nichts übernommen)", skipped: "übersprungen: {{why}}",
+            refused: "abgelehnt (RTN 06: Werte nicht plausibel)", invalid: "abgelehnt (RTN 04: Block-Kennung)", locked: "abgelehnt (E3: Schreiben gesperrt oder geschütztes Bit geändert; nichts übernommen)", skipped: "übersprungen: {{why}}",
             unreached: "nicht erreicht: {{err}}", cancelled: "abgebrochen",
           },
           why: {
@@ -1442,6 +1450,12 @@ const resources = {
         gateUnproven: "This pack's patch version is not proven: the bit is not interpreted and a write via the CAN socket keeps it as the pack has it.",
         gateStartMasterOnly: "Maintenance start release (acts only at master 0); only stored here",
         gateStartFixed: "The maintenance start release cannot be changed via the CAN socket (the pack would refuse the whole write); only via RS485-1/2 or on the display.",
+        gateCutoffUnknown: "Acts only in builds with the pack cutoff (MAINT 1.6); whether this pack has one shows its version query via the CAN socket.",
+        gateCutoffAbsent: "This build has no stored pack cutoff: the bit has no function here.",
+        gateCutoffFixed: "Changeable via the CAN socket only when the pack proved the pack cutoff (MAINT 1.6) on this connection and writing is allowed there (bit 0); otherwise via RS485-1/2 or on the display.",
+        gateLockFixed: "Status only, never editable: switching this pack on directly releases the lock; parameter imports and restoring do not.",
+        gateInverted: "Shown inverted: on = bit 0",
+        packLock: "Pack cutoff active", packLockHint: "Individual pack cutoff stored (function switch 0, bit 5 = 0): the charge and discharge path stay blocked, also across restarts. Release only by switching this pack on directly (Control).",
         writeLocked: "Writing locked", writeLockedHint: "The write release via the CAN socket (function switch 0, bit 0) is off: the pack takes nothing there. Unlock only via RS485-1/2 or on the display.",
         patch: {
           source: { live: "Proven by the pack's own firmware identity (64/03) on this connection; not retractable", master: "Proven by the master's firmware identity on this connection", flash: "Proven: flashed by the app with this image (bound to the BMS serial number)", user: "Proven by your confirmation (bound to the BMS serial number)" },
@@ -1595,7 +1609,8 @@ const resources = {
         noBinary: "The pack does not offer its serial number via the CAN socket (0x81).",
       },
       pw: {
-        locked: "Not written (E3): the pack has locked writing via the CAN socket or the start release would have changed. The state changed since it was read: read the parameters again.",
+        locked: "Not written (E3): the pack has locked writing via the CAN socket or a protected bit (start release, lock of on/off and clock, pack cutoff) would have changed. The state changed since it was read: read the parameters again.",
+        lockedRead: "Not written (E3): the pack has locked writing via the CAN socket or a protected bit would have changed. The column shows the state read just now, your changes stay.",
         gate: {
           locked: "Writing via the CAN socket is locked on this pack (function switch 0, bit 0): the app sends nothing. Unlock via RS485-1/2 or on the display.",
           selfLock: "This locks writing via the CAN socket on this pack. Reading goes on; unlocking works only via RS485-1/2 (in a bank with the master halted, or a single pack) or on the display.",
@@ -1615,6 +1630,7 @@ const resources = {
           fix: "Set rated capacity to {{full}} Ah", otherLink: "the column belongs to an earlier connection, read again first",
         },
         stale: "Pack {{pack}} has changed since it was read. Nothing written; the column shows the current state, your changes stay. Check and write again.",
+        lockChanged: "Lock state changed: pack {{pack}} was locked or released since it was read. Nothing written; the column shows the current state, your changes stay. Check and write again.",
         done: "Written and read back: all values taken.", restored: "Stored state written again and read back.",
         notTakenCount_one: "Written, but 1 value not taken (marked red).", notTakenCount_other: "Written, but {{count}} values not taken (marked red).",
         notTaken: "not taken", unread: "Written; reading back failed ({{err}}). Read the packs again.",
@@ -1646,7 +1662,7 @@ const resources = {
           res: {
             written: "written and read back", writtenUnanswered: "written (answer missing, read-back confirmed)",
             unclear: "result unclear: please read the parameters again ({{err}})", notTaken: "not taken: {{list}}", unread: "written; reading back failed ({{err}})",
-            refused: "refused (RTN 06: values not plausible)", invalid: "refused (RTN 04: block markers)", locked: "refused (E3: writing locked or start release changed; nothing taken)", skipped: "skipped: {{why}}",
+            refused: "refused (RTN 06: values not plausible)", invalid: "refused (RTN 04: block markers)", locked: "refused (E3: writing locked or protected bit changed; nothing taken)", skipped: "skipped: {{why}}",
             unreached: "not reached: {{err}}", cancelled: "cancelled",
           },
           why: {

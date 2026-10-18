@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { firmwareText, gateBits, gateRowLabel, hardStopLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
+import { cutoffBits, firmwareText, gateBits, gateRowLabel, hardStopLine, invertedBit, keepMask, lockChanged, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -91,6 +91,51 @@ describe("the power and clock lock (Group0 bit 3)", () => {
     expect(gateBits(live(true), true)).toMatchObject({ powerEditable: false, power: true });
     expect(gateBits(live(null), false)).toMatchObject({ powerEditable: true, power: null });
     expect(gateBits(live(false), false)).toMatchObject({ powerEditable: false, power: false });
+  });
+});
+
+describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
+  const live = (pack_cutoff: boolean | null): PackPatch => ({ source: "live", release: "16.06.13 MAINT 1.6", caps: { ...caps, power_rtc: true, pack_cutoff }, at: null });
+  it("reads both bits inverted in a proven column: on = bit 0", () => {
+    expect(invertedBit(0, 4, true) && invertedBit(0, 5, true)).toBe(true);
+    expect(invertedBit(0, 3, true) || invertedBit(1, 4, true) || invertedBit(0, 4, false)).toBe(false);
+    // FF: extended off off, no lock; EF: extended off on; CF: on and locked
+    expect([0xff, 0xef, 0xcf].map((v) => [switchOn(v, 4, true), switchOn(v, 5, true)])).toEqual([[false, false], [true, false], [true, true]]);
+    expect(switchOn(0xff, 4, false)).toBe(true);
+  });
+  it("bit 4 edits over RS485-1/2 unless the build has none, over the CAN socket only with the proven cutoff and bit 0 at 1", () => {
+    expect(cutoffBits(live(true), false, 0xfe)).toEqual({ cutoff: true, cutoffEditable: true });
+    expect(cutoffBits(live(null), false, 0xff)).toEqual({ cutoff: null, cutoffEditable: true });
+    expect(cutoffBits(live(false), false, 0xff)).toEqual({ cutoff: false, cutoffEditable: false });
+    expect(cutoffBits(live(true), true, 0xff).cutoffEditable).toBe(true);
+    expect(cutoffBits(live(true), true, 0xfe).cutoffEditable).toBe(false);
+    expect(cutoffBits(live(null), true, 0xff).cutoffEditable).toBe(false);
+    expect(cutoffBits(proof, true, 0xff).cutoffEditable).toBe(false);
+    expect(cutoffBits(null, false, 0xff)).toEqual({ cutoff: null, cutoffEditable: false });
+  });
+  it("never takes bit 5 from an edit, a file or an older state", () => {
+    // RS485-1/2 without proof: only the lock state is kept
+    expect(keepMask(null, false, 0xff)).toBe(0x20);
+    // RS485-1/2 with a 1.6 pack: bits 0, 2, 3, 4 free, 5 kept
+    expect(keepMask(live(true), false, 0xff)).toBe(0x20);
+    // CAN socket: bits 2, 3, 5 kept; 4 with the proven cutoff and writing released, else kept too
+    expect(keepMask(live(true), true, 0xff)).toBe(0x2c);
+    expect(keepMask(live(null), true, 0xff)).toBe(0x3c);
+    expect(keepMask(null, true, 0xff)).toBe(0x3d);
+    // a 1.5 pack over RS485-1/2: bit 4 has no function and stays
+    expect(keepMask(live(false), false, 0xff)).toBe(0x30);
+  });
+  it("shows an active lock only where this connection proved the cutoff, and notices a changed lock state", () => {
+    expect(packLockActive(live(true), 0xdf)).toBe(true);
+    expect(packLockActive(live(true), 0xff)).toBe(false);
+    expect(packLockActive(live(null), 0xdf) || packLockActive(proof, 0xdf) || packLockActive(live(true), undefined)).toBe(false);
+    expect(lockChanged(0xff, 0xdf)).toBe(true);
+    expect(lockChanged(0xff, 0xef)).toBe(false);
+    expect(lockChanged(undefined, 0xdf)).toBe(false);
+  });
+  it("has its texts in both languages", () => {
+    for (const lng of ["de", "en"]) for (const k of ["par.gateCutoffUnknown", "par.gateCutoffAbsent", "par.gateCutoffFixed", "par.gateLockFixed", "par.gateInverted", "par.packLock", "par.packLockHint", "pw.lockChanged", "pw.lockedRead"])
+      expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });
 });
 

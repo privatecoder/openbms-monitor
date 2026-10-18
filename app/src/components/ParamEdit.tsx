@@ -67,9 +67,10 @@ export function EditCell({ e, i, level, disabled, onChange }: { e: Edit; i: numb
 }
 
 /** A switch bit in the edited column. */
-export function EditSwitch({ e, g, b, disabled, title, onChange }: { e: Edit; g: number; b: number; disabled: boolean; title?: string; onChange: (f: (e: Edit) => Edit) => void }) {
+/** `inverted`: the bit reads „an“ at 0 (Group0 bits 4 and 5 of MAINT 1.6). */
+export function EditSwitch({ e, g, b, inverted = false, disabled, title, onChange }: { e: Edit; g: number; b: number; inverted?: boolean; disabled: boolean; title?: string; onChange: (f: (e: Edit) => Edit) => void }) {
   const { t } = useTranslation();
-  const on = ((e.switches[g] >> b) & 1) === 1;
+  const on = (((e.switches[g] >> b) & 1) === 1) !== inverted;
   const changed = (((e.switches[g] ^ e.baseSwitches[g]) >> b) & 1) === 1;
   return (
     <td title={title} className={cn("border-b border-l border-line px-3 py-1 text-right", changed && "bg-charge/12 font-semibold")}>
