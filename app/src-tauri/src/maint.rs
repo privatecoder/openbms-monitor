@@ -747,14 +747,66 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
         Some(_) => bank_view(&Bank::Unchecked),
         None => BankView { state: "none", serial: None },
     };
+    // per pack: String 2 on the pack bus (canonical, unique among the found), for the board-level proof below
+    let bus_serials = if inst.is_some() && !cancelled { unique_serials(found.iter().map(|a| (*a, canonical_string2(&mut link, *a))).collect()) } else { vec![] };
     drop(link);
-    // a CAN version belongs to these packs only when both banks are positively this installation's: the pack bus scan
-    // matched the master's String 2, and the CAN master's battery serial matched
+    // a CAN version belongs to these packs when both banks are positively this installation's (the pack bus scan matched
+    // the master's String 2, the CAN master's battery serial matched); else per pack when its String 2 on the CAN side is
+    // the one read on the pack bus (a single board without master, too)
     let (identities, stopped) = match &inst {
         Some(i) if !cancelled && bank.state == "match" && can_master_confirmed(&state, i) => pack_identities(&state, i, &found, &state.scan_cancel),
+        Some(i) if !cancelled && !bus_serials.is_empty() => board_identities(&state, i, &bus_serials, &state.scan_cancel),
         _ => (vec![], false),
     };
     Ok(PackScan { packs, bank, cleared, cancelled: cancelled || stopped, identities })
+}
+
+/// String 2 of a pack on the pack bus as a board identity (canonical raw bytes, a real value), or None.
+fn canonical_string2(link: &mut Connection, address: u8) -> Option<String> {
+    match link.bms_serial_canonical(address) {
+        Ok((SerialValue::Set { value, truncated: false }, true)) => Some(value),
+        _ => None,
+    }
+}
+
+/// The packs whose String 2 identifies them alone: read, and not shared with another found pack (a duplicate proves
+/// nothing).
+pub fn unique_serials(read: Vec<(u8, Option<String>)>) -> Vec<(u8, String)> {
+    let all: Vec<(u8, String)> = read.into_iter().filter_map(|(a, s)| s.map(|s| (a, s))).collect();
+    all.iter().filter(|(_, s)| all.iter().filter(|(_, o)| o == s).count() == 1).cloned().collect()
+}
+
+/// A pack's CAN 64/03 belongs to the board scanned on the pack bus when its canonical String 2 on the CAN side equals
+/// the canonical one read there.
+pub fn same_board(pack_bus: &str, can: Option<&str>) -> bool {
+    can == Some(pack_bus)
+}
+
+/// Per pack over the installation's control channel: binary String 2 (canonical) and 64/03 at the address; kept only
+/// where String 2 is the board read on the pack bus. „Abbrechen“ is checked before each pack.
+fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String)], cancel: &std::sync::atomic::AtomicBool) -> (Vec<crate::profile::PackProbeView>, bool) {
+    use openbms_flash::maint::policy::PackFinding;
+    if inst.control.is_none() {
+        return (vec![], false);
+    }
+    let gen = crate::link_now(state).gen;
+    let mut out: Vec<(u8, PackFinding)> = vec![];
+    let mut stopped = false;
+    let ask: Vec<u8> = boards.iter().map(|(a, _)| *a).collect();
+    let _ = with_control(state, inst, |c| -> Result<(), openbms_flash::Error> {
+        stopped = probe_until_cancel(&ask, cancel, &mut out, |a| {
+            let expected = boards.iter().find(|(b, _)| *b == a).map(|(_, s)| s.as_str()).unwrap_or_default();
+            let can = c.uart1_serial(Bus::CanSocketBus, a, openbms_proto::uart1::CMD_STRING2).ok().and_then(|raw| openbms_proto::serial::canonical(&raw));
+            if !same_board(expected, can.as_deref()) {
+                return Ok(PackFinding::Undecided);
+            }
+            dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of)
+        })?;
+        Ok(())
+    });
+    // a pack whose String 2 did not match is no finding of this board: left out (shown as unchecked)
+    let shown = out.iter().filter(|(_, f)| *f != PackFinding::Undecided).map(|(a, f)| crate::profile::probe_view(gen, *a, f)).collect();
+    (shown, stopped)
 }
 
 /// The CAN master of the installation is positively its own: on the monitor's current CAN link of this installation
@@ -1309,6 +1361,20 @@ mod tests {
         let mut found = vec![];
         assert!(!probe_until_cancel::<()>(&[1, 2], &cancel, &mut found, |_| Ok(PackFinding::Undecided)).unwrap());
         assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn a_single_board_is_proven_by_its_string_2_on_both_sides() {
+        // matching String 2 without any master: the CAN version belongs to that board
+        assert!(same_board("SYN-1", Some("SYN-1")));
+        // another board on the CAN side, or none readable: not shown
+        assert!(!same_board("SYN-1", Some("SYN-2")));
+        assert!(!same_board("SYN-1", None));
+        // a placeholder or empty serial is no canonical identity, so it never reaches the comparison
+        assert_eq!(openbms_proto::serial::canonical(b"EMU110110S-XXXX               "), None);
+        assert_eq!(unique_serials(vec![(1, None)]), vec![]);
+        // a serial shared by two found packs proves nothing
+        assert_eq!(unique_serials(vec![(1, Some("SYN-A".into())), (2, Some("SYN-A".into())), (3, Some("SYN-C".into()))]), vec![(3, "SYN-C".to_string())]);
     }
 
     #[test]
