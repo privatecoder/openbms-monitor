@@ -15,7 +15,18 @@ const changed = () => subs.forEach((f) => f());
 // a failed load is not cached (nothing may be saved over settings the app could not read): asked again shortly
 function load(scope: string | null) {
   const k = keyOf(scope);
-  if (cache.has(k) || loading.has(k)) return;
+  if (cache.has(k)) {
+    // cell types a failed write left unresolved: read them again, after the writes still queued
+    const q = cellQueues.get(k);
+    if (q?.stale && stored(scope)) {
+      q.tail = q.tail.then(async () => { if (q.stale) await resyncCellTypes(q, () => api.installationSettings(scope).then((s) => s.cell_types), (back) => {
+        const now = cache.get(k);
+        if (now) { cache.set(k, { ...now, cell_types: back }); changed(); }
+      }); });
+    }
+    return;
+  }
+  if (loading.has(k)) return;
   if (!stored(scope)) { cache.set(k, EMPTY); return; }
   loading.add(k);
   api.installationSettings(scope).then((s) => cache.set(k, s), (e) => {
@@ -95,7 +106,8 @@ function cellQueue(scope: string): CellQueue {
 
 /** A cell type write in the installation's queue (`writeCellTypes` once the ones before are done). Only the latest
  *  change may put the cache back, so a late failure never rolls back a newer change; a failure behind a later change
- *  leaves the queue stale, and the latest write, once it went through, reads the stored state back. */
+ *  leaves the queue stale, and the latest write, once it went through, reads the stored state back; only a read that
+ *  succeeds clears it (else the next write or load tries again). */
 export function queueCellTypes(q: CellQueue, write: () => Promise<unknown>, reload: () => Promise<Record<string, unknown>>,
   before: Record<string, unknown>, restore: (back: Record<string, unknown>) => void): Promise<unknown> {
   const gen = ++q.gen;
@@ -103,14 +115,16 @@ export function queueCellTypes(q: CellQueue, write: () => Promise<unknown>, relo
   const run = q.tail.then(async () => {
     const err = await writeCellTypes(write, reload, before, (back) => { if (latest()) restore(back); });
     if (err !== null && !latest()) q.stale = true;
-    if (err === null && latest() && q.stale) {
-      q.stale = false;
-      await reload().then(restore, (r) => console.error("cell types read back:", r));
-    }
+    if (err === null && latest() && q.stale) await resyncCellTypes(q, reload, restore);
     return err;
   });
   q.tail = run.catch(() => undefined);
   return run;
+}
+
+/** A stale queue: read the stored cell types back into the cache; stays stale when the read fails. */
+export async function resyncCellTypes(q: CellQueue, reload: () => Promise<Record<string, unknown>>, restore: (back: Record<string, unknown>) => void) {
+  await reload().then((s) => { q.stale = false; restore(s); }, (r) => console.error("cell types read back:", r));
 }
 
 /** After a merge or the move of the old data: read again from the backend. */
