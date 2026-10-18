@@ -12,7 +12,7 @@ use crate::bms_memory::{uart1_error, uart1_pending, uart1_refusal, uart1_sent, w
 use crate::control::reserve_pack_wait;
 use crate::history::{now_ms, SnapshotKind};
 use crate::maint_store::{BoardRef, SerialPlace};
-use crate::{for_link, link_now, with_conn, with_link, AppState, Link};
+use crate::{for_link, for_link_checked, link_now, with_conn, with_link, AppState, Link};
 use openbms_proto::{serial, uart1, Parameters, SerialValue, Values};
 use openbms_transport::{Bus, Connection};
 use serde::Serialize;
@@ -109,9 +109,10 @@ pub(crate) fn read(state: &AppState, bus: Bus, address: u8) -> Result<ParamRead,
         if let (Some(inst), Some((refs, places))) = (link.installation.as_deref(), facts) {
             match verdict(inst, address, serial, &refs, &places) {
                 Verdict::Known => {
+                    // this board is checked just now: kept also while another pack of the connection is foreign
                     let now = now_ms();
-                    for_link(state, &link, "parameter snapshot", |st, inst| st.add_param_snapshot_serial(inst, address, serial, SnapshotKind::Read, &parameters.block, now));
-                    for_link(state, &link, "board", |st, inst| st.board_seen_canonical(inst, address, &s.bms, &s.battery, true, now));
+                    for_link_checked(state, &link, "parameter snapshot", |st, inst| st.add_param_snapshot_serial(inst, address, serial, SnapshotKind::Read, &parameters.block, now));
+                    for_link_checked(state, &link, "board", |st, inst| st.board_seen_canonical(inst, address, &s.bms, &s.battery, true, now));
                 }
                 Verdict::Unconfirmed(why, other) => {
                     bank::uart1_unconfirmed(state, &link, address, serial, &s.battery, why, other);
@@ -353,9 +354,11 @@ fn keep(state: &AppState, link: &Link, address: u8, session: &Session) {
     for g in &session.gone {
         for_link(state, link, "board gone", |s, inst| s.board_gone(inst, g.address, g.id, g.current_at, now));
     }
+    // the target was checked strictly in this session: its snapshots are kept also while another pack of the
+    // connection is foreign (bound to the installation and the link generation)
     if let Some(serial) = &session.serial {
         for (kind, block) in &session.snaps {
-            for_link(state, link, "parameter snapshot", |s, inst| s.add_param_snapshot_serial(inst, address, serial, *kind, block, now));
+            for_link_checked(state, link, "parameter snapshot", |s, inst| s.add_param_snapshot_serial(inst, address, serial, *kind, block, now));
         }
     }
     if let Some((serial, why, other)) = &session.unconfirmed {
@@ -617,6 +620,32 @@ mod tests {
         assert_eq!(verdict("A", 2, "SYN-2", &refs, &[]), Verdict::Unconfirmed(Why::Legacy, None));
         assert_eq!(verdict("A", 3, "SYN-3", &refs, &[]), Verdict::Elsewhere);
         assert_eq!(verdict("A", 5, "SYN-5", &refs, &[]), Verdict::Unconfirmed(Why::New, None));
+    }
+
+    #[test]
+    fn a_foreign_other_pack_does_not_drop_the_checked_targets_snapshots() {
+        let dir = std::env::temp_dir().join(format!("openbms-uart1-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = crate::maint_store::Store::open(&dir.join("maintenance.sqlite")).unwrap();
+        let a = st.create_installation("A", None, vec![]).unwrap().id;
+        let state = AppState::default();
+        *state.maint.lock().unwrap() = Some(st);
+        crate::new_link(&state, Some(a.clone()));
+        let link = link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        // pack 2 of the connection belongs to another installation
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        bank::after_read(&state, &link, 2, &bank::Identity::Unconfirmed { why: Why::Foreign, other: None }, &set("SYN-B2"), &SerialValue::NoAnswer);
+        assert!(bank::foreign(&state, link.gen));
+        let session = Session { result: None, serial: Some("SYN-1".into()), snaps: vec![(SnapshotKind::Read, block(1, 3600).block)], ..Default::default() };
+        keep(&state, &link, 1, &session);
+        let rows = crate::maint::with_store(&state, |s| s.latest_snapshots(&a)).unwrap();
+        assert_eq!(rows.iter().map(|r| r.address).collect::<Vec<_>>(), [1]);
+        // a session of a connection replaced meanwhile keeps nothing
+        crate::new_link(&state, Some(a.clone()));
+        keep(&state, &link, 3, &Session { serial: Some("SYN-3".into()), snaps: vec![(SnapshotKind::Read, block(3, 3600).block)], ..Default::default() });
+        assert_eq!(crate::maint::with_store(&state, |s| s.latest_snapshots(&a)).unwrap().len(), 1);
     }
 
     #[test]
