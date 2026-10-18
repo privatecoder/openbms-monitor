@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
-import { gatesLine, hardStopLine, patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
-import { useHardStops } from "../hardStops";
+import { patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
@@ -235,7 +234,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
       const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
-      const answeredNote = t("conn.answered", { addr: padAddress(answered), bus: t(`conn.busName.${bus}`) });
+      const answeredNote = t("conn.answered", { addr: padAddress(answered) });
       // pack addresses known without a search: from the master's state in the firmware profile (patched firmware, CAN
       // socket bus, read on this endpoint by the connect), else a fixed count
       let addrs: number[] | null = null;
@@ -676,18 +675,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   );
 }
 
-/** The firmware profile of the connection (CAN socket): what the master is, its maintenance state and its release bits;
- *  „Erneut prüfen“ when it was not recognised. */
+/** The firmware profile of the connection (CAN socket): the master's version only (release bits and hard stop are per
+ *  pack: parameters and pack view); „Erneut prüfen“. */
 function FirmwareProfileLine({ locked }: { locked: boolean }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const p = useProfile();
-  const hardStops = useHardStops();
   const [checking, setChecking] = useState(false);
   // a write to the master updates the release bits (or marks them old) in the backend
   useEffect(() => { const u = api.onFirmwareProfile(setProfile); return () => { u.then((f) => f()); }; }, []);
   const line = profileLine(p, t);
   if (!p || !line) return null;
-  const gates = gatesLine(p.gates, t, !!p.gates_stale);
   const recheck = async () => {
     setChecking(true);
     try { await api.firmwareProfileCheck(p.gen); } catch { /* the line stays as it was */ } finally { setChecking(false); }
@@ -695,10 +692,8 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
   return (
     <div className="text-sm">
       <p className={cn("flex items-center gap-1", line.tone === "ok" ? "text-ok" : line.tone === "warn" ? "text-discharge" : "text-muted")}>
-        <span className="truncate" title={line.text}>{line.text}</span><InfoIcon id="topic.firmwareProfile" />
+        <span className="min-w-0 truncate" title={line.title ?? line.text}>{line.text}</span><InfoIcon id="topic.firmwareProfile" />
       </p>
-      {gates && <p className="text-xs text-muted">{gates}</p>}
-      <p className="flex items-center gap-1 text-xs text-muted">{hardStopLine(p.master.kind === "patched" ? p.master.hard_stop : null, hardStops[0], t, i18n.language)}<InfoIcon id="topic.hardStop" /></p>
       {recheckable(p) && (
         <button className="text-xs text-ink underline disabled:opacity-40" disabled={locked || checking} onClick={() => void recheck()}>{t("profile.recheck")}</button>
       )}

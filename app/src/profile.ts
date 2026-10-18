@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Gates, HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
+import type { HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -29,12 +29,13 @@ export function patchName(m: MasterView, t: T): string {
 }
 
 /** The profile line of the sidebar: tone and text by the master's class. RS485-1/2 knows no 0x64: nothing to say. */
-export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" | "muted"; text: string } | null {
+export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" | "muted"; text: string; title?: string } | null {
   if (!p || p.bus !== "can") return null;
   const m = p.master;
   switch (m.kind) {
     // the version alone: the maintenance state has its own window
-    case "patched": return { tone: "ok", text: patchName(m, t) };
+    // short: the version as 64/03 reports it; whether the build is listed, in the tooltip
+    case "patched": return { tone: "ok", text: m.listed ?? m.version ?? patchName(m, t), title: m.listed ? undefined : `${patchName(m, t)}${m.build_id ? ` · Build ${m.build_id}` : ""}` };
     case "unknown-patch": return { tone: "warn", text: t("profile.unknownPatch", { version: m.version ?? "" }) };
     case "no-0x64": return { tone: "muted", text: t("profile.no0x64") };
     default: return { tone: "warn", text: t("profile.unknown") };
@@ -50,14 +51,6 @@ export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSee
     : seen ? t("profile.hardStopSeen", { at: at(seen.at) })
     : t("profile.hardStopUnknown");
   return t("profile.hardStop", { state });
-}
-
-/** The master's release bits as a short line („Schreiben über CAN-Buchse: erlaubt · Wartungsstart: gesperrt“). */
-export function gatesLine(g: Gates | null, t: T, stale = false): string | null {
-  if (!g) return stale ? t("profile.gatesStale") : null;
-  const part = (v: boolean | null, key: string) => (v === null ? null : `${t(`profile.gate.${key}`)}: ${t(v ? "profile.allowed" : "profile.locked")}`);
-  const line = [part(g.write, "write"), part(g.start, "start"), part(g.power ?? null, "power")].filter(Boolean).join(" · ");
-  return line ? (stale ? `${line} ${t("profile.staleSuffix")}` : line) : null;
 }
 
 /** The firmware a pack header names: the version its own 64/03 proves on this connection (`proven`, e.g. „16.06.13
