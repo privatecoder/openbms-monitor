@@ -6,7 +6,6 @@ use crate::notify::{self, Note, Reading, Settings, Texts};
 use crate::{bank, history::now_ms, link_now, maint, AppState};
 use openbms_proto::{Status, Telemetry};
 use serde::Serialize;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
@@ -89,7 +88,7 @@ pub(crate) fn start(app: &AppHandle) {
         std::thread::sleep(Duration::from_secs(15));
         let state = app.state::<AppState>();
         let now = now_ms();
-        let paused = state.memory_busy.load(Ordering::SeqCst);
+        let paused = crate::polling_paused(&state);
         let lost = state.notify.lock().ok().and_then(|mut n| {
             if paused {
                 n.touch(now);

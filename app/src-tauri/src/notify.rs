@@ -333,7 +333,8 @@ impl Notifier {
         self.allow(&Trigger::Lost, None, now).then(|| Note { trigger: Trigger::Lost, packs: vec![], spread_mv: None, limit_mv: None, minutes: Some(self.settings.lost_minutes) })
     }
 
-    /// Polling paused on purpose (a BMS history read): that time is no lost connection.
+    /// Polling paused on purpose (a BMS history read, a parameter write over the CAN socket): that time is no lost
+    /// connection.
     pub fn touch(&mut self, now: i64) {
         if self.last_data.is_some() {
             self.last_data = Some(now);
@@ -462,6 +463,22 @@ mod tests {
         n.answer(1, 3, 3 * MIN, C, Some(&alarm(&[])));
         n.answer(1, 3, 11 * MIN, C, Some(&alarm(&[OV])));
         assert_eq!(triggers(&n.flush(11 * MIN)), vec![(ov(), vec![3])]);
+    }
+
+    #[test]
+    fn rounds_skipped_for_a_paused_poll_raise_no_silent_pack_and_no_lost_connection() {
+        let mut n = Notifier { settings: Settings { lost_minutes: 1, ..on() }, ..watching(1) };
+        n.answer(1, 3, 0, C, Some(&idle(10.0)));
+        assert!(n.flush(0).is_empty());
+        // a parameter write over the CAN socket holds polling: no answer is handed over, the ticker touches
+        for t in 1..=5 {
+            n.touch(t * 20_000);
+            assert!(n.flush(t * 20_000).is_empty());
+            assert!(n.tick(t * 20_000).is_none());
+        }
+        // polling goes on: the pack's first answer after the pause counts as usual
+        n.answer(1, 3, 120_000, C, Some(&idle(10.0)));
+        assert!(n.flush(120_000).is_empty());
     }
 
     #[test]
