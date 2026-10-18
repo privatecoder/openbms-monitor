@@ -191,7 +191,7 @@ impl Framer {
     pub fn next(&mut self, request: &[u8]) -> Option<Reply> {
         let (address, cmd) = (*request.get(1)?, *request.get(2)?);
         loop {
-            let (start, len) = (0..self.buf.len()).find_map(|i| frame_at(&self.buf[i..]).map(|n| (i, n)))?;
+            let (start, len) = self.first_frame()?;
             let f: Vec<u8> = self.buf.drain(..start + len).skip(start).collect();
             if f == request || f[1] != address {
                 continue;
@@ -205,6 +205,31 @@ impl Framer {
             };
             return Some(reply);
         }
+    }
+}
+
+impl Framer {
+    /// The first complete valid frame (start, length). A start byte with a plausible header protects its frame up to
+    /// its LEN boundary: a valid-looking frame inside its data (switch bytes may read `55 00 E2 00 76 D0 AA`) is not
+    /// taken while it is still arriving. Only when its end byte or CRC disprove it does the search go on at a later
+    /// start byte; a start byte whose header is no known shape is skipped at once.
+    fn first_frame(&self) -> Option<(usize, usize)> {
+        for i in (0..self.buf.len()).filter(|i| self.buf[*i] == START) {
+            let rest = &self.buf[i..];
+            if rest.len() < 4 {
+                return None;
+            }
+            if !known_shape(rest[1], rest[2], usize::from(rest[3])) {
+                continue;
+            }
+            if rest.len() < usize::from(rest[3]) + OVERHEAD {
+                return None;
+            }
+            if let Some(n) = frame_at(rest) {
+                return Some((i, n));
+            }
+        }
+        None
     }
 }
 
@@ -334,6 +359,47 @@ mod tests {
         assert_eq!(f.next(&req), None);
         f.push(&ans[9..]);
         assert_eq!(f.next(&req), Some(Reply::Params(d)));
+    }
+
+    #[test]
+    fn a_frame_inside_the_data_of_an_arriving_answer_is_not_taken() {
+        // switch bytes 0..7 read as a complete E2 answer of address 0
+        let mut d = data();
+        d[150..157].copy_from_slice(&hex("55 00 E2 00 76 D0 AA"));
+        assert_eq!(&answer(0, 0xE2, &[])[..], &d[150..157]);
+        let req = read_request(0).unwrap();
+        let ans = answer(0, CMD_READ, &d);
+        // two TCP chunks, the first one ends right after the inner frame (161 of 175 bytes)
+        let mut f = Framer::new();
+        f.push(&ans[..161]);
+        assert_eq!(f.next(&req), None);
+        f.push(&ans[161..]);
+        assert_eq!(f.next(&req), Some(Reply::Params(d.clone())));
+        // the same after the echo of the request
+        let mut f = Framer::new();
+        f.push(&[req.clone(), ans[..161].to_vec()].concat());
+        assert_eq!(f.next(&req), None);
+        f.push(&ans[161..]);
+        assert_eq!(f.next(&req), Some(Reply::Params(d.clone())));
+        // a broken outer frame (CRC) is disproved once complete: the search goes on and finds the valid frame after it
+        let mut broken = ans.clone();
+        broken[172] ^= 0xFF;
+        let clean = answer(0, CMD_READ, &data());
+        let mut f = Framer::new();
+        f.push(&broken[..161]);
+        assert_eq!(f.next(&req), None);
+        f.push(&broken[161..]);
+        f.push(&clean[..80]);
+        // only the inner frame of the disproved one is complete so far: it is a frame of its own now
+        assert_eq!(f.next(&req), Some(Reply::Error(Code::Rejected)));
+        f.push(&clean[80..]);
+        assert_eq!(f.next(&req), Some(Reply::Params(data())));
+        // a broken outer end byte without a frame inside: the following answer is found
+        let mut bad_end = answer(0, CMD_READ, &data());
+        *bad_end.last_mut().unwrap() = 0x00;
+        let mut f = Framer::new();
+        f.push(&[bad_end, clean.clone()].concat());
+        assert_eq!(f.next(&req), Some(Reply::Params(data())));
     }
 
     #[test]
