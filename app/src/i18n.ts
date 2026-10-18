@@ -156,7 +156,7 @@ const resources = {
         unknown: "Firmware nicht erkannt",
         gate: { write: "Schreiben über CAN", start: "Wartungsstart" }, allowed: "erlaubt", locked: "gesperrt",
         recheck: "Erneut prüfen",
-        hardStop: "Hard-Stop: {{state}}", hardStopOn: "an", hardStopOff: "aus", hardStopUnknown: "unbekannt", hardStopSeen: "beobachtet (am {{at}})", hardStopNotSeen: "nicht beobachtet (am {{at}})",
+        hardStop: "Hard-Stop: {{state}}", hardStopOn: "an", hardStopOff: "aus", hardStopUnknown: "unbekannt", hardStopSeen: "beobachtet (am {{at}})",
         gatesStale: "Freigaben nach dem letzten Schreiben offen: erneut prüfen", staleSuffix: "(vor dem letzten Schreiben, ggf. veraltet)",
       },
       maint: {
@@ -1037,7 +1037,7 @@ const resources = {
         unknown: "Firmware not recognised",
         gate: { write: "Writing via CAN", start: "Maintenance start" }, allowed: "allowed", locked: "locked",
         recheck: "Check again",
-        hardStop: "Hard stop: {{state}}", hardStopOn: "on", hardStopOff: "off", hardStopUnknown: "unknown", hardStopSeen: "observed (on {{at}})", hardStopNotSeen: "not observed (on {{at}})",
+        hardStop: "Hard stop: {{state}}", hardStopOn: "on", hardStopOff: "off", hardStopUnknown: "unknown", hardStopSeen: "observed (on {{at}})",
         gatesStale: "Releases open after the last write: check again", staleSuffix: "(before the last write, may be old)",
       },
       maint: {

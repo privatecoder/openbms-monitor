@@ -292,8 +292,8 @@ export interface MasterView {
   marker: "off" | "on" | "foreign" | null; marker_word: string | null; slaves: number | null;
   may_halt: boolean; may_release: boolean; polling?: "unverified" | "no-slaves";
 }
-/** What a pack's own behaviour showed about the hard stop (waiting for recharge with the charge MOSFET off: observed). */
-export interface HardStopSeen { address: number; observed: boolean; at: number }
+/** A hard stop the pack's own behaviour showed (waiting for recharge with the charge MOSFET off), first seen at `at`. */
+export interface HardStopSeen { address: number; at: number }
 /** The release bits of a Group0 value, each only where the capability has it. */
 export interface Gates { write: boolean | null; start: boolean | null }
 /** The firmware profile of the monitor connection, read on its endpoint right after connecting (`profile.rs`). */

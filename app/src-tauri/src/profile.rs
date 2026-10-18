@@ -175,10 +175,10 @@ pub fn after_master_write(state: &AppState, link: &Link, address: u8, r: Option<
     }
 }
 
-/// What one fresh 0x44 status says about the hard stop: waiting for intermittent recharge (event 6 bit 1) with the
-/// charge MOSFET off is a hard stop seen (true), with it on none (false); not waiting says nothing (None).
-pub fn hard_stop_observation(status: &openbms_proto::Status) -> Option<bool> {
-    (status.events[5] & 0x02 != 0).then(|| !status.charge_mosfet_on())
+/// One fresh 0x44 status shows a hard stop: waiting for intermittent recharge (event 6 bit 1) with the charge MOSFET off.
+/// Waiting with it on proves nothing against it (the firmware closes it again after 10 s of its own discharge over 10 A).
+pub fn hard_stop_observation(status: &openbms_proto::Status) -> bool {
+    status.events[5] & 0x02 != 0 && !status.charge_mosfet_on()
 }
 
 /// The image itself reports the hard stop for this pack on connection `gen` (a format-3 master at address 0): then no
@@ -190,14 +190,16 @@ pub fn hard_stop_reported(profile: Option<&Profile>, address: u8) -> bool {
 /// The poll thread's fresh status of `address` on connection `link`: a hard-stop observation is kept for the board current
 /// there (not for an unconfirmed or foreign pack, not where the image reports the flag) and the UI is told of a change.
 pub fn observe_hard_stop(state: &AppState, link: &Link, address: u8, status: &openbms_proto::Status) {
-    let Some(observed) = hard_stop_observation(status) else { return };
+    if !hard_stop_observation(status) {
+        return;
+    }
     if bank::unconfirmed(state, link.gen, address) || hard_stop_reported(bank::profile(state, link.gen).as_ref(), address) {
         return;
     }
     let now = crate::history::now_ms();
-    if crate::for_link(state, link, "hard stop", |s, inst| s.note_hard_stop(inst, address, observed, now)) == Some(true) {
+    if crate::for_link(state, link, "hard stop", |s, inst| s.note_hard_stop(inst, address, now)) == Some(true) {
         if let Some(app) = state.app.get() {
-            let _ = app.emit("hard-stop", crate::maint_store::HardStopSeen { address, observed, at: now });
+            let _ = app.emit("hard-stop", crate::maint_store::HardStopSeen { address, at: now });
         }
     }
 }
@@ -490,10 +492,10 @@ mod tests {
 
     #[test]
     fn a_hard_stop_is_seen_only_while_waiting_for_recharge() {
-        assert_eq!(hard_stop_observation(&status(0x02, 0x01)), Some(true), "waiting, charge MOSFET off");
-        assert_eq!(hard_stop_observation(&status(0x02, 0x03)), Some(false), "waiting, charge MOSFET on");
-        assert_eq!(hard_stop_observation(&status(0x00, 0x01)), None, "not waiting: says nothing");
-        assert_eq!(hard_stop_observation(&status(0x7D, 0x00)), None, "other event 6 bits");
+        assert!(hard_stop_observation(&status(0x02, 0x01)), "waiting, charge MOSFET off");
+        assert!(!hard_stop_observation(&status(0x02, 0x03)), "waiting, charge MOSFET on: proves nothing");
+        assert!(!hard_stop_observation(&status(0x00, 0x01)), "not waiting");
+        assert!(!hard_stop_observation(&status(0x7D, 0x00)), "other event 6 bits");
     }
 
     #[test]
@@ -520,7 +522,11 @@ mod tests {
         observe_hard_stop(&state, &link, 0, &status(0x02, 0x01));
         observe_hard_stop(&state, &link, 2, &status(0x02, 0x01));
         let seen = crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap();
-        assert_eq!(seen.iter().map(|h| (h.address, h.observed)).collect::<Vec<_>>(), vec![(2, true)]);
+        assert_eq!(seen.iter().map(|h| h.address).collect::<Vec<_>>(), vec![2]);
+        // the re-enable phase (still waiting, charge MOSFET on) never overwrites the sighting
+        let at = seen[0].at;
+        observe_hard_stop(&state, &link, 2, &status(0x02, 0x03));
+        assert_eq!(crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap(), vec![crate::maint_store::HardStopSeen { address: 2, at }]);
     }
 
     #[test]

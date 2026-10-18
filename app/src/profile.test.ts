@@ -27,11 +27,12 @@ describe("firmware profile of the connection", () => {
     expect(profileLine(null, tr("de"))).toBeNull();
   });
   it("shows the hard stop: the image's flag wins, else what the pack showed, else unknown", () => {
-    const seen = { address: 0, observed: true, at: Date.UTC(2026, 0, 2, 12) };
+    const seen = { address: 0, at: Date.UTC(2026, 0, 2, 12) };
     expect(hardStopLine(true, seen, tr("de"))).toBe("Hard-Stop: an");
     expect(hardStopLine(false, seen, tr("en"))).toBe("Hard stop: off");
     expect(hardStopLine(null, seen, tr("de"), "de")).toBe(`Hard-Stop: beobachtet (am ${new Date(seen.at).toLocaleDateString("de")})`);
-    expect(hardStopLine(null, { ...seen, observed: false }, tr("en"), "en")).toBe(`Hard stop: not observed (on ${new Date(seen.at).toLocaleDateString("en")})`);
+    expect(hardStopLine(null, seen, tr("en"), "en")).toBe(`Hard stop: observed (on ${new Date(seen.at).toLocaleDateString("en")})`);
+    for (const lng of ["de", "en"]) expect(i18n.exists("profile.hardStopNotSeen", { lng })).toBe(false);
     expect(hardStopLine(null, undefined, tr("de"))).toBe("Hard-Stop: unbekannt");
     // an unknown OEM revision shows in the base
     expect(profileLine(profile({ listed: null, base: "16.06.?", patch: "1.5", version: "16.06.? MAINT 1.5" }), tr("de"))?.text).toBe("MAINT 1.5 (Basis 16.06.?, Build nicht gelistet) · Wartung aus");
