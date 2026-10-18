@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { forKey, type Keyed } from "../keyed";
 import { useTranslation } from "react-i18next";
 import { Microscope } from "lucide-react";
 import { api, isDemo, type CellAnalysis, type CellResult } from "../api";
@@ -34,11 +35,15 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
   const [period, setPeriodState] = useState<Period>(keptPeriod);
   const setPeriod = (p: Period) => { keptPeriod = p; setPeriodState(p); };
   const [span, setSpan] = useState<{ from: number; to: number } | null>(null);
-  const [data, setData] = useState<CellAnalysis | null>(null);
+  // the analysis with its query (installation, pack, period, devices): another one shows none until its answer
+  const [dataState, setData] = useState<Keyed<CellAnalysis> | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const site = scope ?? (isDemo ? "demo" : null);
   const devicesKey = JSON.stringify(settings.devices ?? null);
+  // the 24 h span moving with the recording is the same query: its refresh keeps the table until the new answer
+  const dataKey = `${site}|${pack}|${period}|${devicesKey}`;
+  const data = forKey(dataState, dataKey);
 
   // one span for the heatmap and the timeline below it; the 24 h view moves with the recording
   useEffect(() => {
@@ -53,8 +58,9 @@ export function CellAnalysisPanel({ pack, scope }: { pack: number; scope: string
     let alive = true;
     setBusy(true);
     api.cellAnalysis(site, pack, span.from, span.to, settings.devices ?? null, SLICES)
-      .then((d) => { if (alive) { setData(d); setErr(null); } })
-      .catch((e) => alive && setErr(String(e)))
+      .then((d) => { if (alive) { setData({ key: dataKey, value: d }); setErr(null); } })
+      // a failed query never leaves the earlier classes as its answer
+      .catch((e) => { if (alive) { setData(null); setErr(String(e)); } })
       .finally(() => alive && setBusy(false));
     return () => { alive = false; };
   }, [site, pack, span, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps

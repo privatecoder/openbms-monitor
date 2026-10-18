@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { useSettings } from "../installData";
 import { errorKey } from "../maint";
+import { runExclusive } from "../exclusive";
 import {
   BALANCER_DEFAULTS, WHENS, addBalancer, assignPacks, assignedNow, editBalancer, fromForm, liveDefs, packsOf, parseDevices, removeBalancer, summary, toForm,
   valuesOf, type BalancerForm, type Devices,
@@ -25,6 +26,9 @@ export function DevicesPanel({ installation, places }: { installation: string; p
   const [editing, setEditing] = useState<{ id: string | null; form: BalancerForm } | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // one save at a time: a second click before the answer would add the definition again on the updated list
+  const saving = useRef(false);
+  const [busy, setBusy] = useState(false);
 
   const store = async (next: Devices) => {
     setError(null);
@@ -32,14 +36,19 @@ export function DevicesPanel({ installation, places }: { installation: string; p
     if (e) { const k = errorKey(e); setError(t("dev.failed", { e: t(k.key, k.params) })); }
     return !e;
   };
-  const submit = async () => {
+  const submit = () => runExclusive(saving, async () => {
     if (!editing) return;
     const v = fromForm(editing.form);
     if (!v) { setError(t("dev.invalid")); return; }
     const now = Date.now();
     const next = editing.id ? editBalancer(devices, editing.id, editing.form.name, v, now) : addBalancer(devices, editing.form.name, v, now)[0];
-    if (await store(next)) setEditing(null);
-  };
+    setBusy(true);
+    try {
+      if (await store(next)) setEditing(null);
+    } finally {
+      setBusy(false);
+    }
+  });
   const name = (n: string) => n || t("dev.unnamed");
   const removingDef = defs.find((d) => d.id === removing);
   const removingPacks = removingDef ? packsOf(devices, removingDef.id, packs) : [];
@@ -78,7 +87,7 @@ export function DevicesPanel({ installation, places }: { installation: string; p
         </div>
       )}
 
-      {editing && <Editor form={editing.form} onChange={(form) => setEditing({ ...editing, form })} onSave={() => void submit()} onCancel={() => { setEditing(null); setError(null); }} />}
+      {editing && <Editor form={editing.form} saving={busy} onChange={(form) => setEditing({ ...editing, form })} onSave={() => void submit()} onCancel={() => { setEditing(null); setError(null); }} />}
 
       {defs.length > 0 && (
         <div className="space-y-1.5 pt-1">
@@ -115,7 +124,7 @@ export function DevicesPanel({ installation, places }: { installation: string; p
   );
 }
 
-function Editor({ form, onChange, onSave, onCancel }: { form: BalancerForm; onChange: (f: BalancerForm) => void; onSave: () => void; onCancel: () => void }) {
+function Editor({ form, saving, onChange, onSave, onCancel }: { form: BalancerForm; saving: boolean; onChange: (f: BalancerForm) => void; onSave: () => void; onCancel: () => void }) {
   const { t } = useTranslation();
   const field = (k: Exclude<keyof BalancerForm, "when">, label: string, placeholder?: string, wide = false) => (
     <label className="flex flex-col gap-0.5">
@@ -141,7 +150,7 @@ function Editor({ form, onChange, onSave, onCancel }: { form: BalancerForm; onCh
         {field("max_a", t("dev.f.maxA"))}
       </div>
       <div className="flex gap-2">
-        <Button size="sm" variant="primary" type="submit">{t("dev.save")}</Button>
+        <Button size="sm" variant="primary" type="submit" disabled={saving}>{t("dev.save")}</Button>
         <Button size="sm" variant="ghost" type="button" onClick={onCancel}>{t("dev.cancel")}</Button>
       </div>
     </form>
