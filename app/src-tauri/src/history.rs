@@ -516,8 +516,7 @@ impl History {
     pub fn clear(&mut self, site: Option<&str>) -> Result<(), String> {
         self.end_session(now_ms());
         let db = self.db.as_ref().ok_or("history database not open")?;
-        clear_rows(db, site).map_err(e2s)?;
-        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e2s)
+        clear_then_compact(db, site, |db| db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"))
     }
 
     /// Give a site's recording, pack list and parameter snapshots another key (e.g. an installation id) in one
@@ -690,6 +689,16 @@ fn e2s(e: rusqlite::Error) -> String {
     e.to_string()
 }
 
+/// The deletes, then giving the space back (`compact`). Only the deletes decide: once they are committed the recording
+/// is gone, so a failing compaction is logged, not reported as a failed delete.
+fn clear_then_compact(db: &Connection, site: Option<&str>, compact: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> Result<(), String> {
+    clear_rows(db, site).map_err(e2s)?;
+    if let Err(e) = compact(db) {
+        eprintln!("history: space not given back after the delete: {e}");
+    }
+    Ok(())
+}
+
 /// The deletes of `History::clear` in one transaction.
 fn clear_rows(db: &Connection, site: Option<&str>) -> rusqlite::Result<()> {
     let tx = db.unchecked_transaction()?;
@@ -854,7 +863,8 @@ fn touch(db: &Connection, session: i64, site: &str, address: u8, t: i64) -> rusq
 }
 
 /// Open an event for each new alarm of the pack, close the ones that are gone. `import`: the site of an import, whose
-/// events are matched by (site, pack, key, start): a known one is neither added again nor changed (id 0 in `open`).
+/// events are matched by (site, pack, key, start): a known one is not added again, it is followed under its negated id
+/// and gets a later end when the alarm is seen to go (never an earlier one, and none at the end of the file).
 /// Returns how many events were added.
 fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, address: u8, update: &Value, import: Option<&str>) -> rusqlite::Result<u64> {
     let Some(alarms) = update["status"]["alarms"].as_array() else { return Ok(0) };
@@ -865,16 +875,23 @@ fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, ad
     let mine = open.entry(address).or_default();
     let gone: Vec<String> = mine.keys().filter(|k| !now.contains_key(*k)).cloned().collect();
     for k in gone {
-        if let Some(id) = mine.remove(&k).filter(|&id| id != 0) {
-            db.prepare_cached("UPDATE events SET end = ?2 WHERE id = ?1")?.execute(params![id, t])?;
+        match mine.remove(&k) {
+            Some(id) if id > 0 => {
+                db.prepare_cached("UPDATE events SET end = ?2 WHERE id = ?1")?.execute(params![id, t])?;
+            }
+            // a known event of an import: only a later end than the one it has
+            Some(id) if id < 0 => {
+                db.prepare_cached("UPDATE events SET end = ?2 WHERE id = ?1 AND (end IS NULL OR end < ?2)")?.execute(params![-id, t])?;
+            }
+            _ => {}
         }
     }
     let mut added = 0;
     for (k, sev) in now {
         if let std::collections::hash_map::Entry::Vacant(e) = mine.entry(k) {
             if let Some(site) = import {
-                if known_event(db, site, address as i64, e.key(), t)?.is_some() {
-                    e.insert(0);
+                if let Some((id, _)) = known_event(db, site, address as i64, e.key(), t)? {
+                    e.insert(-id);
                     continue;
                 }
             }
@@ -885,6 +902,11 @@ fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, ad
         }
     }
     Ok(added)
+}
+
+/// Whether an imported event line names a pack address the protocol has (an integer 0..=15).
+fn valid_event_pack(v: &Value) -> bool {
+    v["pack"].as_u64().is_some_and(|a| a <= MAX_PACK_ADDRESS)
 }
 
 /// An event of the site with this pack, key and start: its id and end.
@@ -916,7 +938,7 @@ fn import_event(db: &Connection, site: &str, session: i64, v: &Value) -> rusqlit
 
 fn close_events(db: &Connection, open: &mut OpenEvents, t: i64) {
     for (_, m) in open.drain() {
-        for (_, id) in m.into_iter().filter(|&(_, id)| id != 0) {
+        for (_, id) in m.into_iter().filter(|&(_, id)| id > 0) {
             let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, t]);
         }
     }
@@ -1732,6 +1754,11 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
         } else if v["system"].is_object() {
             insert_system(tx, site_key, session, t, &v["system"], true).map_err(e2s)?
         } else if v["event"].is_object() {
+            // the same address check as for pack lines
+            if !valid_event_pack(&v["event"]) {
+                stats.skipped += 1;
+                continue;
+            }
             events_added += u64::from(import_event(tx, site, session, &v["event"]).map_err(e2s)?);
             false
         } else {
@@ -1751,13 +1778,23 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
         for line in std::io::BufReader::new(std::fs::File::open(ev).map_err(io)?).lines() {
             let line = line.map_err(io)?;
             let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            if !valid_event_pack(&v) {
+                stats.skipped += 1;
+                continue;
+            }
             events_added += u64::from(import_event(tx, site, session, &v).map_err(e2s)?);
         }
     }
-    tx.execute("UPDATE sessions SET first = ?2, last = ?3 WHERE id = ?1", params![session, stats.from, stats.to]).map_err(e2s)?;
+    // the span and the packs also from the events added here: a file of status lines only is still listed
+    let (ev_first, ev_last): (Option<i64>, Option<i64>) =
+        tx.query_row("SELECT MIN(start), MAX(COALESCE(end, start)) FROM events WHERE session = ?1", [session], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e2s)?;
+    let first = [stats.from, ev_first].into_iter().flatten().min();
+    let last = [stats.to, ev_last].into_iter().flatten().max();
+    tx.execute("UPDATE sessions SET first = ?2, last = ?3 WHERE id = ?1", params![session, first, last]).map_err(e2s)?;
     for a in seen_packs {
         tx.execute("INSERT OR IGNORE INTO site_packs(site, pack) VALUES(?1, ?2)", params![site, a]).map_err(e2s)?;
     }
+    tx.execute("INSERT OR IGNORE INTO site_packs(site, pack) SELECT ?1, pack FROM events WHERE session = ?2", params![site, session]).map_err(e2s)?;
     if stats.rows == 0 && events_added == 0 {
         tx.execute("DELETE FROM sessions WHERE id = ?1", [session]).map_err(e2s)?;
     }
@@ -1856,6 +1893,23 @@ mod tests {
         Connection::open(&path).unwrap().execute_batch("DROP TRIGGER no_delete;").unwrap();
         h.clear(Some("inst-a")).unwrap();
         assert_eq!((count("pack"), count("system"), count("events"), count("sessions")), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_failing_compaction_does_not_fail_the_delete_and_a_repeat_works() {
+        let (path, mut h) = temp_db("clear-compact");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("inst-a", "can");
+        h.pack(1000, 1, &pack_update(1, 1.0, &[3.3], &[]));
+        h.end_session(2000);
+        let db = Connection::open(&path).unwrap();
+        // the deletes went through, giving the space back fails (a full disk): the delete counts as done
+        assert!(clear_then_compact(&db, Some("inst-a"), |_| Err(rusqlite::Error::InvalidQuery)).is_ok());
+        let n: i64 = db.query_row("SELECT COUNT(*) FROM pack", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        // deleting again (the installation row could not be removed the first time) is fine
+        h.clear(Some("inst-a")).unwrap();
+        h.clear(Some("inst-a")).unwrap();
     }
 
     #[test]
@@ -2136,6 +2190,42 @@ mod tests {
         h.import(&file, "gw").unwrap();
         h.import(&file, "gw").unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM events"), 1);
+    }
+
+    #[test]
+    fn a_status_only_import_is_listed_and_a_later_file_extends_a_known_alarm() {
+        let (path, mut h) = temp_db("jsonl-status");
+        let dir = path.parent().unwrap();
+        let status = |t: i64, alarms: &[&str]| json!({ "t": t, "pack": { "address": 3, "telemetry": null, "status": { "alarms": alarms.iter().map(|k| json!({ "id": k, "severity": "alarm" })).collect::<Vec<_>>() }, "error": null } });
+        let write = |name: &str, lines: &[Value]| { let f = dir.join(name); std::fs::write(&f, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap(); f };
+        // the first part: alarm from 10:00, the file ends at 10:02 with it still on
+        let m = 60_000;
+        let first = write("p1.jsonl", &[status(600 * m, &["cell_high"]), status(602 * m, &["cell_high"])]);
+        assert_eq!(h.import(&first, "inst-a").unwrap().events, 1);
+        // listed in the history index: a span and the pack, though there was no measurement
+        let s = sites(&reader(&path).unwrap()).unwrap();
+        assert_eq!(s.iter().map(|x| (x.site.as_str(), x.packs.clone(), x.from, x.to)).collect::<Vec<_>>(), vec![("inst-a", vec![3], Some(600 * m), Some(602 * m))]);
+        // the fuller file: on until 10:05, gone at 10:06 — the known alarm gets the later end, no second one
+        let full = write("p2.jsonl", &[status(600 * m, &["cell_high"]), status(605 * m, &["cell_high"]), status(606 * m, &[])]);
+        assert_eq!(h.import(&full, "inst-a").unwrap().events, 0);
+        let ends: Vec<(i64, Option<i64>)> = reader(&path).unwrap().prepare("SELECT start, end FROM events").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(ends, vec![(600 * m, Some(606 * m))]);
+        // an older part again never shortens it
+        h.import(&first, "inst-a").unwrap();
+        let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(end, Some(606 * m));
+    }
+
+    #[test]
+    fn an_event_line_with_a_bad_pack_address_is_skipped() {
+        let (path, mut h) = temp_db("jsonl-event-addr");
+        let f = path.parent().unwrap().join("ev.jsonl");
+        let ev = |pack: Value| json!({ "t": 1000, "event": { "pack": pack, "key": "cell_high", "severity": "warning", "start": 1000, "end": 2000 } });
+        std::fs::write(&f, [ev(json!(256)), ev(json!(-1)), ev(json!(1.5)), ev(json!(4))].iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let st = h.import(&f, "inst-a").unwrap();
+        assert_eq!((st.events, st.skipped), (1, 3));
+        let packs: Vec<i64> = reader(&path).unwrap().prepare("SELECT pack FROM events").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(packs, vec![4]);
     }
 
     /// The layout before per-site keys, as earlier versions created it.
