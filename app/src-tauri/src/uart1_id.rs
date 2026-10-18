@@ -582,7 +582,7 @@ pub(crate) mod tests {
 
     #[test]
     fn with_proof_a_locked_pack_is_refused_before_the_write_and_e3_is_a_refusal() {
-        let gated = Facts { group0: crate::profile::Group0::Gated { write: true, start: true }, ..facts(vec![board(1, "SYN-1", Some(true))]) };
+        let gated = Facts { group0: crate::profile::Group0::Gated { write: true, start: true, cutoff: false }, ..facts(vec![board(1, "SYN-1", Some(true))]) };
         let fresh = with_group0(&block(1, 3600), 0xFE);
         let mut dev = good(3650);
         dev.reads = vec![Ok(fresh.clone())];
