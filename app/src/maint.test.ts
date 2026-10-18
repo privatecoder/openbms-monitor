@@ -4,7 +4,7 @@ import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
 const tr = (key: string, params?: Record<string, unknown>) => (params ? `${key} ${JSON.stringify(params)}` : key);
-const master = (patch: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...patch });
+const master = (patch: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...patch });
 const image = (kind: FirmwareImage["kind"]): FirmwareImage => ({ release: "16.06.13", device: "EMU1101", bytes: 1, blocks: 1, sha256: "ab", kind, custom: kind !== "original" });
 const pending = (pack: number, endpoint = "serial:/dev/p"): Pending => ({ id: pack, endpoint, pack, release: "16.06.13", since: 0 });
 

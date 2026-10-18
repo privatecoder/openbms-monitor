@@ -43,6 +43,13 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
   }
 }
 
+/** „Hard-Stop: an / aus / unbekannt“ for a recognised patch: a property of the image (format 3 reports it, format 2 not),
+ *  apart from the maintenance state, the release bits and the MOSFETs. */
+export function hardStopLine(m: MasterView | null | undefined, t: T): string | null {
+  if (!m || m.kind !== "patched") return null;
+  return t("profile.hardStop", { state: t(m.hard_stop === true ? "profile.hardStopOn" : m.hard_stop === false ? "profile.hardStopOff" : "profile.hardStopUnknown") });
+}
+
 /** The master's release bits as a short line („Schreiben über CAN-Buchse: erlaubt · Wartungsstart: gesperrt“). */
 export function gatesLine(g: Gates | null, t: T, stale = false): string | null {
   if (!g) return stale ? t("profile.gatesStale") : null;

@@ -58,7 +58,7 @@ describe("maintenance texts", () => {
   it("status lines in both languages", () => {
     const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
     const m: MasterView = { kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5",
-      caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false };
+      caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false };
     expect(masterLine(m, tr("de")).text).toBe("16.06.13 MAINT 1.5 · Marker aus · fragt 3 Slaves ab");
     expect(masterLine({ ...m, listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" }, tr("de")).text).toBe("MAINT 1.6 (Basis 16.07.02, Build nicht gelistet) · Marker aus · fragt 3 Slaves ab");
     expect(masterLine({ ...m, marker: "foreign", marker_word: "12345678" }, tr("en"))).toEqual({ tone: "alarm", text: "16.06.13 MAINT 1.5 · marker sector with unknown content (12345678) · polls 3 slaves" });
