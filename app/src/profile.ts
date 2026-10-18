@@ -33,10 +33,8 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
   if (!p || p.bus !== "can") return null;
   const m = p.master;
   switch (m.kind) {
-    case "patched": {
-      const marker = m.marker === "on" ? t("profile.markerOn") : m.marker === "off" ? t("profile.markerOff") : m.marker === "foreign" ? t("profile.markerForeign", { word: m.marker_word }) : t("profile.markerUnread");
-      return { tone: m.marker === "off" ? "ok" : "warn", text: `${patchName(m, t)} · ${marker}` };
-    }
+    // the version alone: the maintenance state has its own window
+    case "patched": return { tone: "ok", text: patchName(m, t) };
     case "unknown-patch": return { tone: "warn", text: t("profile.unknownPatch", { version: m.version ?? "" }) };
     case "no-0x64": return { tone: "muted", text: t("profile.no0x64") };
     default: return { tone: "warn", text: t("profile.unknown") };
