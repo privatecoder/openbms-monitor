@@ -98,6 +98,16 @@ mod tests {
     }
 
     #[test]
+    fn maint_1_2_is_trusted_like_1_1() {
+        const V12: [u8; 8] = [0x5C, 0x9F, 0x13, 0x58, 0x22, 0x22, 0x71, 0xFA];
+        let i = MaintInfo { patch: [1, 2], ..info(u32::MAX, 3, V12) };
+        assert_eq!(i.version(), "16.06.13 MAINT 1.2");
+        let m = Master::of(Some(Probe::Info(i)));
+        assert!(matches!(m, Master::Maint { release: "16.06.13 MAINT 1.2", .. }));
+        assert!(m.trusted() && m.may_halt() && !m.may_release());
+    }
+
+    #[test]
     fn legacy_no_0x64_and_unknown() {
         let on = Master::of(Some(Probe::Legacy(MaintStatus { marker: true, effective_slaves: 0 })));
         assert!(on.trusted() && on.may_release() && !on.may_halt());

@@ -58,6 +58,12 @@ pub const MAINT_BUILDS: &[Release] = &[
         code_sha256: "4d76a96fa7f7ad0e1aa3de1ac4fbe51f0fc4ae03a19aea2d4e696c2812d8f55d",
         build_id: None,
     },
+    // 1.1 with the binary parameter service on the CAN socket (UART1_PARAMS)
+    Release {
+        name: "16.06.13 MAINT 1.2",
+        code_sha256: "bc1235ade82dba79b58ea6e96cbf8196e5a1dc6160d17b8434a5fbc5766efbf6",
+        build_id: Some("5c9f1358222271fa"),
+    },
 ];
 
 /// The known maintenance build with this build ID (as `MaintInfo::build_id_hex` gives it).
@@ -123,6 +129,13 @@ mod tests {
         // 1.0: renamed, same code hash as before
         let (k, r) = kind_of_hash("4d76a96fa7f7ad0e1aa3de1ac4fbe51f0fc4ae03a19aea2d4e696c2812d8f55d");
         assert_eq!((k, r.map(|r| r.name), r.and_then(|r| r.build_id)), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.0"), None));
+    }
+
+    #[test]
+    fn maint_build_1_2() {
+        let (k, r) = kind_of_hash("bc1235ade82dba79b58ea6e96cbf8196e5a1dc6160d17b8434a5fbc5766efbf6");
+        assert_eq!((k, r.map(|r| r.name)), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.2")));
+        assert_eq!(maint_build("5c9f1358222271fa").map(|r| r.name), Some("16.06.13 MAINT 1.2"));
     }
 
     #[test]
