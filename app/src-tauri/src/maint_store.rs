@@ -591,6 +591,19 @@ impl Store {
         Ok(())
     }
 
+    /// A master read without a valid marker state: the shown data and time follow, the stored marker stays (off when
+    /// none was stored).
+    pub fn set_master_read_keep_marker(&self, inst: &str, data: &str, now: i64) -> Result<(), String> {
+        self.db
+            .execute(
+                "INSERT INTO master_read(installation, data, marker_on, at) VALUES (?1, ?2, 0, ?3)
+                 ON CONFLICT(installation) DO UPDATE SET data = excluded.data, at = excluded.at",
+                params![inst, data, now],
+            )
+            .map_err(e)?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn master_read(&self, inst: &str) -> Result<Option<(String, i64)>, String> {
         self.db.query_row("SELECT data, at FROM master_read WHERE installation = ?1", [inst], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(e)

@@ -325,9 +325,29 @@ pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, Main
     if m != Master::Unknown && !foreign {
         let v = master_view(&m);
         let data = serde_json::to_string(&v).unwrap_or_default();
-        with_store(state, |s| s.set_master_read(&inst.id, &data, v.marker == Some("on"), crate::history::now_ms()))?;
+        let now = crate::history::now_ms();
+        match marker_update(&m) {
+            Some(on) => with_store(state, |s| s.set_master_read(&inst.id, &data, on, now))?,
+            // no valid state: the stored marker stays as it was (a lost 02 never clears a marker seen on)
+            None => with_store(state, |s| s.set_master_read_keep_marker(&inst.id, &data, now))?,
+        }
     }
     Ok(m)
+}
+
+/// What a master read says about the stored marker: a valid `02` of a patched master sets (on) or clears (off) it; a
+/// master that does not know 0x64 clears it (its firmware ignores the marker, there is nothing to release); a missing or
+/// foreign state, or an unknown patch, leaves it as it was (None).
+pub fn marker_update(m: &Master) -> Option<bool> {
+    match m {
+        Master::Patched { .. } => match m.marker()? {
+            MarkerWord::On => Some(true),
+            MarkerWord::Off => Some(false),
+            MarkerWord::Foreign(_) => None,
+        },
+        Master::No0x64 => Some(false),
+        Master::UnknownPatch(_) | Master::Unknown => None,
+    }
 }
 
 // --- pack bus ---
@@ -1132,6 +1152,32 @@ mod tests {
         s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 3, |st| st.clear_patch_proof(&a.id, 0)).unwrap();
         assert_eq!(s.all_pending().unwrap().len(), 1);
         assert!(s.patch_proof(&a.id, 0).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_lost_02_never_clears_a_stored_marker_and_the_flash_stays_refused() {
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None };
+        let patched = |state| Master::Patched { patch: Patch::recognise(info).unwrap(), state };
+        let on = patched(Some(MaintState { marker_word: 0, effective_slaves: 0 }));
+        let off = patched(Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }));
+        let lost = patched(None);
+        assert_eq!((marker_update(&on), marker_update(&off), marker_update(&lost)), (Some(true), Some(false), None));
+        assert_eq!(marker_update(&patched(Some(MaintState { marker_word: 7, effective_slaves: 0 }))), None);
+        assert_eq!(marker_update(&Master::UnknownPatch(None)), None);
+        let s = store_at("marker-keep");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.set_master_read(&a.id, "{}", true, 1).unwrap();
+        // the read without a state keeps the marker on
+        s.set_master_read_keep_marker(&a.id, "{\"state\":null}", 2).unwrap();
+        assert!(s.marker_last_on(&a.id).unwrap());
+        assert_eq!(crate::firmware::master_marker_check(0, openbms_flash::known::ImageKind::Original, Some(&lost), s.marker_last_on(&a.id).unwrap()), Err("release-master-first-unread"));
+        // only a valid off clears it
+        s.set_master_read(&a.id, "{}", marker_update(&off).unwrap(), 3).unwrap();
+        assert!(!s.marker_last_on(&a.id).unwrap());
+        // a first read without a state stores the marker off
+        let b = s.create_installation("B", None, vec![]).unwrap();
+        s.set_master_read_keep_marker(&b.id, "{}", 4).unwrap();
+        assert!(!s.marker_last_on(&b.id).unwrap());
     }
 
     #[test]
