@@ -133,11 +133,14 @@ describe("a fixed pack count", () => {
     expect(fixedFallback([0, 1, 2], 1, null)).toBe("keep");
     // the device query of the fixed addresses found none of them: search
     expect(fixedFallback([0], 0, [])).toBe("search");
-    expect(fixedFallback([0, 1], 0, [1])).toBe("keep");
+    // „Anzahl n“ incomplete: search (a pack may sit outside 0..n-1, e.g. addresses 1–12 with „Anzahl 12“)
+    expect(fixedFallback([0, 1], 0, [1])).toBe("search");
+    expect(fixedFallback(Array.from({ length: 12 }, (_, i) => i), 1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])).toBe("search");
     expect(fixedFallback([0, 1], 0, [0, 1])).toBe("keep");
     const de = i18n.getFixedT("de");
     expect(fixedSearchedLine([0], [1], de)).toBe("Keine Antwort an Adresse 00; gesucht: Pack 01 gefunden.");
     expect(fixedSearchedLine([0, 1, 2], [], de)).toBe("Keine Antwort an Adresse 00–02; gesucht: kein Pack gefunden.");
+    expect(fixedSearchedLine([0, 5], [1, 12], de)).toBe("Keine Antwort an Adresse 00, 05; gesucht: Packs 01, 12 gefunden.");
     expect(fixedSearchedLine([0], [3, 4], i18n.getFixedT("en"))).toBe("No answer at address 00; searched: packs 03, 04 found.");
   });
 });
@@ -163,7 +166,8 @@ describe("which packs a connection polls", () => {
     const { default: i18n } = await import("./i18n");
     expect(fixedFallback([1], 1, null)).toBe("keep");
     expect(fixedFallback([1], 3, null)).toBe("search");
-    expect(fixedFallback([1], 1, [])).toBe("search");
+    expect(fixedFallback([1], 1, [], "address")).toBe("search");
+    expect(fixedFallback([1], 1, [1], "address")).toBe("keep");
     expect(fixedSearchedLine([1], [3], i18n.getFixedT("de"))).toBe("Keine Antwort an Adresse 01; gesucht: Pack 03 gefunden.");
   });
   it("a remembered connection gives its selection, also an old one with a count", async () => {
