@@ -10,7 +10,7 @@ use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError};
 use openbms_flash::maint::policy::Master;
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::session::Progress;
-use openbms_proto::{DeviceInfo, MaintStatus, MarkerWord, SerialValue};
+use openbms_proto::{DeviceInfo, MaintState, MarkerWord, SerialValue};
 use openbms_transport::{Bus, Connection, Endpoint};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -37,9 +37,9 @@ pub fn event_line(stamp: &str, installation: Option<&str>, line: &str) -> String
     format!("{stamp} inst={} {line}", installation.unwrap_or("-"))
 }
 
-/// One line for a master read: kind, version, marker word, effective slaves.
+/// One line for a master read: kind, version, build, marker word, effective slaves.
 fn master_text(m: &MasterView) -> String {
-    format!("master={} version={} marker={} word={} slaves={}", m.kind, m.version.as_deref().unwrap_or("-"),
+    format!("master={} version={} build={} marker={} word={} slaves={}", m.kind, m.version.as_deref().unwrap_or("-"), m.build_id.as_deref().unwrap_or("-"),
         m.marker.unwrap_or("-"), m.marker_word.as_deref().unwrap_or("-"), m.slaves.map_or("-".into(), |n| n.to_string()))
 }
 
@@ -51,7 +51,10 @@ pub enum MaintError {
     Unsupported,
     NoAnswer,
     Rejected { rtn: u8 },
-    Timeout { marker: bool, slaves: u8 },
+    /// the master refused a maintenance start (RTN 05); `reason` from its fresh block (`profile::start_refusal`)
+    StartRefused { reason: String },
+    /// "off" | "on" | "foreign": the marker the last state read showed
+    Timeout { marker: &'static str, slaves: u8 },
     /// not allowed in the current state; `reason` is a stable key for the UI text
     Refused { reason: String },
     Busy,
@@ -69,8 +72,16 @@ impl From<DialogError> for MaintError {
             DialogError::Unsupported => MaintError::Unsupported,
             DialogError::NoAnswer => MaintError::NoAnswer,
             DialogError::Rejected(rtn) => MaintError::Rejected { rtn },
-            DialogError::Timeout { last, .. } => MaintError::Timeout { marker: last.marker, slaves: last.effective_slaves },
+            DialogError::Timeout { last, .. } => MaintError::Timeout { marker: marker_name(last.marker()), slaves: last.effective_slaves },
         }
+    }
+}
+
+fn marker_name(w: MarkerWord) -> &'static str {
+    match w {
+        MarkerWord::Off => "off",
+        MarkerWord::On => "on",
+        MarkerWord::Foreign(_) => "foreign",
     }
 }
 
@@ -220,81 +231,90 @@ pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installati
     }
 }
 
-/// The state a `start` (1/0) or `stop` (marker off) waits for is already there.
-pub fn target_reached(action: Action, s: MaintStatus) -> bool {
-    match action {
-        Action::Status => true,
-        Action::Start => s.marker && s.effective_slaves == 0,
-        Action::Stop => !s.marker,
-    }
+/// The state a `start` or `stop` waits for is already there (marker and slave count, `dialog::reached`).
+pub fn target_reached(action: Action, s: MaintState) -> bool {
+    dialog::reached(action, s)
 }
 
 /// `start`/`stop` over the control channel. A repeat on a fresh channel (`with_control`) reads the status
 /// first: a target already reached is not sent again.
-fn control_dialog(state: &AppState, inst: &Installation, action: Action) -> Result<Result<MaintStatus, DialogError>, MaintError> {
+fn control_dialog(state: &AppState, inst: &Installation, action: Action) -> Result<Result<MaintState, DialogError>, MaintError> {
     let mut retry = false;
     with_control(state, inst, |c| {
         if std::mem::replace(&mut retry, true) {
-            if let Ok(s) = dialog::dialog(c, &SystemClock::new(), Action::Status, None, Budgets::default()) {
+            if let Ok(s) = dialog::dialog(c, &SystemClock::new(), Action::Status, Budgets::default()) {
                 if target_reached(action, s) {
                     return Ok(s);
                 }
             }
         }
-        dialog::dialog(c, &SystemClock::new(), action, None, Budgets::default())
+        dialog::dialog(c, &SystemClock::new(), action, Budgets::default())
     })
 }
 
-/// The master as the UI shows it (status line, panel buttons).
+/// The master as the UI shows it (status line, panel buttons, connection profile).
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct MasterView {
-    /// "maint" (known build) | "unknown-build" | "legacy" (MAINT 1.0 compatible) | "no-0x64" | "unknown"
+    /// "patched" (a supported patch) | "unknown-patch" | "no-0x64" | "unknown"
     pub kind: &'static str,
-    /// what the master reports, e.g. "16.06.13 MAINT 1.1"
+    /// what the master reports, e.g. "16.06.13 MAINT 1.5"
     pub version: Option<String>,
+    /// patch version "1.5" and base "16.06.13" as reported
+    pub patch: Option<String>,
+    pub base: Option<String>,
     pub build_id: Option<String>,
+    /// the listed build's name (None: not listed)
+    pub listed: Option<String>,
+    pub caps: Option<crate::profile::CapsView>,
     /// "off" | "on" | "foreign"
     pub marker: Option<&'static str>,
-    /// the raw marker word (MAINT 1.1), 8 hex digits
+    /// the raw marker word, 8 hex digits
     pub marker_word: Option<String>,
     pub slaves: Option<u8>,
     pub may_halt: bool,
     pub may_release: bool,
+    /// after a release: "unverified" (the marker ended, the polling of the slaves is not verified) or "no-slaves"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polling: Option<&'static str>,
 }
 
 pub fn master_view(m: &Master) -> MasterView {
     let info = match m {
-        Master::Maint { info, .. } | Master::UnknownBuild(info) => Some(info),
+        Master::Patched { patch, .. } => Some(patch.info),
+        Master::UnknownPatch(i) => *i,
+        _ => None,
+    };
+    let listed = match m {
+        Master::Patched { patch, .. } => patch.listed.map(String::from),
         _ => None,
     };
     MasterView {
         kind: match m {
-            Master::Maint { .. } => "maint",
-            Master::UnknownBuild(_) => "unknown-build",
-            Master::Legacy(_) => "legacy",
+            Master::Patched { .. } => "patched",
+            Master::UnknownPatch(_) => "unknown-patch",
             Master::No0x64 => "no-0x64",
             Master::Unknown => "unknown",
         },
         version: info.map(|i| i.version()),
+        patch: info.map(|i| format!("{}.{}", i.patch[0], i.patch[1])),
+        base: info.map(|i| format!("{}.{:02}.{:02}", i.base[0], i.base[1], i.base[2])),
         build_id: info.map(|i| i.build_id_hex()),
-        marker: m.marker().map(|w| match w {
-            MarkerWord::Off => "off",
-            MarkerWord::On => "on",
-            MarkerWord::Foreign(_) => "foreign",
-        }),
-        marker_word: info.map(|i| format!("{:08X}", i.marker_word)),
+        listed,
+        caps: m.caps().map(crate::profile::caps_view),
+        marker: m.marker().map(marker_name),
+        marker_word: m.state().map(|s| format!("{:08X}", s.marker_word)),
         slaves: m.effective_slaves(),
         may_halt: m.may_halt(),
         may_release: m.may_release(),
+        polling: None,
     }
 }
 
-/// Read the master (`03` → RTN 05 → `02`) and keep what it showed for the banner. A read without a valid answer
-/// never replaces the last one: a set marker stays visible until a read shows it off.
+/// Read the master on the control adapter (`03`, and for a supported patch `02`) and keep what it showed for the banner.
+/// A read without a valid answer never replaces the last one: a set marker stays visible until a read shows it off.
 pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {
-    let probe = with_control(state, inst, |c| dialog::probe(c, &SystemClock::new(), Budgets::default()))?
+    let m = with_control(state, inst, |c| dialog::read(c, &SystemClock::new(), Budgets::default()))?
         .map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    let m = Master::of(Some(probe));
     // the monitor connection of this installation shows a pack of another installation: nothing is kept for it
     let link = crate::link_now(state);
     let foreign = link.installation.as_deref() == Some(inst.id.as_str()) && crate::bank::foreign(state, link.gen);
@@ -696,24 +716,50 @@ pub async fn maint_scan_cancel(state: State<'_, AppState>) -> Result<(), MaintEr
     Ok(())
 }
 
-/// „Master anhalten“: `start` on a trusted maintenance build with the marker off, then a fresh read.
+/// „Master anhalten“: `start` on a trusted patched master with the marker off, then a fresh read. The slave count it
+/// polled right before is kept: the release waits for it again.
 #[tauri::command]
 pub async fn maint_halt(state: State<'_, AppState>, installation: String) -> Result<MasterView, MaintError> {
-    marker_action(&state, &installation, Action::Start)
+    marker_action(&state, &installation, Action::Start, None)
 }
 
-/// „Master freigeben“: `stop`, only when 0x64 shows the marker on (never automatic), then a fresh read.
+/// „Master freigeben“: `stop`, only when 0x64 shows the marker on (never automatic), until the master reports its DIP
+/// slave count again: the one kept by the halt, else `expected_slaves` the user confirmed (None then: refused with
+/// "expected-slaves-needed").
 #[tauri::command]
-pub async fn maint_release(state: State<'_, AppState>, installation: String) -> Result<MasterView, MaintError> {
-    marker_action(&state, &installation, Action::Stop)
+pub async fn maint_release(state: State<'_, AppState>, installation: String, expected_slaves: Option<u8>) -> Result<MasterView, MaintError> {
+    marker_action(&state, &installation, Action::Stop { expected: 0 }, expected_slaves)
+}
+
+/// The DIP slave count kept for the installation's master by its halt (None: none kept for this master board).
+#[tauri::command]
+pub async fn maint_expected_slaves(state: State<'_, AppState>, installation: String) -> Result<Option<u8>, MaintError> {
+    let board = master_board(&state, &installation)?;
+    with_store(&state, |s| s.expected_slaves(&installation, board))
+}
+
+fn master_board(state: &AppState, inst: &str) -> Result<Option<i64>, MaintError> {
+    with_store(state, |s| Ok(s.current_board(inst, 0)?.map(|b| b.id)))
+}
+
+/// The count a release waits for: the one kept by the halt, else the user's (None: ask the user).
+pub fn release_target(kept: Option<u8>, confirmed: Option<u8>) -> Option<u8> {
+    kept.or(confirmed)
+}
+
+/// What a finished release can say about the polling: N = 0 has no slaves to poll; for N > 0 only a pack bus capture
+/// with polls and slave answers would verify it, which this step does not take (CAN socket telemetry of the slaves is
+/// no proof: they answer there on their own).
+pub fn polling_after_release(expected: u8) -> &'static str {
+    if expected == 0 { "no-slaves" } else { "unverified" }
 }
 
 static LAST_LIVE: Mutex<String> = Mutex::new(String::new());
 
-fn marker_action(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
+fn marker_action(state: &AppState, installation: &str, action: Action, confirmed: Option<u8>) -> Result<MasterView, MaintError> {
     let name = if action == Action::Start { "halt" } else { "release" };
     event(state, Some(installation), &format!("{name} pressed"));
-    let r = marker_action_inner(state, installation, action);
+    let r = marker_action_inner(state, installation, action, confirmed);
     match &r {
         Ok(m) => event(state, Some(installation), &format!("{name} done {}", master_text(m))),
         Err(e) => event(state, Some(installation), &format!("{name} failed {}", serde_json::to_string(e).unwrap_or_default())),
@@ -744,7 +790,7 @@ pub fn master_check(stored: &str, read: Option<&SerialValue>) -> Result<(), Main
     }
 }
 
-fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> Result<MasterView, MaintError> {
+fn marker_action_inner(state: &AppState, installation: &str, action: Action, confirmed: Option<u8>) -> Result<MasterView, MaintError> {
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
@@ -752,21 +798,47 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action) -> 
     let _a = begin_action(state, if action == Action::Start { "halt" } else { "release" });
     let inst = self::installation(state, installation)?;
     same_master(state, &inst)?;
+    // a fresh exact identity and state on the very adapter the action goes to
     let m = read_master(state, &inst)?;
     let allowed = if action == Action::Start { m.may_halt() } else { m.may_release() };
     if !allowed {
         return Err(refused(if action == Action::Start { "halt-not-offered" } else { "release-not-offered" }));
     }
+    let board = master_board(state, &inst.id)?;
+    let action = match action {
+        Action::Start => {
+            // the slave count it polls now is the one the release must see again
+            if let Some(n) = m.effective_slaves() {
+                with_store(state, |s| s.set_expected_slaves(&inst.id, board, n, crate::history::now_ms()))?;
+            }
+            Action::Start
+        }
+        _ => {
+            let kept = with_store(state, |s| s.expected_slaves(&inst.id, board))?;
+            Action::Stop { expected: release_target(kept, confirmed).ok_or_else(|| refused("expected-slaves-needed"))? }
+        }
+    };
     let r = control_dialog(state, &inst, action)?;
+    if let (Action::Start, Err(DialogError::Rejected(5))) = (action, &r) {
+        // RTN 05 alone names no cause: the master's fresh block explains it
+        let block = with_control(state, &inst, |c| c.uart1_parameters(Bus::CanSocketBus, 0)).ok().and_then(|r| r.ok()).map(|p| p.block);
+        return Err(MaintError::StartRefused { reason: crate::profile::start_refusal(m.caps(), block.as_deref()).into() });
+    }
     // the read after the dialog decides what is shown, also after a failed one
     let after = read_master(state, &inst);
     r?;
-    Ok(master_view(&after?))
+    let mut v = master_view(&after?);
+    if let Action::Stop { expected } = action {
+        with_store(state, |s| s.clear_expected_slaves(&inst.id))?;
+        v.polling = Some(polling_after_release(expected));
+    }
+    Ok(v)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openbms_flash::maint::policy::Patch;
     use openbms_proto::MaintInfo;
 
     fn refused_with(r: Result<impl std::fmt::Debug, MaintError>, key: &str) -> bool {
@@ -951,15 +1023,20 @@ mod tests {
 
     #[test]
     fn the_master_view_names_version_marker_and_actions() {
-        let info = |word: u32, id: [u8; 8]| MaintInfo { base: [16, 6, 13], patch: [1, 1], marker_word: word, effective_slaves: 0, build_id: id };
-        let known = [0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0];
-        let v = master_view(&Master::of(Some(dialog::Probe::Info(info(0, known)))));
-        assert_eq!((v.kind, v.version.as_deref(), v.marker, v.marker_word.as_deref()), ("maint", Some("16.06.13 MAINT 1.1"), Some("on"), Some("00000000")));
-        assert!(v.may_release && !v.may_halt);
-        let v = master_view(&Master::of(Some(dialog::Probe::Info(info(0x0102_0304, known)))));
+        let info = |patch: [u8; 2], id: [u8; 8]| MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: id };
+        let st = |word: u32| Some(MaintState { marker_word: word, effective_slaves: 0 });
+        let listed = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
+        let patched = |i: MaintInfo, s| Master::Patched { patch: Patch::recognise(i).unwrap(), state: s };
+        let v = master_view(&patched(info([1, 5], listed), st(0)));
+        assert_eq!((v.kind, v.version.as_deref(), v.listed.as_deref(), v.marker, v.marker_word.as_deref()), ("patched", Some("16.06.13 MAINT 1.5"), Some("16.06.13 MAINT 1.5"), Some("on"), Some("00000000")));
+        assert!(v.may_release && !v.may_halt && v.caps.is_some_and(|c| c.start_gate));
+        let v = master_view(&patched(info([1, 5], listed), st(0x0102_0304)));
         assert_eq!((v.marker, v.may_release, v.may_halt), (Some("foreign"), false, false));
-        let v = master_view(&Master::of(Some(dialog::Probe::Info(info(0, [0; 8])))));
-        assert_eq!((v.kind, v.may_release), ("unknown-build", false));
+        // not listed, same patch version: same configuration, no name
+        let v = master_view(&patched(info([1, 5], [0; 8]), st(0)));
+        assert_eq!((v.kind, v.listed, v.may_release, v.patch.as_deref(), v.base.as_deref()), ("patched", None, true, Some("1.5"), Some("16.06.13")));
+        let v = master_view(&Master::UnknownPatch(Some(info([1, 4], [0; 8]))));
+        assert_eq!((v.kind, v.may_release, v.caps), ("unknown-patch", false, None));
         let v = master_view(&Master::No0x64);
         assert_eq!((v.kind, v.marker, v.version), ("no-0x64", None, None));
     }
@@ -988,11 +1065,56 @@ mod tests {
 
     #[test]
     fn a_retried_start_or_stop_continues_from_the_state_found() {
-        let st = |marker, slaves| MaintStatus { marker, effective_slaves: slaves };
+        let st = |marker: bool, slaves| MaintState { marker_word: if marker { 0 } else { u32::MAX }, effective_slaves: slaves };
         assert!(target_reached(Action::Start, st(true, 0)));
         assert!(!target_reached(Action::Start, st(true, 3)));
-        assert!(target_reached(Action::Stop, st(false, 3)));
-        assert!(!target_reached(Action::Stop, st(true, 0)));
+        assert!(target_reached(Action::Stop { expected: 3 }, st(false, 3)));
+        // the marker off with another slave count is not the target yet
+        assert!(!target_reached(Action::Stop { expected: 3 }, st(false, 0)));
+        assert!(!target_reached(Action::Stop { expected: 0 }, st(true, 0)));
+    }
+
+    #[test]
+    fn a_release_waits_for_the_kept_or_the_confirmed_slave_count() {
+        assert_eq!(release_target(Some(11), Some(3)), Some(11), "the count read before the halt wins");
+        assert_eq!(release_target(None, Some(3)), Some(3));
+        assert_eq!(release_target(None, None), None);
+        assert_eq!(polling_after_release(0), "no-slaves");
+        assert_eq!(polling_after_release(11), "unverified");
+        let s = store_at("expected");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.set_expected_slaves(&a.id, Some(4), 11, 1).unwrap();
+        assert_eq!(s.expected_slaves(&a.id, Some(4)).unwrap(), Some(11));
+        // another master board: not its count
+        assert_eq!(s.expected_slaves(&a.id, Some(5)).unwrap(), None);
+        s.clear_expected_slaves(&a.id).unwrap();
+        assert_eq!(s.expected_slaves(&a.id, Some(4)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_version_proof_is_per_place_replaced_cleared_and_gone_with_its_installation() {
+        let s = store_at("proof");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.set_patch_proof(&a.id, 3, "SYN-3", "16.06.13 MAINT 1.5", "flash", 1).unwrap();
+        assert_eq!(s.patch_proof(&a.id, 3).unwrap().map(|p| (p.bms_serial, p.source)), Some(("SYN-3".into(), "flash".into())));
+        assert_eq!(s.patch_proof(&a.id, 4).unwrap(), None);
+        s.set_patch_proof(&a.id, 3, "SYN-3B", "MAINT ≥ 1.5", "user", 2).unwrap();
+        assert_eq!(s.patch_proof(&a.id, 3).unwrap().map(|p| p.bms_serial), Some("SYN-3B".into()));
+        s.clear_patch_proof(&a.id, 3).unwrap();
+        assert_eq!(s.patch_proof(&a.id, 3).unwrap(), None);
+        s.set_patch_proof(&a.id, 3, "SYN-3", "16.06.13 MAINT 1.5", "flash", 3).unwrap();
+        s.set_expected_slaves(&a.id, None, 2, 3).unwrap();
+        s.delete_installation(&a.id).unwrap();
+        assert_eq!(s.patch_proof(&a.id, 3).unwrap(), None);
+        assert_eq!(s.expected_slaves(&a.id, None).unwrap(), None);
+        assert!(s.set_patch_proof("missing", 1, "X", "r", "user", 4).is_err());
+    }
+
+    #[test]
+    fn a_timeout_names_the_marker_it_saw() {
+        let last = MaintState { marker_word: 0x1234_5678, effective_slaves: 2 };
+        let e = MaintError::from(DialogError::Timeout { after: Duration::from_secs(3), last });
+        assert_eq!(serde_json::to_value(e).unwrap(), serde_json::json!({ "kind": "timeout", "marker": "foreign", "slaves": 2 }));
     }
 
     #[test]

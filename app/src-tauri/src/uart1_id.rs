@@ -1,11 +1,12 @@
-//! The board identity of a pack on the CAN socket (MAINT 1.3: String 1 and String 2 over the binary service) and what
-//! depends on it: reading parameters with a snapshot, the serial numbers of the sidebar, and writing parameters.
+//! The board identity of a pack on the CAN socket (String 1 and String 2 over the binary service of a patched pack) and
+//! what depends on it: reading parameters with a snapshot, the serial numbers of the sidebar, and writing parameters.
 //!
 //! A write goes out only to a strictly known target (design r5/r7): its fresh String 2 is canonical (`serial::canonical`),
 //! equal to the String 2 read with the edited column, the current board of this address recorded from canonical raw
 //! bytes, and the current board of no other address. Identity check, fresh read, write, acknowledgement and read-back run
 //! in one port session (one `with_link`) under the pack's reservation with host polling held; what the store must know
-//! is read before, what it keeps is written after. MAINT 1.2 (0x81 to String 2) reads but never writes or stores here.
+//! is read before, what it keeps is written after. A pack without String 2 (0x81) reads but never writes or stores here.
+//! The release bits of Group0 follow `profile::Group0`: kept as the pack has them unless the pack's patch is proven.
 
 use crate::bank::{self, Here, Other, Why};
 use crate::bms_memory::{uart1_error, uart1_pending, uart1_refusal, uart1_sent, write_checked, ParamIo, ParamWrite, Sent};
@@ -87,6 +88,8 @@ pub struct ParamRead {
     #[serde(flatten)]
     pub parameters: Parameters,
     pub bms_serial: Option<String>,
+    /// what proves the pack's patch version (`profile::pack_patch`); None: not proven
+    pub patch: Option<crate::profile::PackPatch>,
 }
 
 /// 0x47 over the CAN socket under the pack's reservation, then String 2 and 1 in the same port session (not after a
@@ -103,6 +106,7 @@ pub(crate) fn read(state: &AppState, bus: Bus, address: u8) -> Result<ParamRead,
         };
         Ok(Ok((p, read_serials(&mut d, address).ok())))
     })??;
+    bank::set_uart1(state, link.gen, address, serials.as_ref().and_then(|s| offered(&s.bms)));
     let bms_serial = serials.as_ref().and_then(|s| s.canonical.clone());
     if let (Some(s), Some(serial)) = (&serials, &bms_serial) {
         let facts = link.installation.as_deref().and_then(|inst| crate::maint::with_store(state, |st| Ok((st.current_refs(inst)?, st.serial_places(serial)?))).ok());
@@ -121,7 +125,17 @@ pub(crate) fn read(state: &AppState, bus: Bus, address: u8) -> Result<ParamRead,
             }
         }
     }
-    Ok(ParamRead { parameters, bms_serial })
+    let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
+    Ok(ParamRead { parameters, bms_serial, patch })
+}
+
+/// What a String 2 read says about the binary service: a frame came (true), 0x81 (false), nothing (None).
+fn offered(bms: &SerialValue) -> Option<bool> {
+    match bms {
+        SerialValue::NoAnswer => None,
+        SerialValue::Unavailable => Some(false),
+        _ => Some(true),
+    }
 }
 
 /// What a canonical String 2 means for reading and showing (no device left to ask): known (snapshots), not yet one
@@ -146,11 +160,12 @@ fn verdict(inst: &str, address: u8, serial: &str, refs: &[BoardRef], places: &[S
     }
 }
 
-/// The serial numbers of a pack on the CAN socket whose master reports String 1/2 (MAINT 1.3), and what they say
+/// The serial numbers of a pack on the CAN socket whose master reports String 1/2, and what they say
 /// against the installation: a known board is recorded as seen (String 1 included), one that is not yet confirmed is
 /// noted for „Übernehmen“. Returns the values and the identity view (None: „Nur ansehen“, or nothing to say).
 pub(crate) fn serial_numbers(state: &AppState, link: &Link, bus: Bus, address: u8) -> Result<(openbms_proto::SerialNumbers, Option<bank::IdentityView>), String> {
     let mut s = with_conn(&state.conn, &state.flashing, |c| Ok(read_serials(&mut Conn { c, bus }, address)))??;
+    bank::set_uart1(state, link.gen, address, offered(&s.bms));
     // the master's String 1 as before when the binary one is missing
     if address == 0 && !matches!(s.battery, SerialValue::Set { .. }) {
         if let Ok(b) = with_conn(&state.conn, &state.flashing, |c| c.master_battery_serial()) {
@@ -186,6 +201,8 @@ pub(crate) struct Facts {
     pub master: Option<String>,
     /// every place the expected String 2 is known at
     pub places: Vec<SerialPlace>,
+    /// the release bits of Group0 (`profile::group0_rule` for the expected board)
+    pub group0: crate::profile::Group0,
 }
 
 /// What a write's port session came to, and what the store keeps of it afterwards.
@@ -313,7 +330,7 @@ pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expecte
         }
     }
     let mut io = SessionIo { dev, address, snaps: vec![] };
-    out.result = Some(write_checked(&mut io, address, base, edited, restore));
+    out.result = Some(write_checked(&mut io, address, base, edited, restore, facts.group0));
     out.snaps = io.snaps;
     out.serial = Some(serial);
     out
@@ -333,9 +350,12 @@ pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expect
                 Some(e) => s.serial_places(e)?,
                 None => vec![],
             },
+            group0: crate::profile::Group0::Keep,
         })
     })
     .map_err(|e| format!("{e:?}"))?;
+    // the proof is bound to the expected String 2; the session writes only when the fresh one equals it
+    let facts = Facts { group0: crate::profile::group0_rule(true, crate::profile::pack_patch(state, link, address, expected).as_ref()), ..facts };
     let _pause = crate::PollPause::hold(&state.params_pause);
     let session = with_link(&state.conn, &state.flashing, &state.link, link, |c| {
         Ok(write_session(&mut Conn { c, bus }, &inst, address, expected, &facts, base, edited, restore))
@@ -471,7 +491,7 @@ mod tests {
     }
 
     fn facts(refs: Vec<BoardRef>) -> Facts {
-        Facts { refs, master: None, places: vec![] }
+        Facts { refs, master: None, places: vec![], group0: crate::profile::Group0::Keep }
     }
 
     /// Address 1 holds "SYN-1", canonical, current; it answers String 2 and the read, takes the write, reads back.
@@ -520,6 +540,47 @@ mod tests {
         let (base, edited) = edit(&block(1, 3600), 3650);
         let s = write_session(&mut dev, "A", 1, Some("SYN-1"), &facts(vec![board(1, "SYN-1", Some(true))]), base, edited, false);
         assert!(matches!(s.result, Some(Ok(ParamWrite::Refused { switches_live: false, .. }))));
+        assert_eq!(kinds(&s), [SnapshotKind::Read, SnapshotKind::Refused]);
+    }
+
+    fn with_group0(p: &Parameters, g0: u8) -> Parameters {
+        let mut b = p.block.clone();
+        b[crate::profile::GROUP0] = g0;
+        Parameters::parse(&b).unwrap()
+    }
+
+    #[test]
+    fn without_proof_the_release_bits_go_out_as_the_pack_has_them() {
+        let fresh = with_group0(&block(1, 3600), 0xFA);
+        let mut dev = good(3650);
+        dev.reads = vec![Ok(fresh.clone()), Ok(with_group0(&block(1, 3650), 0xFA))];
+        let (base, mut edited) = edit(&fresh, 3650);
+        edited.switches[0] = 0xFF;
+        let s = write_session(&mut dev, "A", 1, Some("SYN-1"), &facts(vec![board(1, "SYN-1", Some(true))]), base, edited, false);
+        assert!(matches!(s.result, Some(Ok(ParamWrite::Written { .. }))), "{:?}", s.result);
+        assert_eq!(dev.written[0][crate::profile::GROUP0], 0xFA);
+    }
+
+    #[test]
+    fn with_proof_a_locked_pack_is_refused_before_the_write_and_e3_is_a_refusal() {
+        let gated = Facts { group0: crate::profile::Group0::Gated { write: true, start: true }, ..facts(vec![board(1, "SYN-1", Some(true))]) };
+        let fresh = with_group0(&block(1, 3600), 0xFE);
+        let mut dev = good(3650);
+        dev.reads = vec![Ok(fresh.clone())];
+        let (base, edited) = edit(&fresh, 3650);
+        let s = write_session(&mut dev, "A", 1, Some("SYN-1"), &gated, base, edited, false);
+        assert_eq!(err(&s)["error"], "write-locked");
+        assert!(dev.written.is_empty());
+        // the pack locked itself between read and write: E3, nothing taken, no retry
+        let mut dev = good(3650);
+        dev.write = Some(Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0xE3))));
+        dev.reads.pop();
+        let fresh_ok = with_group0(&block(1, 3600), 0xFF);
+        let (base, edited) = edit(&fresh_ok, 3650);
+        dev.reads = vec![Ok(fresh_ok)];
+        let s = write_session(&mut dev, "A", 1, Some("SYN-1"), &gated, base, edited, false);
+        assert!(matches!(s.result, Some(Ok(ParamWrite::Refused { refusal: openbms_proto::Refusal::Locked, switches_live: false, .. }))), "{:?}", s.result);
+        assert_eq!(dev.written.len(), 1);
         assert_eq!(kinds(&s), [SnapshotKind::Read, SnapshotKind::Refused]);
     }
 

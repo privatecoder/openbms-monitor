@@ -90,7 +90,7 @@ pub async fn capture_export(path: String, lang: String) -> Result<usize, String>
 enum Req {
     Ascii { address: u8, cid2: u8, info0: Option<u8>, info1: Option<u8> },
     Modbus,
-    /// the binary parameter service of the CAN socket (MAINT 1.2)
+    /// the binary parameter service of the CAN socket (patched firmware)
     Uart1 { address: u8, cmd: u8 },
     Other,
 }
@@ -157,7 +157,7 @@ fn command_name(cid2: u8, info0: Option<u8>, info1: Option<u8>, l: Lang) -> Stri
         0x5A => p("Intra-Pack", "intra-pack"),
         0x64 => match info0 {
             Some(0x02) => p("Wartungsmodus lesen", "read maintenance state"),
-            Some(0x03) => p("Wartungsinfo lesen", "read maintenance info"),
+            Some(0x03) => p("Firmwarekennung lesen", "read firmware identity"),
             Some(0x00) => p("Wartungsmodus aus", "maintenance mode off"),
             Some(0x01) => p("Wartungsmodus ein", "maintenance mode on"),
             _ => p("Wartungsmodus", "maintenance mode"),
@@ -275,6 +275,7 @@ fn uart1_rx(bytes: &[u8], address: u8, cmd: u8, l: Lang) -> (String, String, Str
                 Some(uart1::Code::WrongLength) => l.pick("Länge falsch", "length wrong"),
                 Some(uart1::Code::Markers) => l.pick("Blockmarker falsch", "block markers wrong"),
                 Some(uart1::Code::Rejected) => l.pick("Parameterprüfung fehlgeschlagen, nichts übernommen", "parameter check failed, nothing taken"),
+                Some(uart1::Code::Locked) => l.pick("Schreiben gesperrt oder Startfreigabe-Bit geändert, nichts übernommen", "writing locked or start release bit changed, nothing taken"),
                 None => l.pick("unbekannter Code", "unknown code"),
             };
             format!("{} {fc:02X}: {what}", l.pick("Fehler", "error"))
@@ -602,12 +603,15 @@ mod tests {
             entry(1, Kind::Rx, &ans[50..], 20),
             entry(1, Kind::Tx, &write, 30),
             entry(1, Kind::Rx, &frame(1, 0xE2, &[]), 40),
+            entry(1, Kind::Tx, &write, 50),
+            entry(1, Kind::Rx, &frame(1, 0xE3, &[]), 60),
         ], 0, Lang::En);
         let tx = cols(&lines[4]);
         assert_eq!((tx[4], tx[5], tx[7]), ("01", "47", "UART1: read parameters (55/47)"));
         assert_eq!(cols(&lines[5])[7], "echo of the request; answer: parameters, 168 bytes");
         assert_eq!(cols(&lines[6])[7], "UART1: write parameters (55/A1)");
         assert_eq!(cols(&lines[7])[7], "error E2: parameter check failed, nothing taken");
+        assert_eq!(cols(&lines[9])[7], "error E3: writing locked or start release bit changed, nothing taken");
     }
 
     #[test]

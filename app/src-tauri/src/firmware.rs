@@ -152,7 +152,7 @@ pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(eh
     };
     let blocks = session::dry_run(&image)?.len() - 3;
     let info = ImageInfo {
-        release: release.or(known_build.map(|r| r.name)).unwrap_or("custom").into(),
+        release: release.or(known_build).unwrap_or("custom").into(),
         kind,
         custom: release.is_none(),
         device: image.header.device.clone(),
@@ -237,6 +237,23 @@ pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: 
     Ok(info)
 }
 
+/// Before flashing an image with the patch functions: the target's Group0 now, from a fresh 0x47 on the pack bus (the
+/// flash takes over the release bits as they are). Stops the monitor like the other pack bus steps; reads only while the
+/// bus is quiet (a polling master would collide). None: not readable now (the UI shows the last snapshot with its age).
+#[tauri::command]
+pub async fn firmware_group0(app: AppHandle, state: State<'_, AppState>, port: String, address: u8) -> Result<Option<u8>, String> {
+    if state.flashing.load(Ordering::SeqCst) {
+        return Err(FLASHING_TEXT.into());
+    }
+    let _port_slot = crate::control::reserve_bus_wait(&state).ok_or("the port is busy with another operation")?;
+    let key = maint::pack_key(&port).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+    let mut link = maint::open_pack_for(&state, &app, &key).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+    let quiet = bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map(|t| t.quiet()).unwrap_or(false);
+    Ok(if quiet { link.parameters(address).ok().map(|p| p.function_switches[0]) } else { None })
+}
+
+const FLASHING_TEXT: &str = "a firmware update is running";
+
 /// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
 /// pending in its bootloader, on any endpoint (`maint::pending_refusal`), and with `checks` (the installation's own
 /// RS485-1/2 port) a patched master with its marker on is released before a non-maintenance image (C'), the master's
@@ -307,6 +324,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // written before the restart, so a crash or power loss leaves it behind
     let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, target.as_deref(), crate::history::now_ms())).map_err(to_text)?;
     maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
+    // the place's version proof ends with the start of every flash (also one that breaks off); only a finished flash of
+    // an image with the patch functions sets it again, for the String 2 read back
+    let patch_image = known::patch_image(&info.sha256);
+    maint::with_store(&state, |s| s.clear_patch_proof(&owner.id, address)).map_err(to_text)?;
+    let owner_id = owner.id.clone();
     let store = state.maint.clone();
     let stored = target.clone();
     std::thread::spawn(move || {
@@ -321,6 +343,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let ok = matches!(result, Ok(Ok(_)));
         // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
         let pending = maint::settle_pending(&store, pending, address, stored.as_deref(), ok, last, &mut link);
+        if let (true, Some(release)) = (ok, patch_image) {
+            if let Some(serial) = proof_serial(stored.as_deref(), maint::string2(&mut link, address)) {
+                let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(&owner_id, address, &serial, release, "flash", crate::history::now_ms()));
+            }
+        }
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
@@ -339,6 +366,12 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let _ = app.emit("firmware-done", done);
     });
     Ok(FlashStarted { bank })
+}
+
+/// The String 2 a version proof after a finished patched flash is bound to: the one read back, and only if it is the
+/// board read before the flash (when that was read).
+pub fn proof_serial(before: Option<&str>, after: Option<String>) -> Option<String> {
+    after.filter(|a| before.is_none_or(|b| b == a))
 }
 
 /// The first listen of a flash with checks: any traffic refuses, before any 0xA4.
@@ -397,6 +430,17 @@ mod tests {
     fn utc_stamp_handles_leap_day() {
         // 2024-02-29 23:59:59 UTC
         assert_eq!(utc_stamp(1_709_251_199), "20240229-235959Z");
+    }
+
+    #[test]
+    fn a_proof_after_a_patched_flash_needs_the_same_board_read_back() {
+        assert_eq!(proof_serial(Some("SYN-3"), Some("SYN-3".into())).as_deref(), Some("SYN-3"));
+        assert_eq!(proof_serial(None, Some("SYN-3".into())).as_deref(), Some("SYN-3"));
+        assert_eq!(proof_serial(Some("SYN-3"), Some("SYN-B".into())), None);
+        assert_eq!(proof_serial(Some("SYN-3"), None), None);
+        // only images with the patch functions set it
+        assert_eq!(known::patch_image("5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12"), Some("16.06.13 MAINT 1.5"));
+        assert_eq!(known::patch_image(known::RELEASES[5].code_sha256), None);
     }
 
     #[test]

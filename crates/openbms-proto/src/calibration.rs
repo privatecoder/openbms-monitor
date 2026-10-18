@@ -75,6 +75,8 @@ pub enum Refusal {
     Refused,
     /// RTN 04: unknown command or value.
     Invalid,
+    /// Binary E3 on the CAN socket: writing is locked there, or the block would change the protected start release bit.
+    Locked,
 }
 
 impl Refusal {

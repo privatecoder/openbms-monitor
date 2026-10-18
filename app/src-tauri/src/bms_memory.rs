@@ -1,5 +1,5 @@
 //! The BMS clock, the pack's internal history, calibration, the CAN inverter protocol, writing parameters and serial
-//! numbers (RS485-1/2 only; parameters also on the CAN socket of a MAINT 1.2 pack, `ParamPath`). Every write reserves
+//! numbers (RS485-1/2 only; parameters also on the CAN socket of a patched pack, `ParamPath`). Every write reserves
 //! its pack for the whole exchange (`control::reserve_pack`), the history read too.
 //!
 //! A history read runs on its own thread and takes the connection lock per frame, through `with_conn` like every
@@ -221,7 +221,7 @@ pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind
 }
 
 /// How parameters are read and written on the connected bus: ASCII 0x47/0xA1 on RS485-1/2, the binary service of a
-/// MAINT 1.2 pack on the CAN socket (`uart1.rs`). Chosen by the bus, never one in place of the other.
+/// patched pack on the CAN socket (`uart1.rs`). Chosen by the bus, never one in place of the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParamPath {
     Ascii,
@@ -323,6 +323,9 @@ pub(crate) fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
         Ok(()) => Sent::Ack,
         // E2: the patch takes neither the values nor the switches
         Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0xE2))) => Sent::Refused { refusal: Refusal::Refused, switches_live: false },
+        // E3: writing locked there, or the start release bit would change; checked before sending, so the pack changed
+        // since the read
+        Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0xE3))) => Sent::Refused { refusal: Refusal::Locked, switches_live: false },
         Err(e @ openbms_transport::Error::Proto(openbms_proto::Error::Uart1(_))) => Sent::Protocol(uart1_error(e)),
         Err(e) => Sent::Lost(e.to_string()),
     }
@@ -364,7 +367,7 @@ pub enum ParamWrite {
 /// (the stored block after a refusal); the rebase would take the live switches for a change of the pack.
 ///
 /// CAN socket: the same steps over the binary service in one port session (`uart1_id::write`), only for a target whose
-/// board identity is strictly known (MAINT 1.3: a fresh canonical String 2 equal to `serial`, the String 2 read with the
+/// board identity is strictly known (a fresh canonical String 2 equal to `serial`, the String 2 read with the
 /// edited column). Host polling pauses from the identity read to the read-back.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -377,7 +380,7 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
         ParamPath::Ascii => {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
             let checked = check_target(&state, &link, address)?;
-            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore)?;
+            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore, crate::profile::Group0::Free)?;
             Ok(Written { value, unchecked: checked.unchecked })
         }
         ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore),
@@ -404,7 +407,8 @@ pub(crate) fn uart1_pending(state: &AppState, link: &Link, address: u8) -> Resul
     if pending { Err(uart1_refusal("pending")) } else { Ok(()) }
 }
 
-pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
+/// `group0`: what the write may do with the release bits of Group0 (`profile::apply_group0`); a refusal there sends nothing.
+pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, edited: Values, restore: bool, group0: crate::profile::Group0) -> Result<ParamWrite, String> {
     let fresh = io.read(true)?;
     // byte 0 is the pack's own address: a block from another pack must never be written here
     if fresh.address != address {
@@ -416,7 +420,8 @@ pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, ed
             None => return Ok(ParamWrite::Stale { fresh }),
         }
     };
-    let block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
+    let mut block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
+    crate::profile::apply_group0(group0, &fresh.block, &mut block)?;
     let uart1 = io.uart1();
     match io.send(&block)? {
         Sent::Refused { refusal, switches_live } => {
@@ -760,12 +765,12 @@ mod tests {
             let b = block(adr);
             let (base, edited) = edit(&b, 3650);
             let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(with_p0(&b, 3650))], Sent::Ack);
-            let r = write_checked(&mut f, adr, base.clone(), edited.clone(), false).unwrap();
+            let r = write_checked(&mut f, adr, base.clone(), edited.clone(), false, crate::profile::Group0::Free).unwrap();
             assert!(matches!(&r, ParamWrite::Written { read_back: Some(p), unanswered: false, before: None, .. } if p.address == adr));
             assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Written, SnapshotKind::Read]);
             assert_eq!(f.blocks, [with_p0(&b, 3650)]);
             let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(with_p0(&b, 3650))], Sent::Ack);
-            let r = write_checked(&mut f, adr, base, edited, false).unwrap();
+            let r = write_checked(&mut f, adr, base, edited, false, crate::profile::Group0::Free).unwrap();
             assert!(matches!(&r, ParamWrite::Written { read_back: Some(_), unanswered: false, before: Some(p), .. } if p.block == b));
             assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Written, SnapshotKind::Read]);
             // the block sent carries the pack's own address
@@ -778,12 +783,12 @@ mod tests {
         let b = block(3);
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone())], Sent::Refused { refusal: Refusal::Refused, switches_live: false });
-        let r = write_checked(&mut f, 3, base.clone(), edited.clone(), false).unwrap();
+        let r = write_checked(&mut f, 3, base.clone(), edited.clone(), false, crate::profile::Group0::Free).unwrap();
         assert!(matches!(r, ParamWrite::Refused { refusal: Refusal::Refused, switches_live: false, .. }));
         let j = serde_json::to_value(&r).unwrap();
         assert_eq!((j["kind"].as_str(), j["switches_live"].as_bool()), (Some("refused"), Some(false)));
         let mut f = Fake::new(false, vec![Ok(b.clone())], Sent::Refused { refusal: Refusal::Refused, switches_live: true });
-        let r = write_checked(&mut f, 3, base, edited, false).unwrap();
+        let r = write_checked(&mut f, 3, base, edited, false, crate::profile::Group0::Free).unwrap();
         assert!(matches!(r, ParamWrite::Refused { switches_live: true, .. }));
         assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Refused]);
     }
@@ -794,7 +799,7 @@ mod tests {
         let (base, edited) = edit(&b, 3650);
         let e = r#"{"code":135,"error":"protocol","kind":"uart1"}"#.to_string();
         let mut f = Fake::new(true, vec![Ok(b)], Sent::Protocol(e.clone()));
-        assert_eq!(write_checked(&mut f, 3, base, edited, false).unwrap_err(), e);
+        assert_eq!(write_checked(&mut f, 3, base, edited, false, crate::profile::Group0::Free).unwrap_err(), e);
         assert!(f.reads.is_empty());
     }
 
@@ -803,7 +808,7 @@ mod tests {
         let b = block(2);
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(with_p0(&b, 3640))], Sent::Ack);
-        let r = write_checked(&mut f, 2, base, edited, false).unwrap();
+        let r = write_checked(&mut f, 2, base, edited, false, crate::profile::Group0::Free).unwrap();
         match &r {
             ParamWrite::UnclearRead { error, read_back: Some(p), before } => {
                 assert_eq!(error, &uart1_refusal("readback"));
@@ -819,7 +824,7 @@ mod tests {
         other_name[160] = b'X';
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(other_name)], Sent::Ack);
-        assert!(matches!(write_checked(&mut f, 2, base, edited, false).unwrap(), ParamWrite::Written { .. }));
+        assert!(matches!(write_checked(&mut f, 2, base, edited, false, crate::profile::Group0::Free).unwrap(), ParamWrite::Written { .. }));
     }
 
     #[test]
@@ -827,11 +832,11 @@ mod tests {
         let b = block(6);
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone()), Err("no answer")], Sent::Ack);
-        let r = write_checked(&mut f, 6, base.clone(), edited.clone(), false).unwrap();
+        let r = write_checked(&mut f, 6, base.clone(), edited.clone(), false, crate::profile::Group0::Free).unwrap();
         assert!(matches!(&r, ParamWrite::UnclearRead { read_back: None, before, .. } if before.block == b), "{r:?}");
         assert_eq!(f.kept, [SnapshotKind::Read], "no written");
         let mut f = Fake::new(false, vec![Ok(b.clone()), Err("timeout")], Sent::Ack);
-        assert!(matches!(write_checked(&mut f, 6, base, edited, false).unwrap(), ParamWrite::Written { read_back: None, .. }));
+        assert!(matches!(write_checked(&mut f, 6, base, edited, false, crate::profile::Group0::Free).unwrap(), ParamWrite::Written { read_back: None, .. }));
     }
 
     #[test]
@@ -839,12 +844,12 @@ mod tests {
         let b = block(7);
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(with_p0(&b, 3640))], Sent::Lost("timeout".into()));
-        let r = write_checked(&mut f, 7, base.clone(), edited.clone(), false).unwrap();
+        let r = write_checked(&mut f, 7, base.clone(), edited.clone(), false, crate::profile::Group0::Free).unwrap();
         assert!(matches!(&r, ParamWrite::UnclearRead { read_back: Some(p), .. } if p.parameters[0].raw == 3640));
         assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Read], "the read before and the one seen now, no written");
         // RS485-1/2 as before: the comparison read is not kept
         let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(with_p0(&b, 3640))], Sent::Lost("timeout".into()));
-        assert!(matches!(write_checked(&mut f, 7, base, edited, false).unwrap(), ParamWrite::Unclear { .. }));
+        assert!(matches!(write_checked(&mut f, 7, base, edited, false, crate::profile::Group0::Free).unwrap(), ParamWrite::Unclear { .. }));
         assert_eq!(f.kept, [SnapshotKind::Read]);
     }
 
@@ -854,19 +859,19 @@ mod tests {
         let same = Parameters::parse(&b).unwrap().values();
         // restore of the block the pack holds: a fresh read cannot tell whether the A1 arrived
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(b.clone())], Sent::Lost("no answer within 3s".into()));
-        let r = write_checked(&mut f, 4, same.clone(), same.clone(), true).unwrap();
+        let r = write_checked(&mut f, 4, same.clone(), same.clone(), true, crate::profile::Group0::Free).unwrap();
         assert!(matches!(r, ParamWrite::UnclearRead { read_back: Some(_), .. }), "{r:?}");
         // the same on RS485-1/2 stays as it was
         let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(b.clone())], Sent::Lost("timeout".into()));
-        assert!(matches!(write_checked(&mut f, 4, same.clone(), same, true).unwrap(), ParamWrite::Written { unanswered: true, .. }));
+        assert!(matches!(write_checked(&mut f, 4, same.clone(), same, true, crate::profile::Group0::Free).unwrap(), ParamWrite::Written { unanswered: true, .. }));
         // a changed block: the read decides as before; the values before mean the write did not arrive
         let (base, edited) = edit(&b, 3650);
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(with_p0(&b, 3650))], Sent::Lost("timeout".into()));
-        assert!(matches!(write_checked(&mut f, 4, base.clone(), edited.clone(), false).unwrap(), ParamWrite::Written { unanswered: true, before: Some(_), .. }));
+        assert!(matches!(write_checked(&mut f, 4, base.clone(), edited.clone(), false, crate::profile::Group0::Free).unwrap(), ParamWrite::Written { unanswered: true, before: Some(_), .. }));
         let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(b.clone())], Sent::Lost("timeout".into()));
-        assert_eq!(write_checked(&mut f, 4, base.clone(), edited.clone(), false).unwrap_err(), "timeout");
+        assert_eq!(write_checked(&mut f, 4, base.clone(), edited.clone(), false, crate::profile::Group0::Free).unwrap_err(), "timeout");
         let mut f = Fake::new(true, vec![Ok(b.clone()), Err("no answer")], Sent::Lost("timeout".into()));
-        assert!(matches!(write_checked(&mut f, 4, base, edited, false).unwrap(), ParamWrite::UnclearRead { read_back: None, .. }));
+        assert!(matches!(write_checked(&mut f, 4, base, edited, false, crate::profile::Group0::Free).unwrap(), ParamWrite::UnclearRead { read_back: None, .. }));
     }
 
     #[test]
