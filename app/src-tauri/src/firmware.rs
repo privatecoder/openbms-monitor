@@ -65,17 +65,32 @@ pub struct FlashStarted {
 }
 
 /// What a flash of the master needs from its marker (C'), for the installation whatever pack bus endpoint is used: a fresh
-/// read of the installation's control channel (`fresh`: None without a control channel or when the read failed or showed
-/// nothing) decides; without one the marker last seen counts. Err: the refusal key; Ok: "checked" or "unchecked".
+/// read of the installation's control channel (`fresh`: None without a control channel or when the read failed) decides
+/// only with a valid marker state; a patched master without one (lost or foreign `02`), an unknown patch or no read falls
+/// back to the marker last reliably seen (on refuses), else the flash goes on "unchecked". A master without 0x64 runs a
+/// firmware that ignores the marker: nothing to release. Err: the refusal key; Ok: "checked" or "unchecked".
 pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&Master>, last_on: bool) -> Result<Option<&'static str>, &'static str> {
+    use openbms_proto::MarkerWord;
     if address != 0 {
         return Ok(None);
     }
-    match fresh.filter(|m| **m != Master::Unknown) {
-        Some(m) if policy::release_first(m, image) => Err("release-master-first"),
-        Some(_) => Ok(Some("checked")),
-        None if image != known::ImageKind::Maintenance && last_on => Err("release-master-first-unread"),
-        None => Ok(Some("unchecked")),
+    let marker = fresh.and_then(|m| if m.caps().is_some() { m.marker() } else { None });
+    match (fresh, marker) {
+        (Some(m), Some(MarkerWord::On)) if policy::release_first(m, image) => Err("release-master-first"),
+        (Some(_), Some(MarkerWord::On | MarkerWord::Off)) => Ok(Some("checked")),
+        (Some(Master::No0x64), _) => Ok(Some("checked")),
+        _ if image != known::ImageKind::Maintenance && last_on => Err("release-master-first-unread"),
+        _ => Ok(Some("unchecked")),
+    }
+}
+
+/// A "checked" marker from the installation's control channel holds for the chosen pack bus endpoint only if that is the
+/// installation's own port, or the master read there (canonical String 2 of address 0) is the installation's current
+/// board at address 0. Otherwise the flash goes on "unchecked" with its hint.
+pub fn marker_for_endpoint(marker: Option<&'static str>, own_port: bool, read: Option<&str>, stored: Option<&str>) -> Option<&'static str> {
+    match marker {
+        Some("checked") if !own_port && (read.is_none() || read != stored) => Some("unchecked"),
+        m => m,
     }
 }
 
@@ -330,6 +345,17 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // for its address is not flashed. Its String 2 goes with the pending record: only that board's answer clears it.
     let target = maint::check_target_board(&state.maint, &owner, address, &mut link).map_err(to_text)?;
     // the pending pack again: only as the same board
+    // a manual endpoint: the control channel's marker counts as checked only for the installation's own master there
+    let marker = if address == 0 && !checks && marker == Some("checked") {
+        let read = match link.bms_serial_canonical(0) {
+            Ok((openbms_proto::SerialValue::Set { value, truncated: false }, true)) => Some(value),
+            _ => None,
+        };
+        let stored = maint::with_store(&state, |s| Ok(s.current_board(&owner.id, 0)?.map(|b| b.bms_serial))).map_err(to_text)?;
+        marker_for_endpoint(marker, false, read.as_deref(), stored.as_deref())
+    } else {
+        marker
+    };
     let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
     maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
@@ -452,6 +478,14 @@ mod tests {
         let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
         let (on, off) = (with(0), with(u32::MAX));
         let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);
+        // a patched master without a valid state (lost or foreign 02): the marker last seen counts
+        let none = Master::Patched { patch: Patch::recognise(info).unwrap(), state: None };
+        let foreign = with(0x1234_5678);
+        for m in [&none, &foreign] {
+            assert_eq!(master_marker_check(0, orig, Some(m), true), Err("release-master-first-unread"));
+            assert_eq!(master_marker_check(0, orig, Some(m), false), Ok(Some("unchecked")));
+        }
+        assert_eq!(master_marker_check(0, orig, Some(&Master::UnknownPatch(None)), true), Err("release-master-first-unread"));
         // fresh read: the marker decides
         assert_eq!(master_marker_check(0, orig, Some(&on), false), Err("release-master-first"));
         assert_eq!(master_marker_check(0, maint, Some(&on), true), Ok(Some("checked")));
@@ -466,6 +500,17 @@ mod tests {
         }
         // another address: no marker question
         assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
+    }
+
+    #[test]
+    fn a_manual_endpoint_is_checked_only_with_the_installations_master_on_it() {
+        assert_eq!(marker_for_endpoint(Some("checked"), false, Some("SYN-0"), Some("SYN-0")), Some("checked"));
+        assert_eq!(marker_for_endpoint(Some("checked"), false, Some("SYN-0"), None), Some("unchecked"), "no stored board");
+        assert_eq!(marker_for_endpoint(Some("checked"), false, Some("SYN-B"), Some("SYN-0")), Some("unchecked"), "another board");
+        assert_eq!(marker_for_endpoint(Some("checked"), false, None, Some("SYN-0")), Some("unchecked"), "not readable");
+        assert_eq!(marker_for_endpoint(Some("checked"), true, None, None), Some("checked"), "the installation's own port");
+        assert_eq!(marker_for_endpoint(Some("unchecked"), false, Some("SYN-0"), Some("SYN-0")), Some("unchecked"));
+        assert_eq!(marker_for_endpoint(None, false, None, None), None);
     }
 
     #[test]
