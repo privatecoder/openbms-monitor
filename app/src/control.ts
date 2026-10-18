@@ -106,7 +106,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere";
-  code?: number; address?: number; board?: number; at?: number | null };
+  code?: number; address?: number; board?: number; at?: number | null; gen?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;
   if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
