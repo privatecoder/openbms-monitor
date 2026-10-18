@@ -14,7 +14,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, lastConn, noAnswer, otherBus, padAddress, partialLine, saveLastConn } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, fixedSearchedLine, lastConn, noAnswer, otherBus, padAddress, parseSel, partialLine, saveLastConn, selAddresses, selText, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -73,7 +73,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const setTarget = (v: string) => setTargets((cur) => ({ ...cur, [kind]: v }));
   const [bus, setBus] = useState<Bus>(() => (localStorage.getItem("conn.bus") as Bus) ?? "can");
   // 0 = search addresses 0..15; n = packs at addresses 0..n-1, polled right away without a search
-  const [packCount, setPackCount] = useState(() => Number(localStorage.getItem("conn.packs") ?? 0) || 0);
+  // which packs are polled: search, a count, or one fixed address (migrated from the old stored count)
+  // stored under the old key: "search" / "count:n" / "address:k", or the old plain count
+  const [packSel, setPackSel] = useState<PackSel>(() => { const v = localStorage.getItem("conn.packs"); return parseSel(v, v); });
+  const fixedAddrs = selAddresses(packSel) ?? [];
   const [ports, setPorts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -107,7 +110,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const viewRef = useRef(view); viewRef.current = view;
   const [waiting, setWaiting] = useState(false);
   const stopWaiting = () => { waitToken.current += 1; };
-  useEffect(stopWaiting, [target, kind, bus, packCount, userActions]);
+  useEffect(stopWaiting, [target, kind, bus, selText(packSel), userActions]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setOffer(null); }, [target, kind, bus]);
   useEffect(() => stopWaiting, []);
   const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<Connected> => {
@@ -215,16 +218,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     setLastTry(Date.now());
     try {
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
-      localStorage.setItem("conn.packs", String(packCount));
+      localStorage.setItem("conn.packs", selText(packSel));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
-      const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, fixedAddrs);
       linkOpen.current = true;
       stopIfCancelled();
       // the choice changed while connecting: this link belongs to the earlier one, it is closed again
       if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
-      if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, packs: packCount });
+      if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, sel: selText(packSel) });
       // another port stored for this bus: offer to replace it (never stored without „Speichern“)
       const owner = maint.installations.find((i) => i.id === connInst.current) ?? null;
       const ask = owner && { inst: owner.id, name: owner.name, bus, kind, target };
@@ -246,7 +249,15 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         else if (patched(m) && m.marker === "on") note = t("conn.maintActive");
       }
       stopIfCancelled();
-      if (!addrs && packCount > 0) { addrs = range(packCount); note = t("conn.fixed", { count: packCount }); }
+      // a fixed count polls 0..n-1 at once, unless the connect check answered outside them: then the normal search
+      let fixedMissed = "";
+      let fixedNote = "";
+      if (!addrs && fixedAddrs.length) {
+        if (fixedFallback(fixedAddrs, answered, null) === "keep") {
+          addrs = fixedAddrs;
+          note = fixedNote = packSel.mode === "address" ? t("conn.fixedAddress", { addr: padAddress(packSel.k) }) : t("conn.fixed", { count: fixedAddrs.length });
+        } else fixedMissed = t("conn.fixedOutside", { addr: padAddress(answered) });
+      }
       if (addrs) {
         // start polling at once; name and firmware version follow from a short device query
         onConnected(addrs.map((a) => [a, undefined]), bus);
@@ -257,9 +268,21 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         stopIfCancelled();
         // serial numbers only of the packs that answered the device query; gaps are named
         const gen = serialGen.current;
-        api.scan(addrs, true).then((found) => {
+        const fixedCount = !!fixedNote;
+        api.scan(addrs, true).then(async (found) => {
           // a late answer of an earlier connection changes nothing
           if (gen !== serialGen.current) return;
+          // a fixed count whose addresses all stay silent: the normal search, and the message says so
+          if (fixedCount && fixedFallback(addrs, answered, found.map(([a]) => a)) === "search") {
+            const all = await api.scan(undefined, true);
+            if (gen !== serialGen.current) return;
+            const at = all.map(([a]) => a);
+            setMsg([linkedNote, answeredNote, fixedSearchedLine(addrs, at, t)].filter(Boolean).join(" "));
+            onConnected(all, bus);
+            if (at.length) await api.startPolling(at, 2000);
+            void readSerials(at, linkGen);
+            return;
+          }
           const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
           if (gaps) setMsg(`${base} ${gaps}`);
           onDevices(found); void readSerials(found.map(([a]) => a), linkGen);
@@ -269,7 +292,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const found = await api.scan(undefined, true);
       stopIfCancelled();
       if (retry && !found.length && bus !== "can") throw new Error(t("conn.none"));
-      setMsg([linkedNote, answeredNote, note, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
+      setMsg([linkedNote, answeredNote, note, fixedMissed, found.length ? t("conn.found", { count: found.length }) : t("conn.none")].filter(Boolean).join(" "));
       onConnected(found, bus);
       setSince(Date.now()); setLost(false);
       // on the CAN socket bus the system values are polled even if no pack answered
@@ -291,7 +314,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         setFailed(true);
         if (kind === "serial") {
           setMsg(t("conn.check.probing", { baud: BAUD[otherBus(bus)] }));
-          const probe = await api.probeOtherBus(target, bus, Array.from({ length: packCount }, (_, i) => i)).catch(() => null);
+          const probe = await api.probeOtherBus(target, bus, fixedAddrs).catch(() => null);
           if (cancelRef.current) { await api.disconnect().catch(() => {}); setFailed(false); setMsg(t("conn.connectCancelled")); return; }
           if (probe) { const r = explain(bus, n, probe, t); setMsg(r.text); setOffer(r.offer); }
           else setMsg(`${firstLine(bus, n, t)} ${t("conn.check.hintSerial")}`);
@@ -385,7 +408,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     setTargets((cur) => ({ ...cur, [f.kind]: f.target }));
     if (f.kind === "tcp") asked.current = f.target.trim().toLowerCase();
     setBus(f.bus);
-    if (f.packs !== null) setPackCount(f.packs);
+    if (f.packs !== null) setPackSel(f.packs);
   };
   const cur = maint.installations.find((i) => i.id === maint.installation) ?? null;
   const storedPorts = JSON.stringify([cur?.control ?? null, cur?.endpoints ?? []]);
@@ -545,10 +568,24 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         )}
         <label className="flex items-center justify-between gap-3 text-sm text-muted">
           {t("conn.packs")}
-          <select className={cn(input, "w-28")} value={packCount} disabled={fixed} onChange={(e) => setPackCount(Number(e.target.value))}>
-            <option value={0}>{t("conn.packsAuto")}</option>
-            {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
+          <span className="flex gap-1">
+            <select className={cn(input, "w-28")} value={packSel.mode} disabled={fixed} aria-label={t("conn.packsMode")}
+              onChange={(e) => setPackSel(e.target.value === "count" ? { mode: "count", n: 1 } : e.target.value === "address" ? { mode: "address", k: 0 } : { mode: "search" })}>
+              <option value="search">{t("conn.packsAuto")}</option>
+              <option value="count">{t("conn.packsCount")}</option>
+              <option value="address">{t("conn.packsAddress")}</option>
+            </select>
+            {packSel.mode === "count" && (
+              <select className={cn(input, "w-16")} value={packSel.n} disabled={fixed} aria-label={t("conn.packsCount")} onChange={(e) => setPackSel({ mode: "count", n: Number(e.target.value) })}>
+                {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
+            {packSel.mode === "address" && (
+              <select className={cn(input, "w-16")} value={packSel.k} disabled={fixed} aria-label={t("conn.packsAddress")} onChange={(e) => setPackSel({ mode: "address", k: Number(e.target.value) })}>
+                {Array.from({ length: 16 }, (_, i) => i).map((k) => <option key={k} value={k}>{padAddress(k)}</option>)}
+              </select>
+            )}
+          </span>
         </label>
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>

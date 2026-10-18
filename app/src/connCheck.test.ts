@@ -79,12 +79,12 @@ describe("sidebar fields after a change of installation or bus", () => {
   const last = (bus: "can" | "pack", kind: "tcp" | "serial" = "tcp", target = "192.0.2.99:4196") => ({ kind, target, bus, packs: 4 });
   it("the stored port of the chosen bus wins over the remembered connection; that gives bus and pack count", () => {
     expect(fillFields(both, "can", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: null });
-    expect(fillFields(both, "can", last("pack"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack", packs: 4 });
-    expect(fillFields(both, "pack", last("can"), "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: 4 });
+    expect(fillFields(both, "can", last("pack"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack", packs: { mode: "count", n: 4 } });
+    expect(fillFields(both, "pack", last("can"), "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: { mode: "count", n: 4 } });
   });
   it("the remembered address only where no port is stored for that bus", () => {
     const canOnly = { control: can, endpoints: [] };
-    expect(fillFields(canOnly, "can", last("pack", "serial", "/dev/cu.other"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: 4 });
+    expect(fillFields(canOnly, "can", last("pack", "serial", "/dev/cu.other"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: { mode: "count", n: 4 } });
     // a bus change takes the remembered address of that bus only, never its pack count
     expect(fillFields(canOnly, "pack", last("pack", "serial", "/dev/cu.other"), "bus")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: null });
     expect(fillFields(canOnly, "pack", last("can"), "bus")).toEqual({ kind: "serial", target: "", bus: "pack", packs: null });
@@ -121,5 +121,55 @@ describe("switching the installation while connecting", () => {
     expect(connectedForOther("inst-a", "inst-b")).toBe(true);
     expect(connectedForOther("inst-a", "inst-a")).toBe(false);
     expect(connectedForOther(null, null)).toBe(false);
+  });
+});
+
+describe("a fixed pack count", () => {
+  it("keeps its fast path when its addresses answer, else searches", async () => {
+    const { fixedFallback, fixedSearchedLine } = await import("./connCheck");
+    const { default: i18n } = await import("./i18n");
+    // the connect check answered at 01, one pack set (address 00): search at once
+    expect(fixedFallback([0], 1, null)).toBe("search");
+    expect(fixedFallback([0, 1, 2], 1, null)).toBe("keep");
+    // the device query of the fixed addresses found none of them: search
+    expect(fixedFallback([0], 0, [])).toBe("search");
+    expect(fixedFallback([0, 1], 0, [1])).toBe("keep");
+    expect(fixedFallback([0, 1], 0, [0, 1])).toBe("keep");
+    const de = i18n.getFixedT("de");
+    expect(fixedSearchedLine([0], [1], de)).toBe("Keine Antwort an Adresse 00; gesucht: Pack 01 gefunden.");
+    expect(fixedSearchedLine([0, 1, 2], [], de)).toBe("Keine Antwort an Adresse 00–02; gesucht: kein Pack gefunden.");
+    expect(fixedSearchedLine([0], [3, 4], i18n.getFixedT("en"))).toBe("No answer at address 00; searched: packs 03, 04 found.");
+  });
+});
+
+describe("which packs a connection polls", () => {
+  it("search, a count or one fixed address, and the old stored count migrates", async () => {
+    const { parseSel, selAddresses, selText } = await import("./connCheck");
+    expect(selAddresses({ mode: "search" })).toBeNull();
+    expect(selAddresses({ mode: "count", n: 3 })).toEqual([0, 1, 2]);
+    expect(selAddresses({ mode: "address", k: 1 })).toEqual([1]);
+    for (const sel of [{ mode: "search" as const }, { mode: "count" as const, n: 12 }, { mode: "address" as const, k: 15 }]) expect(parseSel(selText(sel))).toEqual(sel);
+    // migration of conn.packs: 0 → search, n → count n
+    expect(parseSel(null, "0")).toEqual({ mode: "search" });
+    expect(parseSel(null, "4")).toEqual({ mode: "count", n: 4 });
+    expect(parseSel(null, null)).toEqual({ mode: "search" });
+    // out of range or broken: search
+    expect(parseSel("address:16")).toEqual({ mode: "search" });
+    expect(parseSel("count:0")).toEqual({ mode: "search" });
+    expect(parseSel("x")).toEqual({ mode: "search" });
+  });
+  it("a fixed address keeps its fast path, else searches", async () => {
+    const { fixedFallback, fixedSearchedLine } = await import("./connCheck");
+    const { default: i18n } = await import("./i18n");
+    expect(fixedFallback([1], 1, null)).toBe("keep");
+    expect(fixedFallback([1], 3, null)).toBe("search");
+    expect(fixedFallback([1], 1, [])).toBe("search");
+    expect(fixedSearchedLine([1], [3], i18n.getFixedT("de"))).toBe("Keine Antwort an Adresse 01; gesucht: Pack 03 gefunden.");
+  });
+  it("a remembered connection gives its selection, also an old one with a count", async () => {
+    const { fillFields } = await import("./connCheck");
+    const inst = { control: null, endpoints: [] };
+    expect(fillFields(inst, "pack", { kind: "serial", target: "/dev/x", bus: "pack", sel: "address:1" }, "installation")?.packs).toEqual({ mode: "address", k: 1 });
+    expect(fillFields(inst, "pack", { kind: "serial", target: "/dev/x", bus: "pack", packs: 2 }, "installation")?.packs).toEqual({ mode: "count", n: 2 });
   });
 });

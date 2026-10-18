@@ -54,8 +54,49 @@ export function partialLine(addrs: number[], found: number[], t: TFunction): str
   return t("conn.partial", { n: addrs.length - missing.length, total: addrs.length, list: missing.map(pad).join(", ") });
 }
 
-/** The last connection that worked for an installation, kept in this browser's storage. */
-export interface LastConn { kind: "tcp" | "serial"; target: string; bus: Bus; packs: number }
+/** A fixed pack count (0..n-1) or a fixed address (k) is polled without a search. Fall back to the normal search (0..15) when the connect check
+ *  answered at an address outside them (decided before polling, `found` null), or when the device query of the fixed
+ *  addresses found none of them; otherwise keep the fast path. */
+export function fixedFallback(fixed: number[], answered: number, found: number[] | null): "keep" | "search" {
+  if (!fixed.includes(answered)) return "search";
+  if (found !== null && !found.some((a) => fixed.includes(a))) return "search";
+  return "keep";
+}
+
+/** „Keine Antwort an Adresse 00–02; gesucht: Pack 01 gefunden“ (`found`: the addresses the search found). */
+export function fixedSearchedLine(fixed: number[], found: number[], t: TFunction): string {
+  const range = fixed.length > 1 ? `${pad(fixed[0])}–${pad(fixed[fixed.length - 1])}` : pad(fixed[0] ?? 0);
+  const result = found.length ? t("conn.searchedFound", { count: found.length, list: found.map(pad).join(", ") }) : t("conn.searchedNone");
+  return t("conn.fixedMissed", { range, result });
+}
+
+/** Which packs a connection polls: the normal search of 0..15, a count n (addresses 0..n-1), or exactly one pack at
+ *  address k (no search). */
+export type PackSel = { mode: "search" } | { mode: "count"; n: number } | { mode: "address"; k: number };
+
+/** The addresses polled at once (null: search). */
+export const selAddresses = (sel: PackSel): number[] | null =>
+  sel.mode === "count" ? Array.from({ length: sel.n }, (_, i) => i) : sel.mode === "address" ? [sel.k] : null;
+
+/** As stored: "search", "count:n", "address:k". */
+export const selText = (sel: PackSel): string => (sel.mode === "count" ? `count:${sel.n}` : sel.mode === "address" ? `address:${sel.k}` : "search");
+
+/** A stored selection, or the old stored pack count (0 → search, n → count n); anything else: search. */
+export function parseSel(stored: string | null, legacyCount?: string | number | null): PackSel {
+  const m = stored?.match(/^(count|address):(\d+)$/);
+  if (m) {
+    const v = Number(m[2]);
+    if (m[1] === "count" && v >= 1 && v <= 16) return { mode: "count", n: v };
+    if (m[1] === "address" && v >= 0 && v <= 15) return { mode: "address", k: v };
+  }
+  if (stored === "search") return { mode: "search" };
+  const n = Number(legacyCount ?? 0);
+  return Number.isInteger(n) && n >= 1 && n <= 16 ? { mode: "count", n } : { mode: "search" };
+}
+
+/** The last connection that worked for an installation, kept in this browser's storage (`packs`: the old pack count,
+ *  read when `sel` is missing). */
+export interface LastConn { kind: "tcp" | "serial"; target: string; bus: Bus; sel?: string; packs?: number }
 
 const lastKey = (installation: string) => `conn.last.${installation}`;
 
@@ -68,7 +109,7 @@ export function lastConn(installation: string): LastConn | null {
   try {
     const v = JSON.parse(localStorage.getItem(lastKey(installation)) ?? "null");
     if (v && (v.kind === "tcp" || v.kind === "serial") && typeof v.target === "string" && v.target
-      && (v.bus === "pack" || v.bus === "can") && Number.isInteger(v.packs) && v.packs >= 0 && v.packs <= 16) return v;
+      && (v.bus === "pack" || v.bus === "can") && (typeof v.sel === "string" || (Number.isInteger(v.packs) && v.packs >= 0 && v.packs <= 16))) return v;
   } catch { /* not JSON */ }
   return null;
 }
@@ -78,13 +119,13 @@ export function lastConn(installation: string): LastConn | null {
  *  address/port only where no port is stored for that bus. A new installation without a remembered connection whose
  *  current bus has no port takes its CAN socket. Without either: an empty USB field, so no port of another
  *  installation stays. null for „Nur ansehen“: the fields stay as they are. */
-export function fillFields(inst: Pick<Installation, "control" | "endpoints"> | null, bus: Bus, last: LastConn | null, on: "installation" | "bus"): { kind: "tcp" | "serial"; target: string; bus: Bus; packs: number | null } | null {
+export function fillFields(inst: Pick<Installation, "control" | "endpoints"> | null, bus: Bus, last: LastConn | null, on: "installation" | "bus"): { kind: "tcp" | "serial"; target: string; bus: Bus; packs: PackSel | null } | null {
   if (!inst) return null;
   const remembered = on === "installation" ? last : null;
   let b = remembered?.bus ?? bus;
   let stored = storedPort(inst, b);
   if (on === "installation" && !last && !stored && inst.control) { b = "can"; stored = storedPort(inst, b); }
-  const packs = remembered ? remembered.packs : null;
+  const packs = remembered ? parseSel(remembered.sel ?? null, remembered.packs) : null;
   if (stored) return { ...stored, bus: b, packs };
   if (last && last.bus === b) return { kind: last.kind, target: last.target, bus: b, packs };
   return { kind: "serial", target: "", bus: b, packs };
