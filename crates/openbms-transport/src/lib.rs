@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{calibration, control, frame, memory, modbus, params, serial, BmsTime, Calibration, Comeback, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{calibration, control, frame, memory, modbus, params, serial, uart1, BmsTime, Calibration, Comeback, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -556,6 +556,60 @@ impl Connection {
         ok
     }
 
+    /// One exchange with the binary parameter service of a MAINT 1.2 pack (`uart1.rs`), only on the CAN socket bus.
+    /// One deadline for the whole answer: an echo of the request, frames of other packs and broken bytes are skipped
+    /// without sending again and without extending it. A timeout says only that no answer came, not which firmware runs.
+    pub fn binary_exchange(&mut self, bus: Bus, request: &[u8], timeout: Duration) -> Result<uart1::Reply> {
+        if bus != Bus::CanSocketBus {
+            return Err(openbms_proto::Error::Layout("binary parameter frames exist only on the CAN socket bus").into());
+        }
+        let address = request.get(1).copied().unwrap_or(0);
+        let r = self.drop_input().map_err(Error::from).and_then(|_| self.send(request)).and_then(|_| {
+            let deadline = Instant::now() + timeout;
+            let mut framer = uart1::Framer::new();
+            let mut buf = [0u8; 256];
+            while Instant::now() < deadline {
+                match self.port.read(&mut buf) {
+                    Ok(0) if self.tcp => return Err(Error::Closed),
+                    Ok(0) => {}
+                    Ok(n) => {
+                        self.tap.rx(&buf[..n]);
+                        framer.push(&buf[..n]);
+                        if let Some(reply) = framer.next(request) {
+                            return Ok(reply);
+                        }
+                    }
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(Error::Timeout(timeout))
+        });
+        self.note_failure(&r, address);
+        std::thread::sleep(self.gap);
+        r
+    }
+
+    /// All parameters of one pack over the binary service (CAN socket bus, MAINT 1.2). An error code comes back as
+    /// `Proto(Uart1(code))`.
+    pub fn uart1_parameters(&mut self, bus: Bus, address: u8) -> Result<Parameters> {
+        match self.binary_exchange(bus, &uart1::read_request(address)?, UART1_TIMEOUT)? {
+            uart1::Reply::Params(data) => Ok(uart1::parameters(address, &data)?),
+            uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
+            uart1::Reply::Ack => Err(openbms_proto::Error::Layout("UART1: acknowledgement to a read").into()),
+        }
+    }
+
+    /// Write a block built by `Values::apply` over the binary service (its first 158 data bytes); Ok once acknowledged.
+    /// E2 (the firmware's check failed: nothing taken) and the other codes come back as `Proto(Uart1(code))`.
+    pub fn uart1_write(&mut self, bus: Bus, address: u8, block: &[u8]) -> Result<()> {
+        match self.binary_exchange(bus, &uart1::write_request(address, block)?, UART1_TIMEOUT)? {
+            uart1::Reply::Ack => Ok(()),
+            uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
+            uart1::Reply::Params(_) => Err(openbms_proto::Error::Layout("UART1: parameters as answer to a write").into()),
+        }
+    }
+
     pub fn scan(&mut self, addresses: impl IntoIterator<Item = u8>) -> Vec<(u8, DeviceInfo)> {
         let saved = self.timeout;
         self.timeout = Duration::from_millis(600);
@@ -564,6 +618,9 @@ impl Connection {
         found
     }
 }
+
+/// The whole answer of the binary parameter service (a gateway may deliver it in several parts).
+pub const UART1_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Silence that counts as an interruption in the restart watch: so many unanswered tries in a row, or this long.
 pub const SILENT_TRIES: u32 = 2;
@@ -1070,6 +1127,64 @@ mod tests {
         let es = sink.snapshot().entries;
         assert_eq!(es.len(), 1);
         assert_eq!(es[0].kind, capture::Kind::Skipped { sent: 8, received: 7 });
+    }
+
+    /// A binary answer of the parameter service (CRC-16/XMODEM, like the requests).
+    fn binary(address: u8, cmd: u8, data: &[u8]) -> Vec<u8> {
+        let mut body = vec![address, cmd, data.len() as u8];
+        body.extend_from_slice(data);
+        let crc = uart1::crc16_xmodem(&body);
+        [vec![0x55], body, crc.to_be_bytes().to_vec(), vec![0xAA]].concat()
+    }
+
+    fn uart1_data() -> Vec<u8> {
+        let mut d = vec![0x3C];
+        d.resize(121, 0x02);
+        d.push(0x1B);
+        d.resize(149, 0x03);
+        d.push(0x08);
+        d.resize(uart1::READ_LEN, b' ');
+        d
+    }
+
+    #[test]
+    fn binary_parameters_read_and_write_on_the_can_socket_only() {
+        let sink: &'static capture::Capture = Box::leak(Box::new(capture::Capture::new()));
+        sink.start();
+        let read = uart1::read_request(11).unwrap();
+        let block = [vec![11], uart1_data()].concat();
+        let mut changed = block.clone();
+        changed[5] = 0x07;
+        let write = uart1::write_request(11, &block).unwrap();
+        let refused = uart1::write_request(11, &changed).unwrap();
+        // the gateway echoes the read, a frame of another pack comes in between
+        let answer = [read.clone(), binary(12, 0x47, &uart1_data()), binary(11, 0x47, &uart1_data())].concat();
+        let mut c = scripted_into(vec![(read.clone(), answer), (write, binary(11, 0xA1, &[])), (refused, binary(11, 0xE2, &[]))], sink);
+        let p = c.uart1_parameters(Bus::CanSocketBus, 11).unwrap();
+        assert_eq!((p.address, p.block.clone()), (11, block.clone()));
+        c.uart1_write(Bus::CanSocketBus, 11, &block).unwrap();
+        assert!(matches!(c.uart1_write(Bus::CanSocketBus, 11, &changed), Err(Error::Proto(openbms_proto::Error::Uart1(0xE2)))));
+        // sent once each: the echo did not make it send again
+        let tx = sink.snapshot().entries.iter().filter(|e| e.kind == capture::Kind::Tx).count();
+        assert_eq!(tx, 3);
+        // never on RS485-1/2: nothing is sent there
+        assert!(matches!(c.uart1_parameters(Bus::PackBus, 11), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+        assert_eq!(sink.snapshot().entries.iter().filter(|e| e.kind == capture::Kind::Tx).count(), 3);
+    }
+
+    #[test]
+    fn a_binary_echo_alone_is_a_timeout_within_one_deadline() {
+        let read = uart1::read_request(1).unwrap();
+        let mut c = scripted(vec![(read.clone(), read.clone())]);
+        let t = Instant::now();
+        let r = c.binary_exchange(Bus::CanSocketBus, &read, Duration::from_millis(150));
+        assert!(matches!(r, Err(Error::Timeout(d)) if d == Duration::from_millis(150)));
+        assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
+        // foreign lines do not extend it either
+        let mut p = Connection { port: Box::new(Polling { start: Instant::now(), period: Duration::from_millis(50), sent: 0 }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) };
+        let t = Instant::now();
+        assert!(matches!(p.binary_exchange(Bus::CanSocketBus, &read, Duration::from_millis(200)), Err(Error::Timeout(_))));
+        assert!(t.elapsed() < Duration::from_millis(400), "{:?}", t.elapsed());
     }
 
     fn two() -> Vec<SocketAddr> {
