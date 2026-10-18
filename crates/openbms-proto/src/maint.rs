@@ -86,6 +86,9 @@ pub struct MaintInfo {
     pub build_id: [u8; 8],
     /// format 3, image flag bit 0: the hard-stop patch is compiled in; None with format 2 (not reported)
     pub hard_stop: Option<bool>,
+    /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket (0x45/0x4D/0x4E) with the shared
+    /// lock Group0 bit 3 are compiled in; false with format 2 (no such build)
+    pub power_rtc: bool,
 }
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
@@ -133,15 +136,15 @@ impl MaintInfo {
         if info.len() < 4 || &info[0..3] != SIGNATURE {
             return InfoAnswer::Broken;
         }
-        let hard_stop = match (info[3], info.len()) {
-            (2, Self::LEN) => None,
-            // bits 1–7 are reserved
-            (3, Self::LEN3) => Some(info[17] & 0x01 != 0),
+        let (hard_stop, power_rtc) = match (info[3], info.len()) {
+            (2, Self::LEN) => (None, false),
+            // bits 2–7 are reserved
+            (3, Self::LEN3) => (Some(info[17] & 0x01 != 0), info[17] & 0x02 != 0),
             _ => return InfoAnswer::OtherFormat,
         };
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[9..17]);
-        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop })
+        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop, power_rtc })
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -224,10 +227,17 @@ mod tests {
         assert_eq!(on.build_id_hex(), "0123456789abcdef");
         assert_eq!(on.version(), "16.06.13 MAINT 1.5");
         assert_eq!(MaintInfo::parse(&info3(0x0D, 0x00)).unwrap().hard_stop, Some(false));
-        // reserved bits do not set it
+        // other bits do not set it
         assert_eq!(MaintInfo::parse(&info3(0x0D, 0xFE)).unwrap().hard_stop, Some(false));
         // format 2 does not report it
         assert_eq!(MaintInfo::parse(&info15()).unwrap().hard_stop, None);
+        // bit 1: power and clock over the CAN socket, independent of the hard stop
+        assert!(!on.power_rtc);
+        let pr = MaintInfo::parse(&info3(0x0D, 0x02)).unwrap();
+        assert_eq!((pr.hard_stop, pr.power_rtc), (Some(false), true));
+        assert!(MaintInfo::parse(&info3(0x0D, 0x03)).unwrap().power_rtc);
+        assert!(!MaintInfo::parse(&info3(0x0D, 0xFD)).unwrap().power_rtc);
+        assert!(!MaintInfo::parse(&info15()).unwrap().power_rtc);
         // through a frame: LENGTH A024 carries the 36 hex digits
         let frame = crate::frame::encode_request(0, 0, &info3(0x0D, 0x01)).unwrap();
         assert_eq!(&frame[9..13], b"A024");

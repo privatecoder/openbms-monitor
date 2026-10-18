@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
 import { api, effectiveCurrent, packState, type Bus, type SerialRead } from "../api";
-import { hardStopLine, useProfile } from "../profile";
+import { firmwareText, hardStopLine, useProfile } from "../profile";
 import { useHardStops } from "../hardStops";
 import { packProbeLine, usePackProbes } from "../packProbes";
 import { errorText } from "../control";
@@ -52,6 +52,10 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   // the image's own flag only for the master of a format-3 profile; every other pack by its behaviour
   const hardFlag = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null)
     : probe?.state === "proven" ? probe.hard_stop : null;
+  // the full version from 64/03 on this connection: the master's profile, a slave's own proven answer
+  const proven = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.listed ?? profile.master.version : null)
+    : probe?.state === "proven" ? probe.listed ?? probe.version : null;
+  const firmware = firmwareText(p.device?.firmware_version, proven);
   const askBinary = () => api.serialNumbers(p.address, true).then(setAsked, (e) => setAsked({ error: errorText(e, t) }));
 
   return (
@@ -63,7 +67,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             {t("dash.pack")} {String(p.address).padStart(2, "0")}
             {multi && p.address === 0 && <span className="ml-3 text-2xl font-medium text-muted">{t("dash.master")}</span>}
           </h1>
-          <p className="mt-1 text-muted">{[p.device?.device_name, p.device?.firmware_version && `Firmware ${p.device.firmware_version}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
+          <p className="mt-1 text-muted">{[p.device?.device_name, firmware && `Firmware ${firmware}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-4 text-sm text-muted">
             {(["battery", "bms"] as const).map((k) => {
               const v = serialText(serials?.[k], k, asked && "bms" in asked ? "pack" : bus, p.address === 0, t);

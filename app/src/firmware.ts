@@ -71,12 +71,12 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
 }
 
 /** What the release bits of Group0 (`g0`) mean after a flash with the patch functions, which takes them over unchanged:
- *  writing over the CAN socket (bit 0) and the maintenance start (bit 2) locked, or both allowed. */
-export function flashGateKeys(g0: number): string[] {
+ *  writing over the CAN socket (bit 0) and the maintenance start (bit 2) locked, or both allowed; with an image with
+ *  power and clock over the CAN socket (`powerRtc`) also its lock (bit 3: 1 locks). */
+export function flashGateKeys(g0: number, powerRtc = false): string[] {
   const write = (g0 & 1) === 1, start = (g0 & 4) === 4;
-  if (write && start) return ["fw.patch.ok"];
-  if (!write && !start) return ["fw.patch.bothLocked"];
-  return [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
+  const keys = write && start ? ["fw.patch.ok"] : !write && !start ? ["fw.patch.bothLocked"] : [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
+  return powerRtc ? [...keys, (g0 & 8) === 8 ? "fw.patch.powerLocked" : "fw.patch.powerOpen"] : keys;
 }
 
 /** The image, „Eigene Firmware zulassen“, port and address are fixed while a flash runs (until its end event) or a pack

@@ -58,19 +58,30 @@ export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSee
 export function gatesLine(g: Gates | null, t: T, stale = false): string | null {
   if (!g) return stale ? t("profile.gatesStale") : null;
   const part = (v: boolean | null, key: string) => (v === null ? null : `${t(`profile.gate.${key}`)}: ${t(v ? "profile.allowed" : "profile.locked")}`);
-  const line = [part(g.write, "write"), part(g.start, "start")].filter(Boolean).join(" · ");
+  const line = [part(g.write, "write"), part(g.start, "start"), part(g.power ?? null, "power")].filter(Boolean).join(" · ");
   return line ? (stale ? `${line} ${t("profile.staleSuffix")}` : line) : null;
+}
+
+/** The firmware a pack header names: the version its own 64/03 proves on this connection (`proven`, e.g. „16.06.13
+ *  MAINT 1.5“) instead of the short one of 0x51 (`reported`, „16.06“) when that fits it; both when they differ. */
+export function firmwareText(reported: string | null | undefined, proven: string | null | undefined): string | null {
+  if (!proven) return reported || null;
+  if (!reported || proven === reported || proven.startsWith(`${reported}.`) || proven.startsWith(`${reported} `)) return proven;
+  return `${reported} (${proven})`;
 }
 
 /** „Erneut prüfen“ is offered for every CAN socket profile: also a recognised patch may have changed its release bits. */
 export const recheckable = (p: ProfileView | null): boolean => p?.bus === "can";
 
 /** How the release bits of Group0 appear in a parameter column: named and editable where the pack's patch is proven and
- *  the bus allows it, else unnamed and fixed. `uart1`: the column was read over the CAN socket. */
-export function gateBits(patch: PackPatch | null | undefined, uart1: boolean): { named: boolean; writeEditable: boolean; startEditable: boolean } {
-  if (!patch) return { named: false, writeEditable: false, startEditable: false };
-  // RS485-1/2 is the way to change both; over the CAN socket bit 2 never changes (the pack refuses the whole write)
-  return { named: true, writeEditable: patch.caps.write_gate, startEditable: !uart1 && patch.caps.start_gate };
+ *  the bus allows it, else unnamed and fixed. `uart1`: the column was read over the CAN socket. `power`: the pack's
+ *  image flag for power and clock over the CAN socket (bit 3), null when not known. */
+export function gateBits(patch: PackPatch | null | undefined, uart1: boolean): { named: boolean; writeEditable: boolean; startEditable: boolean; powerEditable: boolean; power: boolean | null } {
+  if (!patch) return { named: false, writeEditable: false, startEditable: false, powerEditable: false, power: null };
+  const power = patch.caps.power_rtc ?? null;
+  // RS485-1/2 is the way to change bits 2 and 3; over the CAN socket they never change (the pack refuses the whole
+  // write). Bit 3 of a build without the service has no function: left as it is
+  return { named: true, writeEditable: patch.caps.write_gate, startEditable: !uart1 && patch.caps.start_gate, powerEditable: !uart1 && power !== false, power };
 }
 
 /** How the shared table rows of Group0 bits 0 and 2 are labelled: by their function only when every column with switches
