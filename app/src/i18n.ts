@@ -578,7 +578,7 @@ const resources = {
         full: {
           reading: "Lese gelernte Vollkapazität …", unknown: "Gelernte Vollkapazität nicht lesbar ({{err}}); ob das BMS sie beim Schreiben auf die Nennkapazität setzt, ist offen.",
           resets: "Beim Schreiben setzt das BMS die gelernte Vollkapazität ({{full}} Ah) auf die Nennkapazität ({{rated}} Ah); der SOC springt.",
-          fix: "Nennkapazität auf {{full}} Ah setzen",
+          fix: "Nennkapazität auf {{full}} Ah setzen", otherLink: "die Spalte gehört zu einer früheren Verbindung, erst neu lesen",
         },
         stale: "Pack {{pack}} hat sich seit dem Lesen geändert. Nichts geschrieben; die Spalte zeigt den aktuellen Stand, deine Änderungen bleiben. Prüfen und erneut schreiben.",
         done: "Geschrieben und zurückgelesen: alle Werte übernommen.", restored: "Gespeicherter Stand wieder geschrieben und zurückgelesen.",
@@ -1376,7 +1376,7 @@ const resources = {
         full: {
           reading: "Reading learned full capacity …", unknown: "Learned full capacity not readable ({{err}}); whether the BMS sets it to the rated capacity on writing is unknown.",
           resets: "On writing, the BMS sets the learned full capacity ({{full}} Ah) to the rated capacity ({{rated}} Ah); the SOC jumps.",
-          fix: "Set rated capacity to {{full}} Ah",
+          fix: "Set rated capacity to {{full}} Ah", otherLink: "the column belongs to an earlier connection, read again first",
         },
         stale: "Pack {{pack}} has changed since it was read. Nothing written; the column shows the current state, your changes stay. Check and write again.",
         done: "Written and read back: all values taken.", restored: "Stored state written again and read back.",

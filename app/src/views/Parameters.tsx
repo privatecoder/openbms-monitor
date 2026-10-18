@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
-import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, type Parameters, type Source } from "../params";
+import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, type Parameters, type Source } from "../params";
 import { blockers, capacityEffects, changeOf, changes, fromRaw, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
@@ -155,10 +155,14 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
 
   const replace = (next: Source) => setSources((s) => s.map((x) => (x.id === next.id ? { ...next, lastWritten: x.lastWritten, previous: x.previous } : x)));
   // last write and the parameters it replaced, kept per installation and pack in the history database
-  const loadHistory = (address: number) => api.paramHistory(address).then(
-    (h) => setSources((s) => s.map((x) => (x.id === `pack-${address}` ? { ...x, lastWritten: h.last_written, previous: h.previous } : x))),
-    () => {},
-  );
+  // the answer belongs to the link it was asked on (`withHistory`): a late one after a change is dropped
+  const loadHistory = (address: number) => {
+    const l = linkNow();
+    return api.paramHistory(address).then(
+      (h) => { if (linkNow() === l) setSources((s) => withHistory(s, address, l, h)); },
+      () => {},
+    );
+  };
 
   const read = async () => {
     setSaved(null); setRunState(null);
@@ -221,7 +225,11 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     setSources((s) => s.map((x) => (x.id === c.id ? { ...x, notTaken: undefined } : x)));
     // the learned full capacity (0x42): every successful write sets it to P58 when they are 10 Ah apart
     setFull(null);
-    api.packLive(a).then((l) => setFull({ address: a, ah: l.telemetry.full_capacity_ah }), (e) => setFull({ address: a, error: String(e) }));
+    // asked on the link of the column; an answer after a change of connection or installation is dropped
+    const l = linkNow();
+    if (c.link !== l) { setFull({ address: a, error: t("pw.full.otherLink") }); return; }
+    api.packLive(a).then((v) => { if (linkNow() === l) setFull({ address: a, ah: v.telemetry.full_capacity_ah }); },
+      (e) => { if (linkNow() === l) setFull({ address: a, error: String(e) }); });
   };
 
   const takeOverFrom = (id: string) => {
