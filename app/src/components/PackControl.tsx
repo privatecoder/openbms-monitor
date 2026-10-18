@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
 import { getProfile } from "../profile";
@@ -151,7 +151,10 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
       return slaves({ text: t("ctl.onOff.offAgain", { reason: why.length ? names(why) : t("ctl.onOff.protection") }), tone: "error" });
     }
     if (on) return slaves(dischargeFree(l.status) ? { text: t("ctl.onOff.onDone"), tone: "ok" } : { text: t("ctl.onOff.onBlocked"), tone: "warn" });
-    return slaves({ text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" });
+    // „done“ only when the read shows it: charging current may have lifted „off“ meanwhile
+    const out = offOutcome(l.status);
+    return slaves(out === "off" ? { text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" }
+      : { text: t(out === "on" ? "ctl.onOff.offBackOn" : "ctl.onOff.offUnclear", { pack: no(a) }), tone: "warn" });
   });
 
   const heater = (a: number, on: boolean) => run("heater", a, async (lk) => {
@@ -237,7 +240,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
 
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" disabled={disabled || powerHeld} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
-            <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))} title={t(off ? "ctl.tip.on" : "ctl.tip.off")}>
+            <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))} title={t(off ? "ctl.tip.on" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>
             {!can && (

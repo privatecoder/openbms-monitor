@@ -405,6 +405,7 @@ const resources = {
       ctl: {
         title: "Steuern", closed: "Neu starten, ein-/ausschalten, Heizung, Restkapazität, Historie löschen (gewähltes Pack)",
         closedCan: "Neu starten, ein-/ausschalten über die CAN-Buchse (gewähltes Pack)",
+        canUnsupported: "Steuern: über die CAN-Buchse nur mit MAINT 1.5 mit Ein/Aus und Uhr; sonst über RS485-1/2.",
         canHint: "Über die CAN-Buchse nur Neu starten, Ein und Aus; vorher prüft die App die Platine und die Freigabe (Funktionsschalter 0, Bit 3). Heizung, Restkapazität und Historie löschen gehen über RS485-1/2.",
         powerLocked: "Ein/Aus und Neustart über die CAN-Buchse sind an diesem Pack gesperrt (Funktionsschalter 0, Bit 3). Freigabe über RS485-1/2 oder am Display.",
         reading: "Lese Zustand …", readError: "Zustand nicht lesbar: {{err}}", reload: "Zustand neu lesen", running: "Sende …", cancel: "Abbrechen",
@@ -415,6 +416,7 @@ const resources = {
         tip: {
           restart: "Startet das BMS dieses Packs neu (einige Sekunden ohne Ausgang). Einstellungen bleiben, nur nicht gesicherte Werte im RAM gehen verloren.",
           off: "Sperrt das Entladen dieses Packs; Laden bleibt möglich und schaltet es wieder ein. Andere Packs bleiben an.",
+          offMaster: "Sperrt das Entladen des Masters und löst den Broadcast „Aus“ an die Slaves aus; die Wirkung je Slave prüfen. Laden bleibt möglich und kann „Aus“ aufheben.",
           on: "Hebt „Aus“ auf. Besteht Unterspannung weiter, schaltet das BMS gleich wieder aus.",
           heaterOn: "Schaltet den Heizausgang für 1 Stunde ein, ohne Rücksicht auf Temperatur und Ladegerät.",
           heaterOff: "Beendet die erzwungene Heizung sofort.",
@@ -449,12 +451,14 @@ const resources = {
           onDone: "Eingeschaltet: Entladen ist frei.", onBlocked: "Eingeschaltet; Entladen bleibt durch einen Schutz gesperrt (siehe Zustand).",
           offDone: "Pack {{pack}} ausgeschaltet: Entladen gesperrt, Laden möglich.",
           offAgain: "Das BMS hat das Pack wieder ausgeschaltet: {{reason}}.", protection: "ein Schutz besteht weiter",
-          slaves: "Der Master gibt Ein/Aus an alle Slaves weiter; seine Bestätigung gilt nur für ihn selbst. Slaves einzeln prüfen.",
+          slaves: "Der Master löst den Broadcast an die Slaves aus; seine Bestätigung gilt nur für ihn selbst. Die Wirkung je Slave prüfen.",
+          offBackOn: "Befehl quittiert, Pack {{pack}} ist inzwischen wieder ein (Ladestrom kann „Aus“ aufheben). Zustand prüfen.",
+          offUnclear: "Befehl quittiert, Zustand unklar: Pack {{pack}} meldet „Aus“, Entladen ist aber nicht gesperrt. Zustand neu lesen.",
         },
         off: {
           title: "Pack {{pack}} ausschalten?", confirm: "Ausschalten",
           text: "Pack {{pack}} sperrt dann das Entladen; Laden bleibt möglich und schaltet es wieder ein. Die anderen Packs bleiben an. Versorgt dieses Pack allein den Rechner oder das Gateway, gibt es nach dem Ausschalten unter Umständen keinen Weg zurück per App.",
-          masterText: "Pack {{pack}} ist der Master: Er gibt „Aus“ an alle Slaves weiter, die ganze Bank sperrt dann das Entladen; Laden bleibt möglich und kann „Aus“ wieder aufheben. Seine Bestätigung gilt nur für den Master, ob jeder Slave es übernommen hat, zeigt erst deren Zustand. Versorgt die Bank den Rechner oder das Gateway, gibt es danach unter Umständen keinen Weg zurück per App.",
+          masterText: "Pack {{pack}} ist der Master: Er sperrt sein Entladen und löst den Broadcast „Aus“ an die Slaves aus. Ob jeder Slave ihn übernimmt, bestätigt der Master nicht: die Wirkung je Slave prüfen. Laden bleibt möglich und kann „Aus“ wieder aufheben. Versorgen die Packs den Rechner oder das Gateway, gibt es danach unter Umständen keinen Weg zurück per App.",
         },
         heater: {
           on: "Heizung 1 h", off: "Heizung aus",
@@ -1318,6 +1322,7 @@ const resources = {
       ctl: {
         title: "Control", closed: "Restart, switch on/off, heater, remaining capacity, clear history (chosen pack)",
         closedCan: "Restart, switch on/off via the CAN socket (chosen pack)",
+        canUnsupported: "Control: via the CAN socket only with MAINT 1.5 with on/off and clock; otherwise via RS485-1/2.",
         canHint: "Via the CAN socket only restart, on and off; before each the app checks the board and the release (function switch 0, bit 3). Heater, remaining capacity and clearing the history go via RS485-1/2.",
         powerLocked: "On/off and restart via the CAN socket are locked on this pack (function switch 0, bit 3). Release via RS485-1/2 or on the display.",
         reading: "Reading state …", readError: "State not readable: {{err}}", reload: "Read state again", running: "Sending …", cancel: "Cancel",
@@ -1328,6 +1333,7 @@ const resources = {
         tip: {
           restart: "Restarts this pack's BMS (a few seconds without output). Settings stay; only values not yet saved from RAM are lost.",
           off: "Blocks discharging of this pack; charging stays possible and switches it on again. Other packs stay on.",
+          offMaster: "Blocks the master's discharging and triggers the broadcast “off” to the slaves; check the effect on each slave. Charging stays possible and can lift “off”.",
           on: "Clears „off“. If undervoltage persists, the BMS switches off again right away.",
           heaterOn: "Switches the heater output on for 1 hour, regardless of temperature and charger.",
           heaterOff: "Ends the forced heating at once.",
@@ -1362,12 +1368,14 @@ const resources = {
           onDone: "Switched on: discharging allowed.", onBlocked: "Switched on; discharging stays blocked by a protection (see state).",
           offDone: "Pack {{pack}} switched off: discharging blocked, charging possible.",
           offAgain: "The BMS switched the pack off again: {{reason}}.", protection: "a protection persists",
-          slaves: "The master passes on/off on to all slaves; its acknowledgement covers only itself. Check the slaves one by one.",
+          slaves: "The master triggers the broadcast to the slaves; its acknowledgement covers only itself. Check the effect on each slave.",
+          offBackOn: "Command acknowledged, pack {{pack}} is on again meanwhile (charging current can lift “off”). Check the state.",
+          offUnclear: "Command acknowledged, state unclear: pack {{pack}} reports “off”, but discharging is not blocked. Read the state again.",
         },
         off: {
           title: "Switch off pack {{pack}}?", confirm: "Switch off",
           text: "Pack {{pack}} then blocks discharging; charging stays possible and switches it on again. The other packs stay on. If this pack alone supplies the computer or the gateway, there may be no way back through the app after switching off.",
-          masterText: "Pack {{pack}} is the master: it passes “off” on to all slaves, the whole bank then blocks discharging; charging stays possible and can lift “off” again. Its acknowledgement covers only the master; whether every slave took it shows only in their state. If the bank supplies the computer or the gateway, there may be no way back through the app afterwards.",
+          masterText: "Pack {{pack}} is the master: it blocks its own discharging and triggers the broadcast “off” to the slaves. The master does not confirm whether each slave takes it: check the effect on each slave. Charging stays possible and can lift “off” again. If the packs supply the computer or the gateway, there may be no way back through the app afterwards.",
         },
         heater: {
           on: "Heater 1 h", off: "Heater off",

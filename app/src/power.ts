@@ -45,6 +45,9 @@ export function clockTargets(packs: number[], canSet: (a: number) => boolean): {
   return { targets: packs.filter(canSet), skipped: packs.filter((a) => !canSet(a)) };
 }
 
+/** Over the CAN socket a pack without the service gets one line where „Steuern“ would be, instead of nothing. */
+export const controlHint = (w: Where & { power: boolean }) => w.connected && w.bus === "can" && !w.demo && !w.power;
+
 /** After ein/aus at the master over the CAN socket: its acknowledgement covers only the master, its broadcast to the
  *  slaves is not confirmed. */
 export const masterBroadcast = (mode: "full" | "power" | null, address: number) => mode === "power" && address === 0;
