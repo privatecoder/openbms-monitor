@@ -37,6 +37,11 @@ pub enum Why {
     Moved,
     /// a board or the master serial of another installation, archived ones included
     Foreign,
+    /// CAN socket: the board here, recorded before the raw bytes of its serial were checked; confirmed once, the CAN
+    /// socket writes to it
+    Legacy,
+    /// CAN socket: an earlier board of this place, not its current one
+    Earlier,
 }
 
 /// The other installation of a foreign board.
@@ -80,6 +85,42 @@ pub fn identity(store: &Store, inst: &str, address: u8, read: &SerialValue) -> R
             Some(s) => Ok(classify(inst, address, &store.serial_places(s)?)),
             None => Ok(Identity::Unchecked),
         },
+    }
+}
+
+/// CAN socket (MAINT 1.3): what a fresh canonical String 2 (`serial`) says about the board at `address`, strictly
+/// (design r5/r7), from the installation's current boards (`refs`, read before the exchange).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Strict {
+    pub here: Here,
+    /// other places whose current board carries the same serial: a move not cleared yet, or a duplicate
+    pub elsewhere: Vec<crate::maint_store::BoardRef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Here {
+    /// the current board here, recorded from canonical raw bytes
+    Known,
+    /// the current board here, recorded before its raw bytes were checked (`Why::Legacy`)
+    Legacy,
+    /// not the current board here
+    Other,
+}
+
+pub fn strict(serial: &str, address: u8, refs: &[crate::maint_store::BoardRef]) -> Strict {
+    let here = match refs.iter().find(|r| r.address == address) {
+        Some(r) if r.bms_serial == serial => if r.canonical == Some(true) { Here::Known } else { Here::Legacy },
+        _ => Here::Other,
+    };
+    Strict { here, elsewhere: refs.iter().filter(|r| r.address != address && r.bms_serial == serial).cloned().collect() }
+}
+
+/// Why a board that is not the current one here is unconfirmed, for „Übernehmen“: from every place its serial is known
+/// at (`classify`); known at this address but not current is an earlier board of the place.
+pub fn other_why(inst: &str, address: u8, places: &[SerialPlace]) -> (Why, Option<Other>) {
+    match classify(inst, address, places) {
+        Identity::Unconfirmed { why, other } => (why, other),
+        _ => (Why::Earlier, None),
     }
 }
 
@@ -188,6 +229,10 @@ pub(crate) struct BankState {
     /// CAN socket: the master's battery serial read after connecting equals the installation's (`notify.rs`); None:
     /// not read yet
     can_master: Option<bool>,
+    /// unconfirmed packs whose String 2 came as canonical raw bytes: „Übernehmen“ records them with that provenance
+    canonical: BTreeMap<u8, bool>,
+    /// CAN socket: the master reports a patch with String 1/2 over the binary service (1.3 or later); None: not asked
+    uart1_serials: Option<bool>,
 }
 
 impl BankState {
@@ -241,9 +286,30 @@ pub(crate) fn begin(state: &AppState, gen: u64, pack_bus: bool, link: Option<Pen
 
 /// What a pack showed on connection `gen`; ignored for any other than the one `begin` started.
 fn note(state: &AppState, gen: u64, address: u8, seen: Seen) {
+    note_canonical(state, gen, address, seen, None);
+}
+
+/// `note`, and whether the raw String 2 behind it was canonical (None: leaves what was noted).
+fn note_canonical(state: &AppState, gen: u64, address: u8, seen: Seen, canonical: Option<bool>) {
     if let Ok(mut b) = state.bank.lock() {
         if b.gen == gen {
             b.note(address, seen);
+            if let Some(c) = canonical {
+                b.canonical.insert(address, c);
+            }
+        }
+    }
+}
+
+/// CAN socket: whether connection `gen`'s master reports String 1/2 over the binary service; None: not asked yet.
+pub(crate) fn uart1_serials(state: &AppState, gen: u64) -> Option<bool> {
+    state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.uart1_serials))
+}
+
+pub(crate) fn set_uart1_serials(state: &AppState, gen: u64, offered: bool) {
+    if let Ok(mut b) = state.bank.lock() {
+        if b.gen == gen {
+            b.uart1_serials = Some(offered);
         }
     }
 }
@@ -345,10 +411,31 @@ fn settle(state: &AppState, link: &Link) {
     }
 }
 
-/// A serial read of the monitor (`serial_numbers`) classified; the recorder and the endpoint link follow.
+/// A serial read of the monitor (`serial_numbers`) classified; the recorder and the endpoint link follow. Without the
+/// raw bytes' provenance (`after_read_canonical` has it).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn after_read(state: &AppState, link: &Link, address: u8, id: &Identity, bms: &SerialValue, battery: &SerialValue) {
-    note(state, link.gen, address, Seen::of(id, bms, battery));
+    after_read_canonical(state, link, address, id, bms, battery, false);
+}
+
+/// `after_read`, with the provenance of the raw String 2 (`serial::canonical`) for „Übernehmen“.
+pub(crate) fn after_read_canonical(state: &AppState, link: &Link, address: u8, id: &Identity, bms: &SerialValue, battery: &SerialValue, canonical: bool) {
+    note_canonical(state, link.gen, address, Seen::of(id, bms, battery), Some(canonical));
     settle(state, link);
+}
+
+/// CAN socket: a pack whose fresh canonical String 2 is not (yet) one the CAN socket may write to (a new, moved or
+/// foreign board, an earlier one of this place, or the board here recorded before its raw bytes were checked). Noted as
+/// unconfirmed with that serial, so „Übernehmen“ records it (provenance included); the sidebar line comes with the event.
+pub(crate) fn uart1_unconfirmed(state: &AppState, link: &Link, address: u8, serial: &str, battery: &SerialValue, why: Why, other: Option<Other>) -> IdentityView {
+    let bms = SerialValue::Set { value: serial.into(), truncated: false };
+    let id = Identity::Unconfirmed { why, other };
+    note_canonical(state, link.gen, address, Seen::of(&id, &bms, battery), Some(true));
+    let view = IdentityView::of(&id, address, &bms);
+    if let Some(app) = state.app.get() {
+        let _ = app.emit("bank-unconfirmed", &view);
+    }
+    view
 }
 
 /// The UI's serial reads of connection `gen` have ended (also when it found no pack or every read failed): a bank
@@ -404,7 +491,7 @@ pub(crate) struct Checked {
 /// refusal of state "failed".
 pub(crate) fn check(state: &AppState, link: &Link, address: u8) -> Result<(Identity, SerialValue), String> {
     let inst = link.installation.as_deref().ok_or_else(|| failed(address, "no-installation"))?;
-    let read = match with_link(&state.conn, &state.flashing, &state.link, link, |c| c.bms_serial(address)) {
+    let (read, canonical) = match with_link(&state.conn, &state.flashing, &state.link, link, |c| c.bms_serial_canonical(address)) {
         Ok(v) => v,
         // the connection changed or a flash took it: that error, not a bank refusal
         Err(e) if e == LINK_CHANGED || e == FLASHING => return Err(e),
@@ -418,7 +505,7 @@ pub(crate) fn check(state: &AppState, link: &Link, address: u8) -> Result<(Ident
         failed(address, "store")
     })?;
     if id != Identity::Failed {
-        note(state, link.gen, address, Seen::of(&id, &read, &SerialValue::NoAnswer));
+        note_canonical(state, link.gen, address, Seen::of(&id, &read, &SerialValue::NoAnswer), Some(canonical));
         settle(state, link);
     }
     if matches!(id, Identity::Unconfirmed { .. }) {
@@ -466,17 +553,24 @@ fn confirm(state: &AppState, installation: &str, addresses: &[u8]) -> Result<Vec
     if link.installation.as_deref() != Some(installation) {
         return Err("the connection belongs to another installation than the one chosen; connect again".into());
     }
-    let held: Vec<(u8, Held)> = {
+    let held: Vec<(u8, Held, bool)> = {
         let b = state.bank.lock().map_err(|e| e.to_string())?;
         let Some(b) = b.current(link.gen) else { return Ok(vec![]) };
-        addresses.iter().filter_map(|a| match b.packs.get(a) { Some(Seen::Unconfirmed(h)) => Some((*a, h.clone())), _ => None }).collect()
+        addresses
+            .iter()
+            .filter_map(|a| match b.packs.get(a) { Some(Seen::Unconfirmed(h)) => Some((*a, h.clone(), b.canonical.get(a).copied().unwrap_or(false))), _ => None })
+            .collect()
     };
     let now = crate::history::now_ms();
     // one transaction per pack (`board_seen`): a failure leaves the packs not recorded yet unconfirmed
     let mut done = vec![];
     let r = crate::maint::with_store(state, |s| {
-        for (a, h) in &held {
-            s.board_seen(installation, *a, &h.bms, &h.battery, now)?;
+        for (a, h, canonical) in &held {
+            s.board_seen_canonical(installation, *a, &h.bms, &h.battery, *canonical, now)?;
+            // confirmed from canonical raw bytes: the board's row stands for it (also one recorded before, `Legacy`)
+            if let (true, Some(serial)) = (*canonical, real(&h.bms)) {
+                s.confirm_canonical(installation, *a, serial)?;
+            }
             done.push(*a);
         }
         Ok(())
@@ -516,6 +610,59 @@ mod tests {
             Identity::Unconfirmed { why, other } => Identity::Unconfirmed { why, other: other.map(|o| Other { id: String::new(), ..o }) },
             i => i,
         }
+    }
+
+    fn board_ref(address: u8, serial: &str, canonical: Option<bool>) -> crate::maint_store::BoardRef {
+        crate::maint_store::BoardRef { address, id: i64::from(address) + 100, bms_serial: serial.into(), aliases: vec![], canonical, current_at: Some(1) }
+    }
+
+    #[test]
+    fn the_can_socket_writes_only_to_the_current_canonically_recorded_board() {
+        let refs = [board_ref(1, "SYN-1", Some(true)), board_ref(2, "SYN-2", None), board_ref(3, "SYN-3", Some(false)), board_ref(4, "SYN-1", Some(true))];
+        let s = strict("SYN-1", 1, &refs);
+        assert_eq!(s.here, Here::Known);
+        // (d): the same serial is the current board at address 4 too
+        assert_eq!(s.elsewhere.iter().map(|r| r.address).collect::<Vec<_>>(), [4]);
+        assert_eq!(strict("SYN-2", 2, &refs), Strict { here: Here::Legacy, elsewhere: vec![] }, "recorded before provenance");
+        assert_eq!(strict("SYN-3", 3, &refs).here, Here::Legacy, "recorded from raw bytes that were not canonical");
+        assert_eq!(strict("SYN-9", 1, &refs).here, Here::Other, "another board here");
+        assert_eq!(strict("SYN-2", 5, &refs), Strict { here: Here::Other, elsewhere: vec![refs[1].clone()] }, "moved");
+    }
+
+    #[test]
+    fn why_a_board_that_is_not_current_here_is_unconfirmed() {
+        let s = Store::open(&temp("why")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap().id;
+        s.board_seen(&a, 2, &set("SYN-OLD"), &NONE, 1).unwrap();
+        s.board_seen(&a, 2, &set("SYN-NOW"), &NONE, 2).unwrap();
+        assert_eq!(other_why(&a, 2, &s.serial_places("SYN-OLD").unwrap()), (Why::Earlier, None));
+        assert_eq!(other_why(&a, 3, &s.serial_places("SYN-NOW").unwrap()), (Why::Moved, None));
+        assert_eq!(other_why(&a, 3, &s.serial_places("SYN-NEW").unwrap()), (Why::New, None));
+    }
+
+    #[test]
+    fn confirming_a_canonical_read_records_its_provenance_also_for_an_old_row() {
+        let s = Store::open(&temp("confirm-canonical")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap().id;
+        // recorded before provenance was known
+        s.board_seen(&a, 1, &set("SYN-A1"), &NONE, 1).unwrap();
+        let state = AppState::default();
+        *state.maint.lock().unwrap() = Some(s);
+        crate::new_link(&state, Some(a.clone()));
+        let link = link_now(&state);
+        begin(&state, link.gen, false, None);
+        let v = uart1_unconfirmed(&state, &link, 1, "SYN-A1", &set("BAT-1"), Why::Legacy, None);
+        assert_eq!((v.kind, v.why), ("unconfirmed", Some(Why::Legacy)));
+        assert!(unconfirmed(&state, link.gen, 1));
+        // a new board read canonically on the CAN socket, and one from RS485-1/2 without canonical bytes
+        uart1_unconfirmed(&state, &link, 5, "SYN-N5", &NONE, Why::New, None);
+        after_read(&state, &link, 6, &Identity::Unconfirmed { why: Why::New, other: None }, &set("SYN-N6"), &NONE);
+        assert_eq!(confirm(&state, &a, &[1, 5, 6]).unwrap(), vec![1, 5, 6]);
+        let refs = crate::maint::with_store(&state, |s| s.current_refs(&a)).unwrap();
+        let canon = |adr: u8| refs.iter().find(|r| r.address == adr).and_then(|r| r.canonical);
+        assert_eq!((canon(1), canon(5), canon(6)), (Some(true), Some(true), Some(false)));
+        assert_eq!(strict("SYN-A1", 1, &refs).here, Here::Known);
+        assert!(!unconfirmed(&state, link.gen, 1));
     }
 
     #[test]
