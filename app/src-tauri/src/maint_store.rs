@@ -634,6 +634,22 @@ impl Store {
         self.db.query_row("SELECT data, at FROM master_read WHERE installation = ?1", [inst], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(e)
     }
 
+    /// „Latenten Marker verwerfen“: a marker kept on whose last read came from an image without 0x64 is cleared. Only
+    /// that case: a marker read on under a patched image is never discarded by hand. Returns whether one was cleared.
+    pub fn discard_latent_marker(&self, inst: &str) -> Result<bool, String> {
+        let row: Option<(String, bool)> = self.db
+            .query_row("SELECT data, marker_on FROM master_read WHERE installation = ?1", [inst], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(e)?;
+        match row {
+            Some((data, true)) if marker_latent(&data) => {
+                self.db.execute("UPDATE master_read SET marker_on = 0 WHERE installation = ?1", [inst]).map_err(e)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// The last master read worth keeping showed the marker on.
     pub fn marker_last_on(&self, inst: &str) -> Result<bool, String> {
         Ok(self.db.query_row("SELECT marker_on FROM master_read WHERE installation = ?1", [inst], |r| r.get::<_, bool>(0)).optional().map_err(e)?.unwrap_or(false))

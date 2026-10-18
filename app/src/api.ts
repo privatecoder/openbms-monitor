@@ -504,6 +504,8 @@ const tauriApi = {
   maintAlerts: () => invoke<Alerts>("maint_alerts"),
   /** „Pack X ist abgeklemmt oder repariert“ */
   maintClearPending: (id: number) => invoke<void>("maint_clear_pending", { id }),
+  /** „Latenten Marker verwerfen“ (only a marker kept on under an image without 0x64) */
+  maintDiscardLatentMarker: (installation: string) => invoke<void>("maint_discard_latent_marker", { installation }),
   /** refused busy while a flash or another operation runs */
   maintLive: (installation: string | null, port: string) => invoke<LiveStatus>("maint_live", { installation, port }),
   /** `port`: the RS485-1/2 endpoint key (`serial:…` / `tcp:…`), like `maintLive`, `firmwareInspect` and `firmwareStart` */
@@ -775,6 +777,7 @@ function demoApi(): typeof tauriApi {
     maintAdoptMasterSerial: async () => { throw new Error("desktop app only"); },
     maintAlerts: async () => ({ markers: [], pending: [] }),
     maintClearPending: async () => { throw new Error("desktop app only"); },
+    maintDiscardLatentMarker: async () => { throw new Error("desktop app only"); },
     maintLive: async () => { throw new Error("desktop app only"); },
     maintScanPacks: async () => { throw new Error("desktop app only"); },
     maintScanCancel: async () => {},
