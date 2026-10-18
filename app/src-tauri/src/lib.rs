@@ -1,7 +1,7 @@
 use openbms_proto::{DeviceInfo, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use openbms_transport::{list_serial_ports, Bus, Connection, Endpoint};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -46,6 +46,8 @@ struct AppState {
     app: std::sync::OnceLock<AppHandle>,
     /// Set while a BMS history read runs; polling pauses meanwhile.
     memory_busy: Arc<AtomicBool>,
+    /// Writes over the CAN socket's parameter service now (`PollPause`): host polling pauses meanwhile.
+    params_pause: Arc<AtomicUsize>,
     /// Asks the running history read to stop after the current frame.
     memory_cancel: Arc<AtomicBool>,
     /// Asks the running pack search on the pack bus to stop before the next address (`maint_scan_cancel`).
@@ -188,6 +190,46 @@ impl Drop for PortSlot {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
+}
+
+/// Host polling holds while a parameter write runs over the CAN socket (fresh read, write, acknowledgement and read-back
+/// with no poll frame between them; at most four frames of 3 s). A count, since writes of two packs may overlap; dropped
+/// also when the write ends with an error.
+pub(crate) struct PollPause(Arc<AtomicUsize>);
+
+impl PollPause {
+    pub fn hold(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        PollPause(count.clone())
+    }
+}
+
+impl Drop for PollPause {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Polling pauses on purpose (a BMS history read, a parameter write over the CAN socket): its skipped rounds are no
+/// missing answers and no lost connection.
+pub(crate) fn polling_paused(state: &AppState) -> bool {
+    state.memory_busy.load(Ordering::SeqCst) || state.params_pause.load(Ordering::SeqCst) > 0
+}
+
+/// One poll exchange; None once a parameter write over the CAN socket holds polling. Checked under the connection lock,
+/// so no poll frame starts between that write's frames.
+fn poll_exchange<T>(conn: &Shared, flashing: &AtomicBool, hold: &AtomicUsize, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Option<Result<T, String>> {
+    if flashing.load(Ordering::SeqCst) {
+        return Some(Err(FLASHING.into()));
+    }
+    let mut guard = match lock(conn) {
+        Ok(g) => g,
+        Err(e) => return Some(Err(e)),
+    };
+    if hold.load(Ordering::SeqCst) > 0 {
+        return None;
+    }
+    Some(guard.as_mut().ok_or_else(|| "not connected".to_string()).and_then(|c| f(c).map_err(|e| e.to_string())))
 }
 
 fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
@@ -535,14 +577,21 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
     Ok(SerialRead { serials, board, identity: Some(view) })
 }
 
-/// All parameters and function switches of one pack (0x47). Only RS485-1/2 knows this command; there the
-/// master of a multi-pack bank does not answer.
+/// All parameters and function switches of one pack (0x47). RS485-1/2 knows this command (there the master of a
+/// multi-pack bank does not answer); on the CAN socket only a MAINT 1.2 pack, over its binary service.
 #[tauri::command]
 async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameters, String> {
-    if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
-        return Err("parameters can only be read on RS485-1/2".into());
+    match bms_memory::param_path(&state)? {
+        bms_memory::ParamPath::Ascii => read_parameters_reserved(&state, address),
+        bms_memory::ParamPath::Uart1(bus) => read_parameters_uart1(&state, bus, address),
     }
-    read_parameters_reserved(&state, address)
+}
+
+/// 0x47 over the CAN socket under the pack's reservation, like `read_parameters_reserved`, but with no bank check and no
+/// snapshot: the board behind it cannot be checked there. Only a valid binary answer shows the pack has the service.
+fn read_parameters_uart1(state: &AppState, bus: Bus, address: u8) -> Result<Parameters, String> {
+    let _guard = control::reserve_pack_wait(state, address, "read")?;
+    bms_memory::read_uart1(state, None, bus, address)
 }
 
 /// 0x47 and its snapshot under the pack's reservation: a write of the same pack keeps it until its own `written`
@@ -590,6 +639,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     let flashing = state.flashing.clone();
     let rec = state.history.clone();
     let paused = state.memory_busy.clone();
+    let hold = state.params_pause.clone();
     let (ops, links, gen) = (state.ops.clone(), state.link.clone(), link_now(&state).gen);
     // answers of a connection replaced meanwhile are neither recorded nor shown
     let current = move || links.lock().map(|l| l.gen == gen).unwrap_or(false);
@@ -599,14 +649,14 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
         // 1, 2, 4 … 32 rounds
         let (mut round, mut master_at, mut master_every) = (0u32, 0u32, 1u32);
         while running.load(Ordering::SeqCst) {
-            // a BMS history read has the bus to itself
-            if paused.load(Ordering::SeqCst) {
+            // a BMS history read or a parameter write over the CAN socket has the bus to itself
+            if paused.load(Ordering::SeqCst) || hold.load(Ordering::SeqCst) > 0 {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
             let started = std::time::Instant::now();
             if bus == Bus::CanSocketBus {
-                let r = with_conn(&conn, &flashing, |c| c.system_values());
+                let Some(r) = poll_exchange(&conn, &flashing, &hold, |c| c.system_values()) else { continue };
                 if !current() {
                     break;
                 }
@@ -618,12 +668,14 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 round += 1;
                 let inst = link_now(&state).installation.filter(|_| round >= master_at && control::pack_action(&ops, 0).is_none() && bank::can_master_unread(&state, gen));
                 if let Some(inst) = inst {
-                    let r = with_conn(&conn, &flashing, |c| c.serial_numbers(bus, 0));
+                    let r = poll_exchange(&conn, &flashing, &hold, |c| c.serial_numbers(bus, 0));
                     if !current() {
                         break;
                     }
                     match r {
-                        Ok(s) if s.battery != SerialValue::NoAnswer => can_master_check(&state, gen, &inst, &s.battery),
+                        // held by a parameter write: asked again in a later round, no back-off
+                        None => {}
+                        Some(Ok(s)) if s.battery != SerialValue::NoAnswer => can_master_check(&state, gen, &inst, &s.battery),
                         _ => {
                             master_at = round + master_every;
                             master_every = (master_every * 2).min(32);
@@ -632,15 +684,16 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 }
             }
             for &address in &addresses {
-                if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) {
+                if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) || hold.load(Ordering::SeqCst) > 0 {
                     break;
                 }
                 // a restarting pack is watched by its own action; asking it now would only wait for timeouts
                 if control::pack_action(&ops, address) == Some("restart") {
                     continue;
                 }
-                let telemetry = with_conn(&conn, &flashing, |c| c.telemetry(address));
-                let status = with_conn(&conn, &flashing, |c| c.status(address));
+                // held by a parameter write meanwhile: the rest of the round is skipped, no pack counts as silent
+                let Some(telemetry) = poll_exchange(&conn, &flashing, &hold, |c| c.telemetry(address)) else { break };
+                let Some(status) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break };
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
                 // A dead link (gateway closed the socket, broken pipe) does not heal by retrying: drop it and
                 // stop polling. The UI reconnects on the "link-lost" event (or after its data timeout).
@@ -970,7 +1023,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
@@ -1018,6 +1071,40 @@ mod port_reservation_tests {
         assert_eq!(read_parameters_reserved(&state, 3).unwrap_err(), "not connected");
         drop(write);
         assert_eq!(read_parameters_reserved(&state, 2).unwrap_err(), "not connected");
+    }
+
+    #[test]
+    fn a_uart1_parameter_read_waits_for_a_write_of_the_same_pack() {
+        let state = AppState::default();
+        let write = control::reserve_pack(&state, 2, "params").unwrap();
+        let e = read_parameters_uart1(&state, Bus::CanSocketBus, 2).unwrap_err();
+        assert!(e.contains("pack-busy"), "{e}");
+        assert_eq!(read_parameters_uart1(&state, Bus::CanSocketBus, 3).unwrap_err(), "not connected");
+        drop(write);
+    }
+
+    #[test]
+    fn the_poll_pause_holds_until_every_write_ends_also_on_an_error() {
+        let state = AppState::default();
+        let failing = |state: &AppState| -> Result<(), String> {
+            let _pause = PollPause::hold(&state.params_pause);
+            assert!(polling_paused(state));
+            Err("timeout".into())
+        };
+        assert!(failing(&state).is_err());
+        assert!(!polling_paused(&state));
+        let a = PollPause::hold(&state.params_pause);
+        let b = PollPause::hold(&state.params_pause);
+        drop(a);
+        assert!(polling_paused(&state), "the other write still runs");
+        // a poll exchange is skipped while held, not failed
+        assert!(poll_exchange(&state.conn, &state.flashing, &state.params_pause, |_| Ok(())).is_none());
+        drop(b);
+        assert!(!polling_paused(&state));
+        assert_eq!(poll_exchange(&state.conn, &state.flashing, &state.params_pause, |_| Ok(())), Some(Err("not connected".to_string())));
+        // a history read pauses as before
+        state.memory_busy.store(true, Ordering::SeqCst);
+        assert!(polling_paused(&state));
     }
 
     #[test]
