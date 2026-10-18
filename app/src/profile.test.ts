@@ -78,6 +78,12 @@ describe("release bits of Group0 in a parameter column", () => {
     // an image with power and clock: FF keeps them locked (bit 3 on)
     expect(flashGateKeys(0xff, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked"]);
     expect(flashGateKeys(0xf7, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen"]);
+    // an image with the pack cutoff: FF leaves the extended off off; bit 5 at 0 is kept as a lock (conservative)
+    expect(flashGateKeys(0xff, true, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked", "fw.patch.cutoffOff"]);
+    expect(flashGateKeys(0xe7, true, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen", "fw.patch.cutoffOn"]);
+    expect(flashGateKeys(0xc7, true, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen", "fw.patch.cutoffOn", "fw.patch.lockKept"]);
+    expect(flashGateKeys(0xc7, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen"]);
+    for (const lng of ["de", "en"]) for (const k of ["fw.patch.cutoffOff", "fw.patch.cutoffOn", "fw.patch.lockKept"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
     for (const lng of ["de", "en"]) for (const k of ["fw.patch.ok", "fw.patch.powerLocked", "fw.patch.powerOpen", "par.gatePowerUnknown", "par.gatePowerAbsent", "par.gatePowerFixed", "profile.gate.power", "fw.patch.writeLocked", "fw.patch.startLocked", "fw.patch.bothLocked", "uart1.write-locked", "uart1.start-bit", "pw.locked", "pw.multi.res.locked",
       "maint.err.start.start-not-allowed", "maint.err.start.auto-address", "maint.err.start.token-or-marker", "maint.err.start.start-refused-unread", "maint.err.refused.expected-slaves-needed",
       "maint.done.polling.unverified", "maint.done.polling.no-slaves", "maint.banner.discard", "maint.banner.discardExplain", "maint.banner.discardYes", "maint.err.refused.not-latent"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
