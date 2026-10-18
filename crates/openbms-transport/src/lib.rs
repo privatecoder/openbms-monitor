@@ -583,7 +583,8 @@ impl Connection {
                     Err(e) => return Err(e.into()),
                 }
             }
-            Err(Error::Timeout(timeout))
+            // a started frame that never completed must not hide an answer behind it
+            framer.finish(request).ok_or(Error::Timeout(timeout))
         });
         self.note_failure(&r, address);
         std::thread::sleep(self.gap);
@@ -1170,6 +1171,14 @@ mod tests {
         // never on RS485-1/2: nothing is sent there
         assert!(matches!(c.uart1_parameters(Bus::PackBus, 11), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
         assert_eq!(sink.snapshot().entries.iter().filter(|e| e.kind == capture::Kind::Tx).count(), 3);
+    }
+
+    #[test]
+    fn at_the_deadline_a_cut_off_prefix_hides_no_answer_behind_it() {
+        let read = uart1::read_request(0).unwrap();
+        let mut c = scripted(vec![(read.clone(), [vec![0x55, 0x00, 0x47, 0xA8], binary(0, 0xE2, &[])].concat())]);
+        let r = c.binary_exchange(Bus::CanSocketBus, &read, Duration::from_millis(100));
+        assert_eq!(r.unwrap(), uart1::Reply::Error(uart1::Code::Rejected));
     }
 
     #[test]
