@@ -5,6 +5,9 @@
 //! switches, the device name). CMD 0xA1 writes the first 158 of those bytes (no name) and is acknowledged with LEN 0.
 //! A frame of the right pack can answer with an error code in place of CMD (LEN 0). Every pack answers only its own
 //! address; a broken frame, a wrong length or a foreign address stays unanswered. Other firmware ignores the frame.
+//!
+//! MAINT 1.3 adds CMD 0xA2 (String 1, battery serial) and 0xA4 (String 2, BMS serial, the board's identity): LEN 0,
+//! answered with the 30 stored bytes as they are. MAINT 1.2 answers them with error 0x81.
 
 use crate::error::{Error, Result};
 use crate::params::{self, Parameters};
@@ -19,6 +22,10 @@ pub const READ_LEN: usize = params::BLOCK_LEN - 1;
 pub const WRITE_LEN: usize = READ_LEN - 10;
 /// The firmware accepts addresses 0..=21 (DIP addresses 0..=15).
 pub const MAX_ADDRESS: u8 = 21;
+/// MAINT 1.3: String 1 (battery serial) and String 2 (BMS serial), 30 raw bytes each.
+pub const CMD_STRING1: u8 = 0xA2;
+pub const CMD_STRING2: u8 = 0xA4;
+pub const SERIAL_LEN: usize = 30;
 /// Header, CRC and end byte around DATA.
 const OVERHEAD: usize = 7;
 
@@ -71,6 +78,8 @@ pub enum Reply {
     /// 0xA1 taken
     Ack,
     Error(Code),
+    /// 0xA2/0xA4: the 30 stored bytes, unchanged
+    Serial(Vec<u8>),
 }
 
 /// A request frame. Only 0x47 with no data and 0xA1 with exactly 158 bytes are built; a write without data never.
@@ -79,8 +88,8 @@ pub fn encode(address: u8, cmd: u8, data: &[u8]) -> Result<Vec<u8>> {
         return Err(Error::Layout("UART1 address must be 0..=21"));
     }
     match (cmd, data.len()) {
-        (CMD_READ, 0) | (CMD_WRITE, WRITE_LEN) => {}
-        _ => return Err(Error::Layout("UART1 request: 0x47 without data or 0xA1 with 158 bytes")),
+        (CMD_READ, 0) | (CMD_WRITE, WRITE_LEN) | (CMD_STRING1, 0) | (CMD_STRING2, 0) => {}
+        _ => return Err(Error::Layout("UART1 request: 0x47, 0xA2 or 0xA4 without data or 0xA1 with 158 bytes")),
     }
     Ok(frame(address, cmd, data))
 }
@@ -99,6 +108,14 @@ fn frame(address: u8, cmd: u8, data: &[u8]) -> Vec<u8> {
 
 pub fn read_request(address: u8) -> Result<Vec<u8>> {
     encode(address, CMD_READ, &[])
+}
+
+/// MAINT 1.3: read String 1 (`CMD_STRING1`) or String 2 (`CMD_STRING2`).
+pub fn serial_request(address: u8, cmd: u8) -> Result<Vec<u8>> {
+    match cmd {
+        CMD_STRING1 | CMD_STRING2 => encode(address, cmd, &[]),
+        _ => Err(Error::Layout("UART1 serial request: 0xA2 or 0xA4")),
+    }
 }
 
 /// 0xA1 with a block as `Values::apply` builds it (the 169-byte 0x47 INFO): its bytes 1..159, without address and name.
@@ -130,6 +147,7 @@ fn known_shape(address: u8, cmd: u8, len: usize) -> bool {
         && match cmd {
             CMD_READ => len == 0 || len == READ_LEN,
             CMD_WRITE => len == 0 || len == WRITE_LEN,
+            CMD_STRING1 | CMD_STRING2 => len == 0 || len == SERIAL_LEN,
             c => Code::of(c).is_some() && len == 0,
         }
 }
@@ -218,6 +236,7 @@ impl Framer {
             let reply = match (f[2], data.len()) {
                 (CMD_READ, READ_LEN) if cmd == CMD_READ && markers_ok(data) => Reply::Params(data.to_vec()),
                 (CMD_WRITE, 0) if cmd == CMD_WRITE => Reply::Ack,
+                (c @ (CMD_STRING1 | CMD_STRING2), SERIAL_LEN) if c == cmd => Reply::Serial(data.to_vec()),
                 (c, 0) if Code::of(c).is_some() => Reply::Error(Code::of(c).unwrap()),
                 _ => continue,
             };
@@ -292,6 +311,7 @@ fn expected(rest: &[u8], request: &[u8]) -> bool {
         && match cmd {
             CMD_READ => request[2] == CMD_READ && len == READ_LEN,
             CMD_WRITE => request[2] == CMD_WRITE && len == 0,
+            c @ (CMD_STRING1 | CMD_STRING2) => request[2] == c && len == SERIAL_LEN,
             c => Code::of(c).is_some() && len == 0,
         }
 }
@@ -548,6 +568,38 @@ mod tests {
         let mut f = Framer::new();
         f.push(&[w[..161].to_vec(), vec![0; 4], answer(0, CMD_WRITE, &[])].concat());
         assert_eq!(f.next(&w), Some(Reply::Ack));
+    }
+
+    #[test]
+    fn serial_requests_and_answers_of_maint_1_3() {
+        assert_eq!(serial_request(1, CMD_STRING1).unwrap(), hex("55 01 A2 00 4C 2C AA"));
+        assert_eq!(serial_request(1, CMD_STRING2).unwrap(), hex("55 01 A4 00 E6 8A AA"));
+        assert_eq!(serial_request(11, CMD_STRING2).unwrap(), hex("55 0B A4 00 21 4B AA"));
+        assert!(serial_request(1, CMD_READ).is_err());
+        assert!(encode(1, CMD_STRING2, &[0]).is_err(), "never with data");
+        // raw bytes with start, end and CR bytes inside, split in two chunks
+        let mut raw = b"SYN-\x55".to_vec();
+        raw.extend([0x55, 0xAA, 0x0D]);
+        raw.resize(SERIAL_LEN, b' ');
+        let req = serial_request(3, CMD_STRING2).unwrap();
+        let ans = answer(3, CMD_STRING2, &raw);
+        let mut f = Framer::new();
+        f.push(&[req.clone(), ans[..12].to_vec()].concat());
+        assert_eq!(f.next(&req), None);
+        f.push(&ans[12..]);
+        assert_eq!(f.next(&req), Some(Reply::Serial(raw.clone())));
+        // String 1 is no answer to a String 2 request; another length is no answer either
+        for wrong in [answer(3, CMD_STRING1, &raw), answer(3, CMD_STRING2, &raw[..29])] {
+            let mut f = Framer::new();
+            f.push(&wrong);
+            assert_eq!(f.next(&req), None);
+        }
+        // 1.2: 81 (no such command), a request with data: 87
+        for (code, c) in [(0x81, Code::UnknownCommand), (0x87, Code::WrongLength)] {
+            let mut f = Framer::new();
+            f.push(&answer(3, code, &[]));
+            assert_eq!(f.next(&req), Some(Reply::Error(c)));
+        }
     }
 
     #[test]

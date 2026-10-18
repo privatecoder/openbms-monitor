@@ -362,8 +362,13 @@ impl Connection {
     /// One serial number string (0xA2/0xA4), e.g. to read a write back. Unlike `serial_numbers` every failure is
     /// an error here.
     pub fn serial(&mut self, address: u8, which: serial::Which) -> Result<SerialValue> {
+        Ok(self.serial_canonical(address, which)?.0)
+    }
+
+    /// `serial`, and whether its raw bytes were canonical (`serial::canonical`).
+    pub fn serial_canonical(&mut self, address: u8, which: serial::Which) -> Result<(SerialValue, bool)> {
         let f = self.ascii(&which.read_request(address)?, address)?;
-        Ok(serial::parse_ascii_serial(&f.info)?)
+        Ok(serial::parse_ascii_serial_canonical(&f.info)?)
     }
 
     /// The BMS clock (0x4D; RS485-1/2 only).
@@ -490,12 +495,17 @@ impl Connection {
     /// it; silence, another RTN or a malformed answer leave this value without an answer. Only a broken link
     /// (I/O, closed gateway) is an error. The flag tells whether the pack stayed silent.
     fn ascii_serial(&mut self, request: openbms_proto::Result<Vec<u8>>, address: u8) -> Result<(SerialValue, bool)> {
+        self.ascii_serial_canonical(request, address).map(|(v, silent, _)| (v, silent))
+    }
+
+    /// `ascii_serial`, and whether the raw bytes were canonical (`serial::canonical`).
+    fn ascii_serial_canonical(&mut self, request: openbms_proto::Result<Vec<u8>>, address: u8) -> Result<(SerialValue, bool, bool)> {
         let answer = request.map_err(Error::from).and_then(|r| self.ascii(&r, address));
-        match answer.and_then(|f| Ok(serial::parse_ascii_serial(&f.info)?)) {
-            Ok(v) => Ok((v, false)),
-            Err(Error::Proto(openbms_proto::Error::Rtn(0x04))) => Ok((SerialValue::Unavailable, false)),
-            Err(Error::Timeout(_)) => Ok((SerialValue::NoAnswer, true)),
-            Err(Error::Proto(_)) => Ok((SerialValue::NoAnswer, false)),
+        match answer.and_then(|f| Ok(serial::parse_ascii_serial_canonical(&f.info)?)) {
+            Ok((v, canonical)) => Ok((v, false, canonical)),
+            Err(Error::Proto(openbms_proto::Error::Rtn(0x04))) => Ok((SerialValue::Unavailable, false, false)),
+            Err(Error::Timeout(_)) => Ok((SerialValue::NoAnswer, true, false)),
+            Err(Error::Proto(_)) => Ok((SerialValue::NoAnswer, false, false)),
             Err(e) => Err(e),
         }
     }
@@ -503,14 +513,27 @@ impl Connection {
     /// Battery and BMS serial number of one pack (0xA2, 0xA4; RS485-1/2 only). If the pack leaves 0xA2
     /// unanswered, 0xA4 is not sent: it would only wait for the timeout once more.
     pub fn serial_numbers_pack_bus(&mut self, address: u8) -> Result<SerialNumbers> {
+        Ok(self.serial_numbers_pack_bus_canonical(address)?.0)
+    }
+
+    /// `serial_numbers_pack_bus`, and whether the raw BMS serial was canonical (`serial::canonical`).
+    pub fn serial_numbers_pack_bus_canonical(&mut self, address: u8) -> Result<(SerialNumbers, bool)> {
         let (battery, silent) = self.ascii_serial(serial::battery_request(address), address)?;
-        let bms = if silent { SerialValue::NoAnswer } else { self.ascii_serial(serial::bms_request(address), address)?.0 };
-        Ok(SerialNumbers { battery, bms })
+        let (bms, canonical) = if silent { (SerialValue::NoAnswer, false) } else {
+            let (v, _, c) = self.ascii_serial_canonical(serial::bms_request(address), address)?;
+            (v, c)
+        };
+        Ok((SerialNumbers { battery, bms }, canonical))
     }
 
     /// The BMS serial number alone (0xA4, RS485-1/2 only), e.g. to recognise a bank by its master.
     pub fn bms_serial(&mut self, address: u8) -> Result<SerialValue> {
         Ok(self.ascii_serial(serial::bms_request(address), address)?.0)
+    }
+
+    /// `bms_serial`, and whether its raw bytes were canonical (`serial::canonical`).
+    pub fn bms_serial_canonical(&mut self, address: u8) -> Result<(SerialValue, bool)> {
+        self.ascii_serial_canonical(serial::bms_request(address), address).map(|(v, _, c)| (v, c))
     }
 
     /// First 22 characters of the master's battery serial number (Modbus FC04, CAN socket bus). Firmware before
@@ -607,7 +630,7 @@ impl Connection {
         match self.binary_exchange(bus, &uart1::read_request(address)?, UART1_TIMEOUT)? {
             uart1::Reply::Params(data) => Ok(uart1::parameters(address, &data)?),
             uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
-            uart1::Reply::Ack => Err(openbms_proto::Error::Layout("UART1: acknowledgement to a read").into()),
+            uart1::Reply::Ack | uart1::Reply::Serial(_) => Err(openbms_proto::Error::Layout("UART1: no parameters in the answer to a read").into()),
         }
     }
 
@@ -617,7 +640,17 @@ impl Connection {
         match self.binary_exchange(bus, &uart1::write_request(address, block)?, UART1_TIMEOUT)? {
             uart1::Reply::Ack => Ok(()),
             uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
-            uart1::Reply::Params(_) => Err(openbms_proto::Error::Layout("UART1: parameters as answer to a write").into()),
+            uart1::Reply::Params(_) | uart1::Reply::Serial(_) => Err(openbms_proto::Error::Layout("UART1: no acknowledgement in the answer to a write").into()),
+        }
+    }
+
+    /// MAINT 1.3: String 1 (`uart1::CMD_STRING1`) or String 2 (`uart1::CMD_STRING2`) of one pack, the 30 raw bytes.
+    /// 1.2 answers 0x81 (`Proto(Uart1(0x81))`: not offered); a timeout says nothing about the firmware.
+    pub fn uart1_serial(&mut self, bus: Bus, address: u8, cmd: u8) -> Result<Vec<u8>> {
+        match self.binary_exchange(bus, &uart1::serial_request(address, cmd)?, UART1_SERIAL_TIMEOUT)? {
+            uart1::Reply::Serial(raw) => Ok(raw),
+            uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
+            uart1::Reply::Ack | uart1::Reply::Params(_) => Err(openbms_proto::Error::Layout("UART1: no serial number in the answer").into()),
         }
     }
 
@@ -632,6 +665,8 @@ impl Connection {
 
 /// The whole answer of the binary parameter service (a gateway may deliver it in several parts).
 pub const UART1_TIMEOUT: Duration = Duration::from_secs(3);
+/// A serial number answer of MAINT 1.3 (37 bytes): short, so packs without it do not stretch a connect.
+pub const UART1_SERIAL_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// Silence that counts as an interruption in the restart watch: so many unanswered tries in a row, or this long.
 pub const SILENT_TRIES: u32 = 2;
@@ -1239,6 +1274,18 @@ mod tests {
         let mut c = scripted(vec![(read.clone(), [vec![0x55, 0x00, 0x47, 0xA8], binary(0, 0xE2, &[])].concat())]);
         let r = c.binary_exchange(Bus::CanSocketBus, &read, Duration::from_millis(100));
         assert_eq!(r.unwrap(), uart1::Reply::Error(uart1::Code::Rejected));
+    }
+
+    #[test]
+    fn serial_numbers_of_maint_1_3_and_the_answer_of_1_2() {
+        let mut raw = b"SYN-0011".to_vec();
+        raw.resize(uart1::SERIAL_LEN, b' ');
+        let a4 = uart1::serial_request(11, uart1::CMD_STRING2).unwrap();
+        let a2 = uart1::serial_request(2, uart1::CMD_STRING1).unwrap();
+        let mut c = scripted(vec![(a4.clone(), [a4.clone(), binary(11, 0xA4, &raw)].concat()), (a2, binary(2, 0x81, &[]))]);
+        assert_eq!(c.uart1_serial(Bus::CanSocketBus, 11, uart1::CMD_STRING2).unwrap(), raw);
+        assert!(matches!(c.uart1_serial(Bus::CanSocketBus, 2, uart1::CMD_STRING1), Err(Error::Proto(openbms_proto::Error::Uart1(0x81)))));
+        assert!(matches!(c.uart1_serial(Bus::PackBus, 11, uart1::CMD_STRING2), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
     }
 
     #[test]
