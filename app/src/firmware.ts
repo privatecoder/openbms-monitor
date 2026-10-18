@@ -30,20 +30,23 @@ export interface FwSetup {
   port: string;
   address: number;
   image: FirmwareImage | null;
-  /** result of "check pack" and the port/address it was read from */
+  /** result of "check pack" and the port/address (and installation) it was read for */
   target: DeviceInfo | null;
-  checkedFor: { port: string; address: number } | null;
+  checkedFor: { port: string; address: number; inst?: string | null } | null;
+  /** the installation chosen now: a check made for another one does not count */
+  inst?: string | null;
   typed: string;
   /** another action runs (pack check, a panel action): inputs and actions wait */
   busy: boolean;
 }
 
-/** Which steps are usable. A checked pack counts only for the port and address it was read from. */
+/** Which steps are usable. A checked pack counts only for the port, address and installation it was read for. */
 export function steps(s: FwSetup) {
   // the confirmation is used up by a run: nothing is usable until the result is dismissed
   if (s.running || s.done || s.busy) return { image: false, inspect: false, confirm: false, start: false };
   const inspect = s.port !== "" && s.image !== null;
-  const confirm = inspect && s.target !== null && s.checkedFor?.port === s.port && s.checkedFor.address === s.address;
+  const confirm = inspect && s.target !== null && s.checkedFor?.port === s.port && s.checkedFor.address === s.address
+    && (s.checkedFor.inst ?? null) === (s.inst ?? null);
   return { image: true, inspect, confirm, start: confirm && s.typed.trim() === confirmationPhrase(s.address, s.image?.custom) };
 }
 

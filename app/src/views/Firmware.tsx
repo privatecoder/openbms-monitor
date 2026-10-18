@@ -41,7 +41,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [imageError, setImageError] = useState<string | null>(null);
   const [target, setTarget] = useState<DeviceInfo | null>(null);
   const [master, setMaster] = useState<MasterView | null>(null);
-  const [checkedFor, setCheckedFor] = useState<{ port: string; address: number } | null>(null);
+  const [checkedFor, setCheckedFor] = useState<{ port: string; address: number; inst: string | null } | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; serial: string | null } | null>(null);
@@ -75,9 +75,12 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const manual = manualPort ?? keyParts(port) ?? { kind: "serial" as PortKind, target: "" };
   const mPort = manualPort ? portKey(manualPort.kind, manualPort.target) : port;
   useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); }, [mPort, address, image?.sha256]);
+  // another installation: the single pack tab's port, check and confirmation belonged to the earlier one; the port
+  // falls back to the new installation's own (shown in the field)
+  useEffect(() => { setManualPort(null); setTarget(null); setCheckedFor(null); setTyped(""); setError(null); setInspectError(null); }, [inst?.id]);
   // the master read belongs to the port it came from
   useEffect(() => { setMaster(null); }, [port]);
-  const s = steps({ running, done: done !== null, port: mPort, address, image, target, checkedFor, typed, busy });
+  const s = steps({ running, done: done !== null, port: mPort, address, image, target, checkedFor, typed, busy, inst: inst?.id ?? null });
   const inputsLocked = running || busy;
   const phrase = confirmationPhrase(address, image?.custom);
 
@@ -129,7 +132,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     onUserAction(); setBusy(true); setError(null); setInspectError(null); setTarget(null); setCheckedFor(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
-    try { setTarget(await api.firmwareInspect(mPort, address, lang, mPort === port ? inst?.id ?? null : null)); setCheckedFor({ port: mPort, address }); void maint.loadLists(); }
+    try { setTarget(await api.firmwareInspect(mPort, address, lang, mPort === port ? inst?.id ?? null : null)); setCheckedFor({ port: mPort, address, inst: inst?.id ?? null }); void maint.loadLists(); }
     catch (e) { setInspectError(String(e)); }
     finally { setBusy(false); }
   };
@@ -141,6 +144,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const targetVersion = target ? packVersion(address, target.firmware_version, samePort ? master : null) : null;
   const manualStart = async () => {
     const confirmation = typed;
+    // a check and confirmation made for another installation never start a flash for this one
+    if (!s.start) return;
     // one confirmation, one run: the pack has to be checked and confirmed again for the next one
     setTyped(""); setTarget(null); setCheckedFor(null);
     try { await startFlash(mPort, address, confirmation, targetVersion, samePort); }

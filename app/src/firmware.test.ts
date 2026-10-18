@@ -18,6 +18,12 @@ describe("firmware steps", () => {
     expect(steps({ ...base, port: "/dev/y" }).confirm).toBe(false);
     expect(steps({ ...base, target: null }).confirm).toBe(false);
   });
+  it("a check made for another installation does not count", () => {
+    const forA = { ...base, checkedFor: { port: "/dev/x", address: 0, inst: "inst-a" }, typed: "FLASH 0" };
+    expect(steps({ ...forA, inst: "inst-a" }).start).toBe(true);
+    expect(steps({ ...forA, inst: "inst-b" }).confirm).toBe(false);
+    expect(steps({ ...forA, inst: "inst-b" }).start).toBe(false);
+  });
   it("start_needs_exact_phrase", () => {
     expect(confirmationPhrase(3)).toBe("FLASH 3");
     expect(steps({ ...base, typed: "FLASH 0" }).start).toBe(true);
