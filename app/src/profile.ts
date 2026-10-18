@@ -122,6 +122,15 @@ export function keepMask(patch: PackPatch | null | undefined, uart1: boolean, gr
   return LOCK_BIT | (uart1 || gate.named ? fixed : 0);
 }
 
+/** The label of the shared rows of bits 4 and 5: by their function only when every column with switches has a proof
+ *  that may carry the cutoff (`pack_cutoff` true or not known); neutral „Bit 0.4/0.5“ when the columns differ (a 1.5
+ *  pack, an original one); unnamed with no such column. */
+export function cutoffRowLabel(cols: { patch?: PackPatch | null; switches: boolean }[]): "named" | "neutral" | "unnamed" {
+  const withSwitches = cols.filter((c) => c.switches);
+  const capable = withSwitches.filter((c) => !!c.patch && c.patch.caps.pack_cutoff !== false).length;
+  return capable === 0 ? "unnamed" : capable === withSwitches.length ? "named" : "neutral";
+}
+
 /** A column whose pack proved the cutoff on this connection and whose Group0 shows the lock: „Packsperre aktiv“. */
 export const packLockActive = (patch: PackPatch | null | undefined, group0: number | undefined) =>
   patch?.caps.pack_cutoff === true && group0 !== undefined && (group0 & LOCK_BIT) === 0;
