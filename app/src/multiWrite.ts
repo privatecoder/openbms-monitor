@@ -22,7 +22,8 @@ export type Outcome =
 export function outcomeOf(r: ParamWrite, sent: Raws, sentSwitches: number[]): Outcome {
   if (r.kind === "stale") return { kind: "skipped", why: "stale" };
   if (r.kind === "unclear") return { kind: "unclear", error: r.error };
-  if (r.kind === "refused") return { kind: "refused", refusal: r.refusal, live: r.refusal === "refused" ? switchDiff(sentSwitches, r.stored.function_switches).length : 0 };
+  // the CAN socket's E2 takes nothing, not even the switches: nothing is live, the series does not wait
+  if (r.kind === "refused") return { kind: "refused", refusal: r.refusal, live: r.refusal === "refused" && r.switches_live !== false ? switchDiff(sentSwitches, r.stored.function_switches).length : 0 };
   if (!r.read_back) return { kind: "unread", error: r.read_error ?? "" };
   const missed = notTaken(sent, sentSwitches, rawsOf(r.read_back), r.read_back.function_switches);
   return missed.params.size + missed.switches.size ? { kind: "notTaken", params: [...missed.params], switches: [...missed.switches] }

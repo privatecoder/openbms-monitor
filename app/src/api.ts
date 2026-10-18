@@ -138,12 +138,14 @@ export interface CanProtocolSet { device: DeviceInfo | null; read_error: string 
  *  written with `unanswered`: the answer to the write was missing, a fresh read showed the values sent; unclear: the
  *  answer was missing and a fresh read showed neither the values sent nor those before (or failed);
  *  refused: the BMS did not take the block, `stored` is the read right before the write (after RTN 06 the switches
- *  sent are live, these are the stored ones). */
+ *  sent are live, these are the stored ones; `switches_live` false: the CAN socket's E2, nothing was taken).
+ *  CAN socket: `before` is the read right before the write (nothing there is stored, so „Vorheriger Stand“ holds for
+ *  the session), an unclear write carries what the pack holds now (`read_back`, null when that read failed). */
 export type ParamWrite =
   | { kind: "stale"; fresh: Parameters }
-  | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered?: boolean }
-  | { kind: "unclear"; error: string }
-  | { kind: "refused"; refusal: "refused" | "invalid"; stored: Parameters };
+  | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered?: boolean; before?: Parameters }
+  | { kind: "unclear"; error: string; read_back?: Parameters | null; before?: Parameters }
+  | { kind: "refused"; refusal: "refused" | "invalid"; stored: Parameters; switches_live?: boolean };
 /** The last write of a pack at this installation and the parameters it replaced. */
 export interface ParamHistory { last_written: number | null; previous: Parameters | null }
 /** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed;
@@ -383,6 +385,8 @@ const tauriApi = {
   setBmsClock: (address: number, time: BmsTime) => written(address, invoke<{ value: BmsTime; unchecked: boolean }>("set_bms_clock", { address, time, installation: chosen })),
   /** RS485-1/2 only: telemetry and status of one pack, for the calibration's live values */
   packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
+  /** The learned full capacity (0x42), on both buses. */
+  packFullCapacity: (address: number) => invoke<number>("pack_full_capacity", { address }),
   /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
   bmsCalibrate: (address: number, calibration: Calibration) => written(address, invoke<{ value: void; unchecked: boolean }>("bms_calibrate", { address, calibration, installation: chosen })),
   /** RS485-1/2 only, 1…6; once accepted, the device info read back or why that read failed */
@@ -606,6 +610,12 @@ function demoApi(): typeof tauriApi {
       const p = await demoPack(address);
       if (!p) throw new Error("timeout after 1500 ms");
       return p;
+    },
+    packFullCapacity: async (address) => {
+      await new Promise((r) => setTimeout(r, 120));
+      const p = await demoPack(address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      return p.telemetry.full_capacity_ah;
     },
     bmsCalibrate: async (address, calibration) => {
       await new Promise((r) => setTimeout(r, 300));

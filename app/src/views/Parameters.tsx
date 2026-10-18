@@ -20,7 +20,7 @@ import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
-import { errorText, packBusy, writeError } from "../control";
+import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
 import { cellName, config } from "./CellAssign";
 
@@ -34,8 +34,8 @@ let keptLink = "";
 const keptRefused = new Map<string, Refused>();
 /** Pack columns of another connection to the same installation: values stay, nothing to edit or undo from. */
 const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: undefined, link: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
-/** A pack column from a read, tagged with the link it was read on. */
-const packCol = (p: Parameters, address: number, link: string): Source => ({ ...fromPack(p, address), link });
+/** A pack column from a read, tagged with the link it was read on and, over the CAN socket, its path. */
+const packCol = (p: Parameters, address: number, link: string, path?: "uart1"): Source => ({ ...fromPack(p, address), link, ...(path ? { path } : {}) });
 // the datasheet chosen for the check; null = follow the packs' cell type
 let keptRef: Assignment | "none" | null = null;
 // the installations view's link to the stored state: the view opens with those columns
@@ -54,7 +54,7 @@ function commonAssignment(assigned: Record<number, Assignment>): Assignment | un
   return [...count.values()].sort((x, y) => y.n - x.n)[0]?.a;
 }
 
-/** Read the packs' parameters (RS485-1/2), show the stored state of the chosen installation, or open BatteryMonitor
+/** Read the packs' parameters (RS485-1/2, or the CAN socket of a pack with the UART1 parameter patch), show the stored state of the chosen installation, or open BatteryMonitor
  *  exports, and compare them side by side. Editing needs a connection with that installation. */
 export function ParametersView({ connected, bus, packs, installation }: { connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null }) {
   const { t, i18n } = useTranslation();
@@ -85,6 +85,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [chosen, setChosen] = usePackChoice(packs);
   // „Nur ansehen“ writes nothing to a pack
   const writable = connected && (isDemo || (bus === "pack" && !!installation));
+  // the CAN socket's parameter service of MAINT 1.2 reads; writing there waits for a firmware that shows the board's
+  // identity (the backend refuses it until then), so its columns get no pencil
+  const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
   const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, ctl: false, multi: false });
@@ -102,7 +105,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
   // packs a write went to without a serial to check the bank with (this connection)
   const unchecked = useUnchecked();
-  const canRead = connected && (bus === "pack" || isDemo) && packs.length > 0 && !reading && !edit && !paramsBusy && !writing.ctl;
+  const canRead = connected && (bus === "pack" || bus === "can" || isDemo) && packs.length > 0 && !reading && !edit && !paramsBusy && !writing.ctl;
   // the edit to further packs: the packs picked, the run's confirmation and its progress and result
   const [picking, setPicking] = useState(false);
   const [targets, setTargets] = useState<number[]>([]);
@@ -181,7 +184,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       try {
         const p = await api.parameters(address);
         if (linkNow() !== l) break;
-        next = packCol(p, address, l); seen(address, p); void loadHistory(address);
+        // over the CAN socket nothing is stored, so there is no stored last write either
+        next = packCol(p, address, l, path); seen(address, p); if (!path) void loadHistory(address);
       } catch (e) {
         if (linkNow() !== l) break;
         next = { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) };
@@ -195,7 +199,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const rereadPack = (address: number) => {
     if (!sources.some((x) => x.id === `pack-${address}`)) return;
     const l = linkNow();
-    api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l)); seen(address, p); } },
+    api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l, path)); seen(address, p); } },
       (e) => setNote({ address, note: { text: t("ctl.reread", { pack: packNo(address), err: errorText(e, t) }), error: true } }));
   };
   // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
@@ -235,7 +239,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     const fits = fullReqs.current.begin(a);
     if (c.link !== l) { setFull({ address: a, error: t("pw.full.otherLink") }); return; }
     const ok = () => linkNow() === l && fits(editing.current);
-    api.packLive(a).then((v) => { if (ok()) setFull({ address: a, ah: v.telemetry.full_capacity_ah }); },
+    api.packFullCapacity(a).then((ah) => { if (ok()) setFull({ address: a, ah }); },
       (e) => { if (ok()) setFull({ address: a, error: String(e) }); });
   };
 
@@ -254,14 +258,20 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     catch (error) { return { error, out: failure(error) }; }
     // the pending refusal is kept per site and pack and holds whatever the link: the switches are live on that pack
     if (r.kind === "refused") {
-      // only the first refusal knows the stored block: later reads show the live switches
-      if (r.refusal === "refused" && !refusedOf(a) && switchDiff(switches, r.stored.function_switches).length) setRefused(a, { stored: r.stored, live: [...switches] });
+      // only the first refusal knows the stored block: later reads show the live switches (the CAN socket's E2 makes
+      // none live)
+      if (r.refusal === "refused" && r.switches_live !== false && !refusedOf(a) && switchDiff(switches, r.stored.function_switches).length) setRefused(a, { stored: r.stored, live: [...switches] });
     } else if (r.kind === "written" && restore) setRefused(a, null);
     if (linkNow() === l) {
-      if (r.kind === "stale") { replace(packCol(r.fresh, a, l)); seen(a, r.fresh); }
-      else if (r.kind === "written") {
+      const col = (p: Parameters) => ({ ...packCol(p, a, l, path), notTaken: notTaken(raws, switches, rawsOf(p), p.function_switches) });
+      if (r.kind === "stale") { replace(packCol(r.fresh, a, l, path)); seen(a, r.fresh); }
+      else if ((r.kind === "written" || r.kind === "unclear") && r.before) {
+        // CAN socket: nothing is stored; „Vorherigen Stand“ is the block before this write, for the session
+        const before = r.before, read = r.read_back;
+        setSources((s) => s.map((x) => (x.id === `pack-${a}` ? { ...(read ? col(read) : x), previous: before, lastWritten: Date.now() } : x)));
+      } else if (r.kind === "written") {
         void loadHistory(a);
-        if (r.read_back) replace({ ...packCol(r.read_back, a, l), notTaken: notTaken(raws, switches, rawsOf(r.read_back), r.read_back.function_switches) });
+        if (r.read_back) replace(col(r.read_back));
       }
     }
     return { r, out: outcomeOf(r, raws, switches) };
@@ -295,9 +305,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         rebaseEdit(a, r.fresh);
         say({ text: t("pw.stale", { pack }), error: true });
       } else if (r.kind === "refused") {
-        say({ text: t(r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
+        say({ text: t(r.switches_live === false ? "pw.refusedNothing" : r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
       } else if (r.kind === "unclear") {
-        say({ text: t("pw.unclear", { err: r.error }), error: true });
+        say({ text: uart1Error(r.error) ? errorText(r.error, t) : t("pw.unclear", { err: r.error }), error: true });
       } else {
         if (r.read_back) {
           const n = out.kind === "notTaken" ? out.params.length + out.switches.length : 0;
@@ -339,7 +349,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     for (const a of [e.address, ...plans.map((p) => p.address)]) {
       if (!current()) break;
       setConfirm((x) => x && { ...x, reading: a });
-      try { full.set(a, (await api.packLive(a)).telemetry.full_capacity_ah); } catch { full.set(a, null); }
+      try { full.set(a, await api.packFullCapacity(a)); } catch { full.set(a, null); }
     }
     if (!current()) { if (prepTicket.current === ticket) { setConfirm(null); busyFor("multi")(false); } return; }
     setConfirm((x) => x && { ...x, reading: null, capacity: capacityEffects([{ address: e.address, raws: e.raws }, ...plans], full) });
@@ -663,6 +673,7 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious }: {
         <span className={cn("truncate font-medium text-ink", c.kind === "file" && "max-w-40")} title={c.label}>
           {c.kind === "pack" ? t("par.pack", { n: c.label }) : c.kind === "stored" ? t("par.storedCol", { n: c.label }) : c.label}
         </span>
+        {c.path === "uart1" && <span className="rounded bg-sunken px-1 text-xs text-muted" title={t("par.uart1ColHint")}>{t("par.uart1Col")}</span>}
         {onEdit && (
           <button onClick={onEdit} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink" title={t("pw.edit")} aria-label={t("pw.edit")}>
             <PenLine className="h-3.5 w-3.5" />

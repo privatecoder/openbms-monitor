@@ -103,16 +103,28 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
   return t(b.why === "moved" ? "bank.refused.moved" : "bank.refused.new", { pack });
 }
 
+/** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
+export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback"; code?: number };
+export function uart1Error(e: unknown): Uart1Error | null {
+  let v: unknown = e;
+  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  if (!v || typeof v !== "object") return null;
+  const o = v as { kind?: unknown; error?: unknown; code?: unknown };
+  return o.kind === "uart1" && typeof o.error === "string" ? (v as Uart1Error) : null;
+}
+
 /** The text of a failed write: a bank refusal as it is (it says that nothing was written), any other error through
  *  `wrap` (e.g. „Nicht geschrieben: …“). */
 export const writeError = (e: unknown, t: (k: string, o?: Record<string, unknown>) => string, wrap: (err: string) => string) =>
-  bankRefusal(e) ? errorText(e, t) : wrap(errorText(e, t));
+  bankRefusal(e) || uart1Error(e) ? errorText(e, t) : wrap(errorText(e, t));
 
 /** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, the texts for a silent pack, a
  *  changed connection and a bank refusal, else as it came. */
 export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>) => string): string {
   const bank = bankRefusal(e);
   if (bank) return bankText(bank, t);
+  const u = uart1Error(e);
+  if (u) return t(`uart1.${u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0") });
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
   const b = packBusy(e);

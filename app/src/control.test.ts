@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import i18n from "./i18n";
 import type { Status } from "./api";
-import { belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
+import { uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -73,5 +74,22 @@ describe("errors", () => {
   it("writes energy in kWh or MWh", () => {
     expect(energyText(850, "de")).toBe("850 kWh");
     expect(energyText(4500, "de")).toBe("4,5 MWh");
+  });
+});
+
+describe("CAN socket parameter service errors", () => {
+  it("are told apart and named in both languages", () => {
+    for (const error of ["no-answer", "protocol", "pending", "other-master", "no-identity", "readback"]) {
+      const e = JSON.stringify({ kind: "uart1", error, code: 0x87 });
+      expect(uart1Error(e)?.error).toBe(error);
+      for (const lng of ["de", "en"]) expect(i18n.exists(`uart1.${error}`, { lng }), `${lng} ${error}`).toBe(true);
+    }
+    const t = i18n.getFixedT("de");
+    expect(errorText(JSON.stringify({ kind: "uart1", error: "protocol", code: 0x87 }), t)).toContain("87");
+    // said as it is, not wrapped as a plain error
+    const noId = JSON.stringify({ kind: "uart1", error: "no-identity" });
+    expect(writeError(noId, t, (err) => `X ${err}`)).toBe(t("uart1.no-identity"));
+    expect(uart1Error("timeout")).toBeNull();
+    expect(uart1Error(JSON.stringify({ kind: "bank" }))).toBeNull();
   });
 });
