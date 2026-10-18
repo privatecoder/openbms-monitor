@@ -446,15 +446,16 @@ pub(crate) fn uart1_known(state: &AppState, link: &Link, address: u8) {
 }
 
 /// Whether something about the board at `address` may be kept from connection `gen`'s poll answers (a hard-stop
-/// sighting): on RS485-1/2 unless the pack is unconfirmed; on the CAN socket only for a pack known at this place, with no
-/// foreign pack on the connection and a master that did not show another installation's battery serial.
+/// sighting): on RS485-1/2 unless the pack is unconfirmed; on the CAN socket only once the bank is positively this
+/// installation's (the master's battery serial matched) and the pack there is neither unconfirmed nor foreign. Original
+/// firmware shows no per-pack serial there: a slave board swapped at an address cannot be told apart (residual risk).
 pub(crate) fn board_storable(state: &AppState, gen: u64, address: u8) -> bool {
     state.bank.lock().is_ok_and(|b| {
         b.current(gen).is_some_and(|b| {
             if b.pack_bus {
                 !matches!(b.packs.get(&address), Some(Seen::Unconfirmed(_)))
             } else {
-                matches!(b.packs.get(&address), Some(Seen::Known)) && !b.foreign() && b.can_master != Some(false)
+                b.can_master == Some(true) && !b.foreign() && !matches!(b.packs.get(&address), Some(Seen::Unconfirmed(_)))
             }
         })
     })
