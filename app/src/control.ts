@@ -35,14 +35,15 @@ export function offOutcome(s: Status): "off" | "on" | "unclear" {
   return dischargeFree(s) ? "unclear" : "off";
 }
 
-/** The confirmation „Aus“ gets, from Group0 read fresh before it (`g0`, undefined: not readable) and the patch the read
- *  names. CAN socket (`mode` "power"): with the pack cutoff proven on this connection (`cutoff`) and bit 4 at 0 (or not
- *  readable) the stored lock, else the soft off. RS485-1/2: a pack with a patch proof (any source) whose bit 4 or 5 is 0
- *  may lock if it has MAINT 1.6 ("cutoffMaybe"); without a proof as before. */
-export function offKind(mode: "full" | "power", cutoff: boolean, patch: PackPatch | null | undefined, g0: number | undefined): "cutoff" | "cutoffMaybe" | "soft" {
-  if (mode === "power") return cutoff && (g0 === undefined || (g0 & CUTOFF_BIT) === 0) ? "cutoff" : "soft";
-  if (!patch || patch.caps.pack_cutoff === false) return "soft";
-  return g0 === undefined || (g0 & CUTOFF_BIT) === 0 || (g0 & LOCK_BIT) === 0 ? "cutoffMaybe" : "soft";
+/** The confirmation „Aus“ gets, from Group0 read fresh right before it (`g0`, undefined: not readable). CAN socket
+ *  (`mode` "power"): only with the pack cutoff proven on this connection (`cutoff`), bit 4 at 0 the stored lock, else the
+ *  soft off. RS485-1/2: every pack (any may have MAINT 1.6, whatever the app knows of its patch), bit 4 at 0 the stored
+ *  lock („falls das Pack MAINT 1.6 hat“ unless the proof names it), else the soft off. "unread": no command offered. */
+export function offKind(mode: "full" | "power", cutoff: boolean, patch: PackPatch | null | undefined, g0: number | undefined): "cutoff" | "cutoffMaybe" | "soft" | "unread" {
+  if (mode === "power" && !cutoff) return "soft";
+  if (g0 === undefined) return "unread";
+  if ((g0 & CUTOFF_BIT) !== 0) return "soft";
+  return mode === "power" || patch?.caps.pack_cutoff === true ? "cutoff" : "cutoffMaybe";
 }
 
 /** What the fresh Group0 (`g0`, undefined: the 0x47 after the action failed) and status say about the pack cutoff after
@@ -55,12 +56,9 @@ export function cutoffOutcome(on: boolean, g0: number | undefined, s: Status | n
   return locked ? "locked" : (g0 & CUTOFF_BIT) === 0 ? "notLocked" : null;
 }
 
-/** What „Aus“ hands the backend from the confirmation: the extended off it was shown with (`expect`, from the fresh
- *  Group0 read before; none without that read or for a soft off without the cutoff) and whether it named the stored
- *  cutoff. The backend compares `expect` right before sending. */
-export function offExpect(kind: "cutoff" | "cutoffMaybe" | "soft", aware: boolean, g0: number | undefined): { expect?: boolean; lockConfirmed: boolean } {
-  return { expect: aware && g0 !== undefined ? (g0 & CUTOFF_BIT) === 0 : undefined, lockConfirmed: kind !== "soft" };
-}
+/** What „Aus“ hands the backend: the extended off (bit 4 at 0) its confirmation was shown with; the backend compares it
+ *  with a fresh 0x47 right before sending (`cutoff-changed`). */
+export const offExpect = (g0: number | undefined): { expect?: boolean } => (g0 === undefined ? {} : { expect: (g0 & CUTOFF_BIT) === 0 });
 
 /** The result line of „Aus“ where the pack may store a cutoff (`maybe`: RS485-1/2, only if it has MAINT 1.6): locked
  *  (never „Laden möglich“), Group0 not readable afterwards (the charge path unclear), or null for the usual soft-off
@@ -71,13 +69,17 @@ export function offCutoffText(cut: ReturnType<typeof cutoffOutcome>, maybe: bool
   return null;
 }
 
-/** The lock line of the state: with the proven cutoff „aktiv“ or „keine“; on RS485-1/2 with a proof only a set bit 5,
- *  as „aktiv, falls MAINT 1.6“; else nothing. */
-export function lockState(cutoff: boolean, proof: boolean, g0: number | undefined): "active" | "none" | "maybeActive" | null {
+/** Whether „Steuern“ shows the pack as off (the button offers „Ein“): the fresh status, or a lock this connection proved
+ *  („active“); a possible lock (`maybeActive`) never. */
+export const shownOff = (s: Status | null, lock: ReturnType<typeof lockState>) => (s ? commandedOff(s) : false) || lock === "active";
+
+/** The lock line of the state: with the proven cutoff „aktiv“ or „keine“; on RS485-1/2 (`maybe`) only a set bit 5, as
+ *  „aktiv, falls MAINT 1.6“, an uncertainty that never drives the buttons; else nothing. */
+export function lockState(cutoff: boolean, maybe: boolean, g0: number | undefined): "active" | "none" | "maybeActive" | null {
   if (g0 === undefined) return null;
   const locked = (g0 & LOCK_BIT) === 0;
   if (cutoff) return locked ? "active" : "none";
-  return proof && locked ? "maybeActive" : null;
+  return maybe && locked ? "maybeActive" : null;
 }
 
 /** Reasons the firmware switches a pack off again right after „on“: cell or pack undervoltage, SOC protection. */
@@ -159,7 +161,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
-  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "cutoff-failed" | "cutoff-changed" | "cutoff-unread";
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;
@@ -169,10 +171,22 @@ export function uart1Error(e: unknown): Uart1Error | null {
   return o.kind === "uart1" && typeof o.error === "string" ? (v as Uart1Error) : null;
 }
 
+/** An ein/aus of RS485-1/2 refused before sending or failed at the cutoff store (backend `switch_refusal`). */
+export function switchError(e: unknown): { error: "cutoff-changed" | "cutoff-unread" | "cutoff-off-failed" | "cutoff-on-failed" } | null {
+  let v: unknown = e;
+  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  if (!v || typeof v !== "object") return null;
+  const o = v as { kind?: unknown; error?: unknown };
+  return o.kind === "switch" && typeof o.error === "string" ? (v as { error: "cutoff-changed" }) : null;
+}
+
+/** The error name of an ein/aus refusal on either port (CAN socket `uart1`, RS485-1/2 `switch`). */
+export const cutoffError = (e: unknown): string | undefined => uart1Error(e)?.error ?? switchError(e)?.error;
+
 /** The text of a failed write: a bank refusal as it is (it says that nothing was written), any other error through
  *  `wrap` (e.g. „Nicht geschrieben: …“). */
 export const writeError = (e: unknown, t: (k: string, o?: Record<string, unknown>) => string, wrap: (err: string) => string) =>
-  bankRefusal(e) || uart1Error(e) ? errorText(e, t) : wrap(errorText(e, t));
+  bankRefusal(e) || uart1Error(e) || switchError(e) ? errorText(e, t) : wrap(errorText(e, t));
 
 /** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, the texts for a silent pack, a
  *  changed connection and a bank refusal, else as it came. */
@@ -182,6 +196,9 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   const u = uart1Error(e);
   // RTN 05 from the pack itself (locked meanwhile, or data it does not take) reads apart from the app's own refusal
   if (u) return t(`uart1.${u.error === "power-locked" && u.code !== undefined ? "power-refused" : u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0") });
+  // the same texts on both ports
+  const sw = switchError(e);
+  if (sw) return t(`uart1.${sw.error}`);
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
   const b = packBusy(e);

@@ -465,8 +465,8 @@ const tauriApi = {
    *  clock service (identity and lock bit instead of the 0x51 before) */
   packRestart: (address: number) => written(address, invoke<{ value: RestartResult; unchecked: boolean }>("pack_restart", { address, installation: chosen })),
   /** `expect`: for off, the extended off (Group0 bit 4 at 0) the confirmation showed; the backend compares it with a fresh
-   *  0x47 right before sending (`cutoff-changed`); `lockConfirmed`: the confirmation named the stored pack cutoff */
-  packOnOff: (address: number, on: boolean, expect?: boolean, lockConfirmed?: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen, expect: expect ?? null, lockConfirmed: lockConfirmed ?? false })),
+   *  0x47 right before sending (`cutoff-changed`); RS485-1/2 sends no off without it */
+  packOnOff: (address: number, on: boolean, expect?: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen, expect: expect ?? null })),
   packHeater: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_heater", { address, on, installation: chosen })),
   /** history, energy counters and cycle count to 0; not reversible */
   packClearHistory: (address: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_clear_history", { address, installation: chosen })),
