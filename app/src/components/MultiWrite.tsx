@@ -127,7 +127,7 @@ function OutcomeText({ out }: { out?: Outcome }) {
   if (!out) return null;
   switch (out.kind) {
     case "written": return <>{t(out.unanswered ? "pw.multi.res.writtenUnanswered" : "pw.multi.res.written")}</>;
-    case "unclear": return <>{t("pw.multi.res.unclear", { err: out.error })}</>;
+    case "unclear": return <>{t("pw.multi.res.unclear", { err: errorText(out.error, t) })}</>;
     case "notTaken": return <>{t("pw.multi.res.notTaken", { list: [...out.params.map((i) => `P${i}`), ...out.switches.map((g) => t("pw.multi.switchByte", { g }))].join(", ") })}</>;
     case "unread": return <>{t("pw.multi.res.unread", { err: out.error })}</>;
     case "refused": return <>{t(out.refusal === "refused" ? "pw.multi.res.refused" : "pw.multi.res.invalid")}</>;

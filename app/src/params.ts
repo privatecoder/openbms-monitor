@@ -107,6 +107,8 @@ export interface Source {
   read?: Parameters;
   /** pack columns: the link (`linkNow()`) the read belongs to; only columns of the current one are write targets */
   link?: string;
+  /** pack columns read over the CAN socket's parameter service (MAINT 1.2): nothing of it is stored */
+  path?: "uart1";
   /** last write of this pack at this installation (ms) and the parameters it replaced */
   lastWritten?: number | null;
   previous?: Parameters | null;

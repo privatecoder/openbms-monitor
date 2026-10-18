@@ -34,6 +34,18 @@ describe("result of one pack", () => {
     expect(needsPause(same)).toBe(false);
     expect(needsPause(outcomeOf({ kind: "refused", refusal: "invalid", stored: block(2631, [0, 0, 0, 0, 0, 0, 0, 0]) }, raws(2731), SW))).toBe(false);
   });
+  it("the CAN socket's E2 makes no switch live: no pause", () => {
+    const r = outcomeOf({ kind: "refused", refusal: "refused", stored: block(2631, [0, 0, 0, 0, 0, 0, 0, 0]), switches_live: false }, raws(2731), [3, 0, 0, 0, 0, 0, 0, 0]);
+    expect(r).toEqual({ kind: "refused", refusal: "refused", live: 0 });
+    expect(needsPause(r)).toBe(false);
+  });
+  it("an acknowledged CAN socket write whose read-back differs stays unclear and stops the series", async () => {
+    const r = outcomeOf({ kind: "unclear", error: '{"kind":"uart1","error":"readback"}', read_back: block(2631, SW), before: block(2531, SW) }, raws(2731), SW);
+    expect(r.kind).toBe("unclear");
+    const seen: number[] = [];
+    const end = await runSeries([1, 2], { link: () => "l", cancelled: () => false, write: async (a) => { seen.push(a); return r; }, pause: async () => true, report: () => {} });
+    expect([end, seen]).toEqual(["unclear", [1]]);
+  });
   it("errors: bank and busy skipped, silent not reached, link change cancels", () => {
     const bank = JSON.stringify({ kind: "bank", state: "unconfirmed", address: 3, why: "new" });
     expect(failure(bank)).toEqual({ kind: "skipped", why: "bank", error: bank });
