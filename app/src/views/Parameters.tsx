@@ -24,7 +24,8 @@ import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
 import { gateBits, gateRowLabel, getProfile, selfLock, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
-import { controlMode, powerLocked, powerRtc } from "../power";
+import { controlHint, controlMode, powerLocked, powerRtc } from "../power";
+import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -531,6 +532,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} linkKey={link} />
+        {chosen !== null && controlHint({ connected, bus, demo: isDemo, installation: !!installation, power: powerOf(chosen) }) && (
+          <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
+        )}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}

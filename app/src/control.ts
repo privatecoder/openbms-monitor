@@ -27,6 +27,13 @@ export const blockingAlarms = (s: Status, dir: "discharge" | "charge") => {
   return s.alarms.map((a) => a.id).filter((id) => ids.includes(id));
 };
 
+/** What the fresh read after an acknowledged „off“ shows: off (command bit set and discharging blocked), back on
+ *  (charging current lifts „off“ again), or anything else (unclear). Only "off" is reported as done. */
+export function offOutcome(s: Status): "off" | "on" | "unclear" {
+  if (!commandedOff(s)) return "on";
+  return dischargeFree(s) ? "unclear" : "off";
+}
+
 /** Reasons the firmware switches a pack off again right after „on“: cell or pack undervoltage, SOC protection. */
 const OFF_REASONS = ["alarm.ev2.b3", "alarm.ev2.b7", "alarm.ev6.b3"];
 export const offReasons = (s: Status) => s.alarms.map((a) => a.id).filter((id) => OFF_REASONS.includes(id));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -106,5 +106,20 @@ describe("CAN socket identity (MAINT 1.3)", () => {
       expect(text).toBe(t(`bank.refused.${why}`, { pack: "02" }));
       expect(text).toContain("02");
     }
+  });
+});
+
+describe("„Aus“ after its acknowledgement", () => {
+  it("is done only when the fresh read shows off and discharging blocked", () => {
+    expect(offOutcome(status(0x20, 0x02))).toBe("off");
+    // charging current lifted „off“ meanwhile
+    expect(offOutcome(status(0x00, 0x03))).toBe("on");
+    expect(offOutcome(status(0x00, 0x02))).toBe("on");
+    // the bit set, but the discharge MOSFET still on
+    expect(offOutcome(status(0x20, 0x03))).toBe("unclear");
+    for (const lng of ["de", "en"]) for (const k of ["ctl.onOff.offBackOn", "ctl.onOff.offUnclear", "ctl.tip.offMaster", "ctl.canUnsupported"]) expect(i18n.exists(k, { lng })).toBe(true);
+    // the master's texts promise no blocked bank and no other packs staying on
+    expect(i18n.t("ctl.off.masterText", { lng: "de", pack: "00" })).not.toMatch(/ganze Bank|bleiben an/);
+    expect(i18n.t("ctl.tip.offMaster", { lng: "en" })).not.toMatch(/whole bank|stay on/);
   });
 });

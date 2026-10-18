@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MasterView, PackProbeView, ProfileView } from "./api";
-import { clockAccess, clockTargets, controlMode, masterBroadcast, powerLocked, powerRtc } from "./power";
+import { clockAccess, clockTargets, controlHint, controlMode, masterBroadcast, powerLocked, powerRtc } from "./power";
 
 const caps = (power_rtc: boolean | null) => ({ status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, power_rtc });
 const master = (m: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "0011223344556677",
@@ -64,6 +64,14 @@ describe("power and clock over the CAN socket", () => {
     expect(clockAccess({ ...where, bus: "pack", power: false, locked: true })).toEqual({ read: true, write: true, unsupported: false });
     expect(clockAccess({ ...where, bus: "pack", installation: false, power: false, locked: null })).toEqual({ read: true, write: false, unsupported: false });
     expect(clockAccess({ ...where, connected: false, power: true, locked: false }).read).toBe(false);
+  });
+
+  it("names the way over RS485-1/2 instead of hiding „Steuern“ for a pack without the service", () => {
+    expect(controlHint({ ...where, power: false })).toBe(true);
+    expect(controlHint({ ...where, power: true })).toBe(false);
+    expect(controlHint({ ...where, bus: "pack", power: false })).toBe(false);
+    expect(controlHint({ ...where, demo: true, power: false })).toBe(false);
+    expect(controlHint({ ...where, connected: false, power: false })).toBe(false);
   });
 
   it("skips and names the packs without the flag when setting all clocks", () => {
