@@ -234,6 +234,8 @@ const resources = {
           notLoaded: "Hinweise zur Wartung konnten nicht geladen werden; angezeigt ist der letzte bekannte Stand.",
           marker: "{{name}}: Wartungsmodus aktiv: Master fragt keine Slaves ab (seit {{since}})",
           markerHint: "Der Master meldet dem Wechselrichter nur sein eigenes Pack. Nach der Wartung „Master freigeben“.",
+          markerLatent: "{{name}}: Wartungsmarker latent – unter dem aktuellen Image nicht prüfbar (zuletzt an seit {{since}})",
+          markerLatentHint: "Das jetzige Image kennt 0x64 nicht und ignoriert den Marker. Ein späteres Patch-Image startet mit ihm ohne Slave-Abfrage; dann „Master freigeben“.",
           pending: "Pack {{pack}} an {{endpoint}}: Update abgebrochen, Pack hängt eventuell im Bootloader (seit {{since}})",
           pendingHint: "Bis Pack {{pack}} wieder antwortet, flasht die App an diesem Anschluss kein anderes Pack: Bootloader-Rahmen tragen keine Adresse, ein Pack im Bootloader würde mitbeschrieben. Neu flashen eines Packs im Bootloader geht in der App noch nicht.",
           pendingConfirm: "Pack {{pack}} ist abgeklemmt oder repariert", pendingYes: "Ja, Pack {{pack}} ist abgeklemmt oder repariert",
@@ -287,6 +289,7 @@ const resources = {
         },
       },
       fw: {
+        markerLatent: "Der Wartungsmarker des Masters war zuletzt an, und das jetzige Image kennt 0x64 nicht: Der Marker steckt noch im Flash, ist unter diesem Image aber nicht prüfbar. Ein Patch-Image startet mit diesem alten Marker und fragt dann keine Slaves ab. Nach dem Flash über die CAN-Buchse „Master freigeben“ (mit der DIP-Slavezahl).",
         markerUnchecked: "Der Wartungsmarker des Masters ließ sich vor dem Flashen nicht frisch lesen (keine CAN-Buchse eingerichtet oder keine Antwort). Zuletzt war er nicht an; ist er doch gesetzt, nach dem Update „Master freigeben“ prüfen.",
         patch: {
           title: "Patch-Firmware {{release}}: vor dem Flashen",
@@ -1112,6 +1115,8 @@ const resources = {
           notLoaded: "Maintenance notes could not be loaded; the last known state is shown.",
           marker: "{{name}}: maintenance mode active: the master polls no slaves (since {{since}})",
           markerHint: "The master reports only its own pack to the inverter. After maintenance: “Release master”.",
+          markerLatent: "{{name}}: maintenance marker latent – cannot be checked under the current image (last seen on since {{since}})",
+          markerLatentHint: "The current image does not know 0x64 and ignores the marker. A later patched image starts with it without polling slaves; then “Release master”.",
           pending: "Pack {{pack}} on {{endpoint}}: update interrupted, the pack may hang in its bootloader (since {{since}})",
           pendingHint: "Until pack {{pack}} answers again, the app flashes no other pack on this port: bootloader frames carry no address, a pack in its bootloader would be written along. Flashing a pack that hangs in its bootloader is not possible in the app yet.",
           pendingConfirm: "Pack {{pack}} is disconnected or repaired", pendingYes: "Yes, pack {{pack}} is disconnected or repaired",
@@ -1165,6 +1170,7 @@ const resources = {
         },
       },
       fw: {
+        markerLatent: "The master's maintenance marker was last seen on, and the current image does not know 0x64: the marker is still in flash but cannot be checked under this image. A patched image starts with this old marker and then polls no slaves. After the flash use “Release master” via the CAN socket (with the DIP slave count).",
         markerUnchecked: "The master's maintenance marker could not be read freshly before flashing (no CAN socket set up or no answer). It was last seen not on; if it is set after all, check “Release master” after the update.",
         patch: {
           title: "Patched firmware {{release}}: before flashing",

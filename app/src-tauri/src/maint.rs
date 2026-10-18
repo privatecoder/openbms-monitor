@@ -335,9 +335,10 @@ pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, Main
     Ok(m)
 }
 
-/// What a master read says about the stored marker: a valid `02` of a patched master sets (on) or clears (off) it; a
-/// master that does not know 0x64 clears it (its firmware ignores the marker, there is nothing to release); a missing or
-/// foreign state, or an unknown patch, leaves it as it was (None).
+/// What a master read says about the stored marker: only a valid `02` of a patched master sets (on) or clears (off) it.
+/// A master without 0x64 (RTN 04) proves only that its current image ignores the marker word, which stays in its own
+/// flash sector: a marker kept on stays, latent under that image. A missing or foreign state, or an unknown patch, leaves
+/// it as it was too (None).
 pub fn marker_update(m: &Master) -> Option<bool> {
     match m {
         Master::Patched { .. } => match m.marker()? {
@@ -345,8 +346,7 @@ pub fn marker_update(m: &Master) -> Option<bool> {
             MarkerWord::Off => Some(false),
             MarkerWord::Foreign(_) => None,
         },
-        Master::No0x64 => Some(false),
-        Master::UnknownPatch(_) | Master::Unknown => None,
+        Master::No0x64 | Master::UnknownPatch(_) | Master::Unknown => None,
     }
 }
 
@@ -1164,6 +1164,8 @@ mod tests {
         assert_eq!((marker_update(&on), marker_update(&off), marker_update(&lost)), (Some(true), Some(false), None));
         assert_eq!(marker_update(&patched(Some(MaintState { marker_word: 7, effective_slaves: 0 }))), None);
         assert_eq!(marker_update(&Master::UnknownPatch(None)), None);
+        // RTN 04: the current image does not know 0x64; the marker word stays in flash
+        assert_eq!(marker_update(&Master::No0x64), None);
         let s = store_at("marker-keep");
         let a = s.create_installation("A", None, vec![]).unwrap();
         s.set_master_read(&a.id, "{}", true, 1).unwrap();
@@ -1171,6 +1173,11 @@ mod tests {
         s.set_master_read_keep_marker(&a.id, "{\"state\":null}", 2).unwrap();
         assert!(s.marker_last_on(&a.id).unwrap());
         assert_eq!(crate::firmware::master_marker_check(0, openbms_flash::known::ImageKind::Original, Some(&lost), s.marker_last_on(&a.id).unwrap()), Err("release-master-first-unread"));
+        // an image without 0x64 afterwards (flashed outside the app): still on, now latent
+        let data = serde_json::to_string(&master_view(&Master::No0x64)).unwrap();
+        s.set_master_read_keep_marker(&a.id, &data, 3).unwrap();
+        assert!(s.marker_last_on(&a.id).unwrap());
+        assert!(s.markers_on().unwrap()[0].latent);
         // only a valid off clears it
         s.set_master_read(&a.id, "{}", marker_update(&off).unwrap(), 3).unwrap();
         assert!(!s.marker_last_on(&a.id).unwrap());

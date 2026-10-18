@@ -173,7 +173,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
-      {image?.kind === "maintenance" && <PatchImageNotes inst={inst?.id ?? null} port={mPort} start={address} release={image.release} locked={inputsLocked} />}
+      {image?.kind === "maintenance" && <PatchImageNotes inst={inst?.id ?? null} port={mPort} start={address} release={image.release} locked={inputsLocked}
+        latent={!!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
     </div>
   );
 
@@ -248,6 +249,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
           {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
           {flashed?.marker === "unchecked" && <p className="text-sm text-discharge">{t("fw.markerUnchecked")}</p>}
+          {flashed?.marker === "latent" && <p className="text-sm text-alarm">{t("fw.markerLatent")}</p>}
           {running && (
             <>
               <p>{progress ? t(`fw.stage.${progress.stage}`, { n: (progress.block ?? 0) + 1, total: progress.total ?? 0 }) : t("fw.stage.preflight")}</p>
@@ -286,7 +288,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
 /** Before flashing an image with the patch functions: the update way, and the target's release bits, which the flash
  *  takes over unchanged (a fresh read on the pack bus, else the last stored block with its age, not checked). */
-function PatchImageNotes({ inst, port, start, release, locked }: { inst: string | null; port: string; start: number; release: string; locked: boolean }) {
+function PatchImageNotes({ inst, port, start, release, locked, latent }: { inst: string | null; port: string; start: number; release: string; locked: boolean; latent: boolean }) {
   const { t, i18n } = useTranslation();
   const [address, setAddress] = useState(start);
   const [fresh, setFresh] = useState<number | null | undefined>(undefined);
@@ -313,6 +315,7 @@ function PatchImageNotes({ inst, port, start, release, locked }: { inst: string 
     <div className="space-y-1 rounded-md border border-line p-3 text-sm">
       <p className="flex items-center gap-1 font-medium">{t("fw.patch.title", { release })}<InfoIcon id="topic.patchGates" /></p>
       <p className="text-muted">{t("fw.patch.update")}</p>
+      {latent && <p className="text-alarm">{t("fw.markerLatent")}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2 text-muted">{t("fw.address")}
           <input type="number" min={0} max={15} value={address} disabled={locked} onChange={(e) => setAddress(Math.max(0, Math.min(15, Number(e.target.value) || 0)))}

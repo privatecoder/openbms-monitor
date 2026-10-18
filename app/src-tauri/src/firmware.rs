@@ -59,7 +59,8 @@ struct FirmwareDone {
 pub struct FlashStarted {
     bank: &'static str,
     /// address 0: "checked" (a fresh control channel read decided C'), "unchecked" (no fresh read; the marker last seen
-    /// was not on, the flash goes on with that hint); None for another address
+    /// was not on, the flash goes on with that hint), "latent" (the current image has no 0x64 and the marker was last
+    /// seen on: the patched image starts with it); None for another address
     #[serde(skip_serializing_if = "Option::is_none")]
     marker: Option<&'static str>,
 }
@@ -78,7 +79,10 @@ pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&
     match (fresh, marker) {
         (Some(m), Some(MarkerWord::On)) if policy::release_first(m, image) => Err("release-master-first"),
         (Some(_), Some(MarkerWord::On | MarkerWord::Off)) => Ok(Some("checked")),
-        (Some(Master::No0x64), _) => Ok(Some("checked")),
+        // the current image ignores the marker: a marker kept on is latent. A patched image would start with it (no slave
+        // polling): said explicitly; another image without 0x64 goes on unchecked
+        (Some(Master::No0x64), _) if last_on && image == known::ImageKind::Maintenance => Ok(Some("latent")),
+        (Some(Master::No0x64), _) => Ok(Some("unchecked")),
         _ if image != known::ImageKind::Maintenance && last_on => Err("release-master-first-unread"),
         _ => Ok(Some("unchecked")),
     }
@@ -490,7 +494,6 @@ mod tests {
         assert_eq!(master_marker_check(0, orig, Some(&on), false), Err("release-master-first"));
         assert_eq!(master_marker_check(0, maint, Some(&on), true), Ok(Some("checked")));
         assert_eq!(master_marker_check(0, orig, Some(&off), true), Ok(Some("checked")));
-        assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), false), Ok(Some("checked")));
         // no control channel or no answer: the marker last seen on refuses, else the flash goes on marked unchecked
         for fresh in [None, Some(&Master::Unknown)] {
             assert_eq!(master_marker_check(0, orig, fresh, true), Err("release-master-first-unread"));
@@ -498,6 +501,10 @@ mod tests {
             assert_eq!(master_marker_check(0, orig, fresh, false), Ok(Some("unchecked")));
             assert_eq!(master_marker_check(0, maint, fresh, true), Ok(Some("unchecked")));
         }
+        // RTN 04 with a marker kept on: latent; a patched image says so, original to original goes on unchecked
+        assert_eq!(master_marker_check(0, maint, Some(&Master::No0x64), true), Ok(Some("latent")));
+        assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), true), Ok(Some("unchecked")));
+        assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), false), Ok(Some("unchecked")));
         // another address: no marker question
         assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
     }

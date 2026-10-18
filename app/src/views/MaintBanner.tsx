@@ -63,8 +63,8 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
         <div key={m.installation} role="status" className="flex items-start gap-3 rounded-md border border-discharge p-3 text-sm">
           <Wrench className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="flex-1 space-y-1">
-            <p className="font-medium">{t("maint.banner.marker", { name: m.name, since: when(m.at) })}</p>
-            <p className="text-muted">{t("maint.banner.markerHint")}</p>
+            <p className="font-medium">{t(m.latent ? "maint.banner.markerLatent" : "maint.banner.marker", { name: m.name, since: when(m.at) })}</p>
+            <p className="text-muted">{t(m.latent ? "maint.banner.markerLatentHint" : "maint.banner.markerHint")}</p>
             {err(`m${m.installation}`)}
           </div>
           <div className="flex shrink-0 gap-2">
