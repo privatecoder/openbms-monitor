@@ -179,6 +179,10 @@ PARAMS.update({
 # Function switches: switch.<group>.<bit>. Groups 1-5 enable the messages of events 2-6; a bit at 0 switches the
 # message and its reaction off completely. Bits without an entry have no function.
 SWITCHES = {
+"switch.0.0": ("Schreiben über die CAN-Buchse erlauben", "Patch-Firmware: 1 erlaubt das Schreiben der Parameter über die CAN-Buchse, 0 sperrt es. Entsperren nur über RS485-1/2 oder am Display.",
+ "Allow writing via the CAN socket", "Patched firmware: 1 allows writing the parameters via the CAN socket, 0 locks it. Unlock only via RS485-1/2 or on the display."),
+"switch.0.2": ("Wartungsstart über die CAN-Buchse erlauben", "Patch-Firmware: 1 erlaubt „Master anhalten“ über die CAN-Buchse, 0 verweigert es; freigeben geht immer. Ändern nur über RS485-1/2 oder am Display.",
+ "Allow maintenance start via the CAN socket", "Patched firmware: 1 allows “Halt master” via the CAN socket, 0 refuses it; releasing always works. Change only via RS485-1/2 or on the display."),
 "switch.0.1": ("Prüfung der Temperaturfühler", "Fühler unter −45 °C, ab 100 °C oder mit 20 K Spreizung melden einen Fühlerfehler; die Heizung schaltet dann aus.",
  "Temperature sensor check", "Sensors below −45 °C, from 100 °C or 20 K apart report a sensor fault; heating then switches off."),
 }
