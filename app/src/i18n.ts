@@ -148,6 +148,13 @@ const resources = {
         otherBoard: "Andere Platine an Adresse {{pack}} (Seriennummer {{serial}}, vorher {{previous}})? Parameterstände der vorherigen Platine zeigt die App nicht mehr als aktuellen Stand.",
         dismiss: "Ausblenden",
       },
+      probe: {
+        pending: "Firmwarekennung: noch ungeprüft",
+        proven: "Firmwarekennung: {{version}} (Build {{build}})",
+        negative: "Firmwarekennung: {{version}}, ohne Patch-Funktionen",
+        undecided: "Firmwarekennung: keine Antwort auf 64/03 (ältere oder Original-Firmware möglich)",
+        recheck: "Erneut prüfen",
+      },
       profile: {
         unlisted: "MAINT {{patch}} (Basis {{base}}, Build nicht gelistet)",
         markerOn: "Wartung an", markerOff: "Wartung aus", markerForeign: "Marker ungeklärt ({{word}})", markerUnread: "Wartungszustand nicht gelesen",
@@ -499,10 +506,11 @@ const resources = {
         uart1Col: "CAN", uart1ColHint: "Über die CAN-Buchse gelesen (Patch-Firmware). Gespeichert und beschreibbar nur, wenn das Pack seine Platine ausweist.",
         gateUnnamed: "Bit 0.{{b}}: Bedeutung erst mit belegter Patch-Firmware", gateNeutral: "Bit 0.{{b}}",
         gateUnproven: "Die Patch-Version dieses Packs ist nicht belegt: Das Bit wird nicht gedeutet und beim Schreiben über die CAN-Buchse so belassen, wie es im Pack steht.",
+        gateStartMasterOnly: "Wartungsstart-Freigabe (wirkt nur am Master 0); hier nur gespeichert",
         gateStartFixed: "Die Wartungsstart-Freigabe lässt sich über die CAN-Buchse nicht ändern (das Pack würde das ganze Schreiben ablehnen); nur über RS485-1/2 oder am Display.",
         writeLocked: "Schreiben gesperrt", writeLockedHint: "Die Schreibfreigabe über die CAN-Buchse (Funktionsschalter 0, Bit 0) ist aus: Das Pack nimmt dort nichts an. Entsperren nur über RS485-1/2 oder am Display.",
         patch: {
-          source: { master: "Belegt durch die Firmwarekennung des Masters auf dieser Verbindung", flash: "Belegt: von der App mit diesem Image geflasht (an die BMS-Seriennummer gebunden)", user: "Belegt durch deine Bestätigung (an die BMS-Seriennummer gebunden)" },
+          source: { live: "Belegt durch die eigene Firmwarekennung des Packs (64/03) auf dieser Verbindung; nicht zurücknehmbar", master: "Belegt durch die Firmwarekennung des Masters auf dieser Verbindung", flash: "Belegt: von der App mit diesem Image geflasht (an die BMS-Seriennummer gebunden)", user: "Belegt durch deine Bestätigung (an die BMS-Seriennummer gebunden)" },
           revoke: "zurücknehmen", confirm: "Patch-Firmware bestätigen",
           confirmHint: "Dieses Pack läuft mit Patch-Firmware (mindestens die unterstützte Version): Dann benennt die App die Freigabebits und wertet sie aus. Gebunden an die BMS-Seriennummer, die das Pack jetzt meldet. Ein späteres Flashen außerhalb der App kann die App nicht sehen: dann den Beleg zurücknehmen.",
         },
@@ -1033,6 +1041,13 @@ const resources = {
         otherBoard: "Another board at address {{pack}} (serial number {{serial}}, before {{previous}})? The app no longer shows the previous board's parameter states as the current state.",
         dismiss: "Dismiss",
       },
+      probe: {
+        pending: "Firmware identity: not checked yet",
+        proven: "Firmware identity: {{version}} (build {{build}})",
+        negative: "Firmware identity: {{version}}, without patch functions",
+        undecided: "Firmware identity: no answer to 64/03 (older or original firmware possible)",
+        recheck: "Check again",
+      },
       profile: {
         unlisted: "MAINT {{patch}} (base {{base}}, build not listed)",
         markerOn: "maintenance on", markerOff: "maintenance off", markerForeign: "marker unclear ({{word}})", markerUnread: "maintenance state not read",
@@ -1384,10 +1399,11 @@ const resources = {
         uart1Col: "CAN", uart1ColHint: "Read via the CAN socket (patched firmware). Stored and writable only when the pack identifies its board.",
         gateUnnamed: "Bit 0.{{b}}: meaning only with proven patched firmware", gateNeutral: "Bit 0.{{b}}",
         gateUnproven: "This pack's patch version is not proven: the bit is not interpreted and a write via the CAN socket keeps it as the pack has it.",
+        gateStartMasterOnly: "Maintenance start release (acts only at master 0); only stored here",
         gateStartFixed: "The maintenance start release cannot be changed via the CAN socket (the pack would refuse the whole write); only via RS485-1/2 or on the display.",
         writeLocked: "Writing locked", writeLockedHint: "The write release via the CAN socket (function switch 0, bit 0) is off: the pack takes nothing there. Unlock only via RS485-1/2 or on the display.",
         patch: {
-          source: { master: "Proven by the master's firmware identity on this connection", flash: "Proven: flashed by the app with this image (bound to the BMS serial number)", user: "Proven by your confirmation (bound to the BMS serial number)" },
+          source: { live: "Proven by the pack's own firmware identity (64/03) on this connection; not retractable", master: "Proven by the master's firmware identity on this connection", flash: "Proven: flashed by the app with this image (bound to the BMS serial number)", user: "Proven by your confirmation (bound to the BMS serial number)" },
           revoke: "take back", confirm: "Confirm patched firmware",
           confirmHint: "This pack runs patched firmware (at least the supported version): then the app names and evaluates the release bits. Bound to the BMS serial number the pack reports now. A later flash outside the app is invisible to the app: then take the proof back.",
         },

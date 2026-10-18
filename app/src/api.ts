@@ -301,7 +301,10 @@ export interface Gates { write: boolean | null; start: boolean | null }
 export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: MasterView; gates: Gates | null; gates_stale?: boolean; at: number }
 /** What proves a pack's patch version: the master's identity on this link, or a stored proof (after an app flash, or
  *  the user's confirmation) for the board with this String 2. */
-export interface PackPatch { source: "master" | "flash" | "user"; release: string; caps: PatchCaps; at: number | null }
+export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?: "master" | "pack"; release: string; caps: PatchCaps; at: number | null }
+/** A pack's own addressed 64/03 on this connection (pack view only, never the master profile): proven (patch ≥ 1.5),
+ *  negative (another MNT or an older patch), undecided (silence or an error). */
+export interface PackProbeView { address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "start-refused"; reason: string }
@@ -362,6 +365,10 @@ const tauriApi = {
   patchProofConfirm: (installation: string, address: number, serial: string, gen: number) => invoke<PackPatch>("patch_proof_confirm", { installation, address, serial, gen }),
   /** the hard-stop observations of the connection's installation for the boards now current */
   hardStops: () => invoke<HardStopSeen[]>("hard_stops"),
+  /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
+  packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
+  packProbes: () => invoke<PackProbeView[]>("pack_probes"),
+  onPackProbe: (f: (p: PackProbeView) => void) => listen<PackProbeView>("pack-probe", (e) => f(e.payload)),
   onHardStop: (f: (h: HardStopSeen) => void) => listen<HardStopSeen>("hard-stop", (e) => f(e.payload)),
   /** „Beleg zurücknehmen“ */
   patchProofRevoke: (installation: string, address: number) => invoke<void>("patch_proof_revoke", { installation, address }),
@@ -573,6 +580,9 @@ function demoApi(): typeof tauriApi {
     patchProofConfirm: async () => { throw new Error("desktop app only"); },
     patchProofRevoke: async () => { throw new Error("desktop app only"); },
     hardStops: async () => [],
+    packProbe: async () => { throw new Error("desktop app only"); },
+    packProbes: async () => [],
+    onPackProbe: async () => () => {},
     onHardStop: async () => () => {},
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     connectCancel: async () => {},
