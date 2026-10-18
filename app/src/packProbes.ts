@@ -30,6 +30,6 @@ type T = (key: string, params?: Record<string, unknown>) => string;
 export function packProbeLine(p: PackProbeView | undefined, t: T): string {
   if (!p) return t("probe.pending");
   if (p.state === "proven") return t("probe.proven", { version: p.listed ?? p.version ?? "", build: p.build_id ?? "" });
-  if (p.state === "negative") return t("probe.negative", { version: p.version ?? "MNT" });
+  if (p.state === "negative") return p.version ? t("probe.negative", { version: p.version }) : t("probe.unknownFormat");
   return t("probe.undecided");
 }
