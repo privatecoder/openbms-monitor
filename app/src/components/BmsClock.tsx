@@ -5,6 +5,7 @@ import { api, isDemo, linkNow, type BmsTime, type Bus } from "../api";
 import { bankRefusal, errorText, writeError } from "../control";
 import { CLOCK_OK_S, clockDiff, durationText, fmtBmsTime, fromBmsTime, toBmsTime, zoneLabel } from "../bmsMemory";
 import { cn } from "../lib/utils";
+import { clockAccess, clockTargets } from "../power";
 import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 import { useNow } from "./live";
@@ -48,18 +49,24 @@ export function usePackChoice(packs: number[]) {
   return [address, setAddress] as const;
 }
 
-/** The clock line of the parameters view: BMS time, PC time, difference, and setting it to the PC's local time. */
-export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy, canWrite = true }: {
+/** The clock line of the parameters view: BMS time, PC time, difference, and setting it to the PC's local time. Over the
+ *  CAN socket only for a pack with the power and clock service (`power.ts`). */
+export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy, installation = true, power, powerLock }: {
   connected: boolean; bus: Bus | null; packs: number[]; address: number | null; setAddress: (a: number) => void;
   /** false with „Nur ansehen“: the clock is read, not set */
-  canWrite?: boolean;
+  installation?: boolean;
+  /** CAN socket: the pack's image flag for the clock as this connection proved it, and its lock bit as last seen */
+  power?: (a: number) => boolean; powerLock?: (a: number) => boolean | null;
   /** another write (CAN protocol, calibration) runs: pack picker and clock buttons wait */
   locked?: boolean; onBusy?: (busy: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const now = useNow();
-  const usable = connected && (bus === "pack" || isDemo);
+  const can = bus === "can" && !isDemo;
+  const hasPower = (a: number) => power?.(a) ?? false;
+  const access = clockAccess({ connected, bus, demo: isDemo, installation, power: address !== null && hasPower(address), locked: address !== null ? powerLock?.(address) ?? null : null });
+  const usable = access.read;
   const { read, setRead, reload } = useBmsClock(address, usable);
   const [busy, setBusy] = useState<string | null>(null);
   useEffect(() => onBusy?.(busy !== null), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -86,9 +93,11 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
     // the series belongs to the installation and connection it began on: after a switch the rest is not set
     const link = linkNow();
     let set = 0;
-    for (const [n, a] of packs.entries()) {
+    // over the CAN socket a pack without the service is skipped and named, nothing is sent to it
+    const { targets, skipped } = clockTargets(packs, (a) => !can || hasPower(a));
+    for (const [n, a] of targets.entries()) {
       if (linkNow() !== link) break;
-      setBusy(t("clock.settingAll", { pack: no(a), n: n + 1, of: packs.length }));
+      setBusy(t("clock.settingAll", { pack: no(a), n: n + 1, of: targets.length }));
       try {
         const bms = await api.setBmsClock(a, toBmsTime(new Date()));
         set += 1;
@@ -96,10 +105,11 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
       } catch (e) { failed.push(no(a)); if (!bank && bankRefusal(e)) bank = e; }
     }
     setBusy(null);
-    if (linkNow() !== link) { setNote({ text: t("clock.setAllStopped", { ok: set, of: packs.length }), error: true }); return; }
-    const done = t("clock.setAllDone", { ok: packs.length - failed.length, of: packs.length });
+    if (linkNow() !== link) { setNote({ text: t("clock.setAllStopped", { ok: set, of: targets.length }), error: true }); return; }
+    const done = t("clock.setAllDone", { ok: targets.length - failed.length, of: targets.length });
     const why = bank ? ` ${errorText(bank, t)}` : "";
-    setNote({ text: failed.length ? `${done} ${t("clock.setAllFailed", { list: failed.join(", ") })}${why}` : done, error: failed.length > 0 });
+    const skip = skipped.length ? ` ${t("clock.setAllSkipped", { list: skipped.map(no).join(", ") })}` : "";
+    setNote({ text: `${failed.length ? `${done} ${t("clock.setAllFailed", { list: failed.join(", ") })}${why}` : done}${skip}`, error: failed.length > 0 });
   };
 
   const diff = readDiff(read);
@@ -124,19 +134,20 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
         )}
       </div>
       {!usable ? (
-        <StatusLine tone={bus === "can" && connected ? "warn" : "muted"}>{bus === "can" && connected ? t("clock.canBus") : t("clock.needConnection")}</StatusLine>
+        <StatusLine tone={access.unsupported ? "warn" : "muted"}>{access.unsupported ? t("clock.canBus") : t("clock.needConnection")}</StatusLine>
       ) : read === null ? (
         <StatusLine>{t("clock.reading")}</StatusLine>
       ) : "error" in read && (
         <StatusLine tone="error">{t("clock.readError", { err: read.error })}</StatusLine>
       )}
-      {usable && canWrite && address !== null && (
+      {usable && access.write && address !== null && (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={!!busy || locked} onClick={setOne} className="tabular-nums">{label}</Button>
           {packs.length > 1 && <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={setAll}>{t("clock.setAll")}</Button>}
         </div>
       )}
-      {usable && canWrite && address !== null && <StatusLine>{busy ?? t("clock.hint")}</StatusLine>}
+      {usable && access.write && address !== null && <StatusLine>{busy ?? (can ? `${t("clock.hint")} ${t("clock.canHint")}` : t("clock.hint"))}</StatusLine>}
+      {usable && installation && can && !access.write && <StatusLine tone="warn">{t("clock.locked")}</StatusLine>}
       {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}
     </div>
   );

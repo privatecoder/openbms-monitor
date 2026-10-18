@@ -5,6 +5,8 @@ import { api, type PackLive } from "../api";
 import { refusal } from "../calibration";
 import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
 import { helpTitle } from "../help";
+import { masterBroadcast } from "../power";
+import { getProfile } from "../profile";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
 import { SectionHead, StatusLine } from "./Section";
@@ -26,9 +28,13 @@ type Ask = { kind: "restart" | "off" } | { kind: "clear"; live: PackLive | null 
 const forced = new Map<string, number>();
 const HEATER_MS = 3600 * 1000;
 
-/** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack. */
-export function PackControlSection({ address, usable, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
+/** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack; over the
+ *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
+export function PackControlSection({ address, usable, mode = "full", powerLocked = null, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
+  mode?: "full" | "power";
+  /** CAN socket: Group0 bit 3 as last seen (true: locked, the buttons wait); null: not known, the backend reads it */
+  powerLocked?: boolean | null;
   /** after a restart: the pack's parameters column (if shown) is read again */
   onChanged?: (address: number) => void;
   /** P79 (SOC protection, %) from the pack's read or stored column; null: read once when the field is used */
@@ -82,12 +88,13 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   // general hint
   const p79 = p79Shown ?? p79Read;
   useEffect(() => {
-    if (!open || !usable || address === null || p79 !== null || !ah.trim() || p79Asked.current.has(address)) return;
+    if (!open || !usable || mode !== "full" || address === null || p79 !== null || !ah.trim() || p79Asked.current.has(address)) return;
     p79Asked.current.add(address);
     const a = address, lk = linkNow.current;
     api.parameters(a).then((p) => { if (same(a, lk)) setP79(p.parameters[P79]?.value ?? null); }, () => {});
-  }, [open, usable, address, ah, p79]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, usable, mode, address, ah, p79]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!usable || address === null) return null;
+  const can = mode === "power";
 
   const pack = no(address);
   const nf = (d: number) => new Intl.NumberFormat(lang, { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -110,11 +117,20 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
     finally { setBusy(null); }
   };
 
+  // after a restart over the CAN socket: the image (64/03; the master's profile) and String 2 are asked again, one after
+  // the other; what they find reaches the views through their events
+  const recheck = async (a: number) => {
+    const g = getProfile()?.gen;
+    if (g === undefined) return;
+    try { await (a === 0 ? api.firmwareProfileCheck(g) : api.packProbe(a, g)); } catch { /* shown as before */ }
+    try { await api.serialNumbers(a, true); } catch { /* the next read shows it */ }
+  };
+
   const restart = (a: number) => run("restart", a, async (lk) => {
     const r: RestartResult = await api.packRestart(a);
     if (!same(a, lk)) return null;
     await reload(a);
-    if (r.kind !== "not_reachable") { forced.delete(`${lk}|${a}`); if (same(a, lk)) onChanged?.(a); }
+    if (r.kind !== "not_reachable") { forced.delete(`${lk}|${a}`); if (same(a, lk)) onChanged?.(a); if (can) void recheck(a); }
     return r.kind === "back" ? { text: t("ctl.restart.back", { pack: no(a), s: nf(1).format(r.after_ms / 1000) }), tone: "ok" }
       : r.kind === "no_interruption" ? { text: t("ctl.restart.noInterruption"), tone: "warn" }
       : r.kind === "no_answer" ? { text: t("ctl.restart.noAnswer", { pack: no(a) }), tone: "error" }
@@ -127,13 +143,15 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
     // the output follows at the next 1-s evaluation of the BMS
     await wait(2000);
     const l = await reload(a);
-    if (!l) return { text: t("ctl.sentUnread"), tone: "warn" };
+    // the master's acknowledgement over the CAN socket covers only itself, not its broadcast to the slaves
+    const slaves = (n: NonNullable<Note>): Note => (masterBroadcast(mode, a) ? { text: `${n.text} ${t("ctl.onOff.slaves")}`, tone: n.tone } : n);
+    if (!l) return slaves({ text: t("ctl.sentUnread"), tone: "warn" });
     if (on && commandedOff(l.status)) {
       const why = offReasons(l.status);
-      return { text: t("ctl.onOff.offAgain", { reason: why.length ? names(why) : t("ctl.onOff.protection") }), tone: "error" };
+      return slaves({ text: t("ctl.onOff.offAgain", { reason: why.length ? names(why) : t("ctl.onOff.protection") }), tone: "error" });
     }
-    if (on) return dischargeFree(l.status) ? { text: t("ctl.onOff.onDone"), tone: "ok" } : { text: t("ctl.onOff.onBlocked"), tone: "warn" };
-    return { text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" };
+    if (on) return slaves(dischargeFree(l.status) ? { text: t("ctl.onOff.onDone"), tone: "ok" } : { text: t("ctl.onOff.onBlocked"), tone: "warn" });
+    return slaves({ text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" });
   });
 
   const heater = (a: number, on: boolean) => run("heater", a, async (lk) => {
@@ -190,6 +208,8 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
   const soc = raw !== null && full ? socOf(raw, full) : null;
   const under = soc !== null ? belowSocProtection(soc, p79) : null;
   const disabled = busy !== null || locked;
+  // over the CAN socket a lock seen in the last state holds restart and on/off back (Group0 bit 3)
+  const powerHeld = can && powerLocked === true;
   const yesNo = (free: boolean) => <span className={free ? "text-ok" : "text-discharge"}>{t(free ? "ctl.state.free" : "ctl.state.blocked")}</span>;
   const blockers = st && !dischargeFree(st) ? blockingAlarms(st, "discharge") : [];
   const chargeBlockers = st && !chargeFree(st) ? blockingAlarms(st, "charge") : [];
@@ -198,7 +218,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
 
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
-      <SectionHead icon={Power} title={t("ctl.title")} help="topic.control" open={open} onToggle={() => setOpen(!open)} closedHint={t("ctl.closed")}
+      <SectionHead icon={Power} title={t("ctl.title")} help="topic.control" open={open} onToggle={() => setOpen(!open)} closedHint={t(can ? "ctl.closedCan" : "ctl.closed")}
         onReload={open ? () => void reload(address) : undefined} reloading={reading} reloadDisabled={disabled} reloadLabel={t("ctl.reload")} readAt={readAt} />
       {open && (
         <div className="space-y-3">
@@ -216,38 +236,42 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={disabled} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
-            <Button size="sm" disabled={disabled || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))} title={t(off ? "ctl.tip.on" : "ctl.tip.off")}>
+            <Button size="sm" disabled={disabled || powerHeld} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
+            <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))} title={t(off ? "ctl.tip.on" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>
-            <Button size="sm" disabled={disabled} onClick={() => void heater(address, !heaterForced)} title={t(heaterForced ? "ctl.tip.heaterOff" : "ctl.tip.heaterOn")}>
-              {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
-            </Button>
-          </div>
-          {noteFor !== "remaining" && noteFor !== "clear" && noteLine}
-          <p className="max-w-3xl text-muted">{t("ctl.heater.hint")}</p>
-
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <label className="flex items-center gap-2">{t("ctl.remaining.field")}
-                <input className={input} inputMode="decimal" value={ah} onChange={(e) => setAh(e.target.value)} placeholder="0,00" disabled={disabled} />
-              </label>
-              {soc !== null && full !== undefined && <span className="tabular-nums">{t("ctl.remaining.soc", { soc: nf(0).format(soc), full: nf(2).format(full) })}</span>}
-              <Button size="sm" disabled={disabled || !remainingAllowed(raw, full)} onClick={() => raw !== null && void setRemaining(address, raw)} title={t("ctl.tip.remaining")}>
-                {busy === "remaining" ? t("ctl.running") : t("ctl.remaining.button")}
+            {!can && (
+              <Button size="sm" disabled={disabled} onClick={() => void heater(address, !heaterForced)} title={t(heaterForced ? "ctl.tip.heaterOff" : "ctl.tip.heaterOn")}>
+                {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
               </Button>
-              {raw !== null && full !== undefined && !remainingAllowed(raw, full) && <span className="text-discharge">{t("ctl.remaining.tooLarge")}</span>}
+            )}
+          </div>
+          {powerHeld && <StatusLine tone="warn">{t("ctl.powerLocked")}</StatusLine>}
+          {noteFor !== "remaining" && noteFor !== "clear" && noteLine}
+          <p className="max-w-3xl text-muted">{t(can ? "ctl.canHint" : "ctl.heater.hint")}</p>
+          {!can && <>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <label className="flex items-center gap-2">{t("ctl.remaining.field")}
+                  <input className={input} inputMode="decimal" value={ah} onChange={(e) => setAh(e.target.value)} placeholder="0,00" disabled={disabled} />
+                </label>
+                {soc !== null && full !== undefined && <span className="tabular-nums">{t("ctl.remaining.soc", { soc: nf(0).format(soc), full: nf(2).format(full) })}</span>}
+                <Button size="sm" disabled={disabled || !remainingAllowed(raw, full)} onClick={() => raw !== null && void setRemaining(address, raw)} title={t("ctl.tip.remaining")}>
+                  {busy === "remaining" ? t("ctl.running") : t("ctl.remaining.button")}
+                </Button>
+                {raw !== null && full !== undefined && !remainingAllowed(raw, full) && <span className="text-discharge">{t("ctl.remaining.tooLarge")}</span>}
+              </div>
+              {under === true && <StatusLine tone="warn">{t("ctl.remaining.under", { p: nf(0).format(p79!) })}</StatusLine>}
+              {under === null && soc !== null && <StatusLine>{t("ctl.remaining.underUnknown")}</StatusLine>}
+              {noteFor === "remaining" && noteLine}
+              <p className="max-w-3xl text-muted">{t("ctl.remaining.hint")}</p>
             </div>
-            {under === true && <StatusLine tone="warn">{t("ctl.remaining.under", { p: nf(0).format(p79!) })}</StatusLine>}
-            {under === null && soc !== null && <StatusLine>{t("ctl.remaining.underUnknown")}</StatusLine>}
-            {noteFor === "remaining" && noteLine}
-            <p className="max-w-3xl text-muted">{t("ctl.remaining.hint")}</p>
-          </div>
 
-          <div className="space-y-1">
-            <Button size="sm" className="text-alarm" disabled={disabled} onClick={() => void askClear(address)} title={t("ctl.tip.clear")}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
-            {noteFor === "clear" && noteLine}
-          </div>
+            <div className="space-y-1">
+              <Button size="sm" className="text-alarm" disabled={disabled} onClick={() => void askClear(address)} title={t("ctl.tip.clear")}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
+              {noteFor === "clear" && noteLine}
+            </div>
+          </>}
         </div>
       )}
       {ask && (
@@ -271,7 +295,7 @@ export function PackControlSection({ address, usable, locked, onBusy, onChanged,
                 : t("ctl.clear.whatUnread", { pack })}</p>
               <p>{t("ctl.clear.text")}</p>
             </>
-          ) : <p>{t(`ctl.${ask.kind}.text`, { pack })}</p>}
+          ) : <p>{t(ask.kind === "off" && masterBroadcast(mode, address) ? "ctl.off.masterText" : `ctl.${ask.kind}.text`, { pack })}</p>}
         </Confirm>
       )}
     </div>

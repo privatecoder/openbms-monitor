@@ -105,7 +105,8 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 }
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
-export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere";
+export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;
@@ -126,7 +127,8 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   const bank = bankRefusal(e);
   if (bank) return bankText(bank, t);
   const u = uart1Error(e);
-  if (u) return t(`uart1.${u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0") });
+  // RTN 05 from the pack itself (locked meanwhile, or data it does not take) reads apart from the app's own refusal
+  if (u) return t(`uart1.${u.error === "power-locked" && u.code !== undefined ? "power-refused" : u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0") });
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
   const b = packBusy(e);
