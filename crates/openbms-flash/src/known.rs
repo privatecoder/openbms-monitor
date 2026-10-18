@@ -137,6 +137,8 @@ pub struct PatchBuild {
     pub mnt_format: u8,
     /// format 3: the hard-stop patch is compiled in; None for a format-2 build (not reported)
     pub hard_stop: Option<bool>,
+    /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket with the lock Group0 bit 3
+    pub power_rtc: bool,
     /// the build ID of `0x64/03`, 16 lower-case hex digits
     pub build_id: &'static str,
     /// SHA-256 of the decoded application code (`ehex::Image::code_sha256`)
@@ -158,6 +160,7 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[PatchBuild {
     patch: [1, 5],
     mnt_format: 2,
     hard_stop: None,
+    power_rtc: false,
     build_id: "909a604e60e9225b",
     code_sha256: "5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12",
     ehex_sha256: "346959edab55e857c2ae8a47cb2f4a7a2be2b279024857ce83ed612304060ee1",
@@ -169,9 +172,23 @@ PatchBuild {
     patch: [1, 5],
     mnt_format: 3,
     hard_stop: Some(false),
+    power_rtc: false,
     build_id: "297f9f2aa8402e9f",
     code_sha256: "02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508",
     ehex_sha256: "31a6477f938bf2ac017deec3d0158f72039a3898d28686e428094946ae609fe0",
+},
+// MNT format 3 with image flags 02: ein/aus, restart and the clock over the CAN socket, lock Group0 bit 3; hard stop off
+// (55124 app bytes, 217 update blocks)
+PatchBuild {
+    name: "16.06.13 MAINT 1.5",
+    base: [16, 6, 13],
+    patch: [1, 5],
+    mnt_format: 3,
+    hard_stop: Some(false),
+    power_rtc: true,
+    build_id: "d75a7b24cb6e8590",
+    code_sha256: "58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a",
+    ehex_sha256: "9b8f7b1535a2491e883b61f8bd7566d074842aadcfdc3095d715f2d968e49052",
 }];
 
 /// The entry `0x64/03` describes in `table`: format, base, patch and build ID all match.
@@ -270,6 +287,17 @@ mod tests {
         assert_eq!(caps_of(2, [1, 4]), None, "1.4: format 2 without release bits");
         assert_eq!(caps_of(1, [1, 5]), None, "format 1");
         assert_eq!(PATCH_BUILDS[0].caps(), Some(full));
+    }
+
+    #[test]
+    fn the_power_rtc_build_is_listed_with_its_image_flag() {
+        let b = patch_build(3, [16, 6, 13], [1, 5], "d75a7b24cb6e8590").unwrap();
+        assert_eq!((b.name, b.hard_stop, b.power_rtc, b.caps()), ("16.06.13 MAINT 1.5", Some(false), true, caps_of(3, [1, 5])));
+        assert_eq!(patch_image("58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a"), Some("16.06.13 MAINT 1.5"));
+        assert_eq!(kind_of_hash("58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a").0, ImageKind::Maintenance);
+        // the earlier builds have no power and clock service
+        assert!(!patch_build(3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").unwrap().power_rtc);
+        assert!(!patch_build(2, [16, 6, 13], [1, 5], "909a604e60e9225b").unwrap().power_rtc);
     }
 
     #[test]

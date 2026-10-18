@@ -183,6 +183,8 @@ SWITCHES = {
  "Allow writing via the CAN socket", "Patched firmware: 1 allows writing the parameters via the CAN socket, 0 locks it. Unlock only via RS485-1/2 or on the display."),
 "switch.0.2": ("Wartungsstart über die CAN-Buchse erlauben", "Patch-Firmware: 1 erlaubt „Master anhalten“ über die CAN-Buchse, 0 verweigert es; freigeben geht immer. Ändern nur über RS485-1/2 oder am Display.",
  "Allow maintenance start via the CAN socket", "Patched firmware: 1 allows “Halt master” via the CAN socket, 0 refuses it; releasing always works. Change only via RS485-1/2 or on the display."),
+"switch.0.3": ("Ein/Aus, Neustart und Uhr stellen über die CAN-Buchse sperren", "Patch-Firmware mit Ein/Aus und Uhr über die CAN-Buchse: 1 sperrt Ein/Aus, Neustart und Uhr stellen dort gemeinsam, 0 erlaubt sie; Uhr lesen geht immer. Ändern nur über RS485-1/2 oder am Display.",
+ "Lock on/off, restart and setting the clock via the CAN socket", "Patched firmware with on/off and the clock via the CAN socket: 1 locks on/off, restart and setting the clock there together, 0 allows them; reading the clock always works. Change only via RS485-1/2 or on the display."),
 "switch.0.1": ("Prüfung der Temperaturfühler", "Fühler unter −45 °C, ab 100 °C oder mit 20 K Spreizung melden einen Fühlerfehler; die Heizung schaltet dann aus.",
  "Temperature sensor check", "Sensors below −45 °C, from 100 °C or 20 K apart report a sensor fault; heating then switches off."),
 }

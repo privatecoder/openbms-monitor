@@ -34,7 +34,9 @@ let keptLink = "";
 // refusals whose switches are still live, per site and address (see Refused); they outlive a view switch
 const keptRefused = new Map<string, Refused>();
 /** Pack columns of another connection to the same installation: values stay, nothing to edit or undo from. */
-const unlink = (s: Source[]) => s.map((x) => (x.kind === "pack" ? { ...x, read: undefined, link: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
+// a pack column without an answer says nothing about the next connection's packs: it goes
+const unlink = (s: Source[]) => s.filter((x) => !(x.kind === "pack" && x.error && !x.values))
+  .map((x) => (x.kind === "pack" ? { ...x, read: undefined, link: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
 /** A pack column from a read, tagged with the link it was read on and, over the CAN socket, its path. */
 const packCol = (p: Parameters, address: number, link: string, path?: "uart1"): Source => ({ ...fromPack(p, address), link, ...(path ? { path } : {}) });
 // the datasheet chosen for the check; null = follow the packs' cell type
@@ -252,7 +254,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
     // the release bits of Group0 that this path does not change stay as the pack has them now (also from „Vorherigen Stand“)
     const gate = gateBits(c.read.patch, c.path === "uart1");
-    const fixedMask = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4);
+    const fixedMask = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4) | (gate.powerEditable ? 0 : 8);
     const keepMask = c.path === "uart1" || gate.named ? fixedMask : 0;
     const switches = (from ? [...from.function_switches] : [...baseSwitches]).map((v, g) => (g === 0 ? (v & ~keepMask) | (baseSwitches[0] & keepMask) : v));
     setEdit({ address: a, base, baseSwitches, raws, switches, text: {}, seriesUnlocked: false });
@@ -449,13 +451,15 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // (the choice stays for later), so the table never empties because a column or the datasheet went away.
   const diffUsable = withValues >= 2 || (!!refCell && withValues >= 1);
   const filtered = onlyDiff && diffUsable;
-  // the release bits of Group0 (bits 0 and 2): shown once a column comes from the CAN socket's service or has a proven
-  // patch; named only when a column's patch is proven (before, they meant nothing)
+  // the release bits of Group0 (bits 0, 2 and 3): shown once a column comes from the CAN socket's service or has a proven
+  // patch; named only when a column's patch is proven (before, they meant nothing). Bit 3 only where a proven pack may
+  // have the power and clock service (its image flag set or not known)
   const gateLabel = gateRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
   const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
-  const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2] : SWITCH_BITS[g]);
+  const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
+  const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2, ...(powerRow ? [3] : [])] : SWITCH_BITS[g]);
   const bitsOff = (g: number) => bitsOf(g).filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
-  const gateBit = (g: number, b: number) => g === 0 && (b === 0 || b === 2);
+  const gateBit = (g: number, b: number) => g === 0 && (b === 0 || b === 2 || b === 3);
   const nothingLeft = filtered && GROUPS.every((g) => !g.indices.some((i) => diffParams[i].size || outside.includes(i))) && diffSwitches.every((d) => !d.size);
   const lang = i18n.language;
   const editCol = cols.findIndex((c) => c.id === editId);
@@ -711,12 +715,14 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                               {cols.map((c, ci) => {
                                 const gate = gateBit(g, b) ? gateBits(c.read?.patch, c.path === "uart1") : null;
-                                const fixed = gate && !(b === 0 ? gate.writeEditable : gate.startEditable);
+                                const fixed = gate && !(b === 0 ? gate.writeEditable : b === 2 ? gate.startEditable : gate.powerEditable);
                                 // the meaning only in proven columns; the shared row stays neutral in a mixed table
-                                const meaning = gate?.named ? helpTitle(`switch.0.${b}`, lang) : undefined;
+                                const meaning = gate?.named && (b !== 3 || gate.power !== false) ? helpTitle(`switch.0.${b}`, lang) : undefined;
+                                // bit 3 acts only in a build with the power and clock service
+                                const power = b !== 3 || !gate?.named ? null : gate.power === false ? t("par.gatePowerAbsent") : gate.power === null ? t("par.gatePowerUnknown") : null;
                                 // on a slave, bit 2 is the master's start release, stored here: it acts only at address 0
                                 const slaveStart = b === 2 && gate?.named && c.address !== undefined && c.address !== 0 ? t("par.gateStartMasterOnly") : null;
-                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, b === 2 && fixed ? t("par.gateStartFixed") : null].filter(Boolean).join(" · ");
+                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, b === 2 && fixed ? t("par.gateStartFixed") : null, b === 3 && fixed && gate.power !== false ? t("par.gatePowerFixed") : null].filter(Boolean).join(" · ");
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (

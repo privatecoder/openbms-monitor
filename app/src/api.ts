@@ -212,7 +212,7 @@ export interface HealthReport { from: number; to: number; packs: PackReport[]; p
 export interface ExportStats { rows: number; files: string[] }
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
-export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean }
+export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean }
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
@@ -280,7 +280,9 @@ export interface SnapshotParams { address: number; at: number; kind: StoredSnaps
 /** The old settings of one site key, raw text as found in the browser storage. */
 export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: string; diag?: string }
 /** What a patched firmware offers (by its patch version; never compared against a version number in the UI). */
-export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean }
+/** `power_rtc`: image flag bit 1 of the pack's own 64/03 (ein/aus, restart and the clock over the CAN socket with the lock
+ *  Group0 bit 3); null: not known (a stored proof carries no image flags) */
+export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null }
 /** The master as read over the CAN socket bus (0x64/03, then for a supported patch 0x64/02). kind: "patched" (patch
  *  functions by its patch version; `listed`: the build's name, null when the build is not listed), "unknown-patch",
  *  "no-0x64" (firmware not proven), "unknown". `polling` after a release: "unverified" or "no-slaves". */
@@ -295,7 +297,7 @@ export interface MasterView {
 /** A hard stop the pack's own behaviour showed (waiting for recharge with the charge MOSFET off), first seen at `at`. */
 export interface HardStopSeen { address: number; at: number }
 /** The release bits of a Group0 value, each only where the capability has it. */
-export interface Gates { write: boolean | null; start: boolean | null }
+export interface Gates { write: boolean | null; start: boolean | null; /** bit 3 inverted: power and clock over the CAN socket allowed */ power?: boolean | null }
 /** The firmware profile of the monitor connection, read on its endpoint right after connecting (`profile.rs`). */
 /** `gates_stale`: a write to the master since then left its release bits open (shown as possibly old). */
 export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: MasterView; gates: Gates | null; gates_stale?: boolean; at: number }

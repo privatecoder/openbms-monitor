@@ -29,6 +29,9 @@ pub const GROUP0: usize = 151;
 pub const GROUP7: usize = 158;
 const WRITE_BIT: u8 = 0x01;
 const START_BIT: u8 = 0x04;
+/// MAINT 1.5 with image flag bit 1: 1 locks ein/aus, restart and setting the clock over the CAN socket; a binary 0xA1
+/// must not change it (E3)
+const POWER_BIT: u8 = 0x08;
 const AUTO_ADDRESS_BIT: u8 = 0x20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +52,11 @@ impl Profile {
     pub fn caps(&self) -> Option<Caps> {
         (self.bus == Bus::CanSocketBus).then(|| self.master.caps()).flatten()
     }
+
+    /// The master's image flag bit 1: power and clock over the CAN socket, with the lock Group0 bit 3.
+    pub fn power_rtc(&self) -> bool {
+        self.caps().is_some() && matches!(&self.master, Master::Patched { patch, .. } if patch.info.power_rtc)
+    }
 }
 
 /// Read the profile on an open CAN socket connection. A link error leaves the master unknown.
@@ -64,15 +72,21 @@ pub fn of(endpoint: &str, bus: Bus, read: Option<(Master, Option<u8>)>) -> Profi
     Profile { endpoint: endpoint.into(), bus, master, group0, gates_stale: false, at: crate::history::now_ms() }
 }
 
-/// The two release bits of a Group0 value, each only where the capability has it.
+/// The release bits of a Group0 value, each only where the capability has it (`power`: bit 3 inverted, power and clock
+/// over the CAN socket allowed; only with the image flag).
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Gates {
     pub write: Option<bool>,
     pub start: Option<bool>,
+    pub power: Option<bool>,
 }
 
-pub fn gates_of(caps: Caps, group0: u8) -> Gates {
-    Gates { write: caps.write_gate_bit0.then_some(group0 & WRITE_BIT != 0), start: caps.start_gate_bit2.then_some(group0 & START_BIT != 0) }
+pub fn gates_of(caps: Caps, power_rtc: bool, group0: u8) -> Gates {
+    Gates {
+        write: caps.write_gate_bit0.then_some(group0 & WRITE_BIT != 0),
+        start: caps.start_gate_bit2.then_some(group0 & START_BIT != 0),
+        power: power_rtc.then_some(group0 & POWER_BIT == 0),
+    }
 }
 
 /// The capabilities as the UI uses them.
@@ -83,10 +97,13 @@ pub struct CapsView {
     pub uart1_identity: bool,
     pub write_gate: bool,
     pub start_gate: bool,
+    /// image flag bit 1 of the pack's own 64/03 (power and clock over the CAN socket, lock Group0 bit 3); None: not known
+    /// (a stored proof carries no image flags)
+    pub power_rtc: Option<bool>,
 }
 
-pub fn caps_view(c: Caps) -> CapsView {
-    CapsView { status_split: c.status_split, uart1_params: c.uart1_params, uart1_identity: c.uart1_identity, write_gate: c.write_gate_bit0, start_gate: c.start_gate_bit2 }
+pub fn caps_view(c: Caps, power_rtc: Option<bool>) -> CapsView {
+    CapsView { status_split: c.status_split, uart1_params: c.uart1_params, uart1_identity: c.uart1_identity, write_gate: c.write_gate_bit0, start_gate: c.start_gate_bit2, power_rtc }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -109,7 +126,7 @@ pub fn view(gen: u64, p: &Profile) -> ProfileView {
         bus: if p.bus == Bus::CanSocketBus { "can" } else { "pack" },
         endpoint: p.endpoint.clone(),
         master: master_view(&p.master),
-        gates: p.caps().zip(p.group0).map(|(c, g)| gates_of(c, g)),
+        gates: p.caps().zip(p.group0).map(|(c, g)| gates_of(c, p.power_rtc(), g)),
         gates_stale: p.gates_stale,
         at: p.at,
     }
@@ -263,14 +280,14 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
         if let (Some(p), Some(caps)) = (profile, profile.and_then(|p| p.caps())) {
             if let Master::Patched { patch, .. } = &p.master {
                 let release = patch.listed.map(String::from).unwrap_or_else(|| patch.info.version());
-                return Some(PackPatch { source: "master".into(), role, release, caps: caps_view(caps), at: Some(p.at) });
+                return Some(PackPatch { source: "master".into(), role, release, caps: caps_view(caps, Some(patch.info.power_rtc)), at: Some(p.at) });
             }
         }
     } else {
         match live {
             Some(PackFinding::Proven { info, listed, .. }) => {
                 let caps = known::caps_of(info.format, info.patch)?;
-                return Some(PackPatch { source: "live".into(), role, release: listed.map(String::from).unwrap_or_else(|| info.version()), caps: caps_view(caps), at: None });
+                return Some(PackPatch { source: "live".into(), role, release: listed.map(String::from).unwrap_or_else(|| info.version()), caps: caps_view(caps, Some(info.power_rtc)), at: None });
             }
             // another MNT or a patch below the supported one: a stored proof no longer holds on this connection
             Some(PackFinding::Negative(_)) => return None,
@@ -280,7 +297,7 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
     let proof = proof.filter(|p| serial == Some(p.bms_serial.as_str()))?;
     // a proof means „at least the lowest supported patch“: its capabilities
     let caps = known::caps_of(2, known::MIN_PATCH)?;
-    Some(PackPatch { source: proof.source.clone(), role, release: proof.release.clone(), caps: caps_view(caps), at: Some(proof.at) })
+    Some(PackPatch { source: proof.source.clone(), role, release: proof.release.clone(), caps: caps_view(caps, None), at: Some(proof.at) })
 }
 
 /// `pack_patch_of` with the connection's profile, the pack's live finding and the installation's stored proof.
@@ -383,7 +400,7 @@ pub async fn pack_probes(state: tauri::State<'_, AppState>) -> Result<Vec<PackPr
 pub enum Group0 {
     /// RS485-1/2: the bits go as edited (that is the way to change them)
     Free,
-    /// CAN socket without proof: both bits always as the pack has them now
+    /// CAN socket without proof: the release bits always as the pack has them now
     Keep,
     /// CAN socket with proof: no write while writing is locked there; the start release bit never changes
     Gated { write: bool, start: bool },
@@ -402,8 +419,11 @@ pub fn apply_group0(rule: Group0, fresh: &[u8], block: &mut [u8]) -> Result<(), 
     let keep = |block: &mut [u8], mask: u8| block[GROUP0] = (block[GROUP0] & !mask) | (fresh[GROUP0] & mask);
     match rule {
         Group0::Free => {}
-        Group0::Keep => keep(block, WRITE_BIT | START_BIT),
+        Group0::Keep => keep(block, WRITE_BIT | START_BIT | POWER_BIT),
         Group0::Gated { write, start } => {
+            // bit 3 never changes over the CAN socket: with the power and clock service the pack refuses the whole
+            // write (E3), without it the bit has no function
+            keep(block, POWER_BIT);
             if write && fresh[GROUP0] & WRITE_BIT == 0 {
                 return Err(uart1_refusal("write-locked"));
             }
@@ -479,7 +499,7 @@ mod tests {
     use openbms_proto::{MaintInfo, MaintState};
 
     fn patched(patch: [u8; 2], build: [u8; 8]) -> Master {
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: build, hard_stop: None };
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: build, hard_stop: None, power_rtc: false };
         Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) }
     }
     const LISTED: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
@@ -516,18 +536,18 @@ mod tests {
         assert_eq!(later.caps, listed.caps);
         assert_eq!(later.release, "16.06.13 MAINT 1.6");
         let v = view(1, &profile(patched([1, 6], [9; 8]), Bus::CanSocketBus));
-        assert_eq!((v.master.kind, v.master.listed.as_deref(), v.gates), ("patched", None, Some(Gates { write: Some(true), start: Some(true) })));
+        assert_eq!((v.master.kind, v.master.listed.as_deref(), v.gates), ("patched", None, Some(Gates { write: Some(true), start: Some(true), power: None })));
     }
 
     #[test]
     fn formats_2_and_3_configure_the_master_alike() {
         let f2 = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap();
-        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(true) };
+        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(true), power_rtc: false };
         let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) };
         let f3 = pack_patch_of(0, Some(&profile(m3, Bus::CanSocketBus)), None, None, None).unwrap();
         assert_eq!(f3.caps, f2.caps);
         let v = view(1, &profile(m3, Bus::CanSocketBus));
-        assert_eq!((v.master.hard_stop, v.gates), (Some(true), Some(Gates { write: Some(true), start: Some(true) })));
+        assert_eq!((v.master.hard_stop, v.gates), (Some(true), Some(Gates { write: Some(true), start: Some(true), power: None })));
     }
 
     #[test]
@@ -540,14 +560,14 @@ mod tests {
     }
 
     #[test]
-    fn without_proof_a_binary_write_keeps_both_release_bits() {
+    fn without_proof_a_binary_write_keeps_the_release_bits() {
         let fresh = block(0xFA, 0);
         let mut b = block(0xFF, 0);
         apply_group0(group0_rule(true, None), &fresh, &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xFA);
         let mut b = block(0x00, 0);
         apply_group0(Group0::Keep, &block(0xFF, 0), &mut b).unwrap();
-        assert_eq!(b[GROUP0], 0x05, "other bits as edited, the release bits as the pack has them");
+        assert_eq!(b[GROUP0], 0x0D, "other bits as edited, the release bits (0, 2, 3) as the pack has them");
         // RS485-1/2: as edited
         let mut b = block(0xFA, 0);
         apply_group0(group0_rule(false, None), &block(0xFF, 0), &mut b).unwrap();
@@ -567,6 +587,30 @@ mod tests {
         let mut b = block(0xFC, 0);
         apply_group0(rule, &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xFC);
+        // bit 3 (power and clock lock) stays as the pack has it, in both directions
+        let mut b = block(0xF7, 0);
+        apply_group0(rule, &block(0xFF, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xFF);
+        let mut b = block(0xFF, 0);
+        apply_group0(rule, &block(0xF7, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xF7);
+        // RS485-1/2 changes it
+        let mut b = block(0xF7, 0);
+        apply_group0(group0_rule(false, p.as_ref()), &block(0xFF, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xF7);
+    }
+
+    #[test]
+    fn the_power_and_clock_release_needs_the_image_flag() {
+        let caps = known::caps_of(3, [1, 5]).unwrap();
+        assert_eq!(gates_of(caps, false, 0xFF).power, None);
+        assert_eq!(gates_of(caps, true, 0xFF).power, Some(false), "bit 3 set: locked");
+        assert_eq!(gates_of(caps, true, 0xF7).power, Some(true));
+        // the pack's own 64/03 says it; a stored proof does not know
+        let flagged = PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true }));
+        assert_eq!(pack_patch_of(3, None, Some(&flagged), None, None).unwrap().caps.power_rtc, Some(true));
+        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.5".into(), source: "flash".into(), at: 7 };
+        assert_eq!(pack_patch_of(3, None, None, Some(&proof), Some("SYN-3")).unwrap().caps.power_rtc, None);
     }
 
     #[test]
@@ -649,7 +693,7 @@ mod tests {
 
     #[test]
     fn a_format_3_master_keeps_no_observation_its_flag_shows() {
-        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false) };
+        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: false };
         let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: None };
         let p3 = profile(m3, Bus::CanSocketBus);
         assert!(hard_stop_reported(Some(&p3), None, 0));
@@ -718,7 +762,7 @@ mod tests {
 
     fn live(patch: [u8; 2], format: u8, hard_stop: Option<bool>) -> PackFinding {
         use openbms_flash::maint::dialog::PackAnswer;
-        PackFinding::of(PackAnswer::Info(MaintInfo { format, base: [16, 6, 13], patch, build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop }))
+        PackFinding::of(PackAnswer::Info(MaintInfo { format, base: [16, 6, 13], patch, build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop, power_rtc: false }))
     }
 
     #[test]

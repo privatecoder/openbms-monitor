@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { gateBits, gateRowLabel, gatesLine, hardStopLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
+import { firmwareText, gateBits, gateRowLabel, gatesLine, hardStopLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -41,6 +41,7 @@ describe("firmware profile of the connection", () => {
     expect(gatesLine({ write: true, start: false }, tr("de"))).toBe("Schreiben über CAN: erlaubt · Wartungsstart: gesperrt");
     expect(gatesLine({ write: null, start: null }, tr("de"))).toBeNull();
     expect(gatesLine(null, tr("de"))).toBeNull();
+    expect(gatesLine({ write: true, start: true, power: false }, tr("de"))).toBe("Schreiben über CAN: erlaubt · Wartungsstart: erlaubt · Ein/Aus und Uhr über CAN: gesperrt");
     // after a write to the master without a read-back: marked old, and „Erneut prüfen“ also for a recognised patch
     expect(gatesLine({ write: true, start: true }, tr("de"), true)).toBe("Schreiben über CAN: erlaubt · Wartungsstart: erlaubt (vor dem letzten Schreiben, ggf. veraltet)");
     expect(gatesLine(null, tr("en"), true)).toBe("Releases open after the last write: check again");
@@ -52,10 +53,11 @@ describe("firmware profile of the connection", () => {
 
 describe("release bits of Group0 in a parameter column", () => {
   it("are named only with a proof; over the CAN socket bit 2 never becomes editable", () => {
-    expect(gateBits(null, true)).toEqual({ named: false, writeEditable: false, startEditable: false });
-    expect(gateBits(null, false)).toEqual({ named: false, writeEditable: false, startEditable: false });
-    expect(gateBits(proof, true)).toEqual({ named: true, writeEditable: true, startEditable: false });
-    expect(gateBits(proof, false)).toEqual({ named: true, writeEditable: true, startEditable: true });
+    const none = { named: false, writeEditable: false, startEditable: false, powerEditable: false, power: null };
+    expect(gateBits(null, true)).toEqual(none);
+    expect(gateBits(null, false)).toEqual(none);
+    expect(gateBits(proof, true)).toEqual({ named: true, writeEditable: true, startEditable: false, powerEditable: false, power: null });
+    expect(gateBits(proof, false)).toEqual({ named: true, writeEditable: true, startEditable: true, powerEditable: true, power: null });
   });
   it("label the shared row neutrally in a mixed table", () => {
     expect(gateRowLabel([{ patch: proof, switches: true }, { patch: proof, switches: true }])).toBe("named");
@@ -79,8 +81,31 @@ describe("release bits of Group0 in a parameter column", () => {
     expect(flashGateKeys(0xfe)).toEqual(["fw.patch.writeLocked"]);
     expect(flashGateKeys(0xfb)).toEqual(["fw.patch.startLocked"]);
     expect(flashGateKeys(0xfa)).toEqual(["fw.patch.bothLocked"]);
-    for (const lng of ["de", "en"]) for (const k of ["fw.patch.ok", "fw.patch.writeLocked", "fw.patch.startLocked", "fw.patch.bothLocked", "uart1.write-locked", "uart1.start-bit", "pw.locked", "pw.multi.res.locked",
+    // an image with power and clock: FF keeps them locked (bit 3 on)
+    expect(flashGateKeys(0xff, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked"]);
+    expect(flashGateKeys(0xf7, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen"]);
+    for (const lng of ["de", "en"]) for (const k of ["fw.patch.ok", "fw.patch.powerLocked", "fw.patch.powerOpen", "par.gatePowerUnknown", "par.gatePowerAbsent", "par.gatePowerFixed", "profile.gate.power", "fw.patch.writeLocked", "fw.patch.startLocked", "fw.patch.bothLocked", "uart1.write-locked", "uart1.start-bit", "pw.locked", "pw.multi.res.locked",
       "maint.err.start.start-not-allowed", "maint.err.start.auto-address", "maint.err.start.token-or-marker", "maint.err.start.start-refused-unread", "maint.err.refused.expected-slaves-needed",
       "maint.done.polling.unverified", "maint.done.polling.no-slaves", "maint.banner.discard", "maint.banner.discardExplain", "maint.banner.discardYes", "maint.err.refused.not-latent"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+  });
+});
+
+describe("the power and clock lock (Group0 bit 3)", () => {
+  const live = (power_rtc: boolean | null): PackPatch => ({ source: "live", release: "16.06.13 MAINT 1.5", caps: { ...caps, power_rtc }, at: null });
+  it("changes only via RS485-1/2, and not where the build has no such service", () => {
+    expect(gateBits(live(true), false)).toMatchObject({ powerEditable: true, power: true });
+    expect(gateBits(live(true), true)).toMatchObject({ powerEditable: false, power: true });
+    expect(gateBits(live(null), false)).toMatchObject({ powerEditable: true, power: null });
+    expect(gateBits(live(false), false)).toMatchObject({ powerEditable: false, power: false });
+  });
+});
+
+describe("the firmware a pack header names", () => {
+  it("takes the version 64/03 proves when 0x51's short one fits it", () => {
+    expect(firmwareText("16.06", "16.06.13 MAINT 1.5")).toBe("16.06.13 MAINT 1.5");
+    expect(firmwareText("16.06", null)).toBe("16.06");
+    expect(firmwareText(undefined, "16.06.13 MAINT 1.5")).toBe("16.06.13 MAINT 1.5");
+    expect(firmwareText("16.05", "16.06.13 MAINT 1.5")).toBe("16.05 (16.06.13 MAINT 1.5)");
+    expect(firmwareText("16.06", "16.06.? MAINT 1.5")).toBe("16.06.? MAINT 1.5");
   });
 });
