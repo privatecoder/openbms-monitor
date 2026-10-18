@@ -286,7 +286,12 @@ pub async fn installation_delete(state: State<'_, AppState>, installation: Strin
         }
         h.clear(Some(&installation)).map_err(text)?;
     }
-    with_store(&state, |s| s.delete_installation(&installation)).map_err(maint::store_refusal)
+    // the recording is gone now; if the installation's rows cannot go too, say so: deleting again finishes it (the
+    // recording's delete finds nothing and succeeds)
+    with_store(&state, |s| s.delete_installation(&installation)).map_err(|e| {
+        eprintln!("installation delete after its recording: {e:?}");
+        maint::refused("delete-recording-only")
+    })
 }
 
 /// The newest stored parameter block of every place (offline Parameters view).
