@@ -705,9 +705,9 @@ pub struct PackScan {
     cleared: Vec<u8>,
     /// stopped by „Abbrechen“: `packs` holds what answered until then
     cancelled: bool,
-    /// each pack's own 64/03 as far as known (the pack bus cannot give it: UART0 answers RTN 04): a live finding of the
-    /// installation's current CAN socket link or a short read over its control channel, only for a pack whose String 2 read
-    /// fresh on the pack bus equals the one read fresh over the CAN socket; missing: not checked
+    /// each pack's own 64/03 as far as known (the pack bus cannot give it: UART0 answers RTN 04): a fresh short read over
+    /// the installation's control channel, only for a pack whose String 2 read fresh on the pack bus equals the one read
+    /// fresh over the CAN socket; missing: not checked
     identities: Vec<crate::profile::PackProbeView>,
 }
 
@@ -788,16 +788,13 @@ pub fn same_board(pack_bus: &str, can: Option<&str>) -> bool {
 }
 
 /// Per pack over the installation's control channel: binary String 2 (canonical) fresh, and only where it is the board read
-/// on the pack bus the 64/03 (a live finding of the installation's current link is reused for such a pack). „Abbrechen“
-/// is checked before every CAN read.
+/// on the pack bus a fresh 64/03. „Abbrechen“ is checked before every CAN read.
 fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String)], cancel: &std::sync::atomic::AtomicBool) -> (Vec<crate::profile::PackProbeView>, bool) {
     use openbms_flash::maint::policy::PackFinding;
     if inst.control.is_none() {
         return (vec![], false);
     }
-    let link = crate::link_now(state);
-    let gen = link.gen;
-    let mine = link.installation.as_deref() == Some(inst.id.as_str());
+    let gen = crate::link_now(state).gen;
     let mut out: Vec<(u8, PackFinding)> = vec![];
     let mut stopped = false;
     let ask: Vec<u8> = boards.iter().map(|(a, _)| *a).collect();
@@ -805,9 +802,8 @@ fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String
         stopped = probe_until_cancel(&ask, cancel, &mut out, |a| {
             let expected = boards.iter().find(|(b, _)| *b == a).map(|(_, s)| s.as_str()).unwrap_or_default();
             let can = c.uart1_serial(Bus::CanSocketBus, a, openbms_proto::uart1::CMD_STRING2).ok().and_then(|raw| openbms_proto::serial::canonical(&raw));
-            let live = mine.then(|| crate::bank::live(state, gen, a)).flatten();
             let cancelled = cancel.load(std::sync::atomic::Ordering::SeqCst);
-            board_finding(expected, can.as_deref(), live, cancelled, || dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of))
+            board_finding(expected, can.as_deref(), cancelled, || dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of))
         })?;
         Ok(())
     });
@@ -818,19 +814,16 @@ fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String
     (shown, stopped)
 }
 
-/// One pack of the board-level proof: only when String 2 read over the CAN socket is the one read on the pack bus may a
-/// 64/03 count; then a live finding of the installation's current link is reused, else it is asked (not after a cancel).
-pub fn board_finding<E>(pack_bus: &str, can: Option<&str>, live: Option<openbms_flash::maint::policy::PackFinding>, cancelled: bool,
+/// One pack of the board-level proof: only when String 2 read over the CAN socket is the one read on the pack bus is the
+/// 64/03 asked, always fresh in this search (a cached live finding may be older than a flash outside the app; it serves
+/// the running pack view only), and not after a cancel.
+pub fn board_finding<E>(pack_bus: &str, can: Option<&str>, cancelled: bool,
     probe: impl FnOnce() -> Result<openbms_flash::maint::policy::PackFinding, E>) -> Result<openbms_flash::maint::policy::PackFinding, E> {
     use openbms_flash::maint::policy::PackFinding;
-    if !same_board(pack_bus, can) {
+    if !same_board(pack_bus, can) || cancelled {
         return Ok(PackFinding::Undecided);
     }
-    match live {
-        Some(f) => Ok(f),
-        None if cancelled => Ok(PackFinding::Undecided),
-        None => probe(),
-    }
+    probe()
 }
 
 /// Probe `ask` in order into `found`, checking „Abbrechen“ before each; Ok(true) when cancelled (what came stays).
@@ -1348,19 +1341,20 @@ mod tests {
     }
 
     #[test]
-    fn a_cached_finding_counts_only_for_a_pack_whose_string_2_matches_now() {
+    fn the_pack_list_asks_64_03_fresh_after_a_matching_string_2() {
         use openbms_flash::maint::dialog::PackAnswer;
         use openbms_flash::maint::policy::PackFinding;
         let info = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false) };
-        let cached = PackFinding::of(PackAnswer::Info(info));
-        let never = || -> Result<PackFinding, ()> { panic!("no 64/03 without a matching String 2") };
-        // another board on the CAN side: neither the cached finding nor a probe
-        assert_eq!(board_finding("SYN-1", Some("SYN-B"), Some(cached), false, never).unwrap(), PackFinding::Undecided);
-        assert_eq!(board_finding("SYN-1", None, Some(cached), false, never).unwrap(), PackFinding::Undecided);
-        // the same board: the cached finding without asking, else a fresh probe; after „Abbrechen“ none
-        assert_eq!(board_finding("SYN-1", Some("SYN-1"), Some(cached), false, never).unwrap(), cached);
-        assert_eq!(board_finding::<()>("SYN-1", Some("SYN-1"), None, false, || Ok(cached)).unwrap(), cached);
-        assert_eq!(board_finding("SYN-1", Some("SYN-1"), None, true, never).unwrap(), PackFinding::Undecided);
+        let fresh = PackFinding::of(PackAnswer::Info(info));
+        let never = || -> Result<PackFinding, ()> { panic!("no 64/03 without a matching String 2 or after a cancel") };
+        // another board on the CAN side, or none readable: no 64/03
+        assert_eq!(board_finding("SYN-1", Some("SYN-B"), false, never).unwrap(), PackFinding::Undecided);
+        assert_eq!(board_finding("SYN-1", None, false, never).unwrap(), PackFinding::Undecided);
+        // the same board: always a fresh 64/03 in this search (no cached finding is taken)
+        let mut asked = 0;
+        assert_eq!(board_finding::<()>("SYN-1", Some("SYN-1"), false, || { asked += 1; Ok(fresh) }).unwrap(), fresh);
+        assert_eq!(asked, 1);
+        assert_eq!(board_finding("SYN-1", Some("SYN-1"), true, never).unwrap(), PackFinding::Undecided);
     }
 
     #[test]
