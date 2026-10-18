@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
 import { api, effectiveCurrent, packState, type Bus, type SerialRead } from "../api";
-import { useProfile } from "../profile";
+import { hardStopLine, useProfile } from "../profile";
+import { useHardStops } from "../hardStops";
 import { errorText } from "../control";
 import { serialText } from "../serial";
 import type { PackEntry } from "../store";
@@ -17,7 +18,7 @@ import { CellAnalysisPanel } from "./CellAnalysis";
 import { DatasheetPanel } from "./DatasheetPanel";
 
 export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEntry; bus: Bus | null; multi: boolean; onBack: () => void; scope: string | null; packs: Record<number, PackEntry> }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const tm = p.telemetry, st = p.status;
   // kept values stay visible, marked old when the last poll failed or is too old (freshness.ts)
   const now = useNow();
@@ -39,6 +40,9 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   useEffect(() => setAsked(null), [p.address, profile?.gen]);
   const askable = bus === "can" && !!profile && !profile.master.caps?.uart1_identity;
   const serials = asked && "bms" in asked ? asked : p.serials;
+  const hardStops = useHardStops();
+  // the image's own flag only for the master of a format-3 profile; every other pack by its behaviour
+  const hardFlag = p.address === 0 && profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null;
   const askBinary = () => api.serialNumbers(p.address, true).then(setAsked, (e) => setAsked({ error: errorText(e, t) }));
 
   return (
@@ -60,6 +64,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             {askable && <button className="underline" title={t("sn.askBinaryHint")} onClick={() => void askBinary()}>{t("sn.askBinary")}</button>}
             {asked && "bms" in asked && asked.uart1 === false && <span>{t("sn.noBinary")}</span>}
             {asked && "error" in asked && <span className="text-alarm">{asked.error}</span>}
+            <span className="flex items-center gap-1">{hardStopLine(hardFlag, hardFlag === null || hardFlag === undefined ? hardStops[p.address] : undefined, t, i18n.language)}<InfoIcon id="topic.hardStop" /></span>
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">

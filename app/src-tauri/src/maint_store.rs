@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -157,6 +157,16 @@ fn patch_proof(db: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS patch_proof(installation TEXT NOT NULL, address INTEGER NOT NULL, bms_serial TEXT NOT NULL, release TEXT NOT NULL,
              source TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation, address)) WITHOUT ROWID;
          CREATE TABLE IF NOT EXISTS maint_expected(installation TEXT PRIMARY KEY, master_board INTEGER, slaves INTEGER NOT NULL, at INTEGER NOT NULL);",
+    )
+}
+
+/// 10: what the pack's own behaviour showed about the hard stop (`hard_stop_seen`): waiting for intermittent recharge
+/// with its charge MOSFET off (observed 1) or on (0), per place, bound to the board then current (its row, and its
+/// String 2 when recorded canonically).
+fn hard_stop_seen(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS hard_stop_seen(installation TEXT NOT NULL, address INTEGER NOT NULL, board INTEGER, bms_serial TEXT,
+             observed INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation, address)) WITHOUT ROWID;",
     )
 }
 
@@ -301,6 +311,15 @@ pub fn real(v: &SerialValue) -> Option<&str> {
         SerialValue::Set { value, truncated: false } => Some(value),
         _ => None,
     }
+}
+
+/// A hard-stop observation of a place (`note_hard_stop`): observed (waiting for recharge with the charge MOSFET off) or
+/// not (waiting with it on), since `at`.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct HardStopSeen {
+    pub address: u8,
+    pub observed: bool,
+    pub at: i64,
 }
 
 /// A pack's version proof (`set_patch_proof`).
@@ -554,6 +573,7 @@ impl Store {
                 "DELETE FROM param_snapshots WHERE installation = ?1",
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
+                "DELETE FROM hard_stop_seen WHERE installation = ?1",
                 // its completed imports (an open one refused the delete): the same files can restore it later
                 "DELETE FROM import_status WHERE installation = ?1",
                 // the files stay; without their installation they are listed as „ohne Anlage“
@@ -652,6 +672,53 @@ impl Store {
             )
             .optional()
             .map_err(e)
+    }
+
+    /// A hard-stop observation of the place for its current board: stored only when it differs from the one kept (the
+    /// value or the board), so the time is when it was first seen. Returns whether it changed.
+    pub fn note_hard_stop(&self, inst: &str, address: u8, observed: bool, now: i64) -> Result<bool, String> {
+        let board = self.current_refs(inst)?.into_iter().find(|b| b.address == address);
+        let (id, serial) = match &board {
+            Some(b) => (Some(b.id), (b.canonical == Some(true)).then(|| b.bms_serial.clone())),
+            None => (None, None),
+        };
+        let kept: Option<(Option<i64>, bool)> = self.db
+            .query_row("SELECT board, observed FROM hard_stop_seen WHERE installation = ?1 AND address = ?2", params![inst, address], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(e)?;
+        if kept == Some((id, observed)) {
+            return Ok(false);
+        }
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO hard_stop_seen(installation, address, board, bms_serial, observed, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![inst, address, id, serial, observed, now],
+            )
+            .map_err(e)?;
+        Ok(true)
+    }
+
+    /// The hard-stop observations of the installation that hold for the board now current at their place (the same
+    /// board row, or the same canonical String 2).
+    pub fn hard_stops(&self, inst: &str) -> Result<Vec<HardStopSeen>, String> {
+        let refs = self.current_refs(inst)?;
+        let mut stmt = self.db.prepare("SELECT address, board, bms_serial, observed, at FROM hard_stop_seen WHERE installation = ?1 ORDER BY address").map_err(e)?;
+        let rows = stmt
+            .query_map([inst], |r| Ok((r.get::<_, u8>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, bool>(3)?, r.get::<_, i64>(4)?)))
+            .map_err(e)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(e)?;
+        Ok(rows
+            .into_iter()
+            .filter(|(address, board, serial, _, _)| {
+                let current = refs.iter().find(|b| b.address == *address);
+                match current {
+                    Some(c) => *board == Some(c.id) || serial.as_deref() == Some(c.bms_serial.as_str()),
+                    None => board.is_none(),
+                }
+            })
+            .map(|(address, _, _, observed, at)| HardStopSeen { address, observed, at })
+            .collect())
     }
 
     /// The DIP slave count read right before the app halted the installation's master (`master_board`: its board row).
@@ -1385,6 +1452,7 @@ impl Store {
                 // a version proof and a halted master's slave count belong to the source's places and master: not taken
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
+                "DELETE FROM hard_stop_seen WHERE installation = ?1",
                 "DELETE FROM installations WHERE id = ?1",
             ] {
                 s.db.execute(sql, [source]).map_err(e)?;
@@ -1723,6 +1791,26 @@ mod tests {
     }
 
     #[test]
+    fn a_hard_stop_observation_is_set_cleared_and_bound_to_the_board() {
+        let s = Store::open(&temp("hard-stop")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        // no board recorded: bound to the place alone
+        assert!(s.note_hard_stop(&a.id, 2, true, 10).unwrap());
+        assert!(!s.note_hard_stop(&a.id, 2, true, 11).unwrap(), "unchanged: the first time stays");
+        assert_eq!(s.hard_stops(&a.id).unwrap(), vec![HardStopSeen { address: 2, observed: true, at: 10 }]);
+        // waiting with the charge MOSFET on: „nicht beobachtet“
+        assert!(s.note_hard_stop(&a.id, 2, false, 12).unwrap());
+        assert_eq!(s.hard_stops(&a.id).unwrap(), vec![HardStopSeen { address: 2, observed: false, at: 12 }]);
+        // a board recorded there later: the old observation belongs to no board, not shown for it
+        s.board_seen(&a.id, 2, &SerialValue::Set { value: "SYN-2".into(), truncated: false }, &SerialValue::NoAnswer, 13).unwrap();
+        assert!(s.hard_stops(&a.id).unwrap().is_empty());
+        assert!(s.note_hard_stop(&a.id, 2, true, 14).unwrap());
+        assert_eq!(s.hard_stops(&a.id).unwrap().len(), 1);
+        s.delete_installation(&a.id).unwrap();
+        assert!(s.hard_stops(&a.id).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_file_of_the_base_layout_is_migrated_once_with_a_copy() {
         let path = temp("migrate");
         {
@@ -1742,7 +1830,10 @@ mod tests {
         assert_eq!((a.endpoints.clone(), a.master_serial.as_deref(), a.archived), (vec!["serial:/dev/p".to_string()], Some("SN-1"), false));
         assert_eq!(s.all_pending().unwrap().iter().map(|p| p.pack).collect::<Vec<_>>(), vec![3]);
         // a copy before each step; the first holds the file as it was
-        assert_eq!(crate::migrate::backups(&path), (1..=MIGRATIONS.len()).map(|n| format!("maintenance.sqlite.bak-{n}")).collect::<Vec<_>>());
+        // (`backups` sorts by name: bak-10 comes after bak-1)
+        let mut expected = (1..=MIGRATIONS.len()).map(|n| format!("maintenance.sqlite.bak-{n}")).collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(crate::migrate::backups(&path), expected);
         let bak = Connection::open(path.with_file_name("maintenance.sqlite.bak-1")).unwrap();
         assert!(bak.prepare("SELECT archived FROM installations").is_err());
         assert_eq!(bak.query_row("SELECT COUNT(*) FROM bootloader_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
