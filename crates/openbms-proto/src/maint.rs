@@ -89,6 +89,9 @@ pub struct MaintInfo {
     /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket (0x45/0x4D/0x4E) with the shared
     /// lock Group0 bit 3 are compiled in; false with format 2 (no such build)
     pub power_rtc: bool,
+    /// format 3, image flag bit 2: the stored pack cutoff of MAINT 1.6 (Group0 bit 4 extended off, bit 5 the lock state)
+    /// is compiled in; a capability, never the lock itself; false with format 2
+    pub pack_cutoff: bool,
 }
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
@@ -136,15 +139,15 @@ impl MaintInfo {
         if info.len() < 4 || &info[0..3] != SIGNATURE {
             return InfoAnswer::Broken;
         }
-        let (hard_stop, power_rtc) = match (info[3], info.len()) {
-            (2, Self::LEN) => (None, false),
-            // bits 2–7 are reserved
-            (3, Self::LEN3) => (Some(info[17] & 0x01 != 0), info[17] & 0x02 != 0),
+        let (hard_stop, power_rtc, pack_cutoff) = match (info[3], info.len()) {
+            (2, Self::LEN) => (None, false, false),
+            // bits 3–7 are reserved
+            (3, Self::LEN3) => (Some(info[17] & 0x01 != 0), info[17] & 0x02 != 0, info[17] & 0x04 != 0),
             _ => return InfoAnswer::OtherFormat,
         };
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[9..17]);
-        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop, power_rtc })
+        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop, power_rtc, pack_cutoff })
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -242,6 +245,21 @@ mod tests {
         let frame = crate::frame::encode_request(0, 0, &info3(0x0D, 0x01)).unwrap();
         assert_eq!(&frame[9..13], b"A024");
         assert_eq!(MaintInfo::classify(&crate::frame::parse(&frame).unwrap().info), InfoAnswer::Known(on));
+    }
+
+    #[test]
+    fn image_flag_bit_2_is_the_pack_cutoff_capability() {
+        // the measured 1.6 identity: 16.06.13, patch 1.6, flags 06 (power and clock, pack cutoff; no hard stop)
+        let raw: Vec<u8> = (0..18).map(|i| u8::from_str_radix(&"4D4E540310060D010618DAF61D8A93671D06"[2 * i..2 * i + 2], 16).unwrap()).collect();
+        let i = MaintInfo::parse(&raw).unwrap();
+        assert_eq!((i.format, i.patch, i.hard_stop, i.power_rtc, i.pack_cutoff), (3, [1, 6], Some(false), true, true));
+        assert_eq!((i.build_id_hex(), i.version()), ("18daf61d8a93671d".to_string(), "16.06.13 MAINT 1.6".to_string()));
+        // with the hard stop 07; other bits do not set it
+        assert!(MaintInfo::parse(&info3(0x0D, 0x07)).unwrap().pack_cutoff);
+        assert!(MaintInfo::parse(&info3(0x0D, 0x04)).unwrap().pack_cutoff);
+        assert!(!MaintInfo::parse(&info3(0x0D, 0xFB)).unwrap().pack_cutoff);
+        assert!(!MaintInfo::parse(&info3(0x0D, 0x02)).unwrap().pack_cutoff);
+        assert!(!MaintInfo::parse(&info15()).unwrap().pack_cutoff, "format 2 has no image flags");
     }
 
     #[test]
