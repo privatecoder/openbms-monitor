@@ -93,3 +93,39 @@ export function selfLock(patch: PackPatch | null | undefined, before: number | u
 export function writeLocked(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): boolean {
   return uart1 && !!patch?.caps.write_gate && group0 !== undefined && (group0 & 1) === 0;
 }
+
+/** MAINT 1.6, Group0 bit 4: 0 switches the extended off with the stored pack cutoff on. */
+export const CUTOFF_BIT = 0x10;
+/** MAINT 1.6, Group0 bit 5: 0 shows a stored individual pack cutoff. Status only, never written. */
+export const LOCK_BIT = 0x20;
+
+/** Group0 bits 4 and 5 of a parameter column: `cutoff` the pack's proven pack cutoff (image flag bit 2 with 1.6; null not
+ *  known, false none); bit 4 editable over RS485-1/2 unless the build has none, over the CAN socket only with the cutoff
+ *  proven on this connection and writing released there (bit 0 of `group0`). Bit 5 is never editable. */
+export function cutoffBits(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): { cutoff: boolean | null; cutoffEditable: boolean } {
+  if (!patch) return { cutoff: null, cutoffEditable: false };
+  const cutoff = patch.caps.pack_cutoff ?? null;
+  return { cutoff, cutoffEditable: uart1 ? cutoff === true && group0 !== undefined && (group0 & 1) === 1 : cutoff !== false };
+}
+
+/** Bits 4 and 5 of Group0 read inverted (on = bit 0) in a proven column: „Erweitertes Aus …“ and „Packsperre aktiv“. */
+export const invertedBit = (g: number, b: number, named: boolean) => named && g === 0 && (b === 4 || b === 5);
+
+/** What a switch cell shows as „an“. */
+export const switchOn = (v: number, b: number, inverted: boolean) => (((v >> b) & 1) === 1) !== inverted;
+
+/** The bits of Group0 an edit takes from the pack as it is now instead of the edited (or restored) block: bit 5 always,
+ *  and over the CAN socket or in a proven column every patch bit this path does not change. */
+export function keepMask(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): number {
+  const gate = gateBits(patch, uart1), cut = cutoffBits(patch, uart1, group0);
+  const fixed = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4) | (gate.powerEditable ? 0 : 8) | (cut.cutoffEditable ? 0 : CUTOFF_BIT);
+  return LOCK_BIT | (uart1 || gate.named ? fixed : 0);
+}
+
+/** A column whose pack proved the cutoff on this connection and whose Group0 shows the lock: „Packsperre aktiv“. */
+export const packLockActive = (patch: PackPatch | null | undefined, group0: number | undefined) =>
+  patch?.caps.pack_cutoff === true && group0 !== undefined && (group0 & LOCK_BIT) === 0;
+
+/** The lock state differs between two Group0 values (the read an edit started from and the pack now). */
+export const lockChanged = (before: number | undefined, now: number | undefined) =>
+  before !== undefined && now !== undefined && ((before ^ now) & LOCK_BIT) !== 0;
