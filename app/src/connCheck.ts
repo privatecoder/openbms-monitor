@@ -66,6 +66,12 @@ export function fixedFallback(fixed: number[], answered: number, found: number[]
   return "keep";
 }
 
+/** After a fallback search: the expected addresses stay (a pack silent at connect is polled on, so its return shows),
+ *  plus the packs found outside them; sorted, without doubles. */
+export function mergeAfterSearch(expected: number[], found: number[]): number[] {
+  return [...new Set([...expected, ...found])].sort((a, b) => a - b);
+}
+
 /** „Keine Antwort an Adresse 00–02; gesucht: Pack 01 gefunden“ (`missing`: the expected addresses that did not answer;
  *  `found`: what the search found). */
 export function fixedSearchedLine(missing: number[], found: number[], t: TFunction): string {

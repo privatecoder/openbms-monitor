@@ -14,7 +14,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, fixedSearchedLine, lastConn, noAnswer, otherBus, padAddress, parseSel, partialLine, saveLastConn, selAddresses, selText, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, fixedSearchedLine, mergeAfterSearch, lastConn, noAnswer, otherBus, padAddress, parseSel, partialLine, saveLastConn, selAddresses, selText, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -279,9 +279,14 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             const all = await api.scan(undefined, true);
             if (gen !== serialGen.current) return;
             const at = all.map(([a]) => a);
-            setMsg([linkedNote, answeredNote, fixedSearchedLine(addrs.filter((a) => !got.includes(a)), at, t)].filter(Boolean).join(" "));
-            onConnected(all, bus);
-            if (at.length) await api.startPolling(at, 2000);
+            // the expected packs stay (a silent one is polled on, „ohne aktuelle Antwort“), the ones found elsewhere join
+            const merged = mergeAfterSearch(addrs, at);
+            const silent = addrs.filter((a) => !at.includes(a));
+            const silentNote = silent.length ? t("conn.expectedSilent", { count: silent.length, list: silent.map(padAddress).join(", ") }) : "";
+            setMsg([linkedNote, answeredNote, fixedSearchedLine(addrs.filter((a) => !got.includes(a)), at, t), silentNote].filter(Boolean).join(" "));
+            const device = (a: number) => all.find(([b]) => b === a)?.[1] ?? found.find(([b]) => b === a)?.[1];
+            onConnected(merged.map((a) => [a, device(a)]), bus);
+            await api.startPolling(merged, 2000);
             void readSerials(at, linkGen);
             return;
           }
