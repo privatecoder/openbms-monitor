@@ -129,11 +129,12 @@ function Editor({ form, saving, onChange, onSave, onCancel }: { form: BalancerFo
   const field = (k: Exclude<keyof BalancerForm, "when">, label: string, placeholder?: string, wide = false) => (
     <label className="flex flex-col gap-0.5">
       <span className="text-muted">{label}</span>
-      <input className={`${input} ${wide ? "w-48" : "w-28"}`} value={form[k]} placeholder={placeholder} inputMode={k === "name" ? undefined : "decimal"}
+      <input className={`${input} ${wide ? "w-48" : "w-28"}`} value={form[k]} placeholder={placeholder} inputMode={k === "name" ? undefined : "decimal"} disabled={saving}
         onChange={(e) => onChange({ ...form, [k]: e.target.value })} />
     </label>
   );
   return (
+    // while saving every field is fixed: an edit after the click would not be in what is being saved
     <form className="space-y-2 rounded-md border border-line p-3" onSubmit={(e) => { e.preventDefault(); onSave(); }}>
       <p className="font-medium">{t("dev.kind.active-balancer")}</p>
       <div className="flex flex-wrap items-end gap-3">
@@ -143,7 +144,7 @@ function Editor({ form, saving, onChange, onSave, onCancel }: { form: BalancerFo
         {field("start_mv", t("dev.f.start"), t("dev.f.startPh"))}
         <label className="flex flex-col gap-0.5">
           <span className="text-muted">{t("dev.f.when")}</span>
-          <select className={input} value={form.when} onChange={(e) => onChange({ ...form, when: e.target.value as BalancerForm["when"] })}>
+          <select className={input} value={form.when} disabled={saving} onChange={(e) => onChange({ ...form, when: e.target.value as BalancerForm["when"] })}>
             {WHENS.map((w) => <option key={w} value={w}>{t(`dev.when.${w}`)}</option>)}
           </select>
         </label>
