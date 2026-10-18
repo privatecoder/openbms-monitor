@@ -160,8 +160,8 @@ fn patch_proof(db: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// 10: what the pack's own behaviour showed about the hard stop (`hard_stop_seen`): waiting for intermittent recharge
-/// with its charge MOSFET off (observed 1) or on (0), per place, bound to the board then current (its row, and its
+/// 10: a hard stop the pack's own behaviour showed (`hard_stop_seen`): waiting for intermittent recharge with its charge
+/// MOSFET off (observed 1; nothing else is recorded), per place, bound to the board then current (its row, and its
 /// String 2 when recorded canonically).
 fn hard_stop_seen(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
@@ -313,12 +313,10 @@ pub fn real(v: &SerialValue) -> Option<&str> {
     }
 }
 
-/// A hard-stop observation of a place (`note_hard_stop`): observed (waiting for recharge with the charge MOSFET off) or
-/// not (waiting with it on), since `at`.
+/// A hard stop seen at a place (`note_hard_stop`: waiting for recharge with the charge MOSFET off), first at `at`.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct HardStopSeen {
     pub address: u8,
-    pub observed: bool,
     pub at: i64,
 }
 
@@ -683,25 +681,27 @@ impl Store {
             .map_err(e)
     }
 
-    /// A hard-stop observation of the place for its current board: stored only when it differs from the one kept (the
-    /// value or the board), so the time is when it was first seen. Returns whether it changed.
-    pub fn note_hard_stop(&self, inst: &str, address: u8, observed: bool, now: i64) -> Result<bool, String> {
+    /// A hard stop seen at the place for its current board (waiting for recharge with the charge MOSFET off). Positive
+    /// only: kept from the first sighting until a flash of the pack or another board there; nothing ever records „not
+    /// seen“ (the firmware closes the MOSFET again after its own discharge over 10 A while still waiting). Returns whether
+    /// it was new.
+    pub fn note_hard_stop(&self, inst: &str, address: u8, now: i64) -> Result<bool, String> {
         let board = self.current_refs(inst)?.into_iter().find(|b| b.address == address);
         let (id, serial) = match &board {
             Some(b) => (Some(b.id), (b.canonical == Some(true)).then(|| b.bms_serial.clone())),
             None => (None, None),
         };
-        let kept: Option<(Option<i64>, bool)> = self.db
-            .query_row("SELECT board, observed FROM hard_stop_seen WHERE installation = ?1 AND address = ?2", params![inst, address], |r| Ok((r.get(0)?, r.get(1)?)))
+        let kept: Option<Option<i64>> = self.db
+            .query_row("SELECT board FROM hard_stop_seen WHERE installation = ?1 AND address = ?2 AND observed = 1", params![inst, address], |r| r.get(0))
             .optional()
             .map_err(e)?;
-        if kept == Some((id, observed)) {
+        if kept == Some(id) {
             return Ok(false);
         }
         self.db
             .execute(
-                "INSERT OR REPLACE INTO hard_stop_seen(installation, address, board, bms_serial, observed, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![inst, address, id, serial, observed, now],
+                "INSERT OR REPLACE INTO hard_stop_seen(installation, address, board, bms_serial, observed, at) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+                params![inst, address, id, serial, now],
             )
             .map_err(e)?;
         Ok(true)
@@ -717,22 +717,22 @@ impl Store {
     /// board row, or the same canonical String 2).
     pub fn hard_stops(&self, inst: &str) -> Result<Vec<HardStopSeen>, String> {
         let refs = self.current_refs(inst)?;
-        let mut stmt = self.db.prepare("SELECT address, board, bms_serial, observed, at FROM hard_stop_seen WHERE installation = ?1 ORDER BY address").map_err(e)?;
+        let mut stmt = self.db.prepare("SELECT address, board, bms_serial, at FROM hard_stop_seen WHERE installation = ?1 AND observed = 1 ORDER BY address").map_err(e)?;
         let rows = stmt
-            .query_map([inst], |r| Ok((r.get::<_, u8>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, bool>(3)?, r.get::<_, i64>(4)?)))
+            .query_map([inst], |r| Ok((r.get::<_, u8>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?)))
             .map_err(e)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(e)?;
         Ok(rows
             .into_iter()
-            .filter(|(address, board, serial, _, _)| {
+            .filter(|(address, board, serial, _)| {
                 let current = refs.iter().find(|b| b.address == *address);
                 match current {
                     Some(c) => *board == Some(c.id) || serial.as_deref() == Some(c.bms_serial.as_str()),
                     None => board.is_none(),
                 }
             })
-            .map(|(address, _, _, observed, at)| HardStopSeen { address, observed, at })
+            .map(|(address, _, _, at)| HardStopSeen { address, at })
             .collect())
     }
 
@@ -1809,18 +1809,19 @@ mod tests {
     fn a_hard_stop_observation_is_set_cleared_and_bound_to_the_board() {
         let s = Store::open(&temp("hard-stop")).unwrap();
         let a = s.create_installation("A", None, vec![]).unwrap();
-        // no board recorded: bound to the place alone
-        assert!(s.note_hard_stop(&a.id, 2, true, 10).unwrap());
-        assert!(!s.note_hard_stop(&a.id, 2, true, 11).unwrap(), "unchanged: the first time stays");
-        assert_eq!(s.hard_stops(&a.id).unwrap(), vec![HardStopSeen { address: 2, observed: true, at: 10 }]);
-        // waiting with the charge MOSFET on: „nicht beobachtet“
-        assert!(s.note_hard_stop(&a.id, 2, false, 12).unwrap());
-        assert_eq!(s.hard_stops(&a.id).unwrap(), vec![HardStopSeen { address: 2, observed: false, at: 12 }]);
-        // a board recorded there later: the old observation belongs to no board, not shown for it
+        // no board recorded: bound to the place alone; the first sighting's time stays
+        assert!(s.note_hard_stop(&a.id, 2, 10).unwrap());
+        assert!(!s.note_hard_stop(&a.id, 2, 11).unwrap());
+        assert_eq!(s.hard_stops(&a.id).unwrap(), vec![HardStopSeen { address: 2, at: 10 }]);
+        // a board recorded there later: the old sighting belongs to no board, not shown for it
         s.board_seen(&a.id, 2, &SerialValue::Set { value: "SYN-2".into(), truncated: false }, &SerialValue::NoAnswer, 13).unwrap();
         assert!(s.hard_stops(&a.id).unwrap().is_empty());
-        assert!(s.note_hard_stop(&a.id, 2, true, 14).unwrap());
-        assert_eq!(s.hard_stops(&a.id).unwrap().len(), 1);
+        assert!(s.note_hard_stop(&a.id, 2, 14).unwrap());
+        assert_eq!(s.hard_stops(&a.id).unwrap(), vec![HardStopSeen { address: 2, at: 14 }]);
+        // a flash of the pack ends it
+        s.clear_hard_stop(&a.id, 2).unwrap();
+        assert!(s.hard_stops(&a.id).unwrap().is_empty());
+        s.note_hard_stop(&a.id, 2, 15).unwrap();
         s.delete_installation(&a.id).unwrap();
         assert!(s.hard_stops(&a.id).unwrap().is_empty());
     }

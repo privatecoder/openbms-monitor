@@ -1148,7 +1148,7 @@ mod tests {
         assert!(s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 2, |_| Err("disk I/O error".into())).is_err());
         assert!(s.all_pending().unwrap().is_empty());
         assert!(s.patch_proof(&a.id, 0).unwrap().is_some());
-        s.note_hard_stop(&a.id, 0, true, 2).unwrap();
+        s.note_hard_stop(&a.id, 0, 2).unwrap();
         // a failing step after both clears: nothing of it stays
         assert!(s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 2, |st| {
             st.clear_patch_proof(&a.id, 0)?;

@@ -43,13 +43,13 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
   }
 }
 
-/** „Hard-Stop: …“ of one pack: the image's own flag wins (a format-3 master, `flag` true/false); else what the pack's
- *  behaviour showed (`seen`: waiting for recharge with the charge MOSFET off or on, with its date); else unknown. Never
- *  from a version number or a flash. */
+/** „Hard-Stop: …“ of one pack: the image's own flag wins (a format-3 master, `flag` true/false); else a sighting in the
+ *  pack's behaviour (`seen`: waiting for recharge with the charge MOSFET off, with its date); else unknown. Never from a
+ *  version number or a flash, and never „not seen“. */
 export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSeen | undefined, t: T, lang = "de"): string {
   const at = (ms: number) => new Date(ms).toLocaleDateString(lang);
   const state = flag === true ? t("profile.hardStopOn") : flag === false ? t("profile.hardStopOff")
-    : seen ? t(seen.observed ? "profile.hardStopSeen" : "profile.hardStopNotSeen", { at: at(seen.at) })
+    : seen ? t("profile.hardStopSeen", { at: at(seen.at) })
     : t("profile.hardStopUnknown");
   return t("profile.hardStop", { state });
 }
