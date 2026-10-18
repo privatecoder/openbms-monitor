@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { gateBits, gatesLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
+import { gateBits, gateRowLabel, gatesLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -45,6 +45,15 @@ describe("release bits of Group0 in a parameter column", () => {
     expect(gateBits(null, false)).toEqual({ named: false, writeEditable: false, startEditable: false });
     expect(gateBits(proof, true)).toEqual({ named: true, writeEditable: true, startEditable: false });
     expect(gateBits(proof, false)).toEqual({ named: true, writeEditable: true, startEditable: true });
+  });
+  it("label the shared row neutrally in a mixed table", () => {
+    expect(gateRowLabel([{ patch: proof, switches: true }, { patch: proof, switches: true }])).toBe("named");
+    // a proven and an original or unproven column: „Bit 0.0“, the meaning only in the proven column
+    expect(gateRowLabel([{ patch: proof, switches: true }, { patch: null, switches: true }])).toBe("neutral");
+    expect(gateRowLabel([{ patch: null, switches: true }])).toBe("unnamed");
+    // a column without values (still reading, unreadable) does not count
+    expect(gateRowLabel([{ patch: proof, switches: true }, { patch: null, switches: false }])).toBe("named");
+    expect(i18n.t("par.gateNeutral", { b: 2, lng: "de" })).toBe("Bit 0.2");
   });
   it("warn before a self-lock and show a locked pack", () => {
     expect(selfLock(proof, 0xff, 0xfe)).toBe(true);

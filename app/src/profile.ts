@@ -62,6 +62,15 @@ export function gateBits(patch: PackPatch | null | undefined, uart1: boolean): {
   return { named: true, writeEditable: patch.caps.write_gate, startEditable: !uart1 && patch.caps.start_gate };
 }
 
+/** How the shared table rows of Group0 bits 0 and 2 are labelled: by their function only when every column with switches
+ *  has a proven patch ("named"); in a mixed table neutrally as „Bit 0.0/0.2“ ("neutral", the meaning shows per proven
+ *  column); with no proven column as bits whose meaning needs a proof ("unnamed"). */
+export function gateRowLabel(cols: { patch?: PackPatch | null; switches: boolean }[]): "named" | "neutral" | "unnamed" {
+  const withSwitches = cols.filter((c) => c.switches);
+  const proven = withSwitches.filter((c) => !!c.patch).length;
+  return proven === 0 ? "unnamed" : proven === withSwitches.length ? "named" : "neutral";
+}
+
 /** A write that switches the CAN socket write release of a proven pack from on to off: the dialog explains the way back. */
 export function selfLock(patch: PackPatch | null | undefined, before: number | undefined, after: number | undefined): boolean {
   return !!patch?.caps.write_gate && before !== undefined && after !== undefined && (before & 1) === 1 && (after & 1) === 0;

@@ -22,7 +22,7 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { gateBits, getProfile, selfLock, writeLocked } from "../profile";
+import { gateBits, gateRowLabel, getProfile, selfLock, writeLocked } from "../profile";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -451,8 +451,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const filtered = onlyDiff && diffUsable;
   // the release bits of Group0 (bits 0 and 2): shown once a column comes from the CAN socket's service or has a proven
   // patch; named only when a column's patch is proven (before, they meant nothing)
-  const gatesNamed = cols.some((c) => !!c.read?.patch);
-  const gateRows = gatesNamed || cols.some((c) => c.path === "uart1");
+  const gateLabel = gateRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
+  const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
   const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2] : SWITCH_BITS[g]);
   const bitsOff = (g: number) => bitsOf(g).filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
   const gateBit = (g: number, b: number) => g === 0 && (b === 0 || b === 2);
@@ -706,13 +706,15 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                           const off = deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined)));
                           return (
                             <tr key={b}>
-                              {gateBit(g, b) && !gatesNamed ? <NameCell id="topic.patchGates" label={t("par.gateUnnamed", { b })} sub={t("par.bit", { b })} />
+                              {gateBit(g, b) && gateLabel !== "named" ? <NameCell id="topic.patchGates" label={t(gateLabel === "neutral" ? "par.gateNeutral" : "par.gateUnnamed", { b })} sub={t("par.bit", { b })} />
                                 : <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />}
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                               {cols.map((c, ci) => {
                                 const gate = gateBit(g, b) ? gateBits(c.read?.patch, c.path === "uart1") : null;
                                 const fixed = gate && !(b === 0 ? gate.writeEditable : gate.startEditable);
-                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : b === 2 && fixed ? t("par.gateStartFixed") : undefined;
+                                // the meaning only in proven columns; the shared row stays neutral in a mixed table
+                                const meaning = gate?.named ? helpTitle(`switch.0.${b}`, lang) : undefined;
+                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, b === 2 && fixed ? t("par.gateStartFixed") : null].filter(Boolean).join(" · ");
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
