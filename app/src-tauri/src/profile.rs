@@ -177,15 +177,16 @@ pub fn after_master_write(state: &AppState, link: &Link, address: u8, r: Option<
 
 /// Every other reason for an open charge MOSFET that 0x44 shows, as (event index, mask): the „Laden verboten“ states of
 /// the firmware (cell/pack OVP, charge over/under temperature, ambient and power stage protection, charge over-current,
-/// charger over-voltage, cell too low to charge, reverse polarity, output connection fault), a charge MOSFET fault and
-/// the severe fault. Not shown by 0x44 and so not excludable: a cause without an event bit (e.g. a modified image's own
-/// lock).
+/// charger over-voltage, cell too low to charge, reverse polarity, output connection fault) and a charge MOSFET fault.
+/// The latched severe fault (event 4 bit 7) is no charge block. Not shown by 0x44 and so not excludable: the standby
+/// shutdown's „Laden verboten“ 60 s before off (event 8 bit 6 is not sent), the raw cell temperature charge protection
+/// while discharging (16.06.11 on; the sent event 3 follows the current direction), a modified image's own lock.
 pub const CHARGE_BLOCKS: [(usize, u8); 9] = [
     (0, 0x20),        // event 1 bit 5: charge MOSFET fault
     (1, 0x02 | 0x20), // event 2 bit 1 cell OVP, bit 5 pack OVP
     (2, 0x02 | 0x08), // event 3 bit 1 charge over-temperature, bit 3 charge under-temperature protection
     (3, 0x02 | 0x08), // event 4 bit 1 ambient over-temperature, bit 3 ambient under-temperature protection
-    (3, 0x10 | 0x80), // event 4 bit 4 power stage over-temperature protection, bit 7 severe fault
+    (3, 0x10),        // event 4 bit 4 power stage over-temperature protection
     (4, 0x02),        // event 5 bit 1 charge over-current protection
     (5, 0x01),        // event 6 bit 0 charger over-voltage
     (5, 0x10 | 0x20), // event 6 bit 4 cell too low to charge, bit 5 reverse polarity
@@ -194,7 +195,7 @@ pub const CHARGE_BLOCKS: [(usize, u8); 9] = [
 
 /// One fresh 0x44 status shows the hard-stop behaviour: waiting for intermittent recharge (event 6 bit 1) with the charge
 /// MOSFET off, no other visible charge-blocking cause (`CHARGE_BLOCKS`), the current limiter and the heater off and the
-/// pack not switched off. An observed behaviour, not a proven image property. Waiting with the MOSFET on proves nothing
+/// pack not switched off. A hint, never a hard-stop property: invisible charge blocks remain (`CHARGE_BLOCKS`). Waiting with the MOSFET on proves nothing
 /// against it (the firmware closes it again after 10 s of its own discharge over 10 A).
 pub fn hard_stop_observation(status: &openbms_proto::Status) -> bool {
     let other = CHARGE_BLOCKS.iter().any(|&(i, mask)| status.events[i] & mask != 0);
@@ -524,12 +525,14 @@ mod tests {
             st.events[i] |= mask;
             st
         };
-        for (i, mask) in [(1, 0x02), (1, 0x20), (2, 0x02), (2, 0x08), (3, 0x02), (3, 0x10), (4, 0x02), (5, 0x01), (5, 0x10), (5, 0x40), (0, 0x20), (3, 0x80)] {
+        for (i, mask) in [(1, 0x02), (1, 0x20), (2, 0x02), (2, 0x08), (3, 0x02), (3, 0x10), (4, 0x02), (5, 0x01), (5, 0x10), (5, 0x40), (0, 0x20)] {
             assert!(!hard_stop_observation(&with(i, mask)), "event {} mask {mask:02X}", i + 1);
         }
         // warnings that do not block charging still allow it
         assert!(hard_stop_observation(&with(1, 0x01)), "cell voltage high warning");
         assert!(hard_stop_observation(&with(2, 0x01)), "charge temperature high warning");
+        // the latched severe fault is no charge block: it does not suppress a later hint
+        assert!(hard_stop_observation(&with(3, 0x80)), "severe fault (latched until restart)");
         // current limiter or heater on, or the pack off: no sighting
         assert!(!hard_stop_observation(&status(0x02, 0x05)));
         assert!(!hard_stop_observation(&status(0x02, 0x09)));
