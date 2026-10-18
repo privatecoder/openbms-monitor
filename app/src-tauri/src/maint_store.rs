@@ -345,12 +345,19 @@ pub struct Pending {
     pub bms_serial: Option<String>,
 }
 
+/// A stored master read (the `MasterView` JSON) of an image without 0x64: a marker kept on is latent there.
+pub fn marker_latent(data: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(data).is_ok_and(|v| v["kind"] == "no-0x64")
+}
+
 /// An installation whose last master read showed the marker on, for the banner.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct MarkerOn {
     pub installation: String,
     pub name: String,
     pub at: i64,
+    /// the last read came from an image without 0x64: the marker word stays in flash, but cannot be checked under it
+    pub latent: bool,
 }
 
 pub struct Store {
@@ -638,9 +645,11 @@ impl Store {
     pub fn markers_on(&self) -> Result<Vec<MarkerOn>, String> {
         let mut stmt = self
             .db
-            .prepare("SELECT m.installation, i.name, m.at FROM master_read m JOIN installations i ON i.id = m.installation WHERE m.marker_on = 1 ORDER BY m.at")
+            .prepare("SELECT m.installation, i.name, m.at, m.data FROM master_read m JOIN installations i ON i.id = m.installation WHERE m.marker_on = 1 ORDER BY m.at")
             .map_err(e)?;
-        let rows = stmt.query_map([], |r| Ok(MarkerOn { installation: r.get(0)?, name: r.get(1)?, at: r.get(2)? })).map_err(e)?;
+        let rows = stmt
+            .query_map([], |r| Ok(MarkerOn { installation: r.get(0)?, name: r.get(1)?, at: r.get(2)?, latent: marker_latent(&r.get::<_, String>(3)?) }))
+            .map_err(e)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
     }
 
@@ -1742,7 +1751,7 @@ mod tests {
         s.save_installation(&Installation { master_serial: None, ..s.installation(&a.id).unwrap() }).unwrap();
         assert_eq!(s.installation(&a.id).unwrap().master_serial.as_deref(), Some("SN-1"));
         s.set_master_read(&a.id, "{}", true, 2).unwrap();
-        assert_eq!(s.markers_on().unwrap(), vec![MarkerOn { installation: a.id.clone(), name: "A".into(), at: 2 }]);
+        assert_eq!(s.markers_on().unwrap(), vec![MarkerOn { installation: a.id.clone(), name: "A".into(), at: 2, latent: false }]);
         s.set_master_read(&a.id, "{}", false, 3).unwrap();
         assert!(s.markers_on().unwrap().is_empty());
         let p = s.add_pending("serial:/dev/p", 3, "16.06.13", None, 4).unwrap();

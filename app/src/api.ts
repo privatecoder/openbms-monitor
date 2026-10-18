@@ -221,7 +221,7 @@ export interface FirmwareDone { ok: boolean; error: string | null; stage: Firmwa
 /** The right-bank check of a flash: "none" without an installation. */
 /** `marker` (master only): "checked" when a fresh read of the installation's control channel decided C', "unchecked"
  *  without one (the marker last seen was not on). */
-export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" }
+export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" | "latent" }
 
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
 /** An installation: endpoints may belong to several installations; `master_serial`, `archived`, `legacy` (the endpoint
@@ -314,7 +314,8 @@ export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked"
 export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean }
 /** A pack that may hang in its bootloader after an interrupted flash, per pack bus endpoint. */
 export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number; bms_serial?: string | null }
-export interface Alerts { markers: { installation: string; name: string; at: number }[]; pending: Pending[] }
+/** `latent`: the marker was last seen on and the master now runs an image without 0x64 (the marker word stays in flash). */
+export interface Alerts { markers: { installation: string; name: string; at: number; latent?: boolean }[]; pending: Pending[] }
 
 
 // tests run without a window: the preview API then
