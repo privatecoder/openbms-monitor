@@ -3,19 +3,26 @@ import { api, type PackProbeView } from "./api";
 import { useProfile } from "./profile";
 
 /** The packs' own 64/03 findings of the connection, by address: loaded per connection and followed as they come (the
- *  first check runs with the serial reads after connecting). */
-export function usePackProbes(): Record<number, PackProbeView> {
+ *  first check runs with the serial reads after connecting). Only findings of the current connection (`gen`) are taken;
+ *  `put` takes a finding directly (the answer of „Erneut prüfen“). */
+export function usePackProbes(): [Record<number, PackProbeView>, (p: PackProbeView) => void] {
   const profile = useProfile();
+  const gen = profile?.gen;
   const [found, setFound] = useState<Record<number, PackProbeView>>({});
+  const put = (p: PackProbeView) => { if (probeForLink(p, gen)) setFound((s) => ({ ...s, [p.address]: p })); };
   useEffect(() => {
     let alive = true;
     setFound({});
-    if (profile) api.packProbes().then((l) => { if (alive) setFound(Object.fromEntries(l.map((p) => [p.address, p]))); }, () => {});
-    const u = api.onPackProbe((p) => setFound((s) => ({ ...s, [p.address]: p })));
+    const take = (p: PackProbeView) => { if (alive && probeForLink(p, gen)) setFound((s) => ({ ...s, [p.address]: p })); };
+    if (gen !== undefined) api.packProbes().then((l) => l.forEach(take), () => {});
+    const u = api.onPackProbe(take);
     return () => { alive = false; u.then((f) => f()); };
-  }, [profile?.gen]); // eslint-disable-line react-hooks/exhaustive-deps
-  return found;
+  }, [gen]);
+  return [found, put];
 }
+
+/** Whether a finding may be shown on the connection `gen` (an answer of an earlier connection never). */
+export const probeForLink = (p: PackProbeView, gen: number | undefined) => gen !== undefined && p.gen === gen;
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 

@@ -333,11 +333,14 @@ pub(crate) fn live(state: &AppState, gen: u64, address: u8) -> Option<openbms_fl
     state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.live.get(&address).copied()))
 }
 
-pub(crate) fn set_live(state: &AppState, gen: u64, address: u8, finding: openbms_flash::maint::policy::PackFinding) {
-    if let Ok(mut b) = state.bank.lock() {
-        if b.gen == gen {
+/// Keep a live finding for connection `gen`; false when that is no longer the current one (nothing kept).
+pub(crate) fn set_live(state: &AppState, gen: u64, address: u8, finding: openbms_flash::maint::policy::PackFinding) -> bool {
+    match state.bank.lock() {
+        Ok(mut b) if b.gen == gen => {
             b.live.insert(address, finding);
+            true
         }
+        _ => false,
     }
 }
 

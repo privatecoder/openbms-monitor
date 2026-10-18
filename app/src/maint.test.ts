@@ -216,7 +216,7 @@ describe("the pack list's version", () => {
     const { packVersionText } = await import("./maint");
     const { default: i18n } = await import("./i18n");
     const de = (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng: "de" });
-    const proven = { address: 1, state: "proven" as const, version: "16.06.13 MAINT 1.5", listed: "16.06.13 MAINT 1.5", build_id: "297f9f2aa8402e9f", hard_stop: false };
+    const proven = { gen: 1, address: 1, state: "proven" as const, version: "16.06.13 MAINT 1.5", listed: "16.06.13 MAINT 1.5", build_id: "297f9f2aa8402e9f", hard_stop: false };
     expect(packVersionText("16.06", proven, de)).toBe("Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop aus)");
     expect(packVersionText("16.06", { ...proven, listed: null, hard_stop: null }, de)).toBe("Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop unbekannt)");
     expect(packVersionText("16.06", { ...proven, state: "negative", listed: null }, de)).toBe("Firmware 16.06 · ohne Patch-Funktionen (64/03)");

@@ -297,6 +297,8 @@ pub const PACK_PROBE: std::time::Duration = std::time::Duration::from_millis(600
 /// A pack's live finding as the UI shows it in its pack view (never in the master profile).
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PackProbeView {
+    /// the connection the finding belongs to: the UI takes it only for its current one
+    pub gen: u64,
     pub address: u8,
     /// "proven" | "negative" | "undecided"
     pub state: &'static str,
@@ -307,13 +309,13 @@ pub struct PackProbeView {
     pub hard_stop: Option<bool>,
 }
 
-pub fn probe_view(address: u8, f: &PackFinding) -> PackProbeView {
+pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
     let (state, info, listed) = match f {
         PackFinding::Proven { info, listed, .. } => ("proven", Some(*info), listed.map(String::from)),
         PackFinding::Negative(info) => ("negative", *info, None),
         PackFinding::Undecided => ("undecided", None, None),
     };
-    PackProbeView { address, state, version: info.map(|i| i.version()), listed, build_id: info.map(|i| i.build_id_hex()), hard_stop: info.filter(|_| state == "proven").and_then(|i| i.hard_stop) }
+    PackProbeView { gen, address, state, version: info.map(|i| i.version()), listed, build_id: info.map(|i| i.build_id_hex()), hard_stop: info.filter(|_| state == "proven").and_then(|i| i.hard_stop) }
 }
 
 /// Ask the pack at `address` (not the master: its profile holds) for its own 64/03 on connection `link`, under the port
@@ -324,9 +326,11 @@ pub fn probe_pack_on(state: &AppState, link: &Link, address: u8) -> Result<PackF
         dialog::probe_pack(c, &SystemClock::new(), address, PACK_PROBE).map_err(|e| openbms_transport::Error::Io(std::io::Error::other(e.to_string())))
     })?;
     let f = PackFinding::of(answer);
-    bank::set_live(state, link.gen, address, f);
-    if let Some(app) = state.app.get() {
-        let _ = app.emit("pack-probe", probe_view(address, &f));
+    // told only when kept for the current connection: a late answer after a reconnect reaches no other bank's view
+    if bank::set_live(state, link.gen, address, f) {
+        if let Some(app) = state.app.get() {
+            let _ = app.emit("pack-probe", probe_view(link.gen, address, &f));
+        }
     }
     Ok(f)
 }
@@ -364,14 +368,14 @@ pub async fn pack_probe(state: tauri::State<'_, AppState>, address: u8, gen: u64
         return Err("64/03 of a pack is asked on the CAN socket, for packs other than the master".into());
     }
     let _guard = crate::control::reserve_pack_wait(&state, address, "probe")?;
-    probe_pack_on(&state, &link, address).map(|f| probe_view(address, &f))
+    probe_pack_on(&state, &link, address).map(|f| probe_view(gen, address, &f))
 }
 
 /// The live findings of the current connection.
 #[tauri::command]
 pub async fn pack_probes(state: tauri::State<'_, AppState>) -> Result<Vec<PackProbeView>, String> {
     let link = link_now(&state);
-    Ok(bank::lives(&state, link.gen).iter().map(|(a, f)| probe_view(*a, f)).collect())
+    Ok(bank::lives(&state, link.gen).iter().map(|(a, f)| probe_view(link.gen, *a, f)).collect())
 }
 
 /// What a write may do with the release bits of Group0.
@@ -753,11 +757,11 @@ mod tests {
         assert!(!hard_stop_reported(None, Some(&live([1, 5], 2, None)), 4), "MNT02: unknown, observations go on");
         assert!(!hard_stop_reported(None, Some(&live([1, 4], 3, Some(true))), 4), "not a supported patch");
         assert!(!hard_stop_reported(None, Some(&PackFinding::Undecided), 4));
-        let v = probe_view(4, &live([1, 5], 3, Some(false)));
+        let v = probe_view(1, 4, &live([1, 5], 3, Some(false)));
         // the measured slave-addressed build is listed
         assert_eq!((v.state, v.hard_stop, v.build_id.as_deref(), v.listed.as_deref()), ("proven", Some(false), Some("297f9f2aa8402e9f"), Some("16.06.13 MAINT 1.5")));
-        assert_eq!(probe_view(4, &PackFinding::Negative(None)).state, "negative");
-        assert_eq!(probe_view(4, &PackFinding::Undecided).hard_stop, None);
+        assert_eq!(probe_view(1, 4, &PackFinding::Negative(None)).state, "negative");
+        assert_eq!(probe_view(1, 4, &PackFinding::Undecided).hard_stop, None);
         // no sighting is kept for a slave with a fresh MNT03 flag
         let state = AppState::default();
         let dir = std::env::temp_dir().join(format!("openbms-slaveflag-{}", std::process::id()));
@@ -775,6 +779,9 @@ mod tests {
         observe_hard_stop(&state, &link, 5, &status(0x02, 0x01));
         let seen = crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap();
         assert_eq!(seen.iter().map(|h| h.address).collect::<Vec<_>>(), vec![5]);
+        // a finding of a connection that is no longer current is not kept (and so not told)
+        assert!(!bank::set_live(&state, link.gen + 1, 6, live([1, 5], 3, Some(true))));
+        assert_eq!(bank::live(&state, link.gen, 6), None);
         // a flash of the pack: its live finding ends
         bank::clear_live(&state, link.gen, 4);
         assert_eq!(bank::live(&state, link.gen, 4), None);

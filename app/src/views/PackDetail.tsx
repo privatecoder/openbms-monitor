@@ -42,11 +42,11 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   // the manual binary read is always offered on the CAN socket (also without any proof)
   const askable = bus === "can" && !!profile;
   // a slave's own 64/03 (the master has its profile)
-  const probes = usePackProbes();
+  const [probes, putProbe] = usePackProbes();
   const probe = probes[p.address];
   const slaveProbe = bus === "can" && !!profile && p.address !== 0;
   const [probing, setProbing] = useState(false);
-  const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).catch(() => {}).finally(() => setProbing(false)); };
+  const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).then(putProbe, () => {}).finally(() => setProbing(false)); };
   const serials = asked && "bms" in asked ? asked : p.serials;
   const hardStops = useHardStops();
   // the image's own flag only for the master of a format-3 profile; every other pack by its behaviour

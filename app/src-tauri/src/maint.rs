@@ -798,7 +798,7 @@ fn pack_identities(state: &AppState, inst: &Installation, found: &[u8], cancel: 
         out.extend(v);
     }
     out.sort_by_key(|(a, _)| *a);
-    (out.iter().map(|(a, f)| crate::profile::probe_view(*a, f)).collect(), stopped)
+    (out.iter().map(|(a, f)| crate::profile::probe_view(link.gen, *a, f)).collect(), stopped)
 }
 
 /// Probe `ask` in order into `found`, checking „Abbrechen“ before each; Ok(true) when cancelled (what came stays).

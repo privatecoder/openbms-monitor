@@ -304,7 +304,7 @@ export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: 
 export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?: "master" | "pack"; release: string; caps: PatchCaps; at: number | null }
 /** A pack's own addressed 64/03 on this connection (pack view only, never the master profile): proven (patch ≥ 1.5),
  *  negative (another MNT or an older patch), undecided (silence or an error). */
-export interface PackProbeView { address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null }
+export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "start-refused"; reason: string }
