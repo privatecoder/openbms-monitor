@@ -285,6 +285,7 @@ const resources = {
         },
       },
       fw: {
+        markerUnchecked: "Der Wartungsmarker des Masters ließ sich vor dem Flashen nicht frisch lesen (keine CAN-Buchse eingerichtet oder keine Antwort). Zuletzt war er nicht an; ist er doch gesetzt, nach dem Update „Master freigeben“ prüfen.",
         patch: {
           title: "Patch-Firmware {{release}}: vor dem Flashen",
           update: "Die CAN-Buchse ist kein Update-Weg: geflasht wird über RS485-1/2. Fragt der Master seine Slaves ab, zuerst „Master anhalten“ (über die CAN-Buchse, braucht die Startfreigabe am Master) oder DIP 5–8 von Hand.",
@@ -1160,6 +1161,7 @@ const resources = {
         },
       },
       fw: {
+        markerUnchecked: "The master's maintenance marker could not be read freshly before flashing (no CAN socket set up or no answer). It was last seen not on; if it is set after all, check “Release master” after the update.",
         patch: {
           title: "Patched firmware {{release}}: before flashing",
           update: "The CAN socket is no update port: flashing goes via RS485-1/2. When the master polls its slaves, first “Halt master” (via the CAN socket, needs the start release on the master) or DIP 5–8 by hand.",
