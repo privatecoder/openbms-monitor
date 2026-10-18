@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, cutoffError, shownOff, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, cutoffError, shownOff, switchUnclear, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
 import { CUTOFF_BIT, getProfile } from "../profile";
@@ -185,7 +185,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   const onOff = (a: number, on: boolean, expect?: boolean) => run(on ? "on" : "off", a, async (lk) => {
     try { await api.packOnOff(a, on, expect); }
     catch (e) {
-      const err = cutoffError(e), silent = noAnswer(e) || err === "power-no-answer";
+      const err = cutoffError(e), unclear = switchUnclear(e), silent = unclear !== null;
       // after a refusal (RTN 08), a changed extended off or silence: the state and Group0 as they are now; no retry
       if (same(a, lk) && (aware || silent)) {
         await reload(a);
@@ -196,7 +196,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
           if (ask) setAsk(ask);
           return { text: errorText(e, t), tone: "warn" };
         }
-        if (silent && same(a, lk)) return { text: can ? errorText(e, t) : t("ctl.onOff.noAnswer"), tone: "warn" };
+        if (silent && same(a, lk)) return { text: can ? errorText(e, t) : t(unclear === "link" ? "ctl.onOff.lostAnswer" : "ctl.onOff.noAnswer"), tone: "warn" };
       }
       throw e;
     }

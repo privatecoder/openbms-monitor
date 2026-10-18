@@ -278,7 +278,7 @@ pub(crate) fn param_path(state: &AppState) -> Result<ParamPath, String> {
 /// `other-master` (the master behind the CAN socket is not the installation's), `readback` (acknowledged, but the
 /// read after it differs), the identity refusals of `uart1_id.rs` (`no-identity`, `unchecked`, `changed`,
 /// `board-changed`, `duplicate`, `elsewhere`) and those of the power and clock service (`power.rs`: `power-unsupported`,
-/// `power-locked`, `rtc-failed`, `power-no-answer`, `no-board`; `cutoff-off-failed`/`cutoff-on-failed`: RTN 08 to ein/aus
+/// `power-locked`, `rtc-failed`, `power-no-answer`, `power-lost` (ein/aus sent, then the link broke), `no-board`; `cutoff-off-failed`/`cutoff-on-failed`: RTN 08 to ein/aus
 /// of a build with the stored pack cutoff; `cutoff-changed`: the extended off differs from the confirmed one; RS485-1/2
 /// has the same as `control::switch_refusal`).
 pub(crate) fn uart1_refusal(error: &str) -> String {
