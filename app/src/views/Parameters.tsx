@@ -7,7 +7,7 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, type Parameters, type Source } from "../params";
-import { blockers, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
+import { afterUart1Write, blockers, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
@@ -274,9 +274,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       const col = (p: Parameters) => ({ ...packCol(p, a, l, path), notTaken: notTaken(raws, switches, rawsOf(p), p.function_switches) });
       if (r.kind === "stale") { replace(packCol(r.fresh, a, l, path)); seen(a, r.fresh); }
       else if ((r.kind === "written" || r.kind === "unclear") && r.before) {
-        // CAN socket: nothing is stored; „Vorherigen Stand“ is the block before this write, for the session
-        const before = r.before, read = r.read_back;
-        setSources((s) => s.map((x) => (x.id === `pack-${a}` ? { ...(read ? col(read) : x), previous: before, lastWritten: Date.now() } : x)));
+        // CAN socket: „Vorherigen Stand“ is the block before this write, for the session; only a confirmed write sets it
+        const before = r.before, read = r.read_back, written = r.kind === "written";
+        setSources((s) => s.map((x) => (x.id === `pack-${a}` ? afterUart1Write(x, read ? col(read) : null, written, before, Date.now()) : x)));
       } else if (r.kind === "written") {
         void loadHistory(a);
         if (r.read_back) replace(col(r.read_back));

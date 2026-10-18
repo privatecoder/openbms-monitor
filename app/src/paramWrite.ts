@@ -1,7 +1,7 @@
 /** Writing parameters (0xA1): raw values, the firmware's plausibility rules, the change list and the checks before
  *  the write button. Pure helpers for the Parameters view. */
 
-import { KEYS, type Parameters } from "./params";
+import { KEYS, type Parameters, type Source } from "./params";
 
 /** Raw values P0..P86 as numbers; currents (P50..P56) signed, everything else as stored. */
 export type Raws = number[];
@@ -202,4 +202,12 @@ export function fullRequests() {
       return (editing: number | undefined) => ticket === seq && editing === address;
     },
   };
+}
+
+/** A pack column after a write over the CAN socket (the answer carries the block before it): a read-back becomes the
+ *  column's read (`readCol`); „zuletzt geschrieben“ and the block it replaced change only for a confirmed write. An
+ *  unclear attempt keeps the earlier confirmed ones. */
+export function afterUart1Write(col: Source, readCol: Source | null, written: boolean, before: Parameters, now: number): Source {
+  const base = readCol ?? col;
+  return written ? { ...base, previous: before, lastWritten: now } : { ...base, previous: col.previous, lastWritten: col.lastWritten };
 }
