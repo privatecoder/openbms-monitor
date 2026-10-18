@@ -13,11 +13,11 @@ const proof: PackPatch = { source: "user", release: "MAINT ≥ 1.5", caps, at: 1
 
 describe("firmware profile of the connection", () => {
   it("names the class the master reports, by capabilities and not by a version number", () => {
-    expect(profileLine(profile({}), tr("de"))).toEqual({ tone: "ok", text: "16.06.13 MAINT 1.5 · Wartung aus" });
-    expect(profileLine(profile({ marker: "on", slaves: 0 }), tr("en"))?.text).toBe("16.06.13 MAINT 1.5 · maintenance on");
+    expect(profileLine(profile({}), tr("de"))).toEqual({ tone: "ok", text: "16.06.13 MAINT 1.5" });
+    expect(profileLine(profile({ marker: "on", slaves: 0 }), tr("en"))?.text).toBe("16.06.13 MAINT 1.5");
     // an unlisted build with the same capabilities: same configuration, named by version and base
     const later = profile({ listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" });
-    expect(profileLine(later, tr("de"))?.text).toBe("MAINT 1.6 (Basis 16.07.02, Build nicht gelistet) · Wartung aus");
+    expect(profileLine(later, tr("de"))?.text).toBe("MAINT 1.6 (Basis 16.07.02, Build nicht gelistet)");
     expect(patchName(later.master, tr("en"))).toBe("MAINT 1.6 (base 16.07.02, build not listed)");
     expect(profileLine(profile({ kind: "unknown-patch", caps: null, version: "16.06.13 MAINT 1.4" }), tr("de"))?.text).toBe("Unbekannte Patch-Firmware 16.06.13 MAINT 1.4: nur Original-Funktionen");
     expect(profileLine(profile({ kind: "no-0x64", caps: null }), tr("de"))?.text).toBe("0x64 nicht unterstützt, Firmwarestand nicht belegt");
@@ -35,7 +35,7 @@ describe("firmware profile of the connection", () => {
     for (const lng of ["de", "en"]) expect(i18n.exists("profile.hardStopNotSeen", { lng })).toBe(false);
     expect(hardStopLine(null, undefined, tr("de"))).toBe("Hard-Stop: unbekannt");
     // an unknown OEM revision shows in the base
-    expect(profileLine(profile({ listed: null, base: "16.06.?", patch: "1.5", version: "16.06.? MAINT 1.5" }), tr("de"))?.text).toBe("MAINT 1.5 (Basis 16.06.?, Build nicht gelistet) · Wartung aus");
+    expect(profileLine(profile({ listed: null, base: "16.06.?", patch: "1.5", version: "16.06.? MAINT 1.5" }), tr("de"))?.text).toBe("MAINT 1.5 (Basis 16.06.?, Build nicht gelistet)");
   });
   it("shows the master's release bits separately from its maintenance state", () => {
     expect(gatesLine({ write: true, start: false }, tr("de"))).toBe("Schreiben über CAN: erlaubt · Wartungsstart: gesperrt");

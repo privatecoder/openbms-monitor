@@ -158,7 +158,6 @@ const resources = {
       },
       profile: {
         unlisted: "MAINT {{patch}} (Basis {{base}}, Build nicht gelistet)",
-        markerOn: "Wartung an", markerOff: "Wartung aus", markerForeign: "Marker ungeklärt ({{word}})", markerUnread: "Wartungszustand nicht gelesen",
         unknownPatch: "Unbekannte Patch-Firmware {{version}}: nur Original-Funktionen",
         no0x64: "0x64 nicht unterstützt, Firmwarestand nicht belegt",
         unknown: "Firmware nicht erkannt",
@@ -1057,7 +1056,6 @@ const resources = {
       },
       profile: {
         unlisted: "MAINT {{patch}} (base {{base}}, build not listed)",
-        markerOn: "maintenance on", markerOff: "maintenance off", markerForeign: "marker unclear ({{word}})", markerUnread: "maintenance state not read",
         unknownPatch: "Unknown patched firmware {{version}}: original functions only",
         no0x64: "0x64 not supported, firmware not proven",
         unknown: "Firmware not recognised",
