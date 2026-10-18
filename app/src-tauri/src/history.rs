@@ -407,7 +407,7 @@ impl History {
 
     fn end_session(&mut self, t: i64) {
         if let (Some(db), Some(_)) = (self.db.as_ref(), self.session) {
-            close_events(db, &mut self.open_events, t);
+            close_events(db, &mut self.open_events, |_| t);
         }
         self.open_events.clear();
         self.session = None;
@@ -880,9 +880,7 @@ fn track_events(db: &Connection, open: &mut OpenEvents, session: i64, t: i64, ad
                 db.prepare_cached("UPDATE events SET end = ?2 WHERE id = ?1")?.execute(params![id, t])?;
             }
             // a known event of an import: only a later end than the one it has
-            Some(id) if id < 0 => {
-                db.prepare_cached("UPDATE events SET end = ?2 WHERE id = ?1 AND (end IS NULL OR end < ?2)")?.execute(params![-id, t])?;
-            }
+            Some(id) if id < 0 => extend_known(db, -id, t, true)?,
             _ => {}
         }
     }
@@ -936,15 +934,28 @@ fn import_event(db: &Connection, site: &str, session: i64, v: &Value) -> rusqlit
     }
 }
 
-fn close_events(db: &Connection, open: &mut OpenEvents, t: i64) {
-    for (_, m) in open.drain() {
+/// A known event of an import gets the later end `t` (never an earlier one; `open_too`: also one without an end), and
+/// its session's span grows to cover it, so the history index reaches the confirmed end.
+fn extend_known(db: &Connection, id: i64, t: i64, open_too: bool) -> rusqlite::Result<()> {
+    let sql = if open_too { "UPDATE events SET end = ?2 WHERE id = ?1 AND (end IS NULL OR end < ?2)" } else { "UPDATE events SET end = ?2 WHERE id = ?1 AND end IS NOT NULL AND end < ?2" };
+    if db.prepare_cached(sql)?.execute(params![id, t])? > 0 {
+        db.prepare_cached("UPDATE sessions SET last = MAX(COALESCE(last, ?2), ?2) WHERE id = (SELECT session FROM events WHERE id = ?1)")?.execute(params![id, t])?;
+    }
+    Ok(())
+}
+
+/// Close the events still open, each at `at(pack)`: live the time of the end, on import the pack's last status line
+/// (a later line of another pack says nothing about this one).
+fn close_events(db: &Connection, open: &mut OpenEvents, at: impl Fn(u8) -> i64) {
+    for (pack, m) in open.drain() {
+        let t = at(pack);
         for (_, id) in m {
             if id > 0 {
                 let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, t]);
             } else if id < 0 {
-                // a known event of an import still on at the end of the file: its end at least that time, like a new
-                // one (an open one stays open, nothing is shortened)
-                let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1 AND end IS NOT NULL AND end < ?2", params![-id, t]);
+                // a known event of an import still on at the pack's last status: its end at least that time, like a
+                // new one (an open one stays open, nothing is shortened)
+                let _ = extend_known(db, -id, t, false);
             }
         }
     }
@@ -1722,6 +1733,8 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
     let mut open = OpenEvents::new();
     let mut seen_packs = HashSet::new();
     let mut last_t = 0;
+    // per pack the time of its last line with a status (the end of what the file says about its alarms)
+    let mut last_status: HashMap<u8, i64> = HashMap::new();
     // events added from status lines, `event` lines and the events file: a session with any of them is kept
     let mut events_added = 0;
     let lines: Box<dyn Iterator<Item = std::io::Result<String>>> = match file {
@@ -1751,6 +1764,9 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
                 stats.skipped += 1;
                 continue;
             };
+            if v["pack"]["status"]["alarms"].is_array() {
+                last_status.entry(a).and_modify(|x| *x = (*x).max(t)).or_insert(t);
+            }
             events_added += track_events(tx, &mut open, session, t, a, &v["pack"], Some(site)).map_err(e2s)?;
             let w = insert_pack(tx, site_key, session, t, a, &v["pack"], true).map_err(e2s)?;
             if w {
@@ -1778,7 +1794,7 @@ fn import_into(tx: &rusqlite::Transaction, file: Option<&Path>, events: Option<&
         }
         last_t = last_t.max(t);
     }
-    close_events(tx, &mut open, last_t);
+    close_events(tx, &mut open, |pack| last_status.get(&pack).copied().unwrap_or(last_t));
     if let Some(ev) = events {
         let io = |e: std::io::Error| format!("{}: {e}", ev.display());
         for line in std::io::BufReader::new(std::fs::File::open(ev).map_err(io)?).lines() {
@@ -2216,6 +2232,8 @@ mod tests {
         assert_eq!(h.import(&full, "inst-a").unwrap().events, 0);
         let ends: Vec<(i64, Option<i64>)> = reader(&path).unwrap().prepare("SELECT start, end FROM events").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
         assert_eq!(ends, vec![(600 * m, Some(606 * m))]);
+        // the history index reaches the confirmed end too
+        assert_eq!(sites(&reader(&path).unwrap()).unwrap()[0].to, Some(606 * m));
         // an older part again never shortens it
         h.import(&first, "inst-a").unwrap();
         let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
@@ -2225,6 +2243,28 @@ mod tests {
         assert_eq!(h.import(&later, "inst-a").unwrap().events, 0);
         let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
         assert_eq!(end, Some(610 * m));
+    }
+
+    #[test]
+    fn a_later_line_of_another_pack_does_not_extend_an_alarm() {
+        let (path, mut h) = temp_db("jsonl-per-pack");
+        let dir = path.parent().unwrap();
+        let m = 60_000;
+        let status = |t: i64, pack: u8, alarms: &[&str]| json!({ "t": t, "pack": { "address": pack, "telemetry": null, "status": { "alarms": alarms.iter().map(|k| json!({ "id": k, "severity": "alarm" })).collect::<Vec<_>>() }, "error": null } });
+        let write = |name: &str, lines: &[Value]| { let f = dir.join(name); std::fs::write(&f, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap(); f };
+        // known: pack 03's alarm 10:00–10:06
+        let known = write("k.jsonl", &[status(600 * m, 3, &["cell_high"]), status(606 * m, 3, &[])]);
+        h.import(&known, "inst-a").unwrap();
+        // a part with pack 03 only at 10:00 (alarm on), then pack 04 at 10:30: pack 03's alarm keeps 10:06
+        let part = write("p.jsonl", &[status(600 * m, 3, &["cell_high"]), status(630 * m, 4, &[])]);
+        h.import(&part, "inst-a").unwrap();
+        let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events WHERE pack = 3", [], |r| r.get(0)).unwrap();
+        assert_eq!(end, Some(606 * m));
+        // a new alarm still on at the end of a file closes at its pack's last status, not at another pack's later line
+        let new = write("n.jsonl", &[status(700 * m, 5, &["cell_low"]), status(702 * m, 5, &["cell_low"]), status(730 * m, 6, &[])]);
+        h.import(&new, "inst-a").unwrap();
+        let end: Option<i64> = reader(&path).unwrap().query_row("SELECT end FROM events WHERE pack = 5", [], |r| r.get(0)).unwrap();
+        assert_eq!(end, Some(702 * m));
     }
 
     #[test]
