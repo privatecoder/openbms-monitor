@@ -306,7 +306,8 @@ export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: 
 export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?: "master" | "pack"; release: string; caps: PatchCaps; at: number | null }
 /** A pack's own addressed 64/03 on this connection (pack view only, never the master profile): proven (patch ≥ 1.5),
  *  negative (another MNT or an older patch), undecided (silence or an error). */
-export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null }
+/** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket). */
+export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "start-refused"; reason: string }
@@ -433,11 +434,12 @@ const tauriApi = {
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
-  /** RS485-1/2 only, like the parameters */
+  /** RS485-1/2, and over the CAN socket a pack with the power and clock service (`power.ts`) */
   bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
-  /** sets the clock to `time` and returns the clock read back */
+  /** sets the clock to `time` and returns the clock read back; over the CAN socket after the identity check and the lock
+   *  bit (`{"kind":"uart1","error":"power-locked"|"rtc-failed"|…}`) */
   setBmsClock: (address: number, time: BmsTime) => written(address, invoke<{ value: BmsTime; unchecked: boolean }>("set_bms_clock", { address, time, installation: chosen })),
-  /** RS485-1/2 only: telemetry and status of one pack, for the calibration's live values */
+  /** Telemetry and status of one pack, for the live values of the calibration and the control; both buses. */
   packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
   /** The learned full capacity (0x42), on both buses. */
   packFullCapacity: (address: number) => invoke<number>("pack_full_capacity", { address }),
@@ -456,7 +458,8 @@ const tauriApi = {
   setSerial: (address: number, which: "battery" | "bms", text: string) => written(address, invoke<{ value: SerialSet; unchecked: boolean }>("set_serial", { address, which, text, installation: chosen })),
   /** RS485-1/2 only, one pack each; every one fails with `{"kind":"pack-busy",…}` while another action holds the pack
    *  (see `packBusy` in control.ts) and with a refusal like `bmsCalibrate`. Restart: 0x51 before, then up to 15 s
-   *  watching for the pack to answer again */
+   *  watching for the pack to answer again. Restart and on/off also over the CAN socket of a pack with the power and
+   *  clock service (identity and lock bit instead of the 0x51 before) */
   packRestart: (address: number) => written(address, invoke<{ value: RestartResult; unchecked: boolean }>("pack_restart", { address, installation: chosen })),
   packOnOff: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen })),
   packHeater: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_heater", { address, on, installation: chosen })),

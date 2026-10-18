@@ -351,8 +351,11 @@ const resources = {
         setting: "Stelle Uhr …", settingAll: "Stelle Pack {{pack}} ({{n}} von {{of}}) …", setAllDone: "Uhr von {{ok}} von {{of}} Packs gestellt.", setAllFailed: "Nicht gestellt: {{list}}", setAllStopped: "Abgebrochen, weil Anlage oder Verbindung gewechselt haben: Uhr von {{ok}} von {{of}} Packs gestellt.",
         reading: "Lese Uhr …", readError: "Uhr nicht lesbar: {{err}}", setError: "Uhr nicht gestellt: {{err}}",
         hint: "Gesendet wird die Ortszeit dieses PCs; das BMS speichert sie ohne Zeitzone.",
-        canBus: "Die BMS-Uhr ist nur über RS485-1/2 lesbar. Die CAN-Buchse kennt den Befehl nicht.", needConnection: "Die BMS-Uhr lässt sich nur mit Verbindung über RS485-1/2 lesen und stellen.",
+        canBus: "Dieses Pack kennt den Uhr-Befehl über die CAN-Buchse nicht: die BMS-Uhr nur über RS485-1/2 lesen und stellen (über die CAN-Buchse erst mit MAINT 1.5 mit Ein/Aus und Uhr).", needConnection: "Die BMS-Uhr lässt sich nur mit Verbindung über RS485-1/2 lesen und stellen.",
         pointer: "Uhr stellen unter „Parameter“ (Wartungsfunktionen).",
+        locked: "Uhr stellen über die CAN-Buchse ist an diesem Pack gesperrt (Funktionsschalter 0, Bit 3). Freigabe über RS485-1/2 oder am Display.",
+        canHint: "Über die CAN-Buchse prüft die App vor dem Stellen die Platine und die Freigabe (Funktionsschalter 0, Bit 3).",
+        setAllSkipped: "Ohne Uhr über die CAN-Buchse übersprungen: {{list}}.",
       },
       can: {
         title: "CAN-Protokoll", current: "{{name}} (laut Pack)", reading: "Lese Protokoll …", reload: "Vom Pack neu lesen", readError: "Protokoll nicht lesbar: {{err}}", noAnswer: "keine Antwort",
@@ -401,6 +404,9 @@ const resources = {
       sec: { reload: "Neu lesen", asOf: "Stand {{time}}" },
       ctl: {
         title: "Steuern", closed: "Neu starten, ein-/ausschalten, Heizung, Restkapazität, Historie löschen (gewähltes Pack)",
+        closedCan: "Neu starten, ein-/ausschalten über die CAN-Buchse (gewähltes Pack)",
+        canHint: "Über die CAN-Buchse nur Neu starten, Ein und Aus; vorher prüft die App die Platine und die Freigabe (Funktionsschalter 0, Bit 3). Heizung, Restkapazität und Historie löschen gehen über RS485-1/2.",
+        powerLocked: "Ein/Aus und Neustart über die CAN-Buchse sind an diesem Pack gesperrt (Funktionsschalter 0, Bit 3). Freigabe über RS485-1/2 oder am Display.",
         reading: "Lese Zustand …", readError: "Zustand nicht lesbar: {{err}}", reload: "Zustand neu lesen", running: "Sende …", cancel: "Abbrechen",
         state: {
           command: "Ein/Aus-Befehl:", on: "an", off: "aus", discharge: "Entladen:", charge: "Laden:", heater: "Heizausgang:", free: "frei", blocked: "gesperrt", offCommand: "ausgeschaltet", heaterUntil: "bis etwa {{time}}, von der App gestartet", offSoon: "das BMS schaltet wegen Unterspannung bzw. SOC-Schutz nach spätestens 60 s wieder aus",
@@ -443,10 +449,12 @@ const resources = {
           onDone: "Eingeschaltet: Entladen ist frei.", onBlocked: "Eingeschaltet; Entladen bleibt durch einen Schutz gesperrt (siehe Zustand).",
           offDone: "Pack {{pack}} ausgeschaltet: Entladen gesperrt, Laden möglich.",
           offAgain: "Das BMS hat das Pack wieder ausgeschaltet: {{reason}}.", protection: "ein Schutz besteht weiter",
+          slaves: "Der Master gibt Ein/Aus an alle Slaves weiter; seine Bestätigung gilt nur für ihn selbst. Slaves einzeln prüfen.",
         },
         off: {
           title: "Pack {{pack}} ausschalten?", confirm: "Ausschalten",
           text: "Pack {{pack}} sperrt dann das Entladen; Laden bleibt möglich und schaltet es wieder ein. Die anderen Packs bleiben an. Versorgt dieses Pack allein den Rechner oder das Gateway, gibt es nach dem Ausschalten unter Umständen keinen Weg zurück per App.",
+          masterText: "Pack {{pack}} ist der Master: Er gibt „Aus“ an alle Slaves weiter, die ganze Bank sperrt dann das Entladen; Laden bleibt möglich und kann „Aus“ wieder aufheben. Seine Bestätigung gilt nur für den Master, ob jeder Slave es übernommen hat, zeigt erst deren Zustand. Versorgt die Bank den Rechner oder das Gateway, gibt es danach unter Umständen keinen Weg zurück per App.",
         },
         heater: {
           on: "Heizung 1 h", off: "Heizung aus",
@@ -627,6 +635,13 @@ const resources = {
         markedGone: "Eintrag an Adresse {{pack}} als nicht mehr vorhanden markiert. Jetzt erneut schreiben.",
         markGoneChanged: "Eintrag an Adresse {{pack}} hat sich inzwischen geändert: nichts markiert. Seriennummern neu lesen.",
         readback: "Ergebnis ungeklärt: Das Pack hat das Schreiben quittiert, das Rücklesen zeigt aber andere Werte. Die Spalte zeigt den zurückgelesenen Stand; bitte prüfen.",
+        "board-changed": "An dieser Adresse antwortet nicht die Platine, die die Anlage hier kennt: nichts gesendet. Seriennummern neu lesen und die Platine gegebenenfalls übernehmen.",
+        "no-board": "Für diese Adresse kennt die Anlage noch keine Platine: nichts gesendet. Erst die Seriennummern lesen und übernehmen.",
+        "power-unsupported": "Dieses Pack bietet Ein/Aus, Neustart und Uhr über die CAN-Buchse nicht an (MAINT 1.5 mit Ein/Aus und Uhr, auf dieser Verbindung über 64/03 belegt): nichts gesendet. Über RS485-1/2 verwenden.",
+        "power-locked": "Ein/Aus, Neustart und Uhr stellen sind an diesem Pack über die CAN-Buchse gesperrt (Funktionsschalter 0, Bit 3): nichts gesendet. Freigabe über RS485-1/2 oder am Display.",
+        "power-refused": "Das Pack hat abgelehnt (RTN 05): über die CAN-Buchse gesperrt oder ungültige Daten. Die Freigabe (Funktionsschalter 0, Bit 3) über RS485-1/2 oder am Display prüfen.",
+        "rtc-failed": "Das Pack meldet einen Fehler seiner Uhr (RTN 08): sie ließ sich nicht lesen oder stellen.",
+        "power-no-answer": "Keine Antwort über die CAN-Buchse. Ob das Pack den Befehl ausgeführt hat, zeigt der neu gelesene Zustand.",
       },
       bank: {
         new_one: "Diese Anlage kennt die Platine an {{packs}} noch nicht oder hat sie nicht bestätigt (neu, umgesteckt oder einmal zu bestätigen). Gehört sie zu „{{name}}“?",
@@ -1249,8 +1264,11 @@ const resources = {
         setting: "Setting clock …", settingAll: "Setting pack {{pack}} ({{n}} of {{of}}) …", setAllDone: "Clock set on {{ok}} of {{of}} packs.", setAllFailed: "Not set: {{list}}", setAllStopped: "Stopped because the installation or connection changed: clock set on {{ok}} of {{of}} packs.",
         reading: "Reading clock …", readError: "Clock not readable: {{err}}", setError: "Clock not set: {{err}}",
         hint: "This PC's local time is sent; the BMS stores it without a time zone.",
-        canBus: "The BMS clock can be read on RS485-1/2 only. The CAN socket does not know the command.", needConnection: "The BMS clock can be read and set only while connected via RS485-1/2.",
+        canBus: "This pack does not know the clock command via the CAN socket: read and set the BMS clock via RS485-1/2 only (via the CAN socket only with MAINT 1.5 with on/off and clock).", needConnection: "The BMS clock can be read and set only while connected via RS485-1/2.",
         pointer: "Set the clock under “Parameters” (maintenance functions).",
+        locked: "Setting the clock via the CAN socket is locked on this pack (function switch 0, bit 3). Release via RS485-1/2 or on the display.",
+        canHint: "Via the CAN socket the app checks the board and the release (function switch 0, bit 3) before setting.",
+        setAllSkipped: "Skipped, no clock via the CAN socket: {{list}}.",
       },
       can: {
         title: "CAN protocol", current: "{{name}} (per pack)", reading: "Reading protocol …", reload: "Read again from the pack", readError: "Protocol not readable: {{err}}", noAnswer: "no answer",
@@ -1299,6 +1317,9 @@ const resources = {
       sec: { reload: "Read again", asOf: "as of {{time}}" },
       ctl: {
         title: "Control", closed: "Restart, switch on/off, heater, remaining capacity, clear history (chosen pack)",
+        closedCan: "Restart, switch on/off via the CAN socket (chosen pack)",
+        canHint: "Via the CAN socket only restart, on and off; before each the app checks the board and the release (function switch 0, bit 3). Heater, remaining capacity and clearing the history go via RS485-1/2.",
+        powerLocked: "On/off and restart via the CAN socket are locked on this pack (function switch 0, bit 3). Release via RS485-1/2 or on the display.",
         reading: "Reading state …", readError: "State not readable: {{err}}", reload: "Read state again", running: "Sending …", cancel: "Cancel",
         state: {
           command: "On/off command:", on: "on", off: "off", discharge: "Discharging:", charge: "Charging:", heater: "Heater output:", free: "allowed", blocked: "blocked", offCommand: "switched off", heaterUntil: "until about {{time}}, started by the app", offSoon: "the BMS switches off again within 60 s because of undervoltage or SOC protection",
@@ -1341,10 +1362,12 @@ const resources = {
           onDone: "Switched on: discharging allowed.", onBlocked: "Switched on; discharging stays blocked by a protection (see state).",
           offDone: "Pack {{pack}} switched off: discharging blocked, charging possible.",
           offAgain: "The BMS switched the pack off again: {{reason}}.", protection: "a protection persists",
+          slaves: "The master passes on/off on to all slaves; its acknowledgement covers only itself. Check the slaves one by one.",
         },
         off: {
           title: "Switch off pack {{pack}}?", confirm: "Switch off",
           text: "Pack {{pack}} then blocks discharging; charging stays possible and switches it on again. The other packs stay on. If this pack alone supplies the computer or the gateway, there may be no way back through the app after switching off.",
+          masterText: "Pack {{pack}} is the master: it passes “off” on to all slaves, the whole bank then blocks discharging; charging stays possible and can lift “off” again. Its acknowledgement covers only the master; whether every slave took it shows only in their state. If the bank supplies the computer or the gateway, there may be no way back through the app afterwards.",
         },
         heater: {
           on: "Heater 1 h", off: "Heater off",
@@ -1525,6 +1548,13 @@ const resources = {
         markedGone: "Entry at address {{pack}} marked as no longer present. Write again now.",
         markGoneChanged: "The entry at address {{pack}} has changed meanwhile: nothing marked. Read the serial numbers again.",
         readback: "Result unclear: the pack acknowledged the write, but the read-back shows other values. The column shows the state read back; please check.",
+        "board-changed": "The board answering at this address is not the one the installation knows here: nothing sent. Read the serial numbers again and take the board over if needed.",
+        "no-board": "The installation knows no board at this address yet: nothing sent. Read and take over the serial numbers first.",
+        "power-unsupported": "This pack does not offer on/off, restart and clock via the CAN socket (MAINT 1.5 with on/off and clock, proven by 64/03 on this connection): nothing sent. Use RS485-1/2.",
+        "power-locked": "On/off, restart and setting the clock via the CAN socket are locked on this pack (function switch 0, bit 3): nothing sent. Release via RS485-1/2 or on the display.",
+        "power-refused": "The pack refused (RTN 05): locked via the CAN socket or invalid data. Check the release (function switch 0, bit 3) via RS485-1/2 or on the display.",
+        "rtc-failed": "The pack reports a fault of its clock (RTN 08): it could not be read or set.",
+        "power-no-answer": "No answer via the CAN socket. Whether the pack carried out the command shows in the state read again.",
       },
       bank: {
         new_one: "This installation does not know or has not confirmed the board at {{packs}} yet (new, moved or to confirm once). Does it belong to “{{name}}”?",

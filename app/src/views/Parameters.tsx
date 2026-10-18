@@ -22,7 +22,9 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { gateBits, gateRowLabel, getProfile, selfLock, writeLocked } from "../profile";
+import { gateBits, gateRowLabel, getProfile, selfLock, useProfile, writeLocked } from "../profile";
+import { usePackProbes } from "../packProbes";
+import { controlMode, powerLocked, powerRtc } from "../power";
 import { cellName, config } from "./CellAssign";
 
 const packNo = (a: number) => String(a).padStart(2, "0");
@@ -92,6 +94,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // identity before every write and names why it refuses); the other writes stay on RS485-1/2
   const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
   const paramWritable = writable || (connected && bus === "can" && !!installation);
+  // ein/aus, restart and the clock over the CAN socket: per pack, as this connection proved the image flag (the master by
+  // the profile, a slave by its own 64/03), with the lock bit of the newest state seen
+  const profile = useProfile();
+  const [probes] = usePackProbes();
+  const powerOf = (a: number) => powerRtc(a, profile, probes[a]);
+  const lockOf = (a: number) => powerLocked(a, targetRead(a)?.function_switches[0], profile);
+  const ctlMode = controlMode({ connected, bus, demo: isDemo, installation: !!installation, power: chosen !== null && powerOf(chosen) });
   // a CAN socket write that found the same board still listed at another address it could not check there: the
   // explicit, confirmed „no longer there“ for that entry
   // `gen`: the connection the finding came from (the action is refused on another one, and dropped on a link change)
@@ -514,11 +523,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         </p>
         {storedNote && <p className="text-sm text-muted">{storedNote}</p>}
         {chosen !== null && unchecked.has(chosen) && <p className="flex items-center gap-1.5 text-sm text-discharge">{t("bank.unchecked", { pack: packNo(chosen) })}<InfoIcon id="topic.installations" /></p>}
-        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")} canWrite={writable} />
+        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")}
+          installation={!!installation} power={powerOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
-        <PackControlSection address={chosen} usable={writable} locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
+        <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
+          locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} linkKey={link} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
