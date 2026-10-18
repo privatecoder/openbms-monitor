@@ -30,10 +30,12 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
   const { t } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<number | null>(null);
+  // „Latenten Marker verwerfen“ asks once more, like a pending record
+  const [discarding, setDiscarding] = useState<string | null>(null);
   const [error, setError] = useState<{ at: string; text: string } | null>(null);
   const act = async (at: string, f: () => Promise<unknown>) => {
     setBusy(at); setError(null);
-    try { await f(); setConfirming(null); } catch (e) { const k = errorKey(e); setError({ at, text: t(k.key, k.params) }); }
+    try { await f(); setConfirming(null); setDiscarding(null); } catch (e) { const k = errorKey(e); setError({ at, text: t(k.key, k.params) }); }
     finally { setBusy(null); onChanged(); }
   };
   const err = (at: string) => error?.at === at && <p className="text-alarm">{error.text}</p>;
@@ -65,11 +67,22 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
           <div className="flex-1 space-y-1">
             <p className="font-medium">{t(m.latent ? "maint.banner.markerLatent" : "maint.banner.marker", { name: m.name, since: when(m.at) })}</p>
             <p className="text-muted">{t(m.latent ? "maint.banner.markerLatentHint" : "maint.banner.markerHint")}</p>
+            {m.latent && discarding === m.installation && (
+              <div className="space-y-1">
+                <p>{t("maint.banner.discardExplain")}</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => act(`m${m.installation}`, () => api.maintDiscardLatentMarker(m.installation))}>{t("maint.banner.discardYes")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => setDiscarding(null)}>{t("maint.setup.cancel")}</Button>
+                </div>
+              </div>
+            )}
             {err(`m${m.installation}`)}
           </div>
           <div className="flex shrink-0 gap-2">
             <Button variant="secondary" size="sm" onClick={() => onShow(m.installation)}>{t("maint.banner.show")}</Button>
-            <Button variant="secondary" size="sm" disabled={busy !== null || flashing} onClick={() => act(`m${m.installation}`, () => api.maintRelease(m.installation))}>{t("maint.release")}</Button>
+            {/* a latent marker cannot be released under an image without 0x64: it can only be discarded */}
+            {m.latent ? discarding !== m.installation && <Button variant="secondary" size="sm" disabled={busy !== null || flashing} onClick={() => setDiscarding(m.installation)}>{t("maint.banner.discard")}</Button>
+              : <Button variant="secondary" size="sm" disabled={busy !== null || flashing} onClick={() => act(`m${m.installation}`, () => api.maintRelease(m.installation))}>{t("maint.release")}</Button>}
           </div>
         </div>
       ))}

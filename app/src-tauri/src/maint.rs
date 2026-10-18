@@ -625,6 +625,19 @@ pub async fn maint_alerts(state: State<'_, AppState>) -> Result<Alerts, MaintErr
     with_store(&state, |s| Ok(Alerts { markers: s.markers_on()?, pending: s.all_pending()? }))
 }
 
+/// „Latenten Marker verwerfen“, after the user's confirmation: the marker kept on for a master that now runs an image
+/// without 0x64 is no longer shown (only a patched image could check the real marker word). Refused for any other marker.
+#[tauri::command]
+pub async fn maint_discard_latent_marker(state: State<'_, AppState>, installation: String) -> Result<(), MaintError> {
+    match with_store(&state, |s| s.discard_latent_marker(&installation))? {
+        true => {
+            event(&state, Some(&installation), "latent marker discarded by the user");
+            Ok(())
+        }
+        false => Err(refused("not-latent")),
+    }
+}
+
 /// The user's confirmation „Pack X ist abgeklemmt oder repariert“.
 #[tauri::command]
 pub async fn maint_clear_pending(state: State<'_, AppState>, id: i64) -> Result<(), MaintError> {
@@ -1190,6 +1203,16 @@ mod tests {
         s.set_master_read_keep_marker(&a.id, &data, 3).unwrap();
         assert!(s.marker_last_on(&a.id).unwrap());
         assert!(s.markers_on().unwrap()[0].latent);
+        // „Latenten Marker verwerfen“ clears only a latent one: not one read on under a patched image
+        let b2 = s.create_installation("B2", None, vec![]).unwrap();
+        s.set_master_read(&b2.id, &serde_json::to_string(&master_view(&on)).unwrap(), true, 3).unwrap();
+        assert!(!s.discard_latent_marker(&b2.id).unwrap());
+        assert!(s.marker_last_on(&b2.id).unwrap());
+        assert!(s.discard_latent_marker(&a.id).unwrap());
+        assert!(!s.marker_last_on(&a.id).unwrap());
+        assert!(s.delete_installation(&a.id).is_ok(), "no longer open work");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.set_master_read(&a.id, "{}", true, 3).unwrap();
         // only a valid off clears it
         s.set_master_read(&a.id, "{}", marker_update(&off).unwrap(), 3).unwrap();
         assert!(!s.marker_last_on(&a.id).unwrap());

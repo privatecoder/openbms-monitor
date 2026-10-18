@@ -81,6 +81,6 @@ describe("release bits of Group0 in a parameter column", () => {
     expect(flashGateKeys(0xfa)).toEqual(["fw.patch.bothLocked"]);
     for (const lng of ["de", "en"]) for (const k of ["fw.patch.ok", "fw.patch.writeLocked", "fw.patch.startLocked", "fw.patch.bothLocked", "uart1.write-locked", "uart1.start-bit", "pw.locked", "pw.multi.res.locked",
       "maint.err.start.start-not-allowed", "maint.err.start.auto-address", "maint.err.start.token-or-marker", "maint.err.start.start-refused-unread", "maint.err.refused.expected-slaves-needed",
-      "maint.done.polling.unverified", "maint.done.polling.no-slaves"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+      "maint.done.polling.unverified", "maint.done.polling.no-slaves", "maint.banner.discard", "maint.banner.discardExplain", "maint.banner.discardYes", "maint.err.refused.not-latent"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });
 });
