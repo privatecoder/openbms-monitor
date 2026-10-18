@@ -39,6 +39,8 @@ pub struct Profile {
     pub master: Master,
     /// the master's Group0 from a fresh binary 0x47 (None: no such capability, or not readable)
     pub group0: Option<u8>,
+    /// a write to the master since then left Group0 open: the shown release bits may be old
+    pub gates_stale: bool,
     pub at: i64,
 }
 
@@ -59,7 +61,7 @@ pub fn detect(conn: &mut Connection) -> (Master, Option<u8>) {
 
 pub fn of(endpoint: &str, bus: Bus, read: Option<(Master, Option<u8>)>) -> Profile {
     let (master, group0) = read.unwrap_or((Master::Unknown, None));
-    Profile { endpoint: endpoint.into(), bus, master, group0, at: crate::history::now_ms() }
+    Profile { endpoint: endpoint.into(), bus, master, group0, gates_stale: false, at: crate::history::now_ms() }
 }
 
 /// The two release bits of a Group0 value, each only where the capability has it.
@@ -94,8 +96,10 @@ pub struct ProfileView {
     pub bus: &'static str,
     pub endpoint: String,
     pub master: MasterView,
-    /// the master's release bits (fresh 0x47 when the profile was read)
+    /// the master's release bits (fresh 0x47 when the profile was read, or the read-back of a later write)
     pub gates: Option<Gates>,
+    /// a write to the master left them open: shown as possibly old, „Erneut prüfen“ reads them again
+    pub gates_stale: bool,
     pub at: i64,
 }
 
@@ -106,6 +110,7 @@ pub fn view(gen: u64, p: &Profile) -> ProfileView {
         endpoint: p.endpoint.clone(),
         master: master_view(&p.master),
         gates: p.caps().zip(p.group0).map(|(c, g)| gates_of(c, g)),
+        gates_stale: p.gates_stale,
         at: p.at,
     }
 }
@@ -137,6 +142,37 @@ pub async fn firmware_profile_check(state: tauri::State<'_, AppState>, gen: u64)
         let _ = app.emit("firmware-profile", &v);
     }
     Ok(v)
+}
+
+/// Group0 of the master after a parameter write to it, as far as the result shows it (a read-back, the fresh read of a
+/// stale edit, the stored block of a refusal); None: open (lost answer without read-back, E3, an error).
+pub fn group0_after(r: Option<&crate::bms_memory::ParamWrite>) -> Option<u8> {
+    use crate::bms_memory::ParamWrite as W;
+    match r? {
+        W::Written { read_back: Some(p), .. } | W::UnclearRead { read_back: Some(p), .. } | W::Stale { fresh: p } => Some(p.function_switches[0]),
+        W::Refused { refusal, stored, .. } if *refusal != openbms_proto::Refusal::Locked => Some(stored.function_switches[0]),
+        _ => None,
+    }
+}
+
+/// After a parameter write to the master (address 0) on connection `link`: the profile's release bits follow the
+/// result, or are marked as possibly old; the UI is told.
+pub fn after_master_write(state: &AppState, link: &Link, address: u8, r: Option<&crate::bms_memory::ParamWrite>) {
+    if address != 0 {
+        return;
+    }
+    let Some(mut p) = bank::profile(state, link.gen) else { return };
+    if p.caps().is_none() {
+        return;
+    }
+    match group0_after(r) {
+        Some(g) => (p.group0, p.gates_stale) = (Some(g), false),
+        None => p.gates_stale = true,
+    }
+    bank::set_profile(state, link.gen, p.clone());
+    if let Some(app) = state.app.get() {
+        let _ = app.emit("firmware-profile", &view(link.gen, &p));
+    }
 }
 
 /// What proves the patch version of one pack: the master's identity on this link ("master"), or a stored proof for the
@@ -280,7 +316,7 @@ mod tests {
     const LISTED: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
 
     fn profile(master: Master, bus: Bus) -> Profile {
-        Profile { endpoint: "tcp:gw:4196".into(), bus, master, group0: Some(0xFF), at: 1 }
+        Profile { endpoint: "tcp:gw:4196".into(), bus, master, group0: Some(0xFF), gates_stale: false, at: 1 }
     }
 
     fn block(group0: u8, group7: u8) -> Vec<u8> {
@@ -351,6 +387,47 @@ mod tests {
         let mut b = block(0xFC, 0);
         apply_group0(rule, &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xFC);
+    }
+
+    #[test]
+    fn the_masters_release_bits_follow_a_write_or_become_stale() {
+        use crate::bms_memory::ParamWrite as W;
+        let params = |g0: u8| {
+            let mut b = vec![0u8, 0x3C];
+            b.extend(std::iter::repeat_n(0u8, 120));
+            b.push(0x1B);
+            b.extend(std::iter::repeat_n(0u8, 27));
+            b.push(0x08);
+            b.push(g0);
+            b.extend([0u8; 7]);
+            b.extend(*b"SYN       ");
+            openbms_proto::Parameters::parse(&b).unwrap()
+        };
+        let written = Some(W::Written { read_back: Some(params(0xFE)), read_error: None, unanswered: false, before: None });
+        assert_eq!(group0_after(written.as_ref()), Some(0xFE));
+        assert_eq!(group0_after(Some(&W::Written { read_back: None, read_error: Some("x".into()), unanswered: false, before: None })), None);
+        assert_eq!(group0_after(Some(&W::Stale { fresh: params(0xFB) })), Some(0xFB));
+        assert_eq!(group0_after(Some(&W::Refused { refusal: openbms_proto::Refusal::Refused, stored: params(0xFF), switches_live: false })), Some(0xFF));
+        // E3: the pack changed since the read
+        assert_eq!(group0_after(Some(&W::Refused { refusal: openbms_proto::Refusal::Locked, stored: params(0xFF), switches_live: false })), None);
+        assert_eq!(group0_after(Some(&W::Unclear { error: "lost".into() })), None);
+        assert_eq!(group0_after(None), None);
+    }
+
+    #[test]
+    fn a_write_to_the_master_updates_or_stales_the_profile_of_its_connection() {
+        let state = AppState::default();
+        crate::new_link(&state, Some("inst".into()));
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        bank::set_profile(&state, link.gen, profile(patched([1, 5], LISTED), Bus::CanSocketBus));
+        // a slave: nothing changes
+        after_master_write(&state, &link, 3, None);
+        assert!(!bank::profile(&state, link.gen).unwrap().gates_stale);
+        // the master without a read-back: stale, „Erneut prüfen“ reads it again
+        after_master_write(&state, &link, 0, None);
+        let p = bank::profile(&state, link.gen).unwrap();
+        assert!(p.gates_stale && view(link.gen, &p).gates_stale);
     }
 
     #[test]

@@ -44,11 +44,15 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
 }
 
 /** The master's release bits as a short line („Schreiben über CAN-Buchse: erlaubt · Wartungsstart: gesperrt“). */
-export function gatesLine(g: Gates | null, t: T): string | null {
-  if (!g) return null;
+export function gatesLine(g: Gates | null, t: T, stale = false): string | null {
+  if (!g) return stale ? t("profile.gatesStale") : null;
   const part = (v: boolean | null, key: string) => (v === null ? null : `${t(`profile.gate.${key}`)}: ${t(v ? "profile.allowed" : "profile.locked")}`);
-  return [part(g.write, "write"), part(g.start, "start")].filter(Boolean).join(" · ") || null;
+  const line = [part(g.write, "write"), part(g.start, "start")].filter(Boolean).join(" · ");
+  return line ? (stale ? `${line} ${t("profile.staleSuffix")}` : line) : null;
 }
+
+/** „Erneut prüfen“ is offered for every CAN socket profile: also a recognised patch may have changed its release bits. */
+export const recheckable = (p: ProfileView | null): boolean => p?.bus === "can";
 
 /** How the release bits of Group0 appear in a parameter column: named and editable where the pack's patch is proven and
  *  the bus allows it, else unnamed and fixed. `uart1`: the column was read over the CAN socket. */

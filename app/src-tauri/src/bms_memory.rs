@@ -376,15 +376,18 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
     let link = bound(&state, installation.as_deref())?;
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
     let _guard = reserve_pack_wait(&state, address, "params")?;
-    match path {
-        ParamPath::Ascii => {
+    let r = match path {
+        ParamPath::Ascii => (|| {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
             let checked = check_target(&state, &link, address)?;
             let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore, crate::profile::Group0::Free)?;
             Ok(Written { value, unchecked: checked.unchecked })
-        }
+        })(),
         ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore),
-    }
+    };
+    // a write to the master: the release bits the profile shows follow it (on both paths)
+    crate::profile::after_master_write(&state, &link, address, r.as_ref().ok().map(|w| &w.value));
+    r
 }
 
 /// An open bootloader record of the installation (one of its endpoints) at this address: the pack there may not run its

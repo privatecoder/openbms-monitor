@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { gateBits, gatesLine, patchName, profileLine, selfLock, writeLocked } from "./profile";
+import { gateBits, gatesLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -30,6 +30,12 @@ describe("firmware profile of the connection", () => {
     expect(gatesLine({ write: true, start: false }, tr("de"))).toBe("Schreiben über CAN: erlaubt · Wartungsstart: gesperrt");
     expect(gatesLine({ write: null, start: null }, tr("de"))).toBeNull();
     expect(gatesLine(null, tr("de"))).toBeNull();
+    // after a write to the master without a read-back: marked old, and „Erneut prüfen“ also for a recognised patch
+    expect(gatesLine({ write: true, start: true }, tr("de"), true)).toBe("Schreiben über CAN: erlaubt · Wartungsstart: erlaubt (vor dem letzten Schreiben, ggf. veraltet)");
+    expect(gatesLine(null, tr("en"), true)).toBe("Releases open after the last write: check again");
+    expect(recheckable(profile({}))).toBe(true);
+    expect(recheckable(profile({ kind: "unknown", caps: null }))).toBe(true);
+    expect(recheckable(profile({}, "pack"))).toBe(false);
   });
 });
 
