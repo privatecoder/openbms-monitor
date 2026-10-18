@@ -273,11 +273,13 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           // a late answer of an earlier connection changes nothing
           if (gen !== serialGen.current) return;
           // a fixed count whose addresses all stay silent: the normal search, and the message says so
-          if (fixedCount && fixedFallback(addrs, answered, found.map(([a]) => a)) === "search") {
+          const got = found.map(([a]) => a);
+          // „Anzahl n“ searches when any expected address is missing, a fixed address only when it does not answer
+          if (fixedCount && fixedFallback(addrs, answered, got, packSel.mode === "address" ? "address" : "count") === "search") {
             const all = await api.scan(undefined, true);
             if (gen !== serialGen.current) return;
             const at = all.map(([a]) => a);
-            setMsg([linkedNote, answeredNote, fixedSearchedLine(addrs, at, t)].filter(Boolean).join(" "));
+            setMsg([linkedNote, answeredNote, fixedSearchedLine(addrs.filter((a) => !got.includes(a)), at, t)].filter(Boolean).join(" "));
             onConnected(all, bus);
             if (at.length) await api.startPolling(at, 2000);
             void readSerials(at, linkGen);

@@ -54,18 +54,23 @@ export function partialLine(addrs: number[], found: number[], t: TFunction): str
   return t("conn.partial", { n: addrs.length - missing.length, total: addrs.length, list: missing.map(pad).join(", ") });
 }
 
-/** A fixed pack count (0..n-1) or a fixed address (k) is polled without a search. Fall back to the normal search (0..15) when the connect check
- *  answered at an address outside them (decided before polling, `found` null), or when the device query of the fixed
- *  addresses found none of them; otherwise keep the fast path. */
-export function fixedFallback(fixed: number[], answered: number, found: number[] | null): "keep" | "search" {
+/** A fixed pack count (0..n-1) or a fixed address (k) is polled without a search. Fall back to the normal search (0..15)
+ *  when the connect check answered at an address outside them (decided before polling, `found` null); after the device
+ *  query, a count searches as soon as any expected address is missing (a pack may sit outside 0..n-1), a fixed address
+ *  only when it does not answer. Otherwise keep the fast path. */
+export function fixedFallback(fixed: number[], answered: number, found: number[] | null, mode: "count" | "address" = "count"): "keep" | "search" {
   if (!fixed.includes(answered)) return "search";
-  if (found !== null && !found.some((a) => fixed.includes(a))) return "search";
+  if (found === null) return "keep";
+  const missing = fixed.filter((a) => !found.includes(a));
+  if (mode === "count" ? missing.length > 0 : missing.length === fixed.length) return "search";
   return "keep";
 }
 
-/** „Keine Antwort an Adresse 00–02; gesucht: Pack 01 gefunden“ (`found`: the addresses the search found). */
-export function fixedSearchedLine(fixed: number[], found: number[], t: TFunction): string {
-  const range = fixed.length > 1 ? `${pad(fixed[0])}–${pad(fixed[fixed.length - 1])}` : pad(fixed[0] ?? 0);
+/** „Keine Antwort an Adresse 00–02; gesucht: Pack 01 gefunden“ (`missing`: the expected addresses that did not answer;
+ *  `found`: what the search found). */
+export function fixedSearchedLine(missing: number[], found: number[], t: TFunction): string {
+  const contiguous = missing.every((a, i) => i === 0 || a === missing[i - 1] + 1);
+  const range = missing.length > 1 && contiguous ? `${pad(missing[0])}–${pad(missing[missing.length - 1])}` : missing.length ? missing.map(pad).join(", ") : pad(0);
   const result = found.length ? t("conn.searchedFound", { count: found.length, list: found.map(pad).join(", ") }) : t("conn.searchedNone");
   return t("conn.fixedMissed", { range, result });
 }
