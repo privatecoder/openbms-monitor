@@ -279,7 +279,8 @@ pub(crate) fn param_path(state: &AppState) -> Result<ParamPath, String> {
 /// read after it differs), the identity refusals of `uart1_id.rs` (`no-identity`, `unchecked`, `changed`,
 /// `board-changed`, `duplicate`, `elsewhere`) and those of the power and clock service (`power.rs`: `power-unsupported`,
 /// `power-locked`, `rtc-failed`, `power-no-answer`, `no-board`; `cutoff-failed`: RTN 08 to ein/aus of a build with the
-/// stored pack cutoff, also on RS485-1/2).
+/// stored pack cutoff, also on RS485-1/2; `cutoff-changed`/`cutoff-unread`: an off refused before sending because the
+/// extended off differs from the confirmed one or could not be read, `control::ascii_switch`).
 pub(crate) fn uart1_refusal(error: &str) -> String {
     serde_json::json!({ "kind": "uart1", "error": error }).to_string()
 }

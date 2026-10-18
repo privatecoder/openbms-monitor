@@ -55,6 +55,22 @@ export function cutoffOutcome(on: boolean, g0: number | undefined, s: Status | n
   return locked ? "locked" : (g0 & CUTOFF_BIT) === 0 ? "notLocked" : null;
 }
 
+/** What „Aus“ hands the backend from the confirmation: the extended off it was shown with (`expect`, from the fresh
+ *  Group0 read before; none without that read or for a soft off without the cutoff) and whether it named the stored
+ *  cutoff. The backend compares `expect` right before sending. */
+export function offExpect(kind: "cutoff" | "cutoffMaybe" | "soft", aware: boolean, g0: number | undefined): { expect?: boolean; lockConfirmed: boolean } {
+  return { expect: aware && g0 !== undefined ? (g0 & CUTOFF_BIT) === 0 : undefined, lockConfirmed: kind !== "soft" };
+}
+
+/** The result line of „Aus“ where the pack may store a cutoff (`maybe`: RS485-1/2, only if it has MAINT 1.6): locked
+ *  (never „Laden möglich“), Group0 not readable afterwards (the charge path unclear), or null for the usual soft-off
+ *  texts. */
+export function offCutoffText(cut: ReturnType<typeof cutoffOutcome>, maybe: boolean): string | null {
+  if (cut === "locked") return maybe ? "ctl.cutoff.offDoneMaybe" : "ctl.cutoff.offDone";
+  if (cut === "unread") return "ctl.cutoff.offUnread";
+  return null;
+}
+
 /** The lock line of the state: with the proven cutoff „aktiv“ or „keine“; on RS485-1/2 with a proof only a set bit 5,
  *  as „aktiv, falls MAINT 1.6“; else nothing. */
 export function lockState(cutoff: boolean, proof: boolean, g0: number | undefined): "active" | "none" | "maybeActive" | null {
@@ -143,7 +159,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
-  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "cutoff-failed";
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "cutoff-failed" | "cutoff-changed" | "cutoff-unread";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;

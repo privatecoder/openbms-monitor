@@ -46,7 +46,9 @@ impl PowerDev for Conn<'_> {
 /// A command that changes the pack. No heater, clearing or remaining capacity: the patch offers none of them here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Act {
-    Switch { on: bool },
+    /// `expect`: for off, the extended off (Group0 bit 4 at 0) the confirmation showed; a fresh read that differs sends
+    /// nothing (`cutoff-changed`)
+    Switch { on: bool, expect: Option<bool> },
     Restart,
     SetClock(BmsTime),
 }
@@ -124,7 +126,9 @@ fn command(dev: &mut impl PowerDev, address: u8, act: Act) -> Result<Done, Strin
         return Err(uart1_refusal("power-locked"));
     }
     match act {
-        Act::Switch { on } => dev.on_off(address, on).map(|_| Done::Switched).map_err(switch_error),
+        // a soft off confirmed must not become a stored cutoff, nor the reverse
+        Act::Switch { on: false, expect } if crate::profile::extended_changed(expect, fresh.function_switches[0]) => Err(uart1_refusal("cutoff-changed")),
+        Act::Switch { on, .. } => dev.on_off(address, on).map(|_| Done::Switched).map_err(switch_error),
         // once, no retry: a timeout proves nothing either way
         Act::Restart => dev.restart(address).map(Done::Restarted).map_err(power_error),
         Act::SetClock(time) => {
@@ -245,7 +249,7 @@ mod tests {
     #[test]
     fn released_commands_go_out_after_identity_and_a_fresh_lock_read() {
         let mut d = script(0xF7, Ok(()));
-        let s = run(&mut d, Act::Switch { on: false });
+        let s = run(&mut d, Act::Switch { on: false, expect: None });
         assert_eq!(s.result, Some(Ok(Done::Switched)));
         assert_eq!(d.bank.asked, [(1, uart1::CMD_STRING2), (1, uart1::CMD_READ)]);
         assert_eq!(d.sent, ["off"]);
@@ -259,7 +263,7 @@ mod tests {
     #[test]
     fn a_locked_pack_gets_nothing() {
         // the old FF parameters lock power and clock (bit 3 set)
-        for act in [Act::Switch { on: true }, Act::Restart, Act::SetClock(TIME)] {
+        for act in [Act::Switch { on: true, expect: None }, Act::Restart, Act::SetClock(TIME)] {
             let mut d = script(0xFF, Ok(()));
             let s = run(&mut d, act);
             assert_eq!(err(&s)["error"], "power-locked");
@@ -282,7 +286,7 @@ mod tests {
         // another board than the installation's at this address
         let mut d = script(0xF7, Ok(()));
         d.bank.strings2.insert(1, Some(raw("SYN-OTHER")));
-        let s = run(&mut d, Act::Switch { on: true });
+        let s = run(&mut d, Act::Switch { on: true, expect: None });
         check(&mut d, s, "board-changed");
         // no String 2, silence, no identity
         let mut d = script(0xF7, Ok(()));
@@ -301,7 +305,7 @@ mod tests {
         let mut d = script(0xF7, Ok(()));
         d.bank.master = Some(SerialValue::Set { value: "SYN-BAT-B".into(), truncated: false });
         let f = Facts { master: Some("SYN-BAT-A".into()), ..facts(vec![board(1, "SYN-1", Some(true))]) };
-        let s = session(&mut d, "A", 1, "SYN-1", &f, Act::Switch { on: false });
+        let s = session(&mut d, "A", 1, "SYN-1", &f, Act::Switch { on: false, expect: None });
         check(&mut d, s, "other-master");
         // recorded before provenance: one confirmation first, noted for „Übernehmen“
         let mut d = script(0xF7, Ok(()));
@@ -318,7 +322,7 @@ mod tests {
     #[test]
     fn rtn_05_and_08_are_named() {
         let mut d = script(0xF7, Err(E::Proto(openbms_proto::Error::Rtn(0x05))));
-        let e = err(&run(&mut d, Act::Switch { on: true }));
+        let e = err(&run(&mut d, Act::Switch { on: true, expect: None }));
         assert_eq!((e["error"].as_str(), e["code"].as_u64()), (Some("power-locked"), Some(5)));
         let mut d = script(0xF7, Err(E::Proto(openbms_proto::Error::Rtn(0x08))));
         assert_eq!(err(&run(&mut d, Act::SetClock(TIME)))["error"], "rtc-failed");
@@ -330,14 +334,34 @@ mod tests {
         // ein/aus: RTN 08 is a failed store of the pack cutoff, in both directions; RTN 05 stays the refusal
         for on in [false, true] {
             let mut d = script(0xE7, Err(E::Proto(openbms_proto::Error::Rtn(0x08))));
-            assert_eq!(err(&run(&mut d, Act::Switch { on }))["error"], "cutoff-failed");
+            assert_eq!(err(&run(&mut d, Act::Switch { on, expect: None }))["error"], "cutoff-failed");
         }
         let mut d = script(0xE7, Err(E::Proto(openbms_proto::Error::Rtn(0x05))));
-        assert_eq!(err(&run(&mut d, Act::Switch { on: false }))["code"], 5);
+        assert_eq!(err(&run(&mut d, Act::Switch { on: false, expect: None }))["code"], 5);
         // silence, RS485-1/2 refusals, a broken link
         assert_eq!(power_error(E::Timeout(std::time::Duration::from_millis(1500))), uart1_refusal("power-no-answer"));
         assert_eq!(power_error(E::Proto(openbms_proto::Error::Rtn(0x04))), r#"{"kind":"invalid"}"#);
         assert_eq!(power_error(E::Closed), E::Closed.to_string());
+    }
+
+    #[test]
+    fn a_changed_extended_off_sends_nothing() {
+        // confirmed as soft off (bit 4 at 1), the pack has the extended off on now, and the reverse
+        for (g0, expect) in [(0xE7, false), (0xF7, true)] {
+            let mut d = script(g0, Ok(()));
+            let s = run(&mut d, Act::Switch { on: false, expect: Some(expect) });
+            assert_eq!(err(&s)["error"], "cutoff-changed", "{g0:02X}");
+            assert!(d.sent.is_empty());
+        }
+        // as confirmed: sent
+        for (g0, expect) in [(0xE7, true), (0xF7, false)] {
+            let mut d = script(g0, Ok(()));
+            assert_eq!(run(&mut d, Act::Switch { on: false, expect: Some(expect) }).result, Some(Ok(Done::Switched)));
+            assert_eq!(d.sent, ["off"]);
+        }
+        // on releases whatever bit 4 shows
+        let mut d = script(0xE7, Ok(()));
+        assert_eq!(run(&mut d, Act::Switch { on: true, expect: Some(false) }).result, Some(Ok(Done::Switched)));
     }
 
     #[test]
@@ -370,6 +394,6 @@ mod tests {
     }
 
     fn run_err(state: &AppState, link: &Link, address: u8) -> String {
-        super::run(state, link, address, Act::Switch { on: true }).unwrap_err()
+        super::run(state, link, address, Act::Switch { on: true, expect: None }).unwrap_err()
     }
 }

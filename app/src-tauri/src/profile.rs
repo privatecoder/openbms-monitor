@@ -334,6 +334,12 @@ pub fn lock_changed(base: u8, fresh: u8) -> bool {
     (base ^ fresh) & LOCK_BIT != 0
 }
 
+/// The extended off (Group0 bit 4 at 0) of the pack now differs from the one an off was confirmed with (`expect`; None:
+/// nothing confirmed about it, never a difference).
+pub fn extended_changed(expect: Option<bool>, group0: u8) -> bool {
+    expect.is_some_and(|e| e != (group0 & CUTOFF_BIT == 0))
+}
+
 /// Group0 bit 3 set: ein/aus, restart and setting the clock over the CAN socket are locked at this pack.
 pub fn power_locked(group0: u8) -> bool {
     group0 & POWER_BIT != 0
