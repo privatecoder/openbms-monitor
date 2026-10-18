@@ -293,7 +293,8 @@ export interface MasterView {
 /** The release bits of a Group0 value, each only where the capability has it. */
 export interface Gates { write: boolean | null; start: boolean | null }
 /** The firmware profile of the monitor connection, read on its endpoint right after connecting (`profile.rs`). */
-export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: MasterView; gates: Gates | null; at: number }
+/** `gates_stale`: a write to the master since then left its release bits open (shown as possibly old). */
+export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: MasterView; gates: Gates | null; gates_stale?: boolean; at: number }
 /** What proves a pack's patch version: the master's identity on this link, or a stored proof (after an app flash, or
  *  the user's confirmation) for the board with this String 2. */
 export interface PackPatch { source: "master" | "flash" | "user"; release: string; caps: PatchCaps; at: number | null }

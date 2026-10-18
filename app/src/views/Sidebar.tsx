@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
-import { gatesLine, patched, profileLine, useProfile } from "../profile";
+import { gatesLine, patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
@@ -637,9 +637,11 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
   const { t } = useTranslation();
   const p = useProfile();
   const [checking, setChecking] = useState(false);
+  // a write to the master updates the release bits (or marks them old) in the backend
+  useEffect(() => { const u = api.onFirmwareProfile(setProfile); return () => { u.then((f) => f()); }; }, []);
   const line = profileLine(p, t);
   if (!p || !line) return null;
-  const gates = gatesLine(p.gates, t);
+  const gates = gatesLine(p.gates, t, !!p.gates_stale);
   const recheck = async () => {
     setChecking(true);
     try { await api.firmwareProfileCheck(p.gen); } catch { /* the line stays as it was */ } finally { setChecking(false); }
@@ -650,7 +652,7 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
         <span className="truncate" title={line.text}>{line.text}</span><InfoIcon id="topic.firmwareProfile" />
       </p>
       {gates && <p className="text-xs text-muted">{gates}</p>}
-      {(p.master.kind === "unknown" || p.master.kind === "unknown-patch") && (
+      {recheckable(p) && (
         <button className="text-xs text-ink underline disabled:opacity-40" disabled={locked || checking} onClick={() => void recheck()}>{t("profile.recheck")}</button>
       )}
     </div>

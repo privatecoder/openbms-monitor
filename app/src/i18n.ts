@@ -156,6 +156,7 @@ const resources = {
         unknown: "Firmware nicht erkannt",
         gate: { write: "Schreiben über CAN", start: "Wartungsstart" }, allowed: "erlaubt", locked: "gesperrt",
         recheck: "Erneut prüfen",
+        gatesStale: "Freigaben nach dem letzten Schreiben offen: erneut prüfen", staleSuffix: "(vor dem letzten Schreiben, ggf. veraltet)",
       },
       maint: {
         halt: "Master anhalten", release: "Master freigeben",
@@ -1032,6 +1033,7 @@ const resources = {
         unknown: "Firmware not recognised",
         gate: { write: "Writing via CAN", start: "Maintenance start" }, allowed: "allowed", locked: "locked",
         recheck: "Check again",
+        gatesStale: "Releases open after the last write: check again", staleSuffix: "(before the last write, may be old)",
       },
       maint: {
         halt: "Halt master", release: "Release master",
