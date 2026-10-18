@@ -1,0 +1,11 @@
+---
+title: Firmware profile of the connection
+short: After connecting via the CAN socket the app asks the master for its firmware and sets itself up by it.
+related: topic.patchGates, topic.maintenance, topic.buses
+---
+- **When:** on every connect via the CAN socket, on exactly that port, before polling starts (command 0x64 to address 0). The profile holds only for this connection; another port, a new connect or an update is checked again. RS485-1/2 does not know the command; there is no profile there.
+- **Patched firmware (from MAINT 1.5):** the line shows the build (listed: 16.06.13 MAINT 1.5; otherwise “MAINT x.y (base …, build not listed)”), the maintenance state and the master's releases. The app then reads every pack's serial numbers via the CAN socket when connecting, offers “Halt master” and sets up the Parameters view by the release bits. What patched firmware can do follows from its patch version, not from the list: the patch functions stay the same in later versions. An unlisted build is recognised by its reported version alone.
+- **Unknown patched firmware:** an older or other patch level. The app then uses original functions only and sends no patch commands.
+- **0x64 not supported:** typical of original firmware, but no proof of it. All original functions work as usual.
+- **Firmware not recognised:** no answer or no valid one. “Check again” asks once more.
+- **Slaves:** only the master reports its identity. Whether a slave has patched firmware shows only by its own answers via the CAN socket; what the release bits mean there holds only with a proof (see “Patched firmware: release bits”).
