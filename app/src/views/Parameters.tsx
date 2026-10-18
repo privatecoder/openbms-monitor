@@ -7,7 +7,7 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, type Parameters, type Source } from "../params";
-import { blockers, capacityEffects, changeOf, changes, fromRaw, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
+import { blockers, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
@@ -95,6 +95,10 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // one pack column is edited at a time; its write runs under the same lock as the other writes
   const [edit, setEdit] = useState<Edit | null>(null);
   const [full, setFull] = useState<Full>(null);
+  // the full-capacity reads of the editor: only the newest one, for the pack still edited, may set `full`
+  const fullReqs = useRef(fullRequests());
+  const editing = useRef<number | undefined>(undefined);
+  editing.current = edit?.address;
   const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
   // packs a write went to without a serial to check the bank with (this connection)
   const unchecked = useUnchecked();
@@ -221,15 +225,18 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     // „Vorherigen Stand“: that block, with P65 as now (it changes only when unlocked)
     const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
     setEdit({ address: a, base, baseSwitches, raws, switches: from ? [...from.function_switches] : [...baseSwitches], text: {}, seriesUnlocked: false });
+    editing.current = a;
     setNote(null); setPicking(false); setTargets([]); setRunState(null);
     setSources((s) => s.map((x) => (x.id === c.id ? { ...x, notTaken: undefined } : x)));
     // the learned full capacity (0x42): every successful write sets it to P58 when they are 10 Ah apart
     setFull(null);
     // asked on the link of the column; an answer after a change of connection or installation is dropped
     const l = linkNow();
+    const fits = fullReqs.current.begin(a);
     if (c.link !== l) { setFull({ address: a, error: t("pw.full.otherLink") }); return; }
-    api.packLive(a).then((v) => { if (linkNow() === l) setFull({ address: a, ah: v.telemetry.full_capacity_ah }); },
-      (e) => { if (linkNow() === l) setFull({ address: a, error: String(e) }); });
+    const ok = () => linkNow() === l && fits(editing.current);
+    api.packLive(a).then((v) => { if (ok()) setFull({ address: a, ah: v.telemetry.full_capacity_ah }); },
+      (e) => { if (ok()) setFull({ address: a, error: String(e) }); });
   };
 
   const takeOverFrom = (id: string) => {

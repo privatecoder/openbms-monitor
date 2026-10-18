@@ -190,3 +190,16 @@ export function capacityEffects(packs: { address: number; raws: Raws }[], full: 
   }
   return { resets, unknown };
 }
+
+/** The editor's full-capacity reads (0x42, `startEdit`): each opening of the editor is a new request with its ticket.
+ *  An answer counts only for the newest request and while the editor still edits the pack it was asked for, so a late
+ *  answer of an earlier editor never replaces the current one's. */
+export function fullRequests() {
+  let seq = 0;
+  return {
+    begin(address: number) {
+      const ticket = ++seq;
+      return (editing: number | undefined) => ticket === seq && editing === address;
+    },
+  };
+}

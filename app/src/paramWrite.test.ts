@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RULES, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations } from "./paramWrite";
+import { RULES, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations, fullRequests } from "./paramWrite";
 import { KEYS, UNITS, type Parameters } from "./params";
 
 /** A synthetic, plausible configuration (display values, P0..P86). */
@@ -280,5 +280,22 @@ describe("one change onto several packs", () => {
     const packs = [{ address: 0, raws: set({ 58: 28000 }) }, { address: 1, raws: set({ 58: 28000 }) }, { address: 2, raws: set({ 58: 28000 }) }, { address: 3, raws: set({ 58: 28000 }) }];
     const full = new Map<number, number | null>([[0, 279.5], [1, 265], [2, null]]);
     expect(capacityEffects(packs, full)).toEqual({ resets: [1], unknown: [2, 3] });
+  });
+});
+
+describe("the editor's full-capacity reads", () => {
+  it("a late answer of an earlier editor never replaces the current one's", () => {
+    const reqs = fullRequests();
+    const pack1 = reqs.begin(1);
+    // closed, pack 2 opened before pack 1's answer came
+    const pack2 = reqs.begin(2);
+    expect(pack1(2)).toBe(false);
+    expect(pack2(2)).toBe(true);
+    // the editor closed or on another pack: no answer counts
+    expect(pack2(undefined)).toBe(false);
+    // the same pack opened again: only the newest request
+    const again = reqs.begin(2);
+    expect(pack2(2)).toBe(false);
+    expect(again(2)).toBe(true);
   });
 });
