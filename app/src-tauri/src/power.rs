@@ -47,6 +47,21 @@ pub(crate) enum Act {
     SetClock(BmsTime),
 }
 
+/// The way an ein/aus, restart or clock command takes on the bus of its link (`bms_memory::bound_bus`): this service on
+/// the CAN socket, the RS485-1/2 one (right-bank check, 0x51) there. Never one in place of the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Way {
+    Power,
+    Ascii,
+}
+
+pub(crate) fn way(bus: Bus) -> Way {
+    match bus {
+        Bus::CanSocketBus => Way::Power,
+        Bus::PackBus => Way::Ascii,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Done {
     Switched,

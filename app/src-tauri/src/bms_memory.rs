@@ -28,16 +28,33 @@ pub const PRE_READ: &str = "pre-read: String 2 could not be read before the writ
 
 const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 
-pub(crate) fn pack_bus_only(state: &AppState) -> Result<(), String> {
-    if can_socket(state)? {
+pub(crate) fn pack_bus(bus: Bus) -> Result<(), String> {
+    if bus == Bus::CanSocketBus {
         return Err(PACK_BUS_ONLY.into());
     }
     Ok(())
 }
 
-/// Connected over the CAN socket: ein/aus, restart and the clock go the patched pack's way there (`power.rs`).
-pub(crate) fn can_socket(state: &AppState) -> Result<bool, String> {
-    Ok(*state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus))
+/// The bus of connection `link`: the one its profile was read with for that generation, so bus and link always belong
+/// to the same connection (never the global bus read at another moment, before a reconnect).
+pub(crate) fn bus_of(state: &AppState, link: &Link) -> Result<Bus, String> {
+    crate::bank::profile(state, link.gen).map(|p| p.bus).ok_or_else(|| "not connected".into())
+}
+
+/// A write's connection and its bus, taken together after the pack's reservation (no connect runs while a pack is
+/// reserved); every frame then goes through `with_link` on exactly this link. On the CAN socket ein/aus, restart and
+/// the clock take the patched pack's way (`power.rs`), never the RS485-1/2 one.
+pub(crate) fn bound_bus(state: &AppState, installation: Option<&str>) -> Result<(Link, Bus), String> {
+    let link = bound(state, installation)?;
+    let bus = bus_of(state, &link)?;
+    Ok((link, bus))
+}
+
+/// `bound_bus` for a command that exists only on RS485-1/2.
+pub(crate) fn bound_pack_bus(state: &AppState, installation: Option<&str>) -> Result<Link, String> {
+    let (link, bus) = bound_bus(state, installation)?;
+    pack_bus(bus)?;
+    Ok(link)
 }
 
 /// Writes to a pack belong to the connection's installation: none with „Nur ansehen“ (nothing would record the state
@@ -118,20 +135,20 @@ pub fn read_all(
 /// The clock (0x4D); over the CAN socket only of a pack with the power and clock service (`power::clock`).
 #[tauri::command]
 pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTime, String> {
-    if can_socket(&state)? {
-        return crate::power::clock(&state, &link_now(&state), address);
+    let link = link_now(&state);
+    match crate::power::way(bus_of(&state, &link)?) {
+        crate::power::Way::Power => crate::power::clock(&state, &link, address),
+        crate::power::Way::Ascii => with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.clock(address)),
     }
-    with_conn(&state.conn, &state.flashing, |c| c.clock(address))
 }
 
 /// Set the clock to `time` (the PC's local time, chosen by the UI) and read it back. Over the CAN socket with the
 /// identity check and the lock bit first (`power::run`).
 #[tauri::command]
 pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<Written<BmsTime>, String> {
-    let can = can_socket(&state)?;
-    let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "clock")?;
-    if can {
+    let (link, bus) = bound_bus(&state, installation.as_deref())?;
+    if crate::power::way(bus) == crate::power::Way::Power {
         return match crate::power::run(&state, &link, address, crate::power::Act::SetClock(time))? {
             crate::power::Done::Clock(value) => Ok(Written { value, unchecked: false }),
             _ => Err("no result".into()),
@@ -189,9 +206,8 @@ fn full_capacity(state: &AppState, address: u8) -> Result<f64, String> {
 /// One calibration step (0xA0). The UI reads the live values again afterwards.
 #[tauri::command]
 pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<Written<()>, String> {
-    pack_bus_only(&state)?;
-    let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "calibration")?;
+    let link = bound_pack_bus(&state, installation.as_deref())?;
     let checked = check_target(&state, &link, address)?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)?;
     Ok(Written { value: (), unchecked: checked.unchecked })
@@ -217,9 +233,8 @@ impl CanProtocolSet {
 /// has accepted, a failed read-back is still a success (the protocol is set), with `read_error`.
 #[tauri::command]
 pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<Written<CanProtocolSet>, String> {
-    pack_bus_only(&state)?;
-    let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "can")?;
+    let link = bound_pack_bus(&state, installation.as_deref())?;
     let checked = check_target(&state, &link, address)?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
     let value = CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.device_info(address)));
@@ -389,11 +404,11 @@ pub enum ParamWrite {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool, serial: Option<String>) -> Result<Written<ParamWrite>, String> {
-    let path = param_path(&state)?;
-    let link = bound(&state, installation.as_deref())?;
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
     let _guard = reserve_pack_wait(&state, address, "params")?;
-    let r = match path {
+    // the path by the bus of this very link, so a reconnect meanwhile cannot send ASCII over the CAN socket
+    let (link, bus) = bound_bus(&state, installation.as_deref())?;
+    let r = match ParamPath::of(Some(bus)) {
         ParamPath::Ascii => (|| {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
             let checked = check_target(&state, &link, address)?;
@@ -571,9 +586,8 @@ pub struct SerialSet {
 /// atomically; a crash in between shows as a bank mismatch, which „Seriennummer übernehmen“ resolves.
 #[tauri::command]
 pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<Written<SerialSet>, String> {
-    pack_bus_only(&state)?;
-    let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "serial")?;
+    let link = bound_pack_bus(&state, installation.as_deref())?;
     // the right bank first (a silent pack is refused there); its String 2 read is the value before the write
     let checked = check_target(&state, &link, address)?;
     let unchecked = checked.unchecked;
@@ -639,14 +653,14 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
 /// Read the whole history of one pack; progress arrives as "bms-history-progress" events. One read at a time.
 #[tauri::command]
 pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8) -> Result<HistoryRead, String> {
-    pack_bus_only(&state)?;
     let busy = crate::reserve_port(&state.memory_busy).ok_or("a history read is already running")?;
     // clearing the same pack meanwhile would cut the read short
     let pack = reserve_pack_wait(&state, address, "history")?;
-    state.memory_cancel.store(false, Ordering::SeqCst);
-    let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
     // records of another connection's pack must not continue this read
     let (links, link) = (state.link.clone(), link_now(&state));
+    pack_bus(bus_of(&state, &link)?)?;
+    state.memory_cancel.store(false, Ordering::SeqCst);
+    let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let (_busy, _pack): (PortSlot, _) = (busy, pack);
         read_all(
@@ -941,7 +955,33 @@ mod tests {
         *state.bus.lock().unwrap() = Some(Bus::CanSocketBus);
         // not refused for the bus: it fails here only for the missing connection
         assert_eq!(full_capacity(&state, 2).unwrap_err(), "not connected");
-        assert_eq!(pack_bus_only(&state).unwrap_err(), PACK_BUS_ONLY);
+        assert_eq!(pack_bus(Bus::CanSocketBus).unwrap_err(), PACK_BUS_ONLY);
+    }
+
+    #[test]
+    fn a_write_takes_the_bus_of_its_own_link_never_the_global_one() {
+        let state = AppState::default();
+        crate::new_link(&state, Some("A".into()));
+        let link = link_now(&state);
+        crate::bank::begin(&state, link.gen, false, None);
+        crate::bank::set_profile(&state, link.gen, crate::profile::of("tcp:gw:4196", Bus::CanSocketBus, None));
+        // the global bus still says RS485-1/2 (read before a reconnect): the link's own connection decides
+        *state.bus.lock().unwrap() = Some(Bus::PackBus);
+        let (l, bus) = bound_bus(&state, Some("A")).unwrap();
+        assert_eq!((l.gen, bus), (link.gen, Bus::CanSocketBus));
+        assert_eq!(crate::power::way(bus), crate::power::Way::Power, "ein/aus, restart and the clock go through power::run");
+        assert_eq!(bound_pack_bus(&state, Some("A")).unwrap_err(), PACK_BUS_ONLY);
+        // a new connection whose profile is not set yet: nothing is decided for it
+        crate::new_link(&state, Some("A".into()));
+        assert_eq!(bound_bus(&state, Some("A")).unwrap_err(), "not connected");
+        let gen = link_now(&state).gen;
+        crate::bank::begin(&state, gen, true, None);
+        crate::bank::set_profile(&state, gen, crate::profile::of("serial:/dev/cu.synthetic", Bus::PackBus, None));
+        *state.bus.lock().unwrap() = Some(Bus::CanSocketBus);
+        assert_eq!(bound_bus(&state, Some("A")).unwrap().1, Bus::PackBus);
+        assert_eq!(crate::power::way(Bus::PackBus), crate::power::Way::Ascii);
+        // „Nur ansehen“ or another installation writes nothing
+        assert!(bound_bus(&state, Some("B")).is_err());
     }
 
     #[test]
