@@ -83,6 +83,36 @@ export async function writeCellTypes(write: () => Promise<unknown>, reload: () =
   }
 }
 
+/** Cell type writes of one installation: one at a time, in order; `gen` counts the changes given, `stale` marks a failed
+ *  write whose state could not be put back because a later change was already shown. */
+export interface CellQueue { tail: Promise<unknown>; gen: number; stale: boolean }
+const cellQueues = new Map<string, CellQueue>();
+function cellQueue(scope: string): CellQueue {
+  let q = cellQueues.get(scope);
+  if (!q) { q = { tail: Promise.resolve(), gen: 0, stale: false }; cellQueues.set(scope, q); }
+  return q;
+}
+
+/** A cell type write in the installation's queue (`writeCellTypes` once the ones before are done). Only the latest
+ *  change may put the cache back, so a late failure never rolls back a newer change; a failure behind a later change
+ *  leaves the queue stale, and the latest write, once it went through, reads the stored state back. */
+export function queueCellTypes(q: CellQueue, write: () => Promise<unknown>, reload: () => Promise<Record<string, unknown>>,
+  before: Record<string, unknown>, restore: (back: Record<string, unknown>) => void): Promise<unknown> {
+  const gen = ++q.gen;
+  const latest = () => q.gen === gen;
+  const run = q.tail.then(async () => {
+    const err = await writeCellTypes(write, reload, before, (back) => { if (latest()) restore(back); });
+    if (err !== null && !latest()) q.stale = true;
+    if (err === null && latest() && q.stale) {
+      q.stale = false;
+      await reload().then(restore, (r) => console.error("cell types read back:", r));
+    }
+    return err;
+  });
+  q.tail = run.catch(() => undefined);
+  return run;
+}
+
 /** After a merge or the move of the old data: read again from the backend. */
 export function reloadSettings() { cache.clear(); changed(); }
 
@@ -126,7 +156,7 @@ export function useSettings(scope: string | null) {
     cache.set(k, { ...cur, cell_types: next });
     changed();
     if (!stored(scope)) return null;
-    return writeCellTypes(() => api.setInstallationCellTypes(scope, changes), () => api.installationSettings(scope).then((s) => s.cell_types), cur.cell_types, (back) => {
+    return queueCellTypes(cellQueue(scope), () => api.setInstallationCellTypes(scope, changes), () => api.installationSettings(scope).then((s) => s.cell_types), cur.cell_types, (back) => {
       const now = cache.get(k);
       if (now) { cache.set(k, { ...now, cell_types: back }); changed(); }
     });
