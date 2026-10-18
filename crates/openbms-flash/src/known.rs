@@ -161,6 +161,17 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[PatchBuild {
     build_id: "909a604e60e9225b",
     code_sha256: "5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12",
     ehex_sha256: "346959edab55e857c2ae8a47cb2f4a7a2be2b279024857ce83ed612304060ee1",
+},
+// MNT format 3, 64/03 answered at every pack's own address; hard stop off (54584 app bytes, 215 update blocks)
+PatchBuild {
+    name: "16.06.13 MAINT 1.5",
+    base: [16, 6, 13],
+    patch: [1, 5],
+    mnt_format: 3,
+    hard_stop: Some(false),
+    build_id: "297f9f2aa8402e9f",
+    code_sha256: "02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508",
+    ehex_sha256: "31a6477f938bf2ac017deec3d0158f72039a3898d28686e428094946ae609fe0",
 }];
 
 /// The entry `0x64/03` describes in `table`: format, base, patch and build ID all match.
@@ -259,6 +270,17 @@ mod tests {
         assert_eq!(caps_of(2, [1, 4]), None, "1.4: format 2 without release bits");
         assert_eq!(caps_of(1, [1, 5]), None, "format 1");
         assert_eq!(PATCH_BUILDS[0].caps(), Some(full));
+    }
+
+    #[test]
+    fn the_slave_addressed_build_is_listed_by_format_and_build_id() {
+        let b = patch_build(3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").unwrap();
+        assert_eq!((b.name, b.hard_stop, b.caps()), ("16.06.13 MAINT 1.5", Some(false), caps_of(3, [1, 5])));
+        assert_eq!(patch_image("02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508"), Some("16.06.13 MAINT 1.5"));
+        assert_eq!(kind_of_hash("02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508").0, ImageKind::Maintenance);
+        // the format-2 build stays listed; the same build ID under another format is not this entry
+        assert!(patch_build(2, [16, 6, 13], [1, 5], "909a604e60e9225b").is_some());
+        assert!(patch_build(2, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").is_none());
     }
 
     #[test]
