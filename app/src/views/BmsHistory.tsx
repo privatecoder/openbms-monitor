@@ -24,8 +24,9 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const setAddress = (a: number | null) => { keptAddress = a; setAddressState(a); };
   useEffect(() => { if (address === null || !packs.includes(address)) setAddress(packs[0] ?? null); }, [packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tagged, setResult] = useState<LastRead | null>(lastRead);
-  // a result of another installation (same address, other bank) is not this one's history: not shown, not exported
-  const result = tagged && sameInstallation(tagged.link, linkNow()) ? tagged.read : null;
+  // a result of another installation (same address, other bank) or of another pack than the chosen one is not this
+  // one's history: not shown, not exported
+  const result = tagged && sameInstallation(tagged.link, linkNow()) && tagged.read.address === address ? tagged.read : null;
   const [progress, setProgress] = useState<number | null>(() => currentRun()?.n ?? null);
   const [saved, setSaved] = useState<{ name: string } | { error: string } | null>(null);
   const usable = connected && (bus === "pack" || isDemo);

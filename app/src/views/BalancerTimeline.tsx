@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { forKey, type Keyed } from "../keyed";
 import { useTranslation } from "react-i18next";
 import { Scale } from "lucide-react";
 import { api, isDemo, type BalancerSlice, type BalancerTimeline as Timeline } from "../api";
@@ -23,17 +24,21 @@ const COLOR: Record<LaneMark["state"], string> = {
 export function BalancerTimeline({ pack, scope, from, to }: { pack: number; scope: string | null; from: number; to: number }) {
   const { t, i18n } = useTranslation();
   const { settings, loaded } = useSettings(scope);
-  const [data, setData] = useState<Timeline | null>(null);
+  // the timeline with its query (installation, pack, length of the span, devices): another one shows none until its
+  // answer; the span moving with the clock keeps its length and so the timeline until the new answer
+  const [dataState, setData] = useState<Keyed<Timeline> | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const site = scope ?? (isDemo ? "demo" : null);
   const devicesKey = JSON.stringify(settings.devices ?? null);
+  const dataKey = `${site}|${pack}|${Math.round((to - from) / 60_000)}|${devicesKey}`;
+  const data = forKey(dataState, dataKey);
 
   useEffect(() => {
     if (!site || !loaded) return;
     let alive = true;
     api.balancerTimeline(site, pack, from, to, settings.devices ?? null, SLICES)
-      .then((d) => { if (alive) { setData(d); setErr(null); } })
-      .catch((e) => alive && setErr(String(e)));
+      .then((d) => { if (alive) { setData({ key: dataKey, value: d }); setErr(null); } })
+      .catch((e) => { if (alive) { setData(null); setErr(String(e)); } });
     return () => { alive = false; };
   }, [site, pack, from, to, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 

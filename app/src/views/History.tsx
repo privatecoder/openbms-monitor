@@ -10,6 +10,7 @@ import { InfoIcon, helpTitle } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { Chart, useDark, type Line } from "../history/Chart";
 import { exportName, packColor, shares } from "../history/data";
+import { forKey, type Keyed } from "../keyed";
 import { BmsHistory } from "./BmsHistory";
 import { HealthReport } from "./HealthReport";
 import { neighbourPairs, usePairs, validPairs } from "../pairs";
@@ -57,7 +58,8 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
   const setMetrics = (f: (m: Metric[]) => Metric[]) => setMetricsState((m) => (keptMetrics = f(m)));
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const [cellPack, setCellPack] = useState<number | null>(null);
-  const [data, setData] = useState<Series | null>(null);
+  // the series with its query (installation, span, packs, cell pack): another one shows none until its answer
+  const [dataState, setData] = useState<Keyed<Series> | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -99,16 +101,20 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
   }, [span, info, tick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const wantCells = metrics.includes("cells");
+  // a relative span moving with the clock is the same query; its refresh keeps the chart until the new answer
+  const dataKey = `${site}|${JSON.stringify(span)}|${packs.join(",")}|${wantCells ? cellPack : ""}`;
+  const data = forKey(dataState, dataKey);
   useEffect(() => {
     if (!site || !packs.length) { setData(null); return; }
     let alive = true;
     setBusy(true);
     api.historySeries(site, from, to, packs, wantCells ? cellPack : null, MAX_POINTS)
-      .then((d) => { if (alive) { setData(d); setErr(null); } })
-      .catch((e) => alive && setErr(String(e)))
+      .then((d) => { if (alive) { setData({ key: dataKey, value: d }); setErr(null); } })
+      // a failed query never leaves the earlier chart as its answer
+      .catch((e) => { if (alive) { setData(null); setErr(String(e)); } })
       .finally(() => alive && setBusy(false));
     return () => { alive = false; };
-  }, [site, from, to, packs, wantCells, cellPack]);
+  }, [site, from, to, packs, wantCells, cellPack]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const zoom = (a: number, b: number) => { if (data && b - a >= data.step * 4) setSpan({ from: a, to: b }); };
   const reset = () => setSpan({ preset: 24 });

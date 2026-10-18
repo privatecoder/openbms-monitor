@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Download } from "lucide-react";
 import { api, isDemo, type CellAnalysis, type HealthReport as Report, type PackDay } from "../api";
 import { reasonText, reportCells } from "../cellAnalysis";
+import { forKey, type Keyed } from "../keyed";
 import { useSettings } from "../installData";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
@@ -27,7 +28,8 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
   const dark = useDark();
   const [period, setPeriodState] = useState<Period>(keptPeriod);
   const setPeriod = (p: Period) => { keptPeriod = p; setPeriodState(p); };
-  const [report, setReport] = useState<Report | null>(null);
+  // the report and the cell analyses with the query they answer: another installation, period or pair set shows none
+  const [reportState, setReport] = useState<Keyed<Report> | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -36,32 +38,36 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
   const { settings, loaded } = useSettings(site);
   const devicesKey = JSON.stringify(settings.devices ?? null);
   // the cell analysis per pack, one after the other once the report is there
-  const [cells, setCells] = useState<Record<number, CellAnalysis | string>>({});
+  const [cellsState, setCells] = useState<Keyed<Record<number, CellAnalysis | string>> | null>(null);
+  const reportKey = `${site}|${period}|${siteFrom}|${pairKey}`;
+  const report = forKey(reportState, reportKey);
+  const cellsKey = `${reportKey}|${devicesKey}`;
+  const cells = forKey(cellsState, cellsKey) ?? {};
 
   useEffect(() => {
     let alive = true;
     const [from, to] = periodRange(period, Date.now(), siteFrom);
     setBusy(true); setErr(null);
     api.healthReport(site, from, to, pairs)
-      .then((r) => { if (alive) setReport(r); })
-      .catch((e) => alive && setErr(String(e)))
+      .then((r) => { if (alive) setReport({ key: reportKey, value: r }); })
+      .catch((e) => { if (alive) { setReport(null); setErr(String(e)); } })
       .finally(() => alive && setBusy(false));
     return () => { alive = false; };
   }, [site, period, siteFrom, pairKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setCells({});
+    setCells({ key: cellsKey, value: {} });
     if (!report || !loaded) return;
     let alive = true;
     (async () => {
       for (const p of report.packs) {
         if (!alive) return;
         const r = await api.cellAnalysis(site, p.pack, report.from, report.to, settings.devices ?? null, 0).catch((e) => String(e));
-        if (alive) setCells((c) => ({ ...c, [p.pack]: r }));
+        if (alive) setCells((c) => (c?.key === cellsKey ? { key: cellsKey, value: { ...c.value, [p.pack]: r } } : c));
       }
     })();
     return () => { alive = false; };
-  }, [report, loaded, devicesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [report, loaded, devicesKey, site]); // eslint-disable-line react-hooks/exhaustive-deps
   const cellsByPack = Object.fromEntries(Object.entries(cells).filter((e): e is [string, CellAnalysis] => typeof e[1] !== "string"));
 
   const packs = useMemo(() => (report ? packRows(report) : []), [report]);
