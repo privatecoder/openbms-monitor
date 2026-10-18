@@ -30,6 +30,8 @@ pub struct ImageInfo {
     custom: bool,
     /// a listed patched build with power and clock over the CAN socket (lock Group0 bit 3, taken over unchanged)
     power_rtc: bool,
+    /// a listed patched build with the stored pack cutoff (Group0 bit 4 extended off, bit 5 the lock, taken over unchanged)
+    pack_cutoff: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -200,6 +202,7 @@ pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(eh
         blocks,
         sha256: image.code_sha256.clone(),
         power_rtc: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.power_rtc),
+        pack_cutoff: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.pack_cutoff),
     };
     Ok((image, info))
 }
@@ -488,7 +491,7 @@ mod tests {
     fn the_master_marker_is_checked_for_the_installation_whatever_endpoint() {
         use openbms_flash::maint::policy::Patch;
         use openbms_proto::{MaintInfo, MaintState};
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false };
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false, pack_cutoff: false };
         let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
         let (on, off) = (with(0), with(u32::MAX));
         let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);

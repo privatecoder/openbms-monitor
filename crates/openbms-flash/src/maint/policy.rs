@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
-        MaintInfo { format: 2, base, patch, build_id, hard_stop: None, power_rtc: false }
+        MaintInfo { format: 2, base, patch, build_id, hard_stop: None, power_rtc: false, pack_cutoff: false }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })
@@ -185,8 +185,8 @@ mod tests {
     #[test]
     fn a_second_listed_entry_is_configured_like_the_first() {
         static TABLE: [PatchBuild; 2] = [
-            PatchBuild { name: "16.06.13 MAINT 1.5", base: [16, 6, 13], patch: [1, 5], mnt_format: 2, hard_stop: None, power_rtc: false, build_id: "909a604e60e9225b", code_sha256: "a", ehex_sha256: "b" },
-            PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], mnt_format: 2, hard_stop: None, power_rtc: false, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
+            PatchBuild { name: "16.06.13 MAINT 1.5", base: [16, 6, 13], patch: [1, 5], mnt_format: 2, hard_stop: None, power_rtc: false, pack_cutoff: false, build_id: "909a604e60e9225b", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], mnt_format: 2, hard_stop: None, power_rtc: false, pack_cutoff: false, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
         ];
         let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 5], LISTED)))).with_state(state(0, 0));
         let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));

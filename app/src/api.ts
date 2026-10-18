@@ -212,7 +212,7 @@ export interface HealthReport { from: number; to: number; packs: PackReport[]; p
 export interface ExportStats { rows: number; files: string[] }
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
-export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean }
+export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean; pack_cutoff?: boolean }
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
@@ -281,8 +281,9 @@ export interface SnapshotParams { address: number; at: number; kind: StoredSnaps
 export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: string; diag?: string }
 /** What a patched firmware offers (by its patch version; never compared against a version number in the UI). */
 /** `power_rtc`: image flag bit 1 of the pack's own 64/03 (ein/aus, restart and the clock over the CAN socket with the lock
- *  Group0 bit 3); null: not known (a stored proof carries no image flags) */
-export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null }
+ *  Group0 bit 3); null: not known (a stored proof carries no image flags). `pack_cutoff`: image flag bit 2 with patch 1.6 or
+ *  later, the stored pack cutoff (Group0 bit 4 extended off, bit 5 the lock state); false below 1.6, null: not known */
+export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null; pack_cutoff?: boolean | null }
 /** The master as read over the CAN socket bus (0x64/03, then for a supported patch 0x64/02). kind: "patched" (patch
  *  functions by its patch version; `listed`: the build's name, null when the build is not listed), "unknown-patch",
  *  "no-0x64" (firmware not proven), "unknown". `polling` after a release: "unverified" or "no-slaves". */
@@ -306,8 +307,9 @@ export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: 
 export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?: "master" | "pack"; release: string; caps: PatchCaps; at: number | null }
 /** A pack's own addressed 64/03 on this connection (pack view only, never the master profile): proven (patch ≥ 1.5),
  *  negative (another MNT or an older patch), undecided (silence or an error). */
-/** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket). */
-export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null }
+/** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket); `pack_cutoff`: its
+ *  stored pack cutoff (image flag bit 2, patch 1.6 or later). */
+export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "start-refused"; reason: string }

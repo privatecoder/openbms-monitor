@@ -104,6 +104,15 @@ pub struct CapMin {
     pub start_gate_bit2: [u8; 2],
 }
 
+/// From this patch version on, image flag bit 2 announces the stored pack cutoff (Group0 bit 4 extended off, bit 5 the
+/// lock state). Below it the bits are not read that way, whatever the flag says.
+pub const PACK_CUTOFF_MIN: [u8; 2] = [1, 6];
+
+/// The stored pack cutoff of an identity with patch `patch` and image flag bit 2 `flag`: both needed.
+pub fn pack_cutoff_of(patch: [u8; 2], flag: bool) -> bool {
+    flag && patch >= PACK_CUTOFF_MIN
+}
+
 /// The `0x64/03` formats the app decodes; both carry the same identity fields (format 3 adds the image flags).
 pub const MNT_FORMATS: [u8; 2] = [2, 3];
 
@@ -139,6 +148,8 @@ pub struct PatchBuild {
     pub hard_stop: Option<bool>,
     /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket with the lock Group0 bit 3
     pub power_rtc: bool,
+    /// format 3, image flag bit 2 with patch 1.6: the stored pack cutoff (Group0 bits 4/5)
+    pub pack_cutoff: bool,
     /// the build ID of `0x64/03`, 16 lower-case hex digits
     pub build_id: &'static str,
     /// SHA-256 of the decoded application code (`ehex::Image::code_sha256`)
@@ -161,6 +172,7 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[PatchBuild {
     mnt_format: 2,
     hard_stop: None,
     power_rtc: false,
+    pack_cutoff: false,
     build_id: "909a604e60e9225b",
     code_sha256: "5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12",
     ehex_sha256: "346959edab55e857c2ae8a47cb2f4a7a2be2b279024857ce83ed612304060ee1",
@@ -173,6 +185,7 @@ PatchBuild {
     mnt_format: 3,
     hard_stop: Some(false),
     power_rtc: false,
+    pack_cutoff: false,
     build_id: "297f9f2aa8402e9f",
     code_sha256: "02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508",
     ehex_sha256: "31a6477f938bf2ac017deec3d0158f72039a3898d28686e428094946ae609fe0",
@@ -186,9 +199,24 @@ PatchBuild {
     mnt_format: 3,
     hard_stop: Some(false),
     power_rtc: true,
+    pack_cutoff: false,
     build_id: "d75a7b24cb6e8590",
     code_sha256: "58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a",
     ehex_sha256: "9b8f7b1535a2491e883b61f8bd7566d074842aadcfdc3095d715f2d968e49052",
+},
+// MAINT 1.6, MNT format 3 with image flags 06: power and clock as 1.5, plus the stored pack cutoff (Group0 bits 4/5) and
+// the master's CCL clamp; hard stop off
+PatchBuild {
+    name: "16.06.13 MAINT 1.6",
+    base: [16, 6, 13],
+    patch: [1, 6],
+    mnt_format: 3,
+    hard_stop: Some(false),
+    power_rtc: true,
+    pack_cutoff: true,
+    build_id: "18daf61d8a93671d",
+    code_sha256: "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
+    ehex_sha256: "32f27f3f128a591759bd2e205579b2dfdccf50c3717e50c7092c1e30f44d146f",
 }];
 
 /// The entry `0x64/03` describes in `table`: format, base, patch and build ID all match.
@@ -298,6 +326,21 @@ mod tests {
         // the earlier builds have no power and clock service
         assert!(!patch_build(3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").unwrap().power_rtc);
         assert!(!patch_build(2, [16, 6, 13], [1, 5], "909a604e60e9225b").unwrap().power_rtc);
+    }
+
+    #[test]
+    fn the_pack_cutoff_build_is_listed_and_the_capability_needs_patch_1_6() {
+        let b = patch_build(3, [16, 6, 13], [1, 6], "18daf61d8a93671d").unwrap();
+        assert_eq!((b.name, b.hard_stop, b.power_rtc, b.pack_cutoff), ("16.06.13 MAINT 1.6", Some(false), true, true));
+        assert_eq!(b.caps(), caps_of(3, [1, 6]), "the 1.5 functions, cumulatively");
+        assert_eq!(patch_image("be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d"), Some("16.06.13 MAINT 1.6"));
+        assert_eq!(kind_of_hash("be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d").0, ImageKind::Maintenance);
+        assert!(PATCH_BUILDS.iter().filter(|b| b.patch < [1, 6]).all(|b| !b.pack_cutoff));
+        // the flag alone is not enough, nor the version alone
+        assert!(pack_cutoff_of([1, 6], true));
+        assert!(pack_cutoff_of([1, 7], true));
+        assert!(!pack_cutoff_of([1, 5], true));
+        assert!(!pack_cutoff_of([1, 6], false));
     }
 
     #[test]
