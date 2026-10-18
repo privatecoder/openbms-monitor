@@ -750,11 +750,11 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     drop(link);
     // a CAN version belongs to these packs only when both banks are positively this installation's: the pack bus scan
     // matched the master's String 2, and the CAN master's battery serial matched
-    let identities = match &inst {
-        Some(i) if !cancelled && bank.state == "match" && can_master_confirmed(&state, i) => pack_identities(&state, i, &found),
-        _ => vec![],
+    let (identities, stopped) = match &inst {
+        Some(i) if !cancelled && bank.state == "match" && can_master_confirmed(&state, i) => pack_identities(&state, i, &found, &state.scan_cancel),
+        _ => (vec![], false),
     };
-    Ok(PackScan { packs, bank, cleared, cancelled, identities })
+    Ok(PackScan { packs, bank, cleared, cancelled: cancelled || stopped, identities })
 }
 
 /// The CAN master of the installation is positively its own: on the monitor's current CAN link of this installation
@@ -781,27 +781,36 @@ pub fn can_master_check(stored: &str, read: Option<&SerialValue>) -> bool {
 /// The full version of the found packs for the pack list: from live 64/03 findings of the installation's current CAN
 /// socket link, the others by a short read-only addressed 64/03 (600 ms each) over its control channel when that is
 /// reachable. Nothing is inferred from 0x51 or from a refusal on the pack bus; a pack without answer stays unchecked.
-fn pack_identities(state: &AppState, inst: &Installation, found: &[u8]) -> Vec<crate::profile::PackProbeView> {
+/// „Abbrechen“ (`cancel`) is checked before every probe: what was found until then is returned, with true.
+fn pack_identities(state: &AppState, inst: &Installation, found: &[u8], cancel: &std::sync::atomic::AtomicBool) -> (Vec<crate::profile::PackProbeView>, bool) {
     use openbms_flash::maint::policy::PackFinding;
     let link = crate::link_now(state);
     let mine = link.installation.as_deref() == Some(inst.id.as_str());
     let mut out: Vec<(u8, PackFinding)> = found.iter().filter_map(|a| mine.then(|| crate::bank::live(state, link.gen, *a)).flatten().map(|f| (*a, f))).collect();
     let ask: Vec<u8> = found.iter().copied().filter(|a| !out.iter().any(|(b, _)| b == a)).collect();
+    let mut stopped = false;
     if !ask.is_empty() && inst.control.is_some() {
-        let read = with_control(state, inst, |c| -> Result<Vec<(u8, PackFinding)>, openbms_flash::Error> {
-            let mut v = vec![];
-            for a in &ask {
-                let answer = dialog::probe_pack(c, &SystemClock::new(), *a, crate::profile::PACK_PROBE)?;
-                v.push((*a, PackFinding::of(answer)));
-            }
-            Ok(v)
+        let mut v = vec![];
+        let _ = with_control(state, inst, |c| -> Result<(), openbms_flash::Error> {
+            stopped = probe_until_cancel(&ask, cancel, &mut v, |a| dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of))?;
+            Ok(())
         });
-        if let Ok(Ok(v)) = read {
-            out.extend(v);
-        }
+        out.extend(v);
     }
     out.sort_by_key(|(a, _)| *a);
-    out.iter().map(|(a, f)| crate::profile::probe_view(*a, f)).collect()
+    (out.iter().map(|(a, f)| crate::profile::probe_view(*a, f)).collect(), stopped)
+}
+
+/// Probe `ask` in order into `found`, checking „Abbrechen“ before each; Ok(true) when cancelled (what came stays).
+pub fn probe_until_cancel<E>(ask: &[u8], cancel: &std::sync::atomic::AtomicBool, found: &mut Vec<(u8, openbms_flash::maint::policy::PackFinding)>,
+    mut probe: impl FnMut(u8) -> Result<openbms_flash::maint::policy::PackFinding, E>) -> Result<bool, E> {
+    for a in ask {
+        if cancel.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(true);
+        }
+        found.push((*a, probe(*a)?));
+    }
+    Ok(false)
 }
 
 /// „Abbrechen“ of the pack search: it stops before the next address.
@@ -1281,6 +1290,28 @@ mod tests {
     }
 
     #[test]
+    fn cancel_stops_the_identity_probes_before_the_next_pack() {
+        use openbms_flash::maint::policy::PackFinding;
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut found = vec![];
+        let mut asked = vec![];
+        // „Abbrechen“ during the probe of pack 2: pack 3 and later are not asked, what came is kept
+        let stopped = probe_until_cancel::<()>(&[1, 2, 3, 4], &cancel, &mut found, |a| {
+            asked.push(a);
+            if a == 2 {
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(PackFinding::Undecided)
+        }).unwrap();
+        assert!(stopped);
+        assert_eq!(asked, vec![1, 2]);
+        assert_eq!(found.len(), 2);
+        let mut found = vec![];
+        assert!(!probe_until_cancel::<()>(&[1, 2], &cancel, &mut found, |_| Ok(PackFinding::Undecided)).unwrap());
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
     fn a_can_version_needs_a_confirmed_can_master() {
         let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
         assert!(can_master_check("BAT-A", Some(&set("BAT-A"))));
@@ -1317,11 +1348,13 @@ mod tests {
         let info = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop: Some(false) };
         crate::bank::set_live(&state, link.gen, 1, PackFinding::of(PackAnswer::Info(info)));
         // no control channel: only what the link found; pack 2 stays unchecked
-        let v = pack_identities(&state, &a, &[1, 2]);
+        let no = std::sync::atomic::AtomicBool::new(false);
+        let (v, stopped) = pack_identities(&state, &a, &[1, 2], &no);
+        assert!(!stopped);
         assert_eq!(v.iter().map(|p| (p.address, p.state)).collect::<Vec<_>>(), vec![(1, "proven")]);
         assert_eq!(v[0].version.as_deref(), Some("16.06.13 MAINT 1.5"));
         // the link belongs to another installation: its findings do not count here
-        assert!(pack_identities(&state, &b, &[1, 2]).is_empty());
+        assert!(pack_identities(&state, &b, &[1, 2], &no).0.is_empty());
     }
 
     #[test]
