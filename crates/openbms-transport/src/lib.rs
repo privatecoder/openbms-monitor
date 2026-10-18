@@ -371,13 +371,13 @@ impl Connection {
         Ok(serial::parse_ascii_serial_canonical(&f.info)?)
     }
 
-    /// The BMS clock (0x4D; RS485-1/2 only).
+    /// The BMS clock (0x4D; RS485-1/2, and the CAN socket of a pack with the power and clock service).
     pub fn clock(&mut self, address: u8) -> Result<BmsTime> {
         let f = self.ascii(&memory::clock_request(address)?, address)?;
         Ok(memory::parse_clock(&f.info)?)
     }
 
-    /// Set the BMS clock (0x4E; RS485-1/2 only). Implausible calendar fields are refused before sending.
+    /// Set the BMS clock (0x4E; RS485-1/2, and the CAN socket of a pack with the power and clock service). Implausible calendar fields are refused before sending.
     pub fn set_clock(&mut self, address: u8, time: BmsTime) -> Result<()> {
         self.ascii(&memory::set_clock_request(address, time)?, address)?;
         Ok(())
@@ -396,7 +396,7 @@ impl Connection {
         Ok(())
     }
 
-    /// Restart the pack (0x45 type 6; RS485-1/2 only). The board resets before it can answer, so a missing answer is
+    /// Restart the pack (0x45 type 6; RS485-1/2, and the CAN socket of a pack with the power and clock service). The board resets before it can answer, so a missing answer is
     /// the expected outcome and waits only 300 ms; RTN 00 counts as well. Returns when the request was sent, the start
     /// of the silence `await_comeback` measures.
     pub fn restart(&mut self, address: u8) -> Result<Instant> {

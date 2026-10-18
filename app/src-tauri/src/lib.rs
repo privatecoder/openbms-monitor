@@ -23,6 +23,7 @@ mod maint_store;
 mod migrate;
 mod notifications;
 mod notify;
+mod power;
 mod profile;
 mod uart1_id;
 use history::{Format, Settings, SharedHistory};

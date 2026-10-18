@@ -1,5 +1,6 @@
-//! Pack control (RS485-1/2 only): restart, on/off, heater, clearing history and counters (0x45) and the remaining
-//! capacity (0x49), always one pack. And the reservations every action of several steps takes (`Ops`).
+//! Pack control: restart, on/off, heater, clearing history and counters (0x45) and the remaining capacity (0x49), always
+//! one pack, on RS485-1/2; restart and on/off also over the CAN socket of a pack with the power and clock service
+//! (`power.rs`). And the reservations every action of several steps takes (`Ops`).
 //!
 //! `with_conn` holds the bus for one frame only. So that nothing falls between the steps of an action, one mutex holds:
 //! - the reserved packs: every write to a pack, the user's parameter and serial number reads and the history read hold
@@ -13,7 +14,8 @@
 //! further frame is sent.
 
 use crate::bank::{check_target, Written};
-use crate::bms_memory::{bound, pack_bus_only, refusable, refusal_error};
+use crate::bms_memory::{bound, can_socket, pack_bus_only, refusable, refusal_error};
+use crate::power::{Act, Done};
 use crate::maint::{refused, MaintError};
 use crate::{current_action, reserve_port, with_link, AppState, Link, PortSlot};
 use openbms_proto::Comeback;
@@ -237,32 +239,53 @@ fn control_frame(state: &AppState, link: &Link, address: u8, action: &'static st
 
 /// Restart one pack (0x45 type 6): 0x51 first (a polling master never answers on RS485-1/2), the restart, then 0x51
 /// back to back for up to 15 s. One frame per lock: the bus stays usable, polling skips this pack meanwhile.
+/// CAN socket: identity and lock bit instead of the 0x51 before (`power::run`), sent once, then the same watch.
 #[tauri::command]
 pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<Restart>, String> {
-    pack_bus_only(&state)?;
+    let can = can_socket(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let guard = reserve_pack_wait(&state, address, "restart")?;
+    let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
+    if can {
+        let Done::Restarted(sent) = crate::power::run(&state, &link, address, Act::Restart)? else { return Err("no result".into()) };
+        let value = tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(Written { value, unchecked: false });
+    }
     // the right bank before the 0x51: a silent pack is refused there already
     let unchecked = check_target(&state, &link, address)?.unchecked;
-    let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
     let value = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         if !with_link(&conn, &flashing, &links, &link, |c| c.answers(address))? {
             return Ok(Restart::NotReachable);
         }
         let sent = with_link(&conn, &flashing, &links, &link, |c| refusable(c.restart(address)))?.map_err(refusal_error)?;
-        // from here the restart is out: a failure only means its comeback is unknown
-        let watch = openbms_transport::watch_comeback(sent, COMEBACK_LIMIT, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)));
-        Ok::<_, String>(watch.map(Restart::from).unwrap_or_else(|error| Restart::SentLinkLost { error }))
+        Ok::<_, String>(watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY))))
     })
     .await
     .map_err(|e| e.to_string())??;
     Ok(Written { value, unchecked })
 }
 
-/// Switch one pack on or off (0x45 type 4). The UI reads the status again 2 s later.
+/// From here the restart is out: a failure only means its comeback is unknown.
+fn watch(sent: Instant, answered: impl FnMut() -> Result<bool, String>) -> Restart {
+    openbms_transport::watch_comeback(sent, COMEBACK_LIMIT, answered).map(Restart::from).unwrap_or_else(|error| Restart::SentLinkLost { error })
+}
+
+/// Switch one pack on or off (0x45 type 4). The UI reads the status again 2 s later. Over the CAN socket the master's
+/// ACK confirms only the master: its original broadcast to the slaves is not confirmed by it.
 #[tauri::command]
 pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<Written<()>, String> {
+    if can_socket(&state)? {
+        let link = bound(&state, installation.as_deref())?;
+        let _guard = reserve_pack_wait(&state, address, "on_off")?;
+        crate::power::run(&state, &link, address, Act::Switch { on })?;
+        return Ok(Written { value: (), unchecked: false });
+    }
     pack_bus_only(&state)?;
     let link = bound(&state, installation.as_deref())?;
     control_frame(&state, &link, address, "on_off", |c| c.on_off(address, on))
