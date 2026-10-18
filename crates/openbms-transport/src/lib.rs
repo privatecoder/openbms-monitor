@@ -20,6 +20,10 @@ pub enum Error {
     Timeout(Duration),
     #[error("connection closed by the gateway")]
     Closed,
+    /// A binary answer started but never completed, with a valid-looking frame inside it: whether the pack answered
+    /// is open (a write treats it like a lost answer).
+    #[error("answer incomplete")]
+    Incomplete,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -207,7 +211,7 @@ impl Connection {
     fn note_failure<T>(&mut self, r: &Result<T>, address: u8) {
         match r {
             Err(Error::Timeout(d)) => self.tap.event(capture::Kind::Timeout { waited_ms: d.as_millis() as u64, address }),
-            Err(e @ (Error::Io(_) | Error::Serial(_) | Error::Closed)) => self.tap.event(capture::Kind::Error(e.to_string())),
+            Err(e @ (Error::Io(_) | Error::Serial(_) | Error::Closed | Error::Incomplete)) => self.tap.event(capture::Kind::Error(e.to_string())),
             _ => {}
         }
     }
@@ -568,9 +572,16 @@ impl Connection {
             let deadline = Instant::now() + timeout;
             let mut framer = uart1::Framer::new();
             let mut buf = [0u8; 256];
+            // once at the end (deadline or the gateway closing): a started frame that never completed must not hide an
+            // answer behind it, nor make a frame inside it an answer
+            let end = |framer: &mut uart1::Framer, otherwise: Error| match framer.finish(request) {
+                uart1::Finish::Reply(r) => Ok(r),
+                uart1::Finish::Truncated => Err(Error::Incomplete),
+                uart1::Finish::Nothing => Err(otherwise),
+            };
             while Instant::now() < deadline {
                 match self.port.read(&mut buf) {
-                    Ok(0) if self.tcp => return Err(Error::Closed),
+                    Ok(0) if self.tcp => return end(&mut framer, Error::Closed),
                     Ok(0) => {}
                     Ok(n) => {
                         self.tap.rx(&buf[..n]);
@@ -583,8 +594,7 @@ impl Connection {
                     Err(e) => return Err(e.into()),
                 }
             }
-            // a started frame that never completed must not hide an answer behind it
-            framer.finish(request).ok_or(Error::Timeout(timeout))
+            end(&mut framer, Error::Timeout(timeout))
         });
         self.note_failure(&r, address);
         std::thread::sleep(self.gap);
@@ -1171,6 +1181,56 @@ mod tests {
         // never on RS485-1/2: nothing is sent there
         assert!(matches!(c.uart1_parameters(Bus::PackBus, 11), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
         assert_eq!(sink.snapshot().entries.iter().filter(|e| e.kind == capture::Kind::Tx).count(), 3);
+    }
+
+    /// A gateway that sends `out` and then closes the connection.
+    struct Closing {
+        out: Vec<u8>,
+    }
+
+    impl Read for Closing {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.out.len());
+            buf[..n].copy_from_slice(&self.out[..n]);
+            self.out.drain(..n);
+            Ok(n)
+        }
+    }
+
+    impl Write for Closing {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Port for Closing {
+        fn clear_input(&mut self, _: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn closing(out: Vec<u8>) -> Connection {
+        Connection { port: Box::new(Closing { out }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) }
+    }
+
+    #[test]
+    fn a_closing_gateway_still_gets_the_last_scan() {
+        let read = uart1::read_request(0).unwrap();
+        // the cut-off 47/A8 prefix, a complete E2, then EOF: the E2 counts
+        let mut c = closing([vec![0x55, 0x00, 0x47, 0xA8], binary(0, 0xE2, &[])].concat());
+        assert_eq!(c.binary_exchange(Bus::CanSocketBus, &read, Duration::from_secs(3)).unwrap(), uart1::Reply::Error(uart1::Code::Rejected));
+        // a 0x47 answer cut off after a frame inside its switch bytes, then EOF: incomplete, no refusal
+        let mut d = uart1_data();
+        d[150..157].copy_from_slice(&binary(0, 0xE2, &[]));
+        let ans = binary(0, 0x47, &d);
+        let mut c = closing(ans[..161].to_vec());
+        assert!(matches!(c.binary_exchange(Bus::CanSocketBus, &read, Duration::from_secs(3)), Err(Error::Incomplete)));
+        // nothing at all: closed
+        let mut c = closing(vec![]);
+        assert!(matches!(c.binary_exchange(Bus::CanSocketBus, &read, Duration::from_secs(3)), Err(Error::Closed)));
     }
 
     #[test]

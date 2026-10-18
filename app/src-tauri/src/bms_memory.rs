@@ -337,13 +337,7 @@ impl ParamIo for Uart1Io<'_> {
 
     fn send(&mut self, block: &[u8]) -> Result<Sent, String> {
         let sent = with_link(&self.state.conn, &self.state.flashing, &self.state.link, self.link, |c| Ok(c.uart1_write(self.bus, self.address, block)))?;
-        Ok(match sent {
-            Ok(()) => Sent::Ack,
-            // E2: the patch takes neither the values nor the switches
-            Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0xE2))) => Sent::Refused { refusal: Refusal::Refused, switches_live: false },
-            Err(e @ openbms_transport::Error::Proto(openbms_proto::Error::Uart1(_))) => Sent::Protocol(uart1_error(e)),
-            Err(e) => Sent::Lost(e.to_string()),
-        })
+        Ok(uart1_sent(sent))
     }
 
     // nothing over the CAN socket is kept for a place of the installation yet: MAINT 1.2 reads no board identity, which
@@ -352,6 +346,17 @@ impl ParamIo for Uart1Io<'_> {
 
     fn uart1(&self) -> bool {
         true
+    }
+}
+
+/// What the answer to a binary write says. A timeout, an incomplete answer or a broken link leave it open (lost).
+fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
+    match r {
+        Ok(()) => Sent::Ack,
+        // E2: the patch takes neither the values nor the switches
+        Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0xE2))) => Sent::Refused { refusal: Refusal::Refused, switches_live: false },
+        Err(e @ openbms_transport::Error::Proto(openbms_proto::Error::Uart1(_))) => Sent::Protocol(uart1_error(e)),
+        Err(e) => Sent::Lost(e.to_string()),
     }
 }
 
@@ -901,6 +906,18 @@ mod tests {
         assert_eq!(write_checked(&mut f, 4, base.clone(), edited.clone(), false).unwrap_err(), "timeout");
         let mut f = Fake::new(true, vec![Ok(b.clone()), Err("no answer")], Sent::Lost("timeout".into()));
         assert!(matches!(write_checked(&mut f, 4, base, edited, false).unwrap(), ParamWrite::UnclearRead { read_back: None, .. }));
+    }
+
+    #[test]
+    fn a_binary_write_answer_is_taken_refused_a_protocol_error_or_lost() {
+        use openbms_transport::Error as E;
+        assert_eq!(uart1_sent(Ok(())), Sent::Ack);
+        assert_eq!(uart1_sent(Err(E::Proto(openbms_proto::Error::Uart1(0xE2)))), Sent::Refused { refusal: Refusal::Refused, switches_live: false });
+        assert_eq!(uart1_sent(Err(E::Proto(openbms_proto::Error::Uart1(0x87)))), Sent::Protocol(r#"{"code":135,"error":"protocol","kind":"uart1"}"#.into()));
+        // an answer cut off with a frame inside it is never a refusal: re-read like a lost answer
+        assert_eq!(uart1_sent(Err(E::Incomplete)), Sent::Lost("answer incomplete".into()));
+        assert!(matches!(uart1_sent(Err(E::Timeout(std::time::Duration::from_secs(3)))), Sent::Lost(_)));
+        assert!(matches!(uart1_sent(Err(E::Closed)), Sent::Lost(_)));
     }
 
     #[test]
