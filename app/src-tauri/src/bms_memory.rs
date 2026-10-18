@@ -1,5 +1,6 @@
 //! The BMS clock, the pack's internal history, calibration, the CAN inverter protocol, writing parameters and serial
-//! numbers (RS485-1/2 only; parameters also on the CAN socket of a patched pack, `ParamPath`). Every write reserves
+//! numbers (RS485-1/2 only; parameters also on the CAN socket of a patched pack, `ParamPath`, and the clock of a pack with
+//! the power and clock service, `power.rs`). Every write reserves
 //! its pack for the whole exchange (`control::reserve_pack`), the history read too.
 //!
 //! A history read runs on its own thread and takes the connection lock per frame, through `with_conn` like every
@@ -28,10 +29,15 @@ pub const PRE_READ: &str = "pre-read: String 2 could not be read before the writ
 const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 
 pub(crate) fn pack_bus_only(state: &AppState) -> Result<(), String> {
-    if *state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus) {
+    if can_socket(state)? {
         return Err(PACK_BUS_ONLY.into());
     }
     Ok(())
+}
+
+/// Connected over the CAN socket: ein/aus, restart and the clock go the patched pack's way there (`power.rs`).
+pub(crate) fn can_socket(state: &AppState) -> Result<bool, String> {
+    Ok(*state.bus.lock().map_err(|e| e.to_string())? == Some(Bus::CanSocketBus))
 }
 
 /// Writes to a pack belong to the connection's installation: none with „Nur ansehen“ (nothing would record the state
@@ -109,18 +115,28 @@ pub fn read_all(
     HistoryRead { address, records, end, error }
 }
 
+/// The clock (0x4D); over the CAN socket only of a pack with the power and clock service (`power::clock`).
 #[tauri::command]
 pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTime, String> {
-    pack_bus_only(&state)?;
+    if can_socket(&state)? {
+        return crate::power::clock(&state, &link_now(&state), address);
+    }
     with_conn(&state.conn, &state.flashing, |c| c.clock(address))
 }
 
-/// Set the clock to `time` (the PC's local time, chosen by the UI) and read it back.
+/// Set the clock to `time` (the PC's local time, chosen by the UI) and read it back. Over the CAN socket with the
+/// identity check and the lock bit first (`power::run`).
 #[tauri::command]
 pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<Written<BmsTime>, String> {
-    pack_bus_only(&state)?;
+    let can = can_socket(&state)?;
     let link = bound(&state, installation.as_deref())?;
     let _guard = reserve_pack_wait(&state, address, "clock")?;
+    if can {
+        return match crate::power::run(&state, &link, address, crate::power::Act::SetClock(time))? {
+            crate::power::Done::Clock(value) => Ok(Written { value, unchecked: false }),
+            _ => Err("no result".into()),
+        };
+    }
     let checked = check_target(&state, &link, address)?;
     let value = with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
         c.set_clock(address, time)?;
@@ -144,7 +160,8 @@ pub(crate) fn refusable<T>(r: openbms_transport::Result<T>) -> openbms_transport
     }
 }
 
-/// Telemetry and status of one pack, for the live values of the calibration and the control.
+/// Telemetry and status of one pack, for the live values of the calibration and the control (both buses answer them;
+/// the poll reads the same).
 #[derive(Serialize)]
 pub struct PackLive {
     pub telemetry: Telemetry,
@@ -153,7 +170,6 @@ pub struct PackLive {
 
 #[tauri::command]
 pub async fn pack_live(state: State<'_, AppState>, address: u8) -> Result<PackLive, String> {
-    pack_bus_only(&state)?;
     // both frames under one lock: no calibration falls between the values and the flags shown beside them
     let (telemetry, status) = with_conn(&state.conn, &state.flashing, |c| Ok((c.telemetry(address)?, c.status(address)?)))?;
     Ok(PackLive { telemetry, status })
@@ -245,8 +261,9 @@ pub(crate) fn param_path(state: &AppState) -> Result<ParamPath, String> {
 /// answer within 3 s: without the patch, or not reachable; never a verdict on the firmware), `protocol` with the code
 /// (81/87/83: the pack answered, nothing was taken), `pending` (an interrupted update of this address is open),
 /// `other-master` (the master behind the CAN socket is not the installation's), `readback` (acknowledged, but the
-/// read after it differs), and the identity refusals of `uart1_id.rs` (`no-identity`, `unchecked`, `changed`,
-/// `duplicate`, `elsewhere`).
+/// read after it differs), the identity refusals of `uart1_id.rs` (`no-identity`, `unchecked`, `changed`,
+/// `board-changed`, `duplicate`, `elsewhere`) and those of the power and clock service (`power.rs`: `power-unsupported`,
+/// `power-locked`, `rtc-failed`, `power-no-answer`, `no-board`).
 pub(crate) fn uart1_refusal(error: &str) -> String {
     serde_json::json!({ "kind": "uart1", "error": error }).to_string()
 }

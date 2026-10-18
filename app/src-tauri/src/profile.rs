@@ -308,6 +308,17 @@ pub fn pack_patch(state: &AppState, link: &Link, address: u8, serial: Option<&st
     pack_patch_of(address, profile.as_ref(), live.as_ref(), proof.as_ref(), serial)
 }
 
+/// Ein/aus, restart and the clock over the CAN socket for `address`: only where this connection proved image flag bit 1
+/// for exactly this pack (the master's profile, a slave's own 64/03); a stored proof carries no image flags.
+pub fn power_rtc(state: &AppState, link: &Link, address: u8) -> bool {
+    pack_patch(state, link, address, None).is_some_and(|p| p.caps.power_rtc == Some(true))
+}
+
+/// Group0 bit 3 set: ein/aus, restart and setting the clock over the CAN socket are locked at this pack.
+pub fn power_locked(group0: u8) -> bool {
+    group0 & POWER_BIT != 0
+}
+
 /// The answer time of a pack's own 64/03: older slaves stay silent, so each costs at most this.
 pub const PACK_PROBE: std::time::Duration = std::time::Duration::from_millis(600);
 
@@ -324,6 +335,8 @@ pub struct PackProbeView {
     pub build_id: Option<String>,
     /// format 3: the image's hard stop; None with format 2 or no identity
     pub hard_stop: Option<bool>,
+    /// image flag bit 1 of a proven pack: ein/aus, restart and the clock over the CAN socket
+    pub power_rtc: Option<bool>,
 }
 
 pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
@@ -332,7 +345,8 @@ pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
         PackFinding::Negative(info) => ("negative", *info, None),
         PackFinding::Undecided => ("undecided", None, None),
     };
-    PackProbeView { gen, address, state, version: info.map(|i| i.version()), listed, build_id: info.map(|i| i.build_id_hex()), hard_stop: info.filter(|_| state == "proven").and_then(|i| i.hard_stop) }
+    let proven = info.filter(|_| state == "proven");
+    PackProbeView { gen, address, state, version: info.map(|i| i.version()), listed, build_id: info.map(|i| i.build_id_hex()), hard_stop: proven.and_then(|i| i.hard_stop), power_rtc: proven.map(|i| i.power_rtc) }
 }
 
 /// Ask the pack at `address` (not the master: its profile holds) for its own 64/03 on connection `link`, under the port

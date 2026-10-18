@@ -1,5 +1,6 @@
 //! Pack control (CID2 0x45) and the remaining capacity (CID2 0x49 index 59). Like the calibration both exist only on
-//! RS485-1/2 and always go to one pack: the app sends no broadcast (address 0xFF).
+//! RS485-1/2 (a pack with the power and clock service answers on/off and restart on the CAN socket too) and always go
+//! to one pack: the app sends no broadcast (address 0xFF).
 //!
 //! 0x45 INFO: `00 <type> <param>`, answer empty with RTN 00, an unknown type gives RTN 04. Type 6 (restart) is never
 //! answered: the board resets before it could send. 0x49 INFO: `00 <index> <u16 BE>`; index 59 sets the coulomb

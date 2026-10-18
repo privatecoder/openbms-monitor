@@ -263,10 +263,11 @@ fn elsewhere(r: &BoardRef) -> String {
 }
 
 /// What the target's fresh String 2 must equal: the String 2 read with the edited column (a parameter write; None: the
-/// column carries none).
+/// column carries none), or the installation's current board at the address (power and clock, `power.rs`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Expected<'a> {
     Column(Option<&'a str>),
+    Board(&'a str),
 }
 
 /// What the identity check found: the target's checked String 2, or the refusal (nothing went to the target); either
@@ -299,9 +300,10 @@ pub(crate) fn identity(dev: &mut impl Dev, inst: &str, address: u8, expected: Ex
         Err(_) => return refuse(out, uart1_refusal("no-answer")),
     };
     let Some(serial) = serial::canonical(&raw) else { return refuse(out, uart1_refusal("unchecked")) };
-    // (b): the board the edited column was read from
+    // (b): the board the edited column was read from, or the one the installation has here
     match expected {
         Expected::Column(e) if e != Some(serial.as_str()) => return refuse(out, uart1_refusal("changed")),
+        Expected::Board(e) if e != serial => return refuse(out, uart1_refusal("board-changed")),
         _ => {}
     }
     let s = bank::strict(&serial, address, &facts.refs);
@@ -435,11 +437,11 @@ fn mark_gone(state: &AppState, installation: &str, address: u8, board: i64, at: 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn raw(text: &str) -> Vec<u8> {
+    pub(crate) fn raw(text: &str) -> Vec<u8> {
         let mut v = text.as_bytes().to_vec();
         v.resize(serial::LEN, b' ');
         v
@@ -448,14 +450,14 @@ mod tests {
     /// A bank as the binary service shows it: String 2/1 per address (None: 0x81, missing: no answer), the block, the
     /// write's answer and the read-back, and what was asked.
     #[derive(Default)]
-    struct Bank {
-        strings2: HashMap<u8, Option<Vec<u8>>>,
-        strings1: HashMap<u8, Vec<u8>>,
-        reads: Vec<openbms_transport::Result<Parameters>>,
-        write: Option<openbms_transport::Result<()>>,
-        master: Option<SerialValue>,
-        asked: Vec<(u8, u8)>,
-        written: Vec<Vec<u8>>,
+    pub(crate) struct Bank {
+        pub strings2: HashMap<u8, Option<Vec<u8>>>,
+        pub strings1: HashMap<u8, Vec<u8>>,
+        pub reads: Vec<openbms_transport::Result<Parameters>>,
+        pub write: Option<openbms_transport::Result<()>>,
+        pub master: Option<SerialValue>,
+        pub asked: Vec<(u8, u8)>,
+        pub written: Vec<Vec<u8>>,
     }
 
     impl Dev for Bank {
@@ -482,7 +484,7 @@ mod tests {
         }
     }
 
-    fn block(address: u8, p0: u16) -> Parameters {
+    pub(crate) fn block(address: u8, p0: u16) -> Parameters {
         let mut b = vec![address, 0x3C];
         b.extend(p0.to_be_bytes());
         for i in 1..60u16 {
@@ -503,11 +505,11 @@ mod tests {
         (base, edited)
     }
 
-    fn board(address: u8, serial: &str, canonical: Option<bool>) -> BoardRef {
+    pub(crate) fn board(address: u8, serial: &str, canonical: Option<bool>) -> BoardRef {
         BoardRef { address, id: 100 + i64::from(address), bms_serial: serial.into(), aliases: vec![], canonical, current_at: Some(5) }
     }
 
-    fn facts(refs: Vec<BoardRef>) -> Facts {
+    pub(crate) fn facts(refs: Vec<BoardRef>) -> Facts {
         Facts { refs, master: None, places: vec![], group0: crate::profile::Group0::Keep }
     }
 
@@ -560,7 +562,7 @@ mod tests {
         assert_eq!(kinds(&s), [SnapshotKind::Read, SnapshotKind::Refused]);
     }
 
-    fn with_group0(p: &Parameters, g0: u8) -> Parameters {
+    pub(crate) fn with_group0(p: &Parameters, g0: u8) -> Parameters {
         let mut b = p.block.clone();
         b[crate::profile::GROUP0] = g0;
         Parameters::parse(&b).unwrap()
