@@ -486,6 +486,16 @@ impl Connection {
         Ok(MaintStatus::parse(&f?.info)?)
     }
 
+    /// Identity of a patched master (CID2 0x64 INFO 03, MAINT 1.1 and later; CAN socket bus). Older firmware answers
+    /// with an RTN or not at all; the short timeout keeps that from delaying the connect.
+    pub fn maint_info(&mut self) -> Result<openbms_proto::MaintInfo> {
+        let saved = self.timeout;
+        self.timeout = Duration::from_millis(600);
+        let f = openbms_proto::MaintInfo::request().map_err(Error::from).and_then(|r| self.ascii(&r, 0));
+        self.timeout = saved;
+        Ok(openbms_proto::MaintInfo::parse(&f?.info)?)
+    }
+
     pub fn system_values(&mut self) -> Result<SystemValues> {
         let regs = self.modbus_read(0x03, SystemValues::START, SystemValues::COUNT)?;
         Ok(SystemValues::from_registers(&regs)?)

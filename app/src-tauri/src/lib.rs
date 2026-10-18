@@ -23,6 +23,7 @@ mod maint_store;
 mod migrate;
 mod notifications;
 mod notify;
+mod uart1_id;
 use history::{Format, Settings, SharedHistory};
 
 #[derive(Default)]
@@ -543,7 +544,19 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
     // the new String 2 for another board
     let _guard = control::reserve_pack_wait(&state, address, "serial_read")?;
     let before = link_now(&state);
-    let serials = with_conn(&state.conn, &state.flashing, |c| c.serial_numbers(bus, address))?;
+    // CAN socket: String 1/2 of every pack over the binary service once the master reports it (MAINT 1.3), asked once
+    // per connection; else as before
+    if bus == Bus::CanSocketBus && uart1_serials_offered(&state, before.gen) {
+        let (serials, identity) = uart1_id::serial_numbers(&state, &before, bus, address)?;
+        if let (0, Some(inst)) = (address, before.installation.as_deref()) {
+            can_master_check(&state, before.gen, inst, &serials.battery);
+        }
+        return Ok(SerialRead { serials, board: None, identity });
+    }
+    let (serials, canonical) = with_conn(&state.conn, &state.flashing, |c| match bus {
+        Bus::PackBus => c.serial_numbers_pack_bus_canonical(address),
+        Bus::CanSocketBus => c.serial_numbers(bus, address).map(|s| (s, false)),
+    })?;
     let Some(inst) = before.installation.clone() else { return Ok(SerialRead { serials, board: None, identity: None }) };
     if link_now(&state).gen != before.gen {
         return Err(LINK_CHANGED.into());
@@ -560,10 +573,10 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
         return Ok(SerialRead { serials, board: None, identity });
     }
     let id = maint::with_store(&state, |s| bank::identity(s, &inst, address, &serials.bms)).unwrap_or(bank::Identity::Failed);
-    bank::after_read(&state, &before, address, &id, &serials.bms, &serials.battery);
+    bank::after_read_canonical(&state, &before, address, &id, &serials.bms, &serials.battery, canonical);
     let board = match id {
         bank::Identity::Known | bank::Identity::Unchecked => {
-            for_link(&state, &before, "board", |s, inst| s.board_seen(inst, address, &serials.bms, &serials.battery, history::now_ms()))
+            for_link(&state, &before, "board", |s, inst| s.board_seen_canonical(inst, address, &serials.bms, &serials.battery, canonical, history::now_ms()))
         }
         _ => None,
     };
@@ -580,18 +593,17 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
 /// All parameters and function switches of one pack (0x47). RS485-1/2 knows this command (there the master of a
 /// multi-pack bank does not answer); on the CAN socket only a MAINT 1.2 pack, over its binary service.
 #[tauri::command]
-async fn parameters(state: State<'_, AppState>, address: u8) -> Result<Parameters, String> {
+async fn parameters(state: State<'_, AppState>, address: u8) -> Result<uart1_id::ParamRead, String> {
     match bms_memory::param_path(&state)? {
-        bms_memory::ParamPath::Ascii => read_parameters_reserved(&state, address),
+        bms_memory::ParamPath::Ascii => read_parameters_reserved(&state, address).map(|parameters| uart1_id::ParamRead { parameters, bms_serial: None }),
         bms_memory::ParamPath::Uart1(bus) => read_parameters_uart1(&state, bus, address),
     }
 }
 
-/// 0x47 over the CAN socket under the pack's reservation, like `read_parameters_reserved`, but with no bank check and no
-/// snapshot: the board behind it cannot be checked there. Only a valid binary answer shows the pack has the service.
-fn read_parameters_uart1(state: &AppState, bus: Bus, address: u8) -> Result<Parameters, String> {
-    let _guard = control::reserve_pack_wait(state, address, "read")?;
-    bms_memory::read_uart1(state, None, bus, address)
+/// 0x47 over the CAN socket under the pack's reservation, with String 2/1 of MAINT 1.3 in the same port session
+/// (`uart1_id::read`). Only a valid binary answer shows the pack has the service.
+fn read_parameters_uart1(state: &AppState, bus: Bus, address: u8) -> Result<uart1_id::ParamRead, String> {
+    uart1_id::read(state, bus, address)
 }
 
 /// 0x47 and its snapshot under the pack's reservation: a write of the same pack keeps it until its own `written`
@@ -608,6 +620,17 @@ fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters,
         bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
     }
     Ok(p)
+}
+
+/// Whether the CAN socket connection `gen`'s master reports String 1/2 over the binary service (patch 1.3 or later),
+/// asked once per connection (0x64 INFO 03 at address 0; no answer counts as no).
+fn uart1_serials_offered(state: &AppState, gen: u64) -> bool {
+    if let Some(v) = bank::uart1_serials(state, gen) {
+        return v;
+    }
+    let offered = with_conn(&state.conn, &state.flashing, |c| Ok(c.maint_info().ok())).ok().flatten().is_some_and(|i| i.patch >= [1, 3]);
+    bank::set_uart1_serials(state, gen, offered);
+    offered
 }
 
 /// Notifications on the CAN socket run only with the installation's own master: compare its battery serial with the one
@@ -1023,7 +1046,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

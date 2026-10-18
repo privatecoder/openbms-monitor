@@ -245,25 +245,19 @@ pub(crate) fn param_path(state: &AppState) -> Result<ParamPath, String> {
 /// answer within 3 s: without the patch, or not reachable; never a verdict on the firmware), `protocol` with the code
 /// (81/87/83: the pack answered, nothing was taken), `pending` (an interrupted update of this address is open),
 /// `other-master` (the master behind the CAN socket is not the installation's), `readback` (acknowledged, but the
-/// read after it differs).
+/// read after it differs), and the identity refusals of `uart1_id.rs` (`no-identity`, `unchecked`, `changed`,
+/// `duplicate`, `elsewhere`).
 pub(crate) fn uart1_refusal(error: &str) -> String {
     serde_json::json!({ "kind": "uart1", "error": error }).to_string()
 }
 
-fn uart1_error(e: openbms_transport::Error) -> String {
+pub(crate) fn uart1_error(e: openbms_transport::Error) -> String {
     match e {
         openbms_transport::Error::Timeout(_) => uart1_refusal("no-answer"),
+        // cut off with a frame inside: no valid parameters
+        openbms_transport::Error::Incomplete => uart1_refusal("no-answer"),
         openbms_transport::Error::Proto(openbms_proto::Error::Uart1(code)) => serde_json::json!({ "kind": "uart1", "error": "protocol", "code": code }).to_string(),
         e => e.to_string(),
-    }
-}
-
-/// A 0x47 read over the CAN socket's binary service: nothing is stored (the board behind it cannot be checked there).
-pub(crate) fn read_uart1(state: &AppState, link: Option<&Link>, bus: Bus, address: u8) -> Result<Parameters, String> {
-    let read = |c: &mut openbms_transport::Connection| Ok(c.uart1_parameters(bus, address).map_err(uart1_error));
-    match link {
-        Some(l) => with_link(&state.conn, &state.flashing, &state.link, l, read)?,
-        None => with_conn(&state.conn, &state.flashing, read)?,
     }
 }
 
@@ -323,34 +317,8 @@ impl ParamIo for AsciiIo<'_> {
     }
 }
 
-struct Uart1Io<'a> {
-    state: &'a AppState,
-    link: &'a Link,
-    bus: Bus,
-    address: u8,
-}
-
-impl ParamIo for Uart1Io<'_> {
-    fn read(&mut self, _keep: bool) -> Result<Parameters, String> {
-        read_uart1(self.state, Some(self.link), self.bus, self.address)
-    }
-
-    fn send(&mut self, block: &[u8]) -> Result<Sent, String> {
-        let sent = with_link(&self.state.conn, &self.state.flashing, &self.state.link, self.link, |c| Ok(c.uart1_write(self.bus, self.address, block)))?;
-        Ok(uart1_sent(sent))
-    }
-
-    // nothing over the CAN socket is kept for a place of the installation yet: MAINT 1.2 reads no board identity, which
-    // would tie the block to a board only assumed there
-    fn snapshot(&mut self, _kind: SnapshotKind, _block: &[u8]) {}
-
-    fn uart1(&self) -> bool {
-        true
-    }
-}
-
 /// What the answer to a binary write says. A timeout, an incomplete answer or a broken link leave it open (lost).
-fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
+pub(crate) fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
     match r {
         Ok(()) => Sent::Ack,
         // E2: the patch takes neither the values nor the switches
@@ -395,11 +363,12 @@ pub enum ParamWrite {
 /// the edit started from) on top of it, send, read back. `restore` sends `edited` as it is on top of the fresh read
 /// (the stored block after a refusal); the rebase would take the live switches for a change of the pack.
 ///
-/// CAN socket: the same steps over the binary service (`write_uart1`), only for a target whose board identity is
-/// verified (`uart1_identity`; MAINT 1.2 shows none, so it refuses before anything is sent). Host polling pauses from the
-/// fresh read to the read-back.
+/// CAN socket: the same steps over the binary service in one port session (`uart1_id::write`), only for a target whose
+/// board identity is strictly known (MAINT 1.3: a fresh canonical String 2 equal to `serial`, the String 2 read with the
+/// edited column). Host polling pauses from the identity read to the read-back.
 #[tauri::command]
-pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool) -> Result<Written<ParamWrite>, String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool, serial: Option<String>) -> Result<Written<ParamWrite>, String> {
     let path = param_path(&state)?;
     let link = bound(&state, installation.as_deref())?;
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
@@ -411,10 +380,7 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
             let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore)?;
             Ok(Written { value, unchecked: checked.unchecked })
         }
-        ParamPath::Uart1(bus) => {
-            let identity = uart1_identity(&state, &link, address);
-            write_uart1(&state, &link, bus, address, identity, base, edited, restore)
-        }
+        ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore),
     }
 }
 
@@ -431,60 +397,11 @@ pub fn master_blocks(stored: Option<&str>, read: &SerialValue) -> bool {
 }
 
 /// Before a write over the CAN socket: no open interrupted update of this address (`pending_blocks`).
-fn uart1_pending(state: &AppState, link: &Link, address: u8) -> Result<(), String> {
+pub(crate) fn uart1_pending(state: &AppState, link: &Link, address: u8) -> Result<(), String> {
     let inst = link.installation.as_deref().ok_or("view only: writing to a pack needs a connection with an installation")?;
     let pending = crate::maint::with_store(state, |s| Ok(pending_blocks(&s.all_pending()?, &s.installation(inst)?.endpoints, address)))
         .map_err(|e| format!("{e:?}"))?;
     if pending { Err(uart1_refusal("pending")) } else { Ok(()) }
-}
-
-/// What the CAN socket shows about the board at the target address before a write.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Uart1Identity {
-    /// The board was identified and belongs to this place of the installation (as `check_target` decides it).
-    Verified,
-    /// No identity can be read: no write.
-    Unavailable,
-}
-
-/// The one place that decides the identity of a target on the CAN socket. MAINT 1.2 shows neither String 1 nor String
-/// 2 of the addressed board, so every pack is `Unavailable` and no parameter write goes out over the CAN socket; a
-/// firmware with an identity query plugs its check in here.
-fn uart1_identity(_state: &AppState, _link: &Link, _address: u8) -> Uart1Identity {
-    Uart1Identity::Unavailable
-}
-
-/// Before a write over the CAN socket, in place of `check_target`: a verified identity of the target, then the master
-/// behind the CAN socket must not be known as another bank's (`master_blocks`).
-fn uart1_check_target(state: &AppState, link: &Link, identity: Uart1Identity) -> Result<crate::bank::Checked, String> {
-    if identity != Uart1Identity::Verified {
-        return Err(uart1_refusal("no-identity"));
-    }
-    let inst = link.installation.as_deref().ok_or("view only: writing to a pack needs a connection with an installation")?;
-    let stored = crate::maint::with_store(state, |s| Ok(s.current_board(inst, 0)?.and_then(|b| b.battery_serial))).map_err(|e| format!("{e:?}"))?;
-    let read = match with_link(&state.conn, &state.flashing, &state.link, link, |c| c.master_battery_serial()) {
-        Ok(v) => v,
-        Err(e) if e == crate::LINK_CHANGED || e == crate::FLASHING => return Err(e),
-        Err(_) => SerialValue::NoAnswer,
-    };
-    if master_blocks(stored.as_deref(), &read) {
-        return Err(uart1_refusal("other-master"));
-    }
-    Ok(crate::bank::Checked { unchecked: false, read: SerialValue::Unavailable })
-}
-
-/// A parameter write over the CAN socket: identity (refused before anything is sent while it is not verified), no open
-/// interrupted update of this address, then with host polling held the same steps as on RS485-1/2.
-#[allow(clippy::too_many_arguments)]
-fn write_uart1(state: &AppState, link: &Link, bus: Bus, address: u8, identity: Uart1Identity, base: Values, edited: Values, restore: bool) -> Result<Written<ParamWrite>, String> {
-    if identity != Uart1Identity::Verified {
-        return Err(uart1_refusal("no-identity"));
-    }
-    uart1_pending(state, link, address)?;
-    let checked = uart1_check_target(state, link, identity)?;
-    let _pause = crate::PollPause::hold(&state.params_pause);
-    let value = write_checked(&mut Uart1Io { state, link, bus, address }, address, base, edited, restore)?;
-    Ok(Written { value, unchecked: checked.unchecked })
 }
 
 pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, edited: Values, restore: bool) -> Result<ParamWrite, String> {
@@ -528,14 +445,26 @@ pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, ed
         }
         Sent::Ack => {}
     }
-    io.snapshot(SnapshotKind::Written, &block);
-    Ok(match io.read(true) {
-        // the CAN socket acknowledges before the read: the first 158 data bytes must be the ones sent
-        Ok(p) if uart1 && uart1::write_data(&p.block) != uart1::write_data(&block) => {
+    if !uart1 {
+        io.snapshot(SnapshotKind::Written, &block);
+        return Ok(match io.read(true) {
+            Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None, unanswered: false, before: None },
+            Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e), unanswered: false, before: None },
+        });
+    }
+    // the CAN socket: `written` only once the read-back shows the first 158 data bytes sent; another read-back is kept
+    // as what was read, the attempt stays open
+    Ok(match io.read(false) {
+        Ok(p) if uart1::write_data(&p.block) != uart1::write_data(&block) => {
+            io.snapshot(SnapshotKind::Read, &p.block);
             ParamWrite::UnclearRead { error: uart1_refusal("readback"), read_back: Some(p), before: fresh }
         }
-        Ok(p) => ParamWrite::Written { read_back: Some(p), read_error: None, unanswered: false, before: uart1.then_some(fresh) },
-        Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e), unanswered: false, before: uart1.then_some(fresh) },
+        Ok(p) => {
+            io.snapshot(SnapshotKind::Written, &block);
+            io.snapshot(SnapshotKind::Read, &p.block);
+            ParamWrite::Written { read_back: Some(p), read_error: None, unanswered: false, before: Some(fresh) }
+        }
+        Err(e) => ParamWrite::Written { read_back: None, read_error: Some(e), unanswered: false, before: Some(fresh) },
     })
 }
 
@@ -630,12 +559,14 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
         None
     };
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_serial(address, which, &text)))?.map_err(refusal_error)?;
-    let read = with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.serial(address, which));
-    // the app's own String 2 write: the board keeps its identity under the new serial
-    if let (Which::Bms, Ok(new)) = (which, &read) {
+    let read_raw = with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.serial_canonical(address, which));
+    let read = read_raw.as_ref().map(|(v, _)| v.clone()).map_err(Clone::clone);
+    // the app's own String 2 write: the board keeps its identity under the new serial, its provenance from the raw
+    // read-back
+    if let (Which::Bms, Ok((new, canonical))) = (which, &read_raw) {
         let before = old.clone().unwrap_or(SerialValue::NoAnswer);
         // the board was checked just before: recorded also while another pack of the connection is foreign
-        for_link_checked(&state, &link, "board", |s, inst| s.board_written(inst, address, &before, new, now_ms()));
+        for_link_checked(&state, &link, "board", |s, inst| s.board_written_canonical(inst, address, &before, new, *canonical, now_ms()));
     }
     // the app's own String 1 write on a known board: kept for it, a store failure is reported
     let mut board_unchecked = false;
@@ -787,7 +718,7 @@ mod tests {
     impl ParamIo for Fake {
         fn read(&mut self, keep: bool) -> Result<Parameters, String> {
             let r = self.reads.pop().expect("an unexpected read");
-            if let (true, false, Ok(p)) = (keep, self.uart1, &r) {
+            if let (true, Ok(p)) = (keep, &r) {
                 self.snapshot(SnapshotKind::Read, &p.block.clone());
             }
             r
@@ -797,9 +728,7 @@ mod tests {
             Ok(self.sent.take().expect("sent twice"))
         }
         fn snapshot(&mut self, kind: SnapshotKind, _block: &[u8]) {
-            if !self.uart1 {
-                self.kept.push(kind);
-            }
+            self.kept.push(kind);
         }
         fn uart1(&self) -> bool {
             self.uart1
@@ -820,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn both_paths_write_and_read_back_ascii_keeps_snapshots_uart1_its_block_before() {
+    fn both_paths_write_and_read_back_uart1_keeps_written_only_after_the_read_back() {
         for adr in [0u8, 1, 11] {
             let b = block(adr);
             let (base, edited) = edit(&b, 3650);
@@ -832,7 +761,7 @@ mod tests {
             let mut f = Fake::new(true, vec![Ok(b.clone()), Ok(with_p0(&b, 3650))], Sent::Ack);
             let r = write_checked(&mut f, adr, base, edited, false).unwrap();
             assert!(matches!(&r, ParamWrite::Written { read_back: Some(_), unanswered: false, before: Some(p), .. } if p.block == b));
-            assert!(f.kept.is_empty());
+            assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Written, SnapshotKind::Read]);
             // the block sent carries the pack's own address
             assert_eq!(f.blocks[0][0], adr);
         }
@@ -947,52 +876,6 @@ mod tests {
         for v in [SerialValue::NoAnswer, SerialValue::Unavailable, SerialValue::Empty, SerialValue::Placeholder { value: "EMU110110S-XXXX".into() }, set("")] {
             assert!(!master_blocks(Some("SYN-A"), &v), "{v:?}");
         }
-    }
-
-    fn uart1_state(name: &str) -> (AppState, Link, crate::maint_store::Installation) {
-        let dir = std::env::temp_dir().join(format!("openbms-uart1-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let s = crate::maint_store::Store::open(&dir.join("maintenance.sqlite")).unwrap();
-        let can = crate::maint_store::ControlEndpoint::Tcp { addr: "192.0.2.10:4196".into() };
-        let i = s.create_installation("A", Some(can), vec!["tcp:192.0.2.11:4196".into()]).unwrap();
-        let state = AppState::default();
-        *state.maint.lock().unwrap() = Some(s);
-        *state.bus.lock().unwrap() = Some(Bus::CanSocketBus);
-        crate::new_link(&state, Some(i.id.clone()));
-        let link = link_now(&state);
-        (state, link, i)
-    }
-
-    #[test]
-    fn no_write_over_the_can_socket_without_a_verified_identity() {
-        let (state, link, _) = uart1_state("identity");
-        // MAINT 1.2 identifies no board: every pack refuses before anything is sent
-        for adr in [0u8, 1, 11] {
-            assert_eq!(uart1_identity(&state, &link, adr), Uart1Identity::Unavailable);
-        }
-        let b = block(1);
-        let (base, edited) = edit(&b, 3650);
-        let e = write_uart1(&state, &link, Bus::CanSocketBus, 1, Uart1Identity::Unavailable, base, edited, false).unwrap_err();
-        assert_eq!(e, uart1_refusal("no-identity"));
-        assert!(!crate::polling_paused(&state));
-    }
-
-    #[test]
-    fn a_verified_target_reaches_the_write_steps_with_polling_held() {
-        let (state, link, i) = uart1_state("verified");
-        let b = block(1);
-        let (base, edited) = edit(&b, 3650);
-        // no connection here: the master read decides nothing, the fresh read of the write steps fails
-        let e = write_uart1(&state, &link, Bus::CanSocketBus, 1, Uart1Identity::Verified, base.clone(), edited.clone(), false).unwrap_err();
-        assert_eq!(e, "not connected");
-        assert!(!crate::polling_paused(&state), "the pause ends with the error");
-        // an interrupted update of this address at the installation's port blocks; another pack does not
-        crate::maint::with_store(&state, |s| s.add_pending(&i.endpoints[0], 1, "16.06.13", None, 1)).unwrap();
-        let e = write_uart1(&state, &link, Bus::CanSocketBus, 1, Uart1Identity::Verified, base.clone(), edited.clone(), false).unwrap_err();
-        assert_eq!(e, uart1_refusal("pending"));
-        let e = write_uart1(&state, &link, Bus::CanSocketBus, 2, Uart1Identity::Verified, base, edited, false).unwrap_err();
-        assert_eq!(e, "not connected");
     }
 
     #[test]

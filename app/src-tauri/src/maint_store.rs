@@ -832,6 +832,7 @@ impl Store {
 
     /// A successful serial number read at a place (String 2 and String 1 as read). A new board row gets no provenance
     /// (`board_seen_canonical` gives it).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn board_seen(&self, inst: &str, address: u8, bms: &SerialValue, battery: &SerialValue, now: i64) -> Result<BoardSeen, String> {
         self.installation(inst)?;
         self.atomic(|s| s.seen_rows(inst, address, bms, battery, None, now))
