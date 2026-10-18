@@ -187,13 +187,14 @@ pub fn hard_stop_reported(profile: Option<&Profile>, address: u8) -> bool {
     address == 0 && profile.is_some_and(|p| p.caps().is_some() && matches!(&p.master, Master::Patched { patch, .. } if patch.info.hard_stop.is_some()))
 }
 
-/// The poll thread's fresh status of `address` on connection `link`: a hard-stop observation is kept for the board current
-/// there (not for an unconfirmed or foreign pack, not where the image reports the flag) and the UI is told of a change.
+/// The poll thread's fresh status of `address` on connection `link`: a hard-stop sighting is kept for the board current
+/// there only when that board's identity is settled for this installation (`bank::board_storable`: on the CAN socket a
+/// known pack, no foreign one, the master not another bank's), never where the image reports the flag; the UI is told.
 pub fn observe_hard_stop(state: &AppState, link: &Link, address: u8, status: &openbms_proto::Status) {
     if !hard_stop_observation(status) {
         return;
     }
-    if bank::unconfirmed(state, link.gen, address) || hard_stop_reported(bank::profile(state, link.gen).as_ref(), address) {
+    if !bank::board_storable(state, link.gen, address) || hard_stop_reported(bank::profile(state, link.gen).as_ref(), address) {
         return;
     }
     let now = crate::history::now_ms();
@@ -346,6 +347,7 @@ pub async fn patch_proof_revoke(state: tauri::State<'_, AppState>, installation:
 mod tests {
     use super::*;
     use crate::maint_store::PatchProof;
+    use openbms_proto::SerialValue;
     use openbms_flash::maint::policy::Patch;
     use openbms_proto::{MaintInfo, MaintState};
 
@@ -519,6 +521,8 @@ mod tests {
         let link = crate::link_now(&state);
         bank::begin(&state, link.gen, false, None);
         bank::set_profile(&state, link.gen, p3);
+        bank::uart1_known(&state, &link, 0);
+        bank::uart1_known(&state, &link, 2);
         observe_hard_stop(&state, &link, 0, &status(0x02, 0x01));
         observe_hard_stop(&state, &link, 2, &status(0x02, 0x01));
         let seen = crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap();
@@ -527,6 +531,45 @@ mod tests {
         let at = seen[0].at;
         observe_hard_stop(&state, &link, 2, &status(0x02, 0x03));
         assert_eq!(crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap(), vec![crate::maint_store::HardStopSeen { address: 2, at }]);
+    }
+
+    #[test]
+    fn on_the_can_socket_a_sighting_is_kept_only_for_a_confirmed_pack_of_this_bank() {
+        let state = AppState::default();
+        let dir = std::env::temp_dir().join(format!("openbms-hardstop-bank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::maint_store::Store::open(&dir.join("maintenance.sqlite")).unwrap();
+        let inst = store.create_installation("A", None, vec![]).unwrap();
+        *state.maint.lock().unwrap() = Some(store);
+        crate::new_link(&state, Some(inst.id.clone()));
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        let seen = |state: &AppState| crate::maint::with_store(state, |s| s.hard_stops(&inst.id)).unwrap().len();
+        // not (yet) known: polling began before the serial reads
+        observe_hard_stop(&state, &link, 3, &status(0x02, 0x01));
+        assert_eq!(seen(&state), 0);
+        // unconfirmed (another board, or another installation's): nothing
+        bank::uart1_unconfirmed(&state, &link, 3, "SYN-B3", &SerialValue::NoAnswer, bank::Why::New, None);
+        observe_hard_stop(&state, &link, 3, &status(0x02, 0x01));
+        assert_eq!(seen(&state), 0);
+        // known, but another pack of the connection belongs to another installation: nothing
+        bank::uart1_known(&state, &link, 3);
+        bank::uart1_unconfirmed(&state, &link, 4, "SYN-B4", &SerialValue::NoAnswer, bank::Why::Foreign, None);
+        observe_hard_stop(&state, &link, 3, &status(0x02, 0x01));
+        assert_eq!(seen(&state), 0);
+        // a fresh connection: known, but the master showed another bank's battery serial: nothing
+        crate::new_link(&state, Some(inst.id.clone()));
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        bank::uart1_known(&state, &link, 3);
+        bank::can_master_read(&state, link.gen, false);
+        observe_hard_stop(&state, &link, 3, &status(0x02, 0x01));
+        assert_eq!(seen(&state), 0);
+        // the master matches: kept
+        bank::can_master_read(&state, link.gen, true);
+        observe_hard_stop(&state, &link, 3, &status(0x02, 0x01));
+        assert_eq!(seen(&state), 1);
     }
 
     #[test]

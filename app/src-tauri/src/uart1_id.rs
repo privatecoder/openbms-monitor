@@ -113,6 +113,7 @@ pub(crate) fn read(state: &AppState, bus: Bus, address: u8) -> Result<ParamRead,
         if let (Some(inst), Some((refs, places))) = (link.installation.as_deref(), facts) {
             match verdict(inst, address, serial, &refs, &places) {
                 Verdict::Known => {
+                    bank::uart1_known(state, &link, address);
                     // this board is checked just now: kept also while another pack of the connection is foreign
                     let now = now_ms();
                     for_link_checked(state, &link, "parameter snapshot", |st, inst| st.add_param_snapshot_serial(inst, address, serial, SnapshotKind::Read, &parameters.block, now));
@@ -177,7 +178,11 @@ pub(crate) fn serial_numbers(state: &AppState, link: &Link, bus: Bus, address: u
     let view = match (&s.canonical, &s.bms) {
         (Some(serial), _) => {
             let facts = crate::maint::with_store(state, |st| Ok((st.current_refs(inst)?, st.serial_places(serial)?))).map_err(|e| format!("{e:?}"))?;
-            match verdict(inst, address, serial, &facts.0, &facts.1) {
+            let v = verdict(inst, address, serial, &facts.0, &facts.1);
+            if v == Verdict::Known {
+                bank::uart1_known(state, link, address);
+            }
+            match v {
                 Verdict::Unconfirmed(why, other) => Some(bank::uart1_unconfirmed(state, link, address, serial, &s.battery, why, other)),
                 Verdict::Known | Verdict::Elsewhere => {
                     let now = now_ms();
