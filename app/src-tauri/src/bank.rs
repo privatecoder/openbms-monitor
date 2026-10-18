@@ -440,6 +440,26 @@ pub(crate) fn after_read_canonical(state: &AppState, link: &Link, address: u8, i
     settle(state, link);
 }
 
+/// CAN socket: a pack whose fresh canonical String 2 is the installation's current board at this place (strictly known).
+pub(crate) fn uart1_known(state: &AppState, link: &Link, address: u8) {
+    note_canonical(state, link.gen, address, Seen::Known, Some(true));
+}
+
+/// Whether something about the board at `address` may be kept from connection `gen`'s poll answers (a hard-stop
+/// sighting): on RS485-1/2 unless the pack is unconfirmed; on the CAN socket only for a pack known at this place, with no
+/// foreign pack on the connection and a master that did not show another installation's battery serial.
+pub(crate) fn board_storable(state: &AppState, gen: u64, address: u8) -> bool {
+    state.bank.lock().is_ok_and(|b| {
+        b.current(gen).is_some_and(|b| {
+            if b.pack_bus {
+                !matches!(b.packs.get(&address), Some(Seen::Unconfirmed(_)))
+            } else {
+                matches!(b.packs.get(&address), Some(Seen::Known)) && !b.foreign() && b.can_master != Some(false)
+            }
+        })
+    })
+}
+
 /// CAN socket: a pack whose fresh canonical String 2 is not (yet) one the CAN socket may write to (a new, moved or
 /// foreign board, an earlier one of this place, or the board here recorded before its raw bytes were checked). Noted as
 /// unconfirmed with that serial, so „Übernehmen“ records it (provenance included); the sidebar line comes with the event.
