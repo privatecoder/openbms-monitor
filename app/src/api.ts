@@ -137,7 +137,8 @@ export interface SystemUpdate { values: SystemValues | null; error: string | nul
 export interface PackLive { telemetry: Telemetry; status: Status }
 /** A CAN protocol set the BMS accepted; `device` is null when the read-back of 0x51 failed. */
 export interface CanProtocolSet { device: DeviceInfo | null; read_error: string | null }
-/** Outcome of a parameter write. stale: the pack changed an untouched value since the edit's read, nothing written;
+/** Outcome of a parameter write. stale: the pack changed an untouched value since the edit's read, nothing written
+ *  (`lock_changed`: its lock state, Group0 bit 5, among them);
  *  written with `unanswered`: the answer to the write was missing, a fresh read showed the values sent; unclear: the
  *  answer was missing and a fresh read showed neither the values sent nor those before (or failed);
  *  refused: the BMS did not take the block, `stored` is the read right before the write (after RTN 06 the switches
@@ -145,7 +146,7 @@ export interface CanProtocolSet { device: DeviceInfo | null; read_error: string 
  *  CAN socket: `before` is the read right before the write (nothing there is stored, so „Vorheriger Stand“ holds for
  *  the session), an unclear write carries what the pack holds now (`read_back`, null when that read failed). */
 export type ParamWrite =
-  | { kind: "stale"; fresh: Parameters }
+  | { kind: "stale"; fresh: Parameters; lock_changed?: boolean }
   | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered?: boolean; before?: Parameters }
   | { kind: "unclear"; error: string; read_back?: Parameters | null; before?: Parameters }
   | { kind: "refused"; refusal: "refused" | "invalid" | "locked"; stored: Parameters; switches_live?: boolean };

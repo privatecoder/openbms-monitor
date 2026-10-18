@@ -32,6 +32,12 @@ const START_BIT: u8 = 0x04;
 /// MAINT 1.5 with image flag bit 1: 1 locks ein/aus, restart and setting the clock over the CAN socket; a binary 0xA1
 /// must not change it (E3)
 const POWER_BIT: u8 = 0x08;
+/// MAINT 1.6 with image flag bit 2: 0 switches the extended off on (an addressed off stores the pack cutoff), 1 keeps the
+/// OEM soft off; a normal setting, also over the CAN socket while writing is released there
+const CUTOFF_BIT: u8 = 0x10;
+/// MAINT 1.6: 0 shows the stored individual pack cutoff. Status only: set and cleared by an addressed ein/aus, never by a
+/// write (a binary 0xA1 that changes it is refused with E3)
+pub const LOCK_BIT: u8 = 0x20;
 const AUTO_ADDRESS_BIT: u8 = 0x20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,7 +180,7 @@ pub async fn firmware_profile_check(state: tauri::State<'_, AppState>, gen: u64)
 pub fn group0_after(r: Option<&crate::bms_memory::ParamWrite>) -> Option<u8> {
     use crate::bms_memory::ParamWrite as W;
     match r? {
-        W::Written { read_back: Some(p), .. } | W::UnclearRead { read_back: Some(p), .. } | W::Stale { fresh: p } => Some(p.function_switches[0]),
+        W::Written { read_back: Some(p), .. } | W::UnclearRead { read_back: Some(p), .. } | W::Stale { fresh: p, .. } => Some(p.function_switches[0]),
         W::Refused { refusal, stored, .. } if *refusal != openbms_proto::Refusal::Locked => Some(stored.function_switches[0]),
         _ => None,
     }
@@ -322,6 +328,12 @@ pub fn power_rtc(state: &AppState, link: &Link, address: u8) -> bool {
     pack_patch(state, link, address, None).is_some_and(|p| p.caps.power_rtc == Some(true))
 }
 
+/// The lock state (Group0 bit 5) differs between the read an edit started from and the pack now: a write is not sent
+/// over it, the user sees the pack's state first.
+pub fn lock_changed(base: u8, fresh: u8) -> bool {
+    (base ^ fresh) & LOCK_BIT != 0
+}
+
 /// Group0 bit 3 set: ein/aus, restart and setting the clock over the CAN socket are locked at this pack.
 pub fn power_locked(group0: u8) -> bool {
     group0 & POWER_BIT != 0
@@ -427,14 +439,15 @@ pub enum Group0 {
     Free,
     /// CAN socket without proof: the release bits always as the pack has them now
     Keep,
-    /// CAN socket with proof: no write while writing is locked there; the start release bit never changes
-    Gated { write: bool, start: bool },
+    /// CAN socket with proof: no write while writing is locked there; the start release bit never changes; the extended
+    /// off (bit 4) only where this connection proved the pack cutoff (`cutoff`)
+    Gated { write: bool, start: bool, cutoff: bool },
 }
 
 pub fn group0_rule(uart1: bool, patch: Option<&PackPatch>) -> Group0 {
     match (uart1, patch) {
         (false, _) => Group0::Free,
-        (true, Some(p)) => Group0::Gated { write: p.caps.write_gate, start: p.caps.start_gate },
+        (true, Some(p)) => Group0::Gated { write: p.caps.write_gate, start: p.caps.start_gate, cutoff: p.caps.pack_cutoff == Some(true) },
         (true, None) => Group0::Keep,
     }
 }
@@ -442,13 +455,19 @@ pub fn group0_rule(uart1: bool, patch: Option<&PackPatch>) -> Group0 {
 /// Apply `rule` to `block` (built on the fresh read `fresh`) before it is sent; Err: refused here, nothing sent.
 pub fn apply_group0(rule: Group0, fresh: &[u8], block: &mut [u8]) -> Result<(), String> {
     let keep = |block: &mut [u8], mask: u8| block[GROUP0] = (block[GROUP0] & !mask) | (fresh[GROUP0] & mask);
+    // bit 5 (the lock state) on every way as the pack has it: an old backup or import never clears a stored cutoff, and
+    // in other builds the bit has no function
+    keep(block, LOCK_BIT);
     match rule {
         Group0::Free => {}
-        Group0::Keep => keep(block, WRITE_BIT | START_BIT | POWER_BIT),
-        Group0::Gated { write, start } => {
+        Group0::Keep => keep(block, WRITE_BIT | START_BIT | POWER_BIT | CUTOFF_BIT),
+        Group0::Gated { write, start, cutoff } => {
             // bit 3 never changes over the CAN socket: with the power and clock service the pack refuses the whole
             // write (E3), without it the bit has no function
             keep(block, POWER_BIT);
+            if !cutoff {
+                keep(block, CUTOFF_BIT);
+            }
             if write && fresh[GROUP0] & WRITE_BIT == 0 {
                 return Err(uart1_refusal("write-locked"));
             }
@@ -592,7 +611,7 @@ mod tests {
         assert_eq!(b[GROUP0], 0xFA);
         let mut b = block(0x00, 0);
         apply_group0(Group0::Keep, &block(0xFF, 0), &mut b).unwrap();
-        assert_eq!(b[GROUP0], 0x0D, "other bits as edited, the release bits (0, 2, 3) as the pack has them");
+        assert_eq!(b[GROUP0], 0x3D, "other bits as edited, the patch bits (0, 2, 3, 4, 5) as the pack has them");
         // RS485-1/2: as edited
         let mut b = block(0xFA, 0);
         apply_group0(group0_rule(false, None), &block(0xFF, 0), &mut b).unwrap();
@@ -603,13 +622,13 @@ mod tests {
     fn with_proof_a_locked_pack_or_a_changed_start_bit_is_refused_before_sending() {
         let p = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None);
         let rule = group0_rule(true, p.as_ref());
-        assert_eq!(rule, Group0::Gated { write: true, start: true });
+        assert_eq!(rule, Group0::Gated { write: true, start: true, cutoff: false });
         let locked = apply_group0(rule, &block(0xFE, 0), &mut block(0xFF, 0)).unwrap_err();
         assert!(locked.contains("write-locked"), "{locked}");
         let start = apply_group0(rule, &block(0xFF, 0), &mut block(0xFB, 0)).unwrap_err();
         assert!(start.contains("start-bit"), "{start}");
-        // the self-lock (bit 0 from 1 to 0) goes out; bit 1 and the rest as edited
-        let mut b = block(0xFC, 0);
+        // the self-lock (bit 0 from 1 to 0) goes out; bit 1 and the rest as edited (bits 4 and 5 as in the pack)
+        let mut b = block(0xCC, 0);
         apply_group0(rule, &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xFC);
         // bit 3 (power and clock lock) stays as the pack has it, in both directions
@@ -623,6 +642,46 @@ mod tests {
         let mut b = block(0xF7, 0);
         apply_group0(group0_rule(false, p.as_ref()), &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xF7);
+    }
+
+    #[test]
+    fn the_lock_state_is_never_written_on_any_way() {
+        let rules = [Group0::Free, Group0::Keep, Group0::Gated { write: true, start: true, cutoff: false }, Group0::Gated { write: true, start: true, cutoff: true }];
+        for rule in rules {
+            // an old backup (bit 5 at 1) never clears a stored cutoff, and an edit never sets one
+            let mut b = block(0xFF, 0);
+            apply_group0(rule, &block(0xDF, 0), &mut b).unwrap();
+            assert_eq!(b[GROUP0] & LOCK_BIT, 0, "{rule:?}");
+            let mut b = block(0xDF, 0);
+            apply_group0(rule, &block(0xFF, 0), &mut b).unwrap();
+            assert_eq!(b[GROUP0] & LOCK_BIT, LOCK_BIT, "{rule:?}");
+        }
+        // RS485-1/2 changes bit 4 as edited
+        let mut b = block(0xEF, 0);
+        apply_group0(Group0::Free, &block(0xFF, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xEF);
+    }
+
+    #[test]
+    fn the_extended_off_goes_over_the_can_socket_only_with_the_proven_cutoff() {
+        let finding = |patch: [u8; 2], flag: bool| PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 3, base: [16, 6, 13], patch, build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: flag }));
+        let with = pack_patch_of(3, None, Some(&finding([1, 6], true)), None, None);
+        let rule = group0_rule(true, with.as_ref());
+        assert_eq!(rule, Group0::Gated { write: true, start: true, cutoff: true });
+        // on (bit 4 to 0) and back
+        let mut b = block(0xE7, 0);
+        apply_group0(rule, &block(0xF7, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xE7);
+        let mut b = block(0xF7, 0);
+        apply_group0(rule, &block(0xE7, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xF7);
+        // a 1.5 pack, a stored proof (flags not known) or no proof: bit 4 as the pack has it
+        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.6".into(), source: "flash".into(), at: 7 };
+        for patch in [pack_patch_of(3, None, Some(&finding([1, 5], true)), None, None), pack_patch_of(3, None, None, Some(&proof), Some("SYN-3")), None] {
+            let mut b = block(0xE7, 0);
+            apply_group0(group0_rule(true, patch.as_ref()), &block(0xF7, 0), &mut b).unwrap();
+            assert_eq!(b[GROUP0], 0xF7, "{patch:?}");
+        }
     }
 
     #[test]
@@ -675,7 +734,7 @@ mod tests {
         let written = Some(W::Written { read_back: Some(params(0xFE)), read_error: None, unanswered: false, before: None });
         assert_eq!(group0_after(written.as_ref()), Some(0xFE));
         assert_eq!(group0_after(Some(&W::Written { read_back: None, read_error: Some("x".into()), unanswered: false, before: None })), None);
-        assert_eq!(group0_after(Some(&W::Stale { fresh: params(0xFB) })), Some(0xFB));
+        assert_eq!(group0_after(Some(&W::Stale { fresh: params(0xFB), lock_changed: false })), Some(0xFB));
         assert_eq!(group0_after(Some(&W::Refused { refusal: openbms_proto::Refusal::Refused, stored: params(0xFF), switches_live: false })), Some(0xFF));
         // E3: the pack changed since the read
         assert_eq!(group0_after(Some(&W::Refused { refusal: openbms_proto::Refusal::Locked, stored: params(0xFF), switches_live: false })), None);

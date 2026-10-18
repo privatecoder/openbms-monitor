@@ -368,8 +368,8 @@ pub(crate) fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ParamWrite {
     /// The pack changed a value the user did not touch since the edit's read: nothing was written; `fresh` is the
-    /// pack now.
-    Stale { fresh: Parameters },
+    /// pack now. `lock_changed`: its lock state (Group0 bit 5, MAINT 1.6) is among the changes.
+    Stale { fresh: Parameters, lock_changed: bool },
     /// Written; the block read back, or why that read failed. `unanswered`: the BMS's answer to the write was missing
     /// or broken, the fresh read showed the values sent. `before` (CAN socket only): the read right before the write,
     /// „Vorheriger Stand“ for this session, since nothing read there is stored.
@@ -449,10 +449,13 @@ pub(crate) fn write_checked(io: &mut impl ParamIo, address: u8, base: Values, ed
     if fresh.address != address {
         return Err(format!("the pack at address {address} answered with address {}", fresh.address));
     }
+    let lock_changed = crate::profile::lock_changed(base.switches[0], fresh.function_switches[0]);
+    // a changed lock state stops the write even where the edit carries the bit as changed (a restore sends the stored
+    // block on top of the pack, its lock state kept)
     let values = if restore { edited } else {
-        match Values::rebase(&base, &edited, &fresh.values()) {
+        match Values::rebase(&base, &edited, &fresh.values()).filter(|_| !lock_changed) {
             Some(v) => v,
-            None => return Ok(ParamWrite::Stale { fresh }),
+            None => return Ok(ParamWrite::Stale { fresh, lock_changed }),
         }
     };
     let mut block = values.apply(&fresh.block).map_err(|e| e.to_string())?;
@@ -810,6 +813,37 @@ mod tests {
             // the block sent carries the pack's own address
             assert_eq!(f.blocks[0][0], adr);
         }
+    }
+
+    #[test]
+    fn a_changed_lock_state_stops_the_write_and_a_restore_keeps_it() {
+        let with_g0 = |g0: u8| {
+            let mut b = block(2);
+            b[crate::profile::GROUP0] = g0;
+            b
+        };
+        // the column read without a cutoff (bit 5 at 1), the pack locked meanwhile; the edit switches the extended off on
+        // and even carries bit 5 as changed: nothing goes out, the answer names the lock
+        let base = Parameters::parse(&with_g0(0xFF)).unwrap().values();
+        for g0 in [0xEF, 0xCF] {
+            let mut edited = base.clone();
+            edited.switches[0] = g0;
+            let mut f = Fake::new(true, vec![Ok(with_g0(0xDF))], Sent::Ack);
+            let r = write_checked(&mut f, 2, base.clone(), edited, false, crate::profile::Group0::Free).unwrap();
+            assert!(matches!(&r, ParamWrite::Stale { lock_changed: true, fresh } if fresh.function_switches[0] == 0xDF), "{g0:02X}");
+            assert!(f.blocks.is_empty());
+            assert_eq!(serde_json::to_value(&r).unwrap()["lock_changed"], true);
+        }
+        // another change of the pack is stale without the lock
+        let mut edited = base.clone();
+        edited.raws[0] = 3650;
+        let mut f = Fake::new(false, vec![Ok(with_p0(&with_g0(0xFE), 3001))], Sent::Ack);
+        assert!(matches!(write_checked(&mut f, 2, base.clone(), edited, false, crate::profile::Group0::Free).unwrap(), ParamWrite::Stale { lock_changed: false, .. }));
+        // restoring an older block (bit 5 at 1) over a locked pack: sent, with the lock as the pack has it
+        let mut f = Fake::new(false, vec![Ok(with_g0(0xDF)), Ok(with_g0(0xDF))], Sent::Ack);
+        let stored = base.clone();
+        write_checked(&mut f, 2, stored.clone(), stored, true, crate::profile::Group0::Free).unwrap();
+        assert_eq!(f.blocks[0][crate::profile::GROUP0], 0xDF);
     }
 
     #[test]
