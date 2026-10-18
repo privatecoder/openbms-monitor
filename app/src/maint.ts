@@ -1,4 +1,5 @@
 import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, Pending } from "./api";
+import { patchName } from "./profile";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
  *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
@@ -144,7 +145,7 @@ export function saveOffer(inst: Pick<Installation, "endpoints" | "control"> | nu
   return !!stored && portKey(stored.kind, stored.target) !== portKey(kind, target);
 }
 
-const KINDS = ["connection", "unsupported", "no-answer", "rejected", "timeout", "refused", "busy", "store", "other-bank", "bootloader-pending"];
+const KINDS = ["connection", "unsupported", "no-answer", "rejected", "start-refused", "timeout", "refused", "busy", "store", "other-bank", "bootloader-pending"];
 
 /** Backend errors arrive as a MaintError object, as its JSON text, as a bare refusal key, or as plain text. */
 export function errorKey(e: unknown): { key: string; params?: Record<string, unknown> } {
@@ -156,7 +157,8 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
     const m = v as MaintError;
     switch (m.kind) {
       case "refused": return { key: `maint.err.refused.${m.reason}` };
-      case "timeout": return { key: "maint.err.timeout", params: { marker: Number(m.marker), slaves: m.slaves } };
+      case "timeout": return { key: "maint.err.timeout", params: { marker: m.marker, slaves: m.slaves } };
+      case "start-refused": return { key: `maint.err.start.${m.reason}` };
       case "rejected": return { key: "maint.err.rejected", params: { rtn: m.rtn.toString(16).padStart(2, "0") } };
       case "connection": case "store": return { key: `maint.err.${m.kind}`, params: { text: m.message } };
       case "other-bank": return { key: "maint.err.other-bank", params: { serial: m.serial } };
@@ -226,18 +228,17 @@ export function masterLine(m: MasterView, t: T): { tone: Tone; text: string } {
   const marker = m.marker === "on" ? t("maint.live.markerOn") : m.marker === "off" ? t("maint.live.markerOff") : m.marker === "foreign" ? t("maint.live.markerForeign", { word: m.marker_word }) : null;
   const join = (...parts: (string | null)[]) => parts.filter(Boolean).join(" · ");
   switch (m.kind) {
-    case "maint": return { tone: m.marker === "foreign" ? "alarm" : "muted", text: join(m.version, marker, slaves) };
-    case "unknown-build": return { tone: "alarm", text: join(t("maint.live.unknownBuild", { version: m.version, id: m.build_id }), marker, slaves) };
-    case "legacy": return { tone: "muted", text: join(t("maint.live.legacy"), marker, slaves) };
+    case "patched": return { tone: m.marker === "foreign" ? "alarm" : "muted", text: join(patchName(m, t), marker, slaves) };
+    case "unknown-patch": return { tone: "alarm", text: t("maint.live.unknownPatch", { version: m.version ?? "" }) };
     case "no-0x64": return { tone: "muted", text: t("maint.live.no0x64") };
     default: return { tone: "muted", text: t("maint.live.masterUnknown") };
   }
 }
 
-/** The version shown for a pack: 0x51 only knows major.minor (e.g. 16.06); for the master (address 0) a trusted
- *  maintenance read over the CAN socket gives the full build. */
-export function packVersion(address: number, firmware: string, master: MasterView | null): string {
-  return address === 0 && master?.kind === "maint" && master.version ? master.version : firmware;
+/** The version shown for a pack: 0x51 only knows major.minor (e.g. 16.06); for the master (address 0) a recognised
+ *  patch read over the CAN socket gives the full build. */
+export function packVersion(address: number, firmware: string, master: MasterView | null, t?: T): string {
+  return address === 0 && master?.kind === "patched" && master.version ? (t ? patchName(master, t) : master.listed ?? master.version) : firmware;
 }
 
 /** Scenario C': the master (address 0) with a trusted maintenance build and its marker on gets an image that is

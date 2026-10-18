@@ -11,7 +11,7 @@ export type Outcome =
   | { kind: "unclear"; error: string }
   | { kind: "notTaken"; params: number[]; switches: number[] }
   | { kind: "unread"; error: string }
-  | { kind: "refused"; refusal: "refused" | "invalid"; live: number }
+  | { kind: "refused"; refusal: "refused" | "invalid" | "locked"; live: number }
   | { kind: "skipped"; why: "blocked"; blockers: Blocker[] }
   | { kind: "skipped"; why: "same" | "pending" | "stale" }
   | { kind: "skipped"; why: "bank" | "busy"; error: unknown }

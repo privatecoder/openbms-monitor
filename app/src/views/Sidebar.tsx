@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
-import { api, isDemo, type Bus, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
+import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
+import { gatesLine, patched, profileLine, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
@@ -108,7 +109,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   useEffect(stopWaiting, [target, kind, bus, packCount, userActions]);
   useEffect(() => { setOffer(null); }, [target, kind, bus]);
   useEffect(() => stopWaiting, []);
-  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<{ linked: boolean; answered: number; gen: number }> => {
+  const connectWhenFree = async (ep: Endpoint, auto: boolean, installation: string | null, check: number[]): Promise<Connected> => {
     const token = ++waitToken.current;
     const until = Date.now() + BUSY_WAIT_MS;
     let action: string | null = null;
@@ -217,7 +218,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
-      const { linked, answered, gen: linkGen } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
+      const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, range(packCount));
       linkOpen.current = true;
       stopIfCancelled();
       // the choice changed while connecting: this link belongs to the earlier one, it is closed again
@@ -231,16 +232,17 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
       const answeredNote = t("conn.answered", { addr: padAddress(answered), bus: t(`conn.busName.${bus}`) });
-      // pack addresses known without a search: from the master (patched firmware, CAN socket bus), else a fixed count
+      // pack addresses known without a search: from the master's state in the firmware profile (patched firmware, CAN
+      // socket bus, read on this endpoint by the connect), else a fixed count
       let addrs: number[] | null = null;
       let note = "";
       if (bus === "can") {
         // the master answers Modbus at once: show its system values before anything slower
         const sys = await api.systemOnce().then(() => true, () => false);
         if (sys) { onConnected([], bus); setSince(Date.now()); setLost(false); }
-        const m = await api.maintStatus().catch(() => null);
-        if (m && !m.marker) { addrs = range(m.effective_slaves + 1); note = t("conn.fromMaster", { count: addrs.length }); }
-        else if (m?.marker) note = t("conn.maintActive");
+        const m = profile.master;
+        if (patched(m) && m.marker === "off" && m.slaves !== null) { addrs = range(m.slaves + 1); note = t("conn.fromMaster", { count: addrs.length }); }
+        else if (patched(m) && m.marker === "on") note = t("conn.maintActive");
       }
       stopIfCancelled();
       if (!addrs && packCount > 0) { addrs = range(packCount); note = t("conn.fixed", { count: packCount }); }
@@ -558,6 +560,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
           {msg && <p title={msg} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{msg}</p>}
+          {connected && <FirmwareProfileLine locked={locked} />}
           {saveAsk && connected && (
             <div className="space-y-1 pt-1">
               <p className="text-sm">{t(`conn.saveAsk.${saveAsk.bus}`, { name: saveAsk.name })}</p>
@@ -625,5 +628,31 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         </Button>
       </div>
     </aside>
+  );
+}
+
+/** The firmware profile of the connection (CAN socket): what the master is, its maintenance state and its release bits;
+ *  „Erneut prüfen“ when it was not recognised. */
+function FirmwareProfileLine({ locked }: { locked: boolean }) {
+  const { t } = useTranslation();
+  const p = useProfile();
+  const [checking, setChecking] = useState(false);
+  const line = profileLine(p, t);
+  if (!p || !line) return null;
+  const gates = gatesLine(p.gates, t);
+  const recheck = async () => {
+    setChecking(true);
+    try { await api.firmwareProfileCheck(p.gen); } catch { /* the line stays as it was */ } finally { setChecking(false); }
+  };
+  return (
+    <div className="text-sm">
+      <p className={cn("flex items-center gap-1", line.tone === "ok" ? "text-ok" : line.tone === "warn" ? "text-discharge" : "text-muted")}>
+        <span className="truncate" title={line.text}>{line.text}</span><InfoIcon id="topic.firmwareProfile" />
+      </p>
+      {gates && <p className="text-xs text-muted">{gates}</p>}
+      {(p.master.kind === "unknown" || p.master.kind === "unknown-patch") && (
+        <button className="text-xs text-ink underline disabled:opacity-40" disabled={locked || checking} onClick={() => void recheck()}>{t("profile.recheck")}</button>
+      )}
+    </div>
   );
 }

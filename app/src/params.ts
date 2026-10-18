@@ -1,9 +1,12 @@
 /** BMS parameters (0x47): order, grouping, BatteryMonitor XML import/export and the comparison between sources. */
+import type { PackPatch } from "./api";
 
 export interface Parameter { index: number; key: string; raw: number; value: number; unit: string }
-/** `bms_serial`: over the CAN socket (MAINT 1.3) the String 2 read with the block, when it identifies the board; a
+/** `bms_serial`: over the CAN socket the String 2 read with the block, when it identifies the board; a
  *  write there must find the same. */
-export interface Parameters { address: number; parameters: Parameter[]; function_switches: number[]; device_name: string; bms_serial?: string | null }
+export interface Parameters { address: number; parameters: Parameter[]; function_switches: number[]; device_name: string; bms_serial?: string | null;
+  /** what proves the pack's patch version (the release bits of Group0 are named only then) */
+  patch?: PackPatch | null }
 
 /** Parameter keys in BMS order (P0..P86), as in openbms-proto/src/params.rs. */
 export const KEYS = [
@@ -109,7 +112,7 @@ export interface Source {
   read?: Parameters;
   /** pack columns: the link (`linkNow()`) the read belongs to; only columns of the current one are write targets */
   link?: string;
-  /** pack columns read over the CAN socket's parameter service (MAINT 1.2): nothing of it is stored */
+  /** pack columns read over the CAN socket's parameter service (patched firmware): nothing of it is stored */
   path?: "uart1";
   /** last write of this pack at this installation (ms) and the parameters it replaced */
   lastWritten?: number | null;

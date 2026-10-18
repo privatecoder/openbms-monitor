@@ -57,12 +57,13 @@ describe("maintenance texts", () => {
   });
   it("status lines in both languages", () => {
     const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
-    const m: MasterView = { kind: "maint", version: "16.06.13 MAINT 1.1", build_id: "fe381985bfff8ad0", marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false };
-    expect(masterLine(m, tr("de")).text).toBe("16.06.13 MAINT 1.1 · Marker aus · fragt 3 Slaves ab");
-    expect(masterLine({ ...m, kind: "legacy", version: null, marker: "on", slaves: 0 }, tr("de")).text).toBe("16.06 MAINT-1.0-kompatibel · Marker an (Wartung) · fragt 0 Slaves ab");
-    expect(masterLine({ ...m, marker: "foreign", marker_word: "12345678" }, tr("en"))).toEqual({ tone: "alarm", text: "16.06.13 MAINT 1.1 · marker sector with unknown content (12345678) · polls 3 slaves" });
-    expect(masterLine({ ...m, kind: "unknown-build" }, tr("de")).text).toContain("Unbekannter Wartungs-Build 16.06.13 MAINT 1.1 (Build-ID fe381985bfff8ad0)");
-    expect(masterLine({ ...m, kind: "no-0x64", marker: null, slaves: null }, tr("de")).text).toBe("Original 16.06 (0x64 nicht unterstützt)");
+    const m: MasterView = { kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5",
+      caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false };
+    expect(masterLine(m, tr("de")).text).toBe("16.06.13 MAINT 1.5 · Marker aus · fragt 3 Slaves ab");
+    expect(masterLine({ ...m, listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" }, tr("de")).text).toBe("MAINT 1.6 (Basis 16.07.02, Build nicht gelistet) · Marker aus · fragt 3 Slaves ab");
+    expect(masterLine({ ...m, marker: "foreign", marker_word: "12345678" }, tr("en"))).toEqual({ tone: "alarm", text: "16.06.13 MAINT 1.5 · marker sector with unknown content (12345678) · polls 3 slaves" });
+    expect(masterLine({ ...m, kind: "unknown-patch", caps: null, version: "16.06.13 MAINT 1.4" }, tr("de")).text).toBe("Unbekannte Patch-Firmware 16.06.13 MAINT 1.4: keine Patch-Funktionen");
+    expect(masterLine({ ...m, kind: "no-0x64", marker: null, slaves: null }, tr("de")).text).toBe("0x64 nicht unterstützt, Firmwarestand nicht belegt");
     expect(busLine({ bus: "polling", polled: [1, 2], bus_error: null, master: null, master_error: null }, false, tr("en")).text).toBe("Master polls 2 slaves");
     expect(busLine(null, false, tr("de")).text).toBe("Prüfe den Pack-Bus …");
   });

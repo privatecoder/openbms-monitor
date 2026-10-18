@@ -67,12 +67,12 @@ export function EditCell({ e, i, level, disabled, onChange }: { e: Edit; i: numb
 }
 
 /** A switch bit in the edited column. */
-export function EditSwitch({ e, g, b, disabled, onChange }: { e: Edit; g: number; b: number; disabled: boolean; onChange: (f: (e: Edit) => Edit) => void }) {
+export function EditSwitch({ e, g, b, disabled, title, onChange }: { e: Edit; g: number; b: number; disabled: boolean; title?: string; onChange: (f: (e: Edit) => Edit) => void }) {
   const { t } = useTranslation();
   const on = ((e.switches[g] >> b) & 1) === 1;
   const changed = (((e.switches[g] ^ e.baseSwitches[g]) >> b) & 1) === 1;
   return (
-    <td className={cn("border-b border-l border-line px-3 py-1 text-right", changed && "bg-charge/12 font-semibold")}>
+    <td title={title} className={cn("border-b border-l border-line px-3 py-1 text-right", changed && "bg-charge/12 font-semibold")}>
       <label className="inline-flex cursor-pointer items-center gap-1.5">
         <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={on} disabled={disabled}
           onChange={() => onChange((x) => ({ ...x, switches: x.switches.map((s, k) => (k === g ? s ^ (1 << b) : s)) }))} />
@@ -106,7 +106,7 @@ export function useWriteTexts() {
 /** The sticky bar of an edit: change list, datasheet findings, blockers, the capacity line, write and discard.
  *  `more` sits next to the buttons and `extra` below the checks (further packs); `held` keeps the bar still while
  *  a run over several packs is prepared or runs. */
-export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused, busy, locked, held, sources, writeLabel, more, extra, onChange, onTakeOver, onWrite, onRestore, onDiscard }: {
+export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused, busy, locked, held, sources, writeLabel, more, extra, warning, onChange, onTakeOver, onWrite, onRestore, onDiscard }: {
   e: Edit; pack: string; changes: Change[]; blockers: Blocker[];
   /** a refusal of this pack whose switches are still live: writing waits for the restore */
   refused: Refused | null;
@@ -116,6 +116,8 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
   /** other columns with values, for „Werte übernehmen aus …“ */
   sources: { id: string; label: string }[];
   writeLabel?: string; more?: React.ReactNode; extra?: React.ReactNode;
+  /** a consequence to read before writing (the CAN socket write release switched off, writing locked there) */
+  warning?: string | null;
   onChange: (f: (e: Edit) => Edit) => void; onTakeOver: (id: string) => void;
   onWrite: () => void; onRestore: (stored: Parameters) => void; onDiscard: () => void;
 }) {
@@ -172,6 +174,7 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
         </ul>
       )}
 
+      {warning && <p className="flex gap-2 text-discharge"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{warning}</p>}
       {extra}
       {full?.address === e.address && "error" in full ? <p className="text-muted">{t("pw.full.unknown", { err: full.error })}</p>
         : full?.address !== e.address ? <p className="text-muted">{t("pw.full.reading")}</p>

@@ -5,6 +5,7 @@ import { CAN_PROTOCOLS, type Calibration } from "./calibration";
 import type { RestartResult } from "./control";
 import { fromRaw, isSigned, toRaw, violations, type Wire } from "./paramWrite";
 import { noteUnchecked } from "./bank";
+import { setProfile } from "./profile";
 
 export type Bus = "pack" | "can";
 /** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
@@ -51,7 +52,9 @@ export type IdentityView = {
   why: "new" | "moved" | "foreign" | null; installation: OtherInstallation | null; hint: boolean;
 };
 /** A serial number read; `board` is null with „Nur ansehen“ (nothing stored), `identity` null with „Nur ansehen“. */
-export type SerialRead = SerialNumbers & { board?: BoardSeen | null; identity?: IdentityView | null };
+/** `uart1` (CAN socket): String 2 came over the binary service (true) or was refused with 0x81 (false); missing: not
+ *  asked or no answer. */
+export type SerialRead = SerialNumbers & { board?: BoardSeen | null; identity?: IdentityView | null; uart1?: boolean };
 export interface Telemetry {
   address: number;
   cell_voltages: number[];
@@ -145,14 +148,13 @@ export type ParamWrite =
   | { kind: "stale"; fresh: Parameters }
   | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered?: boolean; before?: Parameters }
   | { kind: "unclear"; error: string; read_back?: Parameters | null; before?: Parameters }
-  | { kind: "refused"; refusal: "refused" | "invalid"; stored: Parameters; switches_live?: boolean };
+  | { kind: "refused"; refusal: "refused" | "invalid" | "locked"; stored: Parameters; switches_live?: boolean };
 /** The last write of a pack at this installation and the parameters it replaced. */
 export interface ParamHistory { last_written: number | null; previous: Parameters | null }
 /** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed;
  *  `master_unchecked`: master String 2, but the old or new value could not be read, so none was updated;
  *  `board_unchecked`: String 1 of a known board, but the database could not keep the new value for it. */
 export interface SerialSet { value: SerialValue | null; read_error: string | null; master_updated: string[]; master_unchecked: boolean; board_unchecked: boolean }
-export interface MaintStatus { marker: boolean; effective_slaves: number }
 /** Recording into the history database. Off by default; changes apply at once. */
 export interface HistorySettings {
   enabled: boolean;
@@ -275,16 +277,28 @@ export interface SnapshotParams { address: number; at: number; kind: StoredSnaps
   switches_unconfirmed?: boolean }
 /** The old settings of one site key, raw text as found in the browser storage. */
 export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: string; diag?: string }
-/** The master as read over the CAN socket bus (0x64/03, after RTN 05 0x64/02). */
+/** What a patched firmware offers (by its patch version; never compared against a version number in the UI). */
+export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean }
+/** The master as read over the CAN socket bus (0x64/03, then for a supported patch 0x64/02). kind: "patched" (patch
+ *  functions by its patch version; `listed`: the build's name, null when the build is not listed), "unknown-patch",
+ *  "no-0x64" (firmware not proven), "unknown". `polling` after a release: "unverified" or "no-slaves". */
 export interface MasterView {
-  kind: "maint" | "unknown-build" | "legacy" | "no-0x64" | "unknown";
-  version: string | null; build_id: string | null;
+  kind: "patched" | "unknown-patch" | "no-0x64" | "unknown";
+  version: string | null; patch: string | null; base: string | null; build_id: string | null; listed: string | null; caps: PatchCaps | null;
   marker: "off" | "on" | "foreign" | null; marker_word: string | null; slaves: number | null;
-  may_halt: boolean; may_release: boolean;
+  may_halt: boolean; may_release: boolean; polling?: "unverified" | "no-slaves";
 }
+/** The release bits of a Group0 value, each only where the capability has it. */
+export interface Gates { write: boolean | null; start: boolean | null }
+/** The firmware profile of the monitor connection, read on its endpoint right after connecting (`profile.rs`). */
+export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: MasterView; gates: Gates | null; at: number }
+/** What proves a pack's patch version: the master's identity on this link, or a stored proof (after an app flash, or
+ *  the user's confirmation) for the board with this String 2. */
+export interface PackPatch { source: "master" | "flash" | "user"; release: string; caps: PatchCaps; at: number | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
-  | { kind: "timeout"; marker: boolean; slaves: number } | { kind: "refused"; reason: string } | { kind: "busy" }
+  | { kind: "start-refused"; reason: string }
+  | { kind: "timeout"; marker: "off" | "on" | "foreign"; slaves: number } | { kind: "refused"; reason: string } | { kind: "busy" }
   | { kind: "store"; message: string } | { kind: "other-bank"; serial: string } | { kind: "bootloader-pending"; pack: number; endpoint: string };
 /** The panel's live status: a short listen on the pack bus, and with a CAN socket the master read. */
 export interface LiveStatus { bus: "quiet" | "polling" | "traffic" | "no-port" | "error"; polled: number[]; bus_error: string | null; master: MasterView | null; master_error: MaintError | null }
@@ -309,10 +323,20 @@ export const linkNow = () => `${chosen ?? ""}|${linkGen}`;
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** What `connect` did: the endpoint linked to the installation now, the generation, the first pack that answered, and
+ *  the firmware profile read on this endpoint. */
+export interface Connected { linked: boolean; answered: number; gen: number; profile: ProfileView }
+
 /** A write's result from the backend: the value and whether the target had no serial to check the bank with. The
  *  wrapper hands on the value and reports `unchecked` to the note in the Parameters view (`bank.ts`). */
 const written = <T,>(address: number, p: Promise<{ value: T; unchecked: boolean }>): Promise<T> =>
   p.then((r) => { if (r.unchecked) noteUnchecked(address); return r.value; });
+
+/** The demo has no device: a CAN socket whose master does not know 0x64. */
+const DEMO_PROFILE: ProfileView = {
+  gen: 0, bus: "can", endpoint: "demo", gates: null, at: 0,
+  master: { kind: "no-0x64", version: null, patch: null, base: null, build_id: null, listed: null, caps: null, marker: null, marker_word: null, slaves: null, may_halt: false, may_release: false },
+};
 
 const tauriApi = {
   listPorts: () => invoke<string[]>("list_ports"),
@@ -320,25 +344,34 @@ const tauriApi = {
   /** opens the port and checks that a pack answers (`addresses` first, then the rest of 0..15); no answer: error
    *  JSON `{ code: "no-answer", noise, intra }`, the port is closed again */
   connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
-    invoke<{ linked: boolean; answered: number; gen: number }>("connect", { endpoint, installation, addresses: addresses ?? null })
-      .then((r) => { linkGen = r.gen; return r; }),
+    invoke<Connected>("connect", { endpoint, installation, addresses: addresses ?? null })
+      .then((r) => { linkGen = r.gen; setProfile(r.profile); return r; }),
+  /** the connection's firmware profile (null: not connected) */
+  firmwareProfile: () => invoke<ProfileView | null>("firmware_profile"),
+  /** „Erneut prüfen“ on connection `gen` (CAN socket) */
+  firmwareProfileCheck: (gen: number) => invoke<ProfileView>("firmware_profile_check", { gen }).then((p) => { setProfile(p); return p; }),
+  /** „Dieses Pack hat die Patch-Funktionen“, bound to String 2 read now (`serial`: the one the column was read with) */
+  patchProofConfirm: (installation: string, address: number, serial: string, gen: number) => invoke<PackPatch>("patch_proof_confirm", { installation, address, serial, gen }),
+  /** „Beleg zurücknehmen“ */
+  patchProofRevoke: (installation: string, address: number) => invoke<void>("patch_proof_revoke", { installation, address }),
   /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
   probeOtherBus: (path: string, bus: Bus, addresses?: number[]) =>
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
   /** `lost`: the UI drops a dead link to reconnect (notifications keep watching for the lost connection) */
   connectCancel: () => invoke<void>("connect_cancel"),
-  disconnect: (lost = false) => invoke<void>("disconnect", { lost }),
+  disconnect: (lost = false) => invoke<void>("disconnect", { lost }).finally(() => setProfile(null)),
+  /** „Erneut prüfen“ found another profile */
+  onFirmwareProfile: (f: (p: ProfileView) => void) => listen<ProfileView>("firmware-profile", (e) => f(e.payload)),
   /** without addresses: search 0..15; with addresses: only read their device info */
   /** `connecting`: the search of a connect, stopped by its „Abbrechen“ */
   scan: (addresses?: number[], connecting = false) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null, connecting }),
   startPolling: (addresses: number[], intervalMs: number) => invoke<void>("start_polling", { addresses, intervalMs }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
   systemOnce: () => invoke<void>("system_once"),
-  /** CAN socket bus: maintenance state of a patched master (CID2 0x64); fails on original firmware */
-  maintStatus: () => invoke<MaintStatus>("maint_status"),
   stopPolling: () => invoke<void>("stop_polling"),
-  /** battery and BMS serial number, as far as the connected bus shows them */
-  serialNumbers: (address: number) => invoke<SerialRead>("serial_numbers", { address }),
+  /** battery and BMS serial number, as far as the connected bus shows them; `binary` (CAN socket): ask this pack over
+   *  the binary service even when the connection's master does not offer it */
+  serialNumbers: (address: number, binary = false) => invoke<SerialRead>("serial_numbers", { address, binary }),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
   /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
@@ -466,7 +499,13 @@ const tauriApi = {
   maintScanPacks: (installation: string | null, port: string) => invoke<PackScan>("maint_scan_packs", { installation, port }),
   maintScanCancel: () => invoke<void>("maint_scan_cancel"),
   maintHalt: (installation: string) => invoke<MasterView>("maint_halt", { installation }),
-  maintRelease: (installation: string) => invoke<MasterView>("maint_release", { installation }),
+  /** `expectedSlaves`: the DIP slave count the user confirmed when the halt kept none */
+  maintRelease: (installation: string, expectedSlaves: number | null = null) => invoke<MasterView>("maint_release", { installation, expectedSlaves }),
+  /** the DIP slave count kept by the halt for the installation's master (null: none) */
+  maintExpectedSlaves: (installation: string) => invoke<number | null>("maint_expected_slaves", { installation }),
+  /** before flashing an image with the patch functions: the target's Group0 from a fresh read on the pack bus (null:
+   *  not readable now) */
+  firmwareGroup0: (port: string, address: number) => invoke<number | null>("firmware_group0", { port, address }),
   onFirmwareProgress: (f: (p: FirmwareProgress) => void) => listen<FirmwareProgress>("firmware-progress", (e) => f(e.payload)),
   onFirmwareDone: (f: (d: FirmwareDone) => void) => listen<FirmwareDone>("firmware-done", (e) => f(e.payload)),
   /** The window was not closed because a flash is running. */
@@ -515,14 +554,18 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => ({ linked: false, answered: 0, gen: 0 }),
+    connect: async () => ({ linked: false, answered: 0, gen: 0, profile: DEMO_PROFILE }),
+    firmwareProfile: async () => DEMO_PROFILE,
+    firmwareProfileCheck: async () => DEMO_PROFILE,
+    patchProofConfirm: async () => { throw new Error("desktop app only"); },
+    patchProofRevoke: async () => { throw new Error("desktop app only"); },
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     connectCancel: async () => {},
-    disconnect: async () => { clearInterval(timer); },
+    disconnect: async () => { clearInterval(timer); setProfile(null); },
+    onFirmwareProfile: async () => () => {},
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
       .map((s) => [s.address, demoProtocol.has(s.address) ? { ...s.device, can_protocol: demoProtocol.get(s.address)! } : s.device] as [number, DeviceInfo]),
     systemOnce: async () => { const c = await load(); sysL.forEach((f) => f({ values: c.system, error: null })); },
-    maintStatus: async () => { throw new Error("original firmware"); },
     startPolling: async (addresses, intervalMs) => {
       const c = await load();
       const tick = () => {
@@ -724,6 +767,8 @@ function demoApi(): typeof tauriApi {
     maintScanCancel: async () => {},
     maintHalt: async () => { throw new Error("desktop app only"); },
     maintRelease: async () => { throw new Error("desktop app only"); },
+    maintExpectedSlaves: async () => null,
+    firmwareGroup0: async () => null,
     onFirmwareProgress: async () => () => {},
     onFirmwareDone: async () => () => {},
     onFirmwareBusy: async () => () => {},
