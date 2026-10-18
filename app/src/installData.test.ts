@@ -73,12 +73,16 @@ describe("cell type writes", () => {
     let shown: Record<string, unknown> = { 3: { cell: "new", parallel: 1 } };
     const restore = (s: Record<string, unknown>) => { shown = s; };
     const stored = { 3: { cell: "old", parallel: 1 } };
-    const err = await writeCellTypes(() => Promise.reject("disk full"), async () => stored, restore);
+    const err = await writeCellTypes(() => Promise.reject("disk full"), async () => stored, {}, restore);
     expect(err).toBe("disk full");
     expect(shown).toEqual(stored);
+    // the read back fails too: the cell types from before the change, never the unsaved ones
+    shown = { 3: { cell: "new", parallel: 1 } };
+    expect(await writeCellTypes(() => Promise.reject("disk full"), () => Promise.reject("gone"), { 3: { cell: "before", parallel: 1 } }, restore)).toBe("disk full");
+    expect(shown).toEqual({ 3: { cell: "before", parallel: 1 } });
     // a write that goes through changes nothing back
     shown = { 3: { cell: "new", parallel: 1 } };
-    expect(await writeCellTypes(async () => undefined, async () => stored, restore)).toBeNull();
+    expect(await writeCellTypes(async () => undefined, async () => stored, {}, restore)).toBeNull();
     expect(shown).toEqual({ 3: { cell: "new", parallel: 1 } });
   });
 });

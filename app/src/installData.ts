@@ -68,15 +68,16 @@ function deviceWriter(scope: string) {
   return w;
 }
 
-/** A cell type write: null when it went through; else its error, after `restore` got the stored cell types (read back
- *  fresh; if that fails too, the error stays and the cache keeps what was shown). */
+/** A cell type write: null when it went through; else its error, after `restore` got the cell types from before the
+ *  change (`before`) and then, if it can be read, the stored state (read back fresh). */
 export async function writeCellTypes(write: () => Promise<unknown>, reload: () => Promise<Record<string, unknown>>,
-  restore: (stored: Record<string, unknown>) => void): Promise<unknown> {
+  before: Record<string, unknown>, restore: (back: Record<string, unknown>) => void): Promise<unknown> {
   try {
     await write();
     return null;
   } catch (e) {
     console.error("cell types:", e);
+    restore(before);
     await reload().then(restore, (r) => console.error("cell types read back:", r));
     return e ?? "error";
   }
@@ -125,9 +126,9 @@ export function useSettings(scope: string | null) {
     cache.set(k, { ...cur, cell_types: next });
     changed();
     if (!stored(scope)) return null;
-    return writeCellTypes(() => api.setInstallationCellTypes(scope, changes), () => api.installationSettings(scope).then((s) => s.cell_types), (stored) => {
+    return writeCellTypes(() => api.setInstallationCellTypes(scope, changes), () => api.installationSettings(scope).then((s) => s.cell_types), cur.cell_types, (back) => {
       const now = cache.get(k);
-      if (now) { cache.set(k, { ...now, cell_types: stored }); changed(); }
+      if (now) { cache.set(k, { ...now, cell_types: back }); changed(); }
     });
   };
   return { settings: cache.get(k) ?? EMPTY, loaded, save, saveCellTypes };
