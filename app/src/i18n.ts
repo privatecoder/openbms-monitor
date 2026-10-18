@@ -602,7 +602,7 @@ const resources = {
         disconnectWait: "Warte auf laufende Aktion an einem Pack, dann wird getrennt …",
         cancel: "Abbrechen", busyCancelled: "Warten auf den Port abgebrochen.", connectCancelled: "Verbinden abgebrochen.",
         busName: { can: "CAN-Buchse", pack: "RS485-1/2" }, checking: "Prüfe …",
-        answered: "Pack {{addr}} antwortet über {{bus}}.", partial: "{{n}} von {{total}} Packs antworten, keine Antwort von {{list}}.",
+        answered: "Pack {{addr}} antwortet.", partial: "{{n}} von {{total}} Packs antworten, keine Antwort von {{list}}.",
         check: {
           probing: "Keine Antwort. Probiere {{baud}} Baud …",
           none: "Über {{bus}} ({{baud}} Baud) antwortet kein Pack.", noise: "Über {{bus}} ({{baud}} Baud) kommen Daten an, aber nicht lesbar: falsche Baudrate?",
@@ -1519,7 +1519,7 @@ const resources = {
         disconnectWait: "Waiting for a running action on a pack, then disconnecting …",
         cancel: "Cancel", busyCancelled: "Waiting for the port cancelled.", connectCancelled: "Connecting cancelled.",
         busName: { can: "CAN socket", pack: "RS485-1/2" }, checking: "Checking …",
-        answered: "Pack {{addr}} answers on {{bus}}.", partial: "{{n}} of {{total}} packs answer, no answer from {{list}}.",
+        answered: "Pack {{addr}} answers.", partial: "{{n}} of {{total}} packs answer, no answer from {{list}}.",
         check: {
           probing: "No answer. Trying {{baud}} baud …",
           none: "No pack answers on {{bus}} ({{baud}} baud).", noise: "Data arrives on {{bus}} ({{baud}} baud) but is unreadable: wrong baud rate?",
