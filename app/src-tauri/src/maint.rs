@@ -265,6 +265,9 @@ pub struct MasterView {
     pub build_id: Option<String>,
     /// the listed build's name (None: not listed)
     pub listed: Option<String>,
+    /// format 3: the hard-stop patch is compiled into the image (an image property, apart from the maintenance state, the
+    /// release bits and the MOSFETs); None: not reported (format 2) or no identity
+    pub hard_stop: Option<bool>,
     pub caps: Option<crate::profile::CapsView>,
     /// "off" | "on" | "foreign"
     pub marker: Option<&'static str>,
@@ -297,9 +300,10 @@ pub fn master_view(m: &Master) -> MasterView {
         },
         version: info.map(|i| i.version()),
         patch: info.map(|i| format!("{}.{}", i.patch[0], i.patch[1])),
-        base: info.map(|i| format!("{}.{:02}.{:02}", i.base[0], i.base[1], i.base[2])),
+        base: info.map(|i| i.base_text()),
         build_id: info.map(|i| i.build_id_hex()),
         listed,
+        hard_stop: info.and_then(|i| i.hard_stop),
         caps: m.caps().map(crate::profile::caps_view),
         marker: m.marker().map(marker_name),
         marker_word: m.state().map(|s| format!("{:08X}", s.marker_word)),
@@ -1023,7 +1027,7 @@ mod tests {
 
     #[test]
     fn the_master_view_names_version_marker_and_actions() {
-        let info = |patch: [u8; 2], id: [u8; 8]| MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: id };
+        let info = |patch: [u8; 2], id: [u8; 8]| MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: id, hard_stop: None };
         let st = |word: u32| Some(MaintState { marker_word: word, effective_slaves: 0 });
         let listed = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
         let patched = |i: MaintInfo, s| Master::Patched { patch: Patch::recognise(i).unwrap(), state: s };
@@ -1038,7 +1042,12 @@ mod tests {
         let v = master_view(&Master::UnknownPatch(Some(info([1, 4], [0; 8]))));
         assert_eq!((v.kind, v.may_release, v.caps), ("unknown-patch", false, None));
         let v = master_view(&Master::No0x64);
-        assert_eq!((v.kind, v.marker, v.version), ("no-0x64", None, None));
+        assert_eq!((v.kind, v.marker, v.version, v.hard_stop), ("no-0x64", None, None, None));
+        // format 3: the hard stop of the image; an unknown OEM revision
+        let i3 = MaintInfo { format: 3, base: [16, 6, 0xFF], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false) };
+        let v = master_view(&patched(i3, st(u32::MAX)));
+        assert_eq!((v.kind, v.hard_stop, v.base.as_deref(), v.version.as_deref(), v.may_halt), ("patched", Some(false), Some("16.06.?"), Some("16.06.? MAINT 1.5"), true));
+        assert_eq!(master_view(&patched(info([1, 5], listed), st(0))).hard_stop, None);
     }
 
     #[test]

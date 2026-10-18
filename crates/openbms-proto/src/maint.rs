@@ -4,7 +4,8 @@
 //! polling the pack bus (RS485-1/2) and answers there itself, so its parameters can be read and it can be updated.
 //! Original firmware answers 0x64 with RTN 04 (unknown command); slaves never answer 0x64.
 //!
-//! `INFO=03` reads the identity (format 2: 17 bytes, [`MaintInfo`], no runtime state). `INFO=02` reads the state
+//! `INFO=03` reads the identity ([`MaintInfo`], no runtime state): format 2 with 17 bytes, or format 3 with 18 bytes and
+//! an image flag byte (bit 0: the hard-stop patch is compiled in). `INFO=02` reads the state
 //! ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout holds only once a format-2
 //! identity of a supported build was read on the same connection.
 
@@ -72,44 +73,49 @@ impl MaintState {
     }
 }
 
-/// Format-2 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
+/// Format-2 or format-3 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintInfo {
     pub format: u8,
-    /// base firmware major, minor, patch (16.06.13 = `[0x10, 0x06, 0x0D]`)
+    /// OEM base major, minor, revision (16.06.13 = `[0x10, 0x06, 0x0D]`; revision `FF`: unknown)
     pub base: [u8; 3],
     /// patch version major, minor
     pub patch: [u8; 2],
     /// identifies the build (not an authentication of the device)
     pub build_id: [u8; 8],
+    /// format 3, image flag bit 0: the hard-stop patch is compiled in; None with format 2 (not reported)
+    pub hard_stop: Option<bool>,
 }
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoAnswer {
-    /// the 17-byte format-2 identity
-    Format2(MaintInfo),
-    /// `MNT` with another format or length (e.g. the historic 22-byte format 1): a patch the app does not know, never
-    /// decoded as format 2
+    /// the 17-byte format-2 or the 18-byte format-3 identity
+    Known(MaintInfo),
+    /// `MNT` with another format or length (e.g. the historic 22-byte format 1, or format 4): a patch the app does not
+    /// know, never decoded
     OtherFormat,
     /// no `MNT` signature: not an identity
     Broken,
 }
 
 impl MaintInfo {
+    /// format 2: 17 bytes; format 3: 18 bytes (the image flags after the build ID)
     pub const LEN: usize = 17;
-    pub const FORMAT: u8 = 2;
+    pub const LEN3: usize = 18;
+    /// the revision byte of an unknown OEM revision
+    pub const REVISION_UNKNOWN: u8 = 0xFF;
 
     /// Read the identity (changes nothing). Only the master at address 0 answers.
     pub fn request() -> Result<Vec<u8>> {
         encode_request(0, 0x64, &[0x03])
     }
 
-    /// Exactly the 17-byte format 2.
+    /// Exactly the 17-byte format 2 or the 18-byte format 3.
     pub fn parse(info: &[u8]) -> Result<Self> {
         match Self::classify(info) {
-            InfoAnswer::Format2(i) => Ok(i),
-            _ => Err(Error::Layout("0x64/03 answer is not the 17-byte MNT format 2")),
+            InfoAnswer::Known(i) => Ok(i),
+            _ => Err(Error::Layout("0x64/03 answer is neither the 17-byte MNT format 2 nor the 18-byte format 3")),
         }
     }
 
@@ -117,12 +123,15 @@ impl MaintInfo {
         if info.len() < 4 || &info[0..3] != SIGNATURE {
             return InfoAnswer::Broken;
         }
-        if info.len() != Self::LEN || info[3] != Self::FORMAT {
-            return InfoAnswer::OtherFormat;
-        }
+        let hard_stop = match (info[3], info.len()) {
+            (2, Self::LEN) => None,
+            // bits 1–7 are reserved
+            (3, Self::LEN3) => Some(info[17] & 0x01 != 0),
+            _ => return InfoAnswer::OtherFormat,
+        };
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[9..17]);
-        InfoAnswer::Format2(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id })
+        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop })
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -130,10 +139,15 @@ impl MaintInfo {
         self.build_id.iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    /// "16.06.13", or "16.06.?" for an unknown revision
+    pub fn base_text(&self) -> String {
+        let [a, b, c] = self.base;
+        if c == Self::REVISION_UNKNOWN { format!("{a}.{b:02}.?") } else { format!("{a}.{b:02}.{c:02}") }
+    }
+
     /// "16.06.13 MAINT 1.5"
     pub fn version(&self) -> String {
-        let [a, b, c] = self.base;
-        format!("{a}.{b:02}.{c:02} MAINT {}.{}", self.patch[0], self.patch[1])
+        format!("{} MAINT {}.{}", self.base_text(), self.patch[0], self.patch[1])
     }
 }
 
@@ -164,7 +178,7 @@ mod tests {
         assert_eq!(i.version(), "16.06.13 MAINT 1.5");
         // through a frame: LENGTH C022 carries the 34 hex digits
         let f = crate::frame::parse(&crate::frame::encode_request(0, 0, &info15()).unwrap()).unwrap();
-        assert_eq!(MaintInfo::classify(&f.info), InfoAnswer::Format2(i));
+        assert_eq!(MaintInfo::classify(&f.info), InfoAnswer::Known(i));
     }
 
     #[test]
@@ -184,6 +198,47 @@ mod tests {
         assert_eq!(MaintInfo::classify(&broken), InfoAnswer::Broken);
         assert_eq!(MaintInfo::classify(&[]), InfoAnswer::Broken);
         assert!(MaintInfo::parse(&f1).is_err());
+    }
+
+    /// The 18 INFO bytes of a format-3 identity (the documented example) with image flags `flags`.
+    fn info3(revision: u8, flags: u8) -> Vec<u8> {
+        let mut v = b"MNT".to_vec();
+        v.extend_from_slice(&[0x03, 0x10, 0x06, revision, 0x01, 0x05, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, flags]);
+        v
+    }
+
+    #[test]
+    fn format_3_has_18_bytes_and_reports_the_hard_stop() {
+        let on = MaintInfo::parse(&info3(0x0D, 0x01)).unwrap();
+        assert_eq!((on.format, on.base, on.patch, on.hard_stop), (3, [16, 6, 13], [1, 5], Some(true)));
+        assert_eq!(on.build_id_hex(), "0123456789abcdef");
+        assert_eq!(on.version(), "16.06.13 MAINT 1.5");
+        assert_eq!(MaintInfo::parse(&info3(0x0D, 0x00)).unwrap().hard_stop, Some(false));
+        // reserved bits do not set it
+        assert_eq!(MaintInfo::parse(&info3(0x0D, 0xFE)).unwrap().hard_stop, Some(false));
+        // format 2 does not report it
+        assert_eq!(MaintInfo::parse(&info15()).unwrap().hard_stop, None);
+        // through a frame: LENGTH A024 carries the 36 hex digits
+        let frame = crate::frame::encode_request(0, 0, &info3(0x0D, 0x01)).unwrap();
+        assert_eq!(&frame[9..13], b"A024");
+        assert_eq!(MaintInfo::classify(&crate::frame::parse(&frame).unwrap().info), InfoAnswer::Known(on));
+    }
+
+    #[test]
+    fn an_unknown_oem_revision_shows_as_question_mark() {
+        let i = MaintInfo::parse(&info3(0xFF, 0x00)).unwrap();
+        assert_eq!((i.base_text(), i.version()), ("16.06.?".to_string(), "16.06.? MAINT 1.5".to_string()));
+    }
+
+    #[test]
+    fn wrong_lengths_and_other_formats_are_rejected() {
+        // format 3 with 17 bytes, format 2 with 18 bytes, format 4
+        assert_eq!(MaintInfo::classify(&info3(0x0D, 1)[..17]), InfoAnswer::OtherFormat);
+        assert_eq!(MaintInfo::classify(&[info15(), vec![1]].concat()), InfoAnswer::OtherFormat);
+        let mut f4 = info3(0x0D, 1);
+        f4[3] = 4;
+        assert_eq!(MaintInfo::classify(&f4), InfoAnswer::OtherFormat);
+        assert!(MaintInfo::parse(&f4).is_err());
     }
 
     #[test]
