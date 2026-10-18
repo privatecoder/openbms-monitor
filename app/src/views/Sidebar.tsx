@@ -234,7 +234,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       // „Anschluss wird Anlage X zugeordnet“: said once, no dialog
       const linkedNote = linked ? t("conn.linked", { name: maint.installations.find((i) => i.id === connInst.current)?.name ?? maint.current?.name ?? "" }) : "";
       if (linked) void maint.loadLists();
-      const answeredNote = t("conn.answered", { addr: padAddress(answered) });
+      let answeredNote = t("conn.answered", { addr: padAddress(answered) });
       // pack addresses known without a search: from the master's state in the firmware profile (patched firmware, CAN
       // socket bus, read on this endpoint by the connect), else a fixed count
       let addrs: number[] | null = null;
@@ -244,7 +244,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         const sys = await api.systemOnce().then(() => true, () => false);
         if (sys) { onConnected([], bus); setSince(Date.now()); setLost(false); }
         const m = profile.master;
-        if (patched(m) && m.marker === "off" && m.slaves !== null) { addrs = range(m.slaves + 1); note = t("conn.fromMaster", { count: addrs.length }); }
+        // the master's slave count goes into the answered note, and only when it has slaves
+        if (patched(m) && m.marker === "off" && m.slaves !== null) { addrs = range(m.slaves + 1); if (m.slaves > 0) answeredNote = t("conn.answeredSlaves", { addr: padAddress(answered), count: m.slaves }); }
         else if (patched(m) && m.marker === "on") note = t("conn.maintActive");
       }
       stopIfCancelled();
