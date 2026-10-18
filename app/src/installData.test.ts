@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectLegacy, legacyKeys, serialWriter, writeCellTypes } from "./installData";
+import { collectLegacy, legacyKeys, queueCellTypes, serialWriter, writeCellTypes, type CellQueue } from "./installData";
 import { parseGroups } from "./groups";
 import { parsePairs } from "./pairs";
 import { parseAssignments } from "./cells/packCheck";
@@ -84,5 +84,28 @@ describe("cell type writes", () => {
     shown = { 3: { cell: "new", parallel: 1 } };
     expect(await writeCellTypes(async () => undefined, async () => stored, {}, restore)).toBeNull();
     expect(shown).toEqual({ 3: { cell: "new", parallel: 1 } });
+  });
+});
+
+describe("cell type writes of one installation", () => {
+  it("run one after the other, and a late failure never rolls back a newer change", async () => {
+    const q: CellQueue = { tail: Promise.resolve(), gen: 0, stale: false };
+    const log: string[] = [];
+    let shown = "b";
+    let failFirst: (e: unknown) => void = () => {};
+    const first = queueCellTypes(q, () => { log.push("write a"); return new Promise((_, rej) => { failFirst = rej; }); },
+      async () => { log.push("read"); return { v: "stored" }; }, { v: "before-a" }, (b) => { shown = String(b.v); });
+    const second = queueCellTypes(q, async () => { log.push("write b"); }, async () => { log.push("read"); return { v: "stored" }; }, { v: "a" }, (b) => { shown = String(b.v); });
+    await new Promise((r) => setTimeout(r, 0));
+    // the second waits for the first
+    expect(log).toEqual(["write a"]);
+    failFirst("disk full");
+    expect(await first).toBe("disk full");
+    // the failed first did not put back its state over the newer change shown
+    expect(shown).toBe("b");
+    expect(await second).toBeNull();
+    // the latest went through and the queue was stale: the stored state is read back
+    expect(log).toEqual(["write a", "read", "write b", "read"]);
+    expect(shown).toBe("stored");
   });
 });
