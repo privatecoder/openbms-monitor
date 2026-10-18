@@ -186,7 +186,8 @@ export interface PackDay {
   spread_raw: boolean;
   /** rest_minutes: distinct clock minutes with rest values (of the kind taken) */
   rest_rows: number; rest_minutes: number; rest_p50: number | null; rest_p95: number | null; cycles: number | null; temp_max: number | null;
-  /** per quarter hour from local midnight the warmest cell's maximum (96 entries), null without a value */
+  /** per quarter hour since local midnight the warmest cell's maximum (92, 96 or 100 slots by the day's length), null
+   *  without a value */
   temp_slots: (number | null)[];
   /** BMS balancing bits of the day: OR (bit n = cell n+1), rows with a bit set of rows with a status; null without a status */
   bal_mask?: number | null; bal_rows?: number | null; bal_n?: number | null;
