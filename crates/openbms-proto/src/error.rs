@@ -24,6 +24,9 @@ pub enum Error {
     ModbusCrc,
     #[error("Modbus exception 0x{0:02X}")]
     ModbusException(u8),
+    /// The binary parameter service (`uart1.rs`) answered with this error code.
+    #[error("UART1 parameter service answered error 0x{0:02X}")]
+    Uart1(u8),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

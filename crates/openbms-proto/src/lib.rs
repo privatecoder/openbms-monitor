@@ -16,6 +16,7 @@ mod reader;
 pub mod serial;
 pub mod status;
 pub mod telemetry;
+pub mod uart1;
 
 pub use calibration::{Calibration, Refusal};
 pub use control::Comeback;

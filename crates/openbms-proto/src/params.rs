@@ -1,5 +1,5 @@
 //! CID2 0x47: read all parameters (60 x u16, 27 x u8, 8 function switch bytes, device name); CID2 0xA1 writes the
-//! same 169-byte block back (RS485-1/2 only).
+//! same 169-byte block back (RS485-1/2 only; the CAN socket of a MAINT 1.2 pack has its binary form, `uart1.rs`).
 //!
 //! 0xA1 refuses a wrong marker with RTN 04 and an implausible block with RTN 06 (the app checks the firmware's rules
 //! before sending). The function switches and the name are taken into RAM before that check, so after RTN 06 they
@@ -130,7 +130,7 @@ pub struct Values {
 }
 
 /// Whether a block has the 0x47 layout.
-fn check_block(block: &[u8]) -> Result<()> {
+pub(crate) fn check_block(block: &[u8]) -> Result<()> {
     if block.len() < BLOCK_LEN || block[1] != 0x3C || block[122] != 0x1B || block[150] != 0x08 {
         return Err(Error::Layout("unexpected 0x47 markers/length"));
     }
