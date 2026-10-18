@@ -123,6 +123,18 @@ const kindOf = (e: unknown): unknown => {
 
 /** The pack did not answer a control command (typically a master polling its slaves). */
 export const noAnswer = (e: unknown) => kindOf(e) === "no-answer";
+/** An ein/aus whose request left without a definite answer, on either port: "silent" (no answer) or "link" (the gateway
+ *  closed or an I/O error after sending); open whether the pack switched. null: refused or failed before sending. */
+export function switchUnclear(e: unknown): "silent" | "link" | null {
+  let v: unknown = e;
+  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  if (!v || typeof v !== "object") return null;
+  const o = v as { kind?: unknown; error?: unknown; link?: unknown };
+  if (o.kind === "no-answer") return typeof o.link === "string" ? "link" : "silent";
+  if (o.kind === "uart1") return o.error === "power-no-answer" ? "silent" : o.error === "power-lost" ? "link" : null;
+  return null;
+}
+
 /** The connection changed during the action; nothing more was sent. */
 export const linkChanged = (e: unknown) => kindOf(e) === "link-changed";
 
@@ -161,7 +173,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
-  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed";
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;

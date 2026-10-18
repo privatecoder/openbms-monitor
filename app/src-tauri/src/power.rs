@@ -21,7 +21,7 @@ use std::time::Instant;
 
 /// The ASCII exchanges of the power and clock service besides the binary ones; the connection, or a script in tests.
 pub(crate) trait PowerDev: Dev {
-    fn on_off(&mut self, address: u8, on: bool) -> openbms_transport::Result<()>;
+    fn on_off(&mut self, address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure>;
     /// returns when the restart was sent (no answer expected)
     fn restart(&mut self, address: u8) -> openbms_transport::Result<Instant>;
     fn clock(&mut self, address: u8) -> openbms_transport::Result<BmsTime>;
@@ -29,8 +29,8 @@ pub(crate) trait PowerDev: Dev {
 }
 
 impl PowerDev for Conn<'_> {
-    fn on_off(&mut self, address: u8, on: bool) -> openbms_transport::Result<()> {
-        self.c.on_off(address, on)
+    fn on_off(&mut self, address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure> {
+        self.c.on_off_phased(address, on)
     }
     fn restart(&mut self, address: u8) -> openbms_transport::Result<Instant> {
         self.c.restart(address)
@@ -91,10 +91,13 @@ pub(crate) fn power_error(e: openbms_transport::Error) -> String {
 }
 
 /// Ein/aus of a build with the stored pack cutoff (MAINT 1.6) answers RTN 08 when storing or verifying the lock failed
-/// (`control::cutoff_failed`): never a success or a release. Every other error as `power_error`.
-pub(crate) fn switch_error(e: openbms_transport::Error, on: bool) -> String {
-    match e {
+/// (`control::cutoff_failed`): never a success or a release. A request that left and then lost its link (gateway
+/// closed, I/O) is open like silence (`power-lost`); every other error as `power_error`.
+pub(crate) fn switch_error(f: openbms_transport::SwitchFailure, on: bool) -> String {
+    match f.error {
         openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)) => uart1_refusal(crate::control::cutoff_failed(on)),
+        openbms_transport::Error::Timeout(_) | openbms_transport::Error::Incomplete => power_error(f.error),
+        _ if f.unclear() => uart1_refusal("power-lost"),
         e => power_error(e),
     }
 }
@@ -210,9 +213,9 @@ mod tests {
     }
 
     impl PowerDev for Script {
-        fn on_off(&mut self, _address: u8, on: bool) -> openbms_transport::Result<()> {
+        fn on_off(&mut self, _address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure> {
             self.sent.push(if on { "on" } else { "off" });
-            self.answer.take().expect("one command")
+            self.answer.take().expect("one command").map_err(|error| openbms_transport::SwitchFailure { sent: true, error })
         }
         fn restart(&mut self, _address: u8) -> openbms_transport::Result<Instant> {
             self.sent.push("restart");
@@ -342,6 +345,20 @@ mod tests {
         assert_eq!(power_error(E::Timeout(std::time::Duration::from_millis(1500))), uart1_refusal("power-no-answer"));
         assert_eq!(power_error(E::Proto(openbms_proto::Error::Rtn(0x04))), r#"{"kind":"invalid"}"#);
         assert_eq!(power_error(E::Closed), E::Closed.to_string());
+    }
+
+    #[test]
+    fn a_broken_link_after_sending_leaves_ein_aus_open() {
+        for answer in [E::Closed, E::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))] {
+            let mut d = script(0xF7, Err(answer));
+            assert_eq!(err(&run(&mut d, Act::Switch { on: false, expect: Some(false) }))["error"], "power-lost");
+            assert_eq!(d.sent, ["off"], "sent once, never repeated");
+        }
+        let mut d = script(0xF7, Err(E::Timeout(std::time::Duration::from_millis(1500))));
+        assert_eq!(err(&run(&mut d, Act::Switch { on: true, expect: None }))["error"], "power-no-answer");
+        // the request never left: not executed
+        let before = openbms_transport::SwitchFailure { sent: false, error: E::Closed };
+        assert_eq!(switch_error(before, false), E::Closed.to_string());
     }
 
     #[test]

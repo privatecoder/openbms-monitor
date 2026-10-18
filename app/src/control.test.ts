@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { PackPatch, Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, shownOff, socOf } from "./control";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, shownOff, socOf, switchUnclear } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -222,5 +222,22 @@ describe("ein/aus answers per the confirmed contract, round 2", () => {
     expect(shownOff(status(0x00, 0x03), lockState(false, true, 0xdf))).toBe(false);
     expect(shownOff(status(0x00, 0x03), lockState(true, false, 0xdf))).toBe(true);
     expect(shownOff(status(0x20, 0x02), null)).toBe(true);
+  });
+});
+
+describe("ein/aus after the request left, round 3", () => {
+  const de = (k: string, o?: Record<string, unknown>) => i18n.t(k, { ...o, lng: "de" });
+  it("is open on a broken link as on silence, on both ports, and not executed only before sending", () => {
+    expect(switchUnclear(JSON.stringify({ kind: "no-answer" }))).toBe("silent");
+    expect(switchUnclear(JSON.stringify({ kind: "no-answer", link: "connection closed by the gateway" }))).toBe("link");
+    expect(switchUnclear(JSON.stringify({ kind: "uart1", error: "power-no-answer" }))).toBe("silent");
+    expect(switchUnclear(JSON.stringify({ kind: "uart1", error: "power-lost" }))).toBe("link");
+    // a refusal or a failure before sending (plain text) is no open result
+    expect(switchUnclear(JSON.stringify({ kind: "switch", error: "cutoff-off-failed" }))).toBeNull();
+    expect(switchUnclear("connection closed by the gateway")).toBeNull();
+    for (const lng of ["de", "en"]) for (const k of ["ctl.onOff.lostAnswer", "uart1.power-lost"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+    expect(de("ctl.onOff.lostAnswer")).toMatch(/Ergebnis ungeklärt/);
+    expect(de("ctl.onOff.lostAnswer")).toMatch(/Bit 5 nach dem Wiederverbinden/);
+    expect(errorText(JSON.stringify({ kind: "uart1", error: "power-lost" }), de)).not.toMatch(/Nicht ausgeführt/);
   });
 });

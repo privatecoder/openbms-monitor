@@ -241,11 +241,18 @@ pub(crate) fn cutoff_failed(on: bool) -> &'static str {
     if on { "cutoff-on-failed" } else { "cutoff-off-failed" }
 }
 
-/// Ein/aus (0x45 type 4): RTN 08 never done (`cutoff_failed`); the rest as `command` (silence: open whether it switched).
-fn switch_command(r: openbms_transport::Result<()>, on: bool) -> openbms_transport::Result<Result<(), String>> {
+/// Ein/aus (0x45 type 4): RTN 08 never done (`cutoff_failed`); a request that left without a definite answer (silence,
+/// the gateway closed, an I/O error) is open whether it switched (`no-answer`, with `link` for a broken link); only a
+/// failure before or while sending is „not executed“.
+fn switch_command(r: Result<(), openbms_transport::SwitchFailure>, on: bool) -> openbms_transport::Result<Result<(), String>> {
     match r {
-        Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => Ok(Err(switch_refusal(cutoff_failed(on)))),
-        r => command(r),
+        Ok(()) => Ok(Ok(())),
+        Err(f) if matches!(f.error, openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => Ok(Err(switch_refusal(cutoff_failed(on)))),
+        Err(f) if f.unclear() => Ok(Err(match f.error {
+            openbms_transport::Error::Timeout(_) => no_answer_error(),
+            e => serde_json::json!({ "kind": "no-answer", "link": e.to_string() }).to_string(),
+        })),
+        Err(f) => command(Err(f.error)),
     }
 }
 
@@ -253,7 +260,7 @@ fn switch_command(r: openbms_transport::Result<()>, on: bool) -> openbms_transpo
 pub(crate) trait SwitchDev {
     /// Group0 of a fresh 0x47 of exactly this pack
     fn group0(&mut self, address: u8) -> openbms_transport::Result<u8>;
-    fn on_off(&mut self, address: u8, on: bool) -> openbms_transport::Result<()>;
+    fn on_off(&mut self, address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure>;
 }
 
 impl SwitchDev for openbms_transport::Connection {
@@ -265,8 +272,8 @@ impl SwitchDev for openbms_transport::Connection {
         }
         Ok(p.function_switches[0])
     }
-    fn on_off(&mut self, address: u8, on: bool) -> openbms_transport::Result<()> {
-        openbms_transport::Connection::on_off(self, address, on)
+    fn on_off(&mut self, address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure> {
+        self.on_off_phased(address, on)
     }
 }
 
@@ -466,15 +473,32 @@ mod tests {
 
     #[test]
     fn a_failed_store_of_the_pack_cutoff_is_never_done() {
+        use openbms_transport::{Error as E, SwitchFailure};
+        let after = |error: E| Err(SwitchFailure { sent: true, error });
         for (on, error) in [(false, "cutoff-off-failed"), (true, "cutoff-on-failed")] {
-            let e = switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))), on).unwrap().unwrap_err();
+            let e = switch_command(after(E::Proto(openbms_proto::Error::Rtn(0x08))), on).unwrap().unwrap_err();
             assert_eq!((json(&e)["kind"].as_str(), json(&e)["error"].as_str()), (Some("switch"), Some(error)));
         }
         assert_eq!(switch_command(Ok(()), false).unwrap(), Ok(()));
-        assert_eq!(switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06))), true).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
+        assert_eq!(switch_command(after(E::Proto(openbms_proto::Error::Rtn(0x06))), true).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
         // silence: no-answer (open whether it switched), never a retry
-        let silent = switch_command(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))), false).unwrap().unwrap_err();
-        assert_eq!(json(&silent)["kind"], "no-answer");
+        let silent = switch_command(after(E::Timeout(Duration::from_millis(1500))), false).unwrap().unwrap_err();
+        assert_eq!(json(&silent), serde_json::json!({ "kind": "no-answer" }));
+    }
+
+    #[test]
+    fn a_broken_link_after_sending_leaves_ein_aus_open_before_it_is_not_executed() {
+        use openbms_transport::{Error as E, SwitchFailure};
+        for error in [E::Closed, E::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)), E::Incomplete] {
+            let text = error.to_string();
+            let e = switch_command(Err(SwitchFailure { sent: true, error }), false).unwrap().unwrap_err();
+            assert_eq!((json(&e)["kind"].as_str(), json(&e)["link"].as_str()), (Some("no-answer"), Some(text.as_str())));
+        }
+        // the request never left: a plain error, „not executed“
+        let before = switch_command(Err(SwitchFailure { sent: false, error: E::Closed }), true);
+        assert!(matches!(before, Err(E::Closed)));
+        let before = switch_command(Err(SwitchFailure { sent: false, error: E::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)) }), false);
+        assert!(matches!(before, Err(E::Io(_))));
     }
 
     /// Group0 answers in order and what was sent.
@@ -487,7 +511,7 @@ mod tests {
         fn group0(&mut self, _address: u8) -> openbms_transport::Result<u8> {
             self.reads.remove(0)
         }
-        fn on_off(&mut self, _address: u8, on: bool) -> openbms_transport::Result<()> {
+        fn on_off(&mut self, _address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure> {
             self.sent.push(on);
             Ok(())
         }

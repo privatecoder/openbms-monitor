@@ -144,6 +144,21 @@ pub struct Connection {
     tap: capture::Tap,
 }
 
+/// A failed ein/aus (`Connection::on_off_phased`): `sent` whether the request had left completely before `error`.
+#[derive(Debug)]
+pub struct SwitchFailure {
+    pub sent: bool,
+    pub error: Error,
+}
+
+impl SwitchFailure {
+    /// The pack may have switched: the request left and no definite answer (an RTN) came back. Silence, a closed
+    /// gateway, an I/O error or a broken answer after sending leave the result open.
+    pub fn unclear(&self) -> bool {
+        self.sent && !matches!(self.error, Error::Proto(openbms_proto::Error::Rtn(_)))
+    }
+}
+
 /// Received bytes, valid frames and intra-pack frames (master polling its slaves) of ASCII exchanges.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RxStats {
@@ -274,6 +289,11 @@ impl Connection {
     fn ascii_exchange(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool) -> Result<Frame> {
         self.drop_input()?;
         self.send(request)?;
+        self.ascii_answer(request, address, fits)
+    }
+
+    /// The answer part of `ascii_exchange`, once the request left completely.
+    fn ascii_answer(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool) -> Result<Frame> {
         let deadline = Instant::now() + self.timeout;
         let mut pending = Vec::new();
         // an answer of ours whose layout did not fit: returned only if no fitting one comes
@@ -416,6 +436,20 @@ impl Connection {
     pub fn on_off(&mut self, address: u8, on: bool) -> Result<()> {
         self.ascii(&control::on_off_request(address, on)?, address)?;
         Ok(())
+    }
+
+    /// `on_off` that tells whether a failure came before the request had left completely (`sent: false`: not switched)
+    /// or after (`sent: true`: a missing, broken or refused answer). Never repeated here.
+    pub fn on_off_phased(&mut self, address: u8, on: bool) -> std::result::Result<(), SwitchFailure> {
+        let request = control::on_off_request(address, on).map_err(|e| SwitchFailure { sent: false, error: e.into() })?;
+        let before = self.drop_input().map_err(Error::from).and_then(|_| self.send(&request));
+        if before.is_err() {
+            self.note_failure(&before, address);
+            return before.map_err(|error| SwitchFailure { sent: false, error });
+        }
+        let r = self.ascii_answer(&request, address, &|_| true).map(|_| ());
+        self.note_failure(&r, address);
+        r.map_err(|error| SwitchFailure { sent: true, error })
     }
 
     /// Force the heater for one hour or stop it (0x45 type 3).
@@ -1239,6 +1273,48 @@ mod tests {
 
     fn closing(out: Vec<u8>) -> Connection {
         Connection { port: Box::new(Closing { out }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) }
+    }
+
+    /// A port whose write fails: the request never left.
+    struct Unwritable;
+
+    impl Read for Unwritable {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Unwritable {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Port for Unwritable {
+        fn clear_input(&mut self, _: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_on_off_tells_a_failure_after_sending_from_one_before() {
+        // the gateway closes after the request left (the pack it hangs on switched off): sent, result open
+        let f = closing(vec![]).on_off_phased(1, false).unwrap_err();
+        assert!(f.sent && matches!(f.error, Error::Closed) && f.unclear());
+        // silence after sending: open as well
+        let request = control::on_off_request(1, false).unwrap();
+        let f = scripted(vec![(request.clone(), vec![])]).on_off_phased(1, false).unwrap_err();
+        assert!(matches!(f.error, Error::Timeout(_)) && f.unclear());
+        // RTN 08 (store or verify fault of the pack cutoff, the documented answer at address 1): definite, not open
+        let f = scripted(vec![(request.clone(), b"~200146080000FDAB\r".to_vec())]).on_off_phased(1, false).unwrap_err();
+        assert!(f.sent && matches!(f.error, Error::Proto(openbms_proto::Error::Rtn(0x08))) && !f.unclear());
+        // the request could not be written: nothing left, not switched
+        let mut c = Connection { port: Box::new(Unwritable), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) };
+        let f = c.on_off_phased(1, true).unwrap_err();
+        assert!(!f.sent && !f.unclear() && matches!(f.error, Error::Io(_)));
     }
 
     #[test]
