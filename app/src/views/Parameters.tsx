@@ -318,7 +318,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       } else if (r.kind === "refused") {
         say({ text: t(r.switches_live === false ? "pw.refusedNothing" : r.refusal === "refused" ? (restore ? "pw.restoreRefused" : "pw.refusedShort") : "pw.invalid"), error: true });
       } else if (r.kind === "unclear") {
-        say({ text: uart1Error(r.error) ? errorText(r.error, t) : t("pw.unclear", { err: r.error }), error: true });
+        // CAN socket: acknowledged, but the read-back failed
+        const unread = !!r.before && !r.read_back && !uart1Error(r.error);
+        say({ text: unread ? t("pw.uart1Unread", { err: r.error }) : uart1Error(r.error) ? errorText(r.error, t) : t("pw.unclear", { err: r.error }), error: true });
       } else {
         if (r.read_back) {
           const n = out.kind === "notTaken" ? out.params.length + out.switches.length : 0;
