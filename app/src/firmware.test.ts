@@ -111,3 +111,20 @@ describe("flash result", () => {
     expect(resultVersions({ before: info("16.06"), after: null }, null, custom, tr("de")).to).toBe("eigene Firmware");
   });
 });
+
+describe("inputs while a flash runs", () => {
+  it("are locked during a flash and a check, free otherwise", async () => {
+    const { firmwareInputsLocked } = await import("./firmware");
+    expect(firmwareInputsLocked(true, false)).toBe(true);
+    expect(firmwareInputsLocked(false, true)).toBe(true);
+    expect(firmwareInputsLocked(false, false)).toBe(false);
+  });
+  it("the switch is disabled and looks so", async () => {
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement } = await import("react");
+    const { Switch } = await import("./components/PackPicker");
+    const html = renderToStaticMarkup(createElement(Switch, { checked: false, onChange: () => {}, disabled: true }));
+    expect(html).toContain("disabled");
+    expect(html).toContain("disabled:opacity-40");
+  });
+});

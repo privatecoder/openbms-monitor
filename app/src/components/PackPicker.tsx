@@ -79,7 +79,7 @@ export function Tick({ state }: { state: "none" | "some" | "all" }) {
 export function Switch({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
-      className={cn("relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors", checked ? "bg-ink" : "bg-line")}>
+      className={cn("relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40", checked ? "bg-ink" : "bg-line")}>
       <span className={cn("absolute left-0 top-0.5 h-4 w-4 rounded-full bg-surface shadow transition-transform", checked ? "translate-x-4.5" : "translate-x-0.5")} />
     </button>
   );
