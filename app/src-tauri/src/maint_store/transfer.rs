@@ -24,6 +24,12 @@ pub struct BoardData {
     /// the current board at its place on the exporting computer
     #[serde(default)]
     pub current: bool,
+    /// recorded from canonical raw bytes (true/false); None: not known, also in bundles of earlier versions
+    #[serde(default)]
+    pub serial_canonical: Option<bool>,
+    /// since when the board is no longer at its place (marked there); None: there as far as known
+    #[serde(default)]
+    pub gone: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -146,11 +152,14 @@ impl Store {
         let mut boards = vec![];
         let mut stmt = self
             .db
-            .prepare("SELECT id, address, bms_serial, battery_serial, first_seen, last_seen FROM boards WHERE installation = ?1 ORDER BY address, id")
+            .prepare("SELECT id, address, bms_serial, battery_serial, first_seen, last_seen, serial_canonical, gone FROM boards WHERE installation = ?1 ORDER BY address, id")
             .map_err(e)?;
         let rows = stmt
             .query_map([inst], |r| {
-                Ok((r.get::<_, i64>(0)?, BoardData { address: r.get(1)?, bms_serial: r.get(2)?, battery_serial: r.get(3)?, first_seen: r.get(4)?, last_seen: r.get(5)?, aliases: vec![], current: false }))
+                Ok((r.get::<_, i64>(0)?, BoardData {
+                    address: r.get(1)?, bms_serial: r.get(2)?, battery_serial: r.get(3)?, first_seen: r.get(4)?, last_seen: r.get(5)?, aliases: vec![], current: false,
+                    serial_canonical: r.get(6)?, gone: r.get(7)?,
+                }))
             })
             .map_err(e)?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -353,8 +362,8 @@ impl Store {
                     }
                     None => {
                         s.db.execute(
-                            "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen, current_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-                            params![target, b.address, b.bms_serial, b.battery_serial, b.first_seen, b.last_seen],
+                            "INSERT INTO boards(installation, address, bms_serial, battery_serial, first_seen, last_seen, current_at, serial_canonical, gone) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
+                            params![target, b.address, b.bms_serial, b.battery_serial, b.first_seen, b.last_seen, b.serial_canonical, b.gone],
                         )
                         .map_err(e)?;
                         boards_added += 1;
@@ -372,6 +381,19 @@ impl Store {
                             params![id, a.serial, a.at],
                         )
                         .map_err(e)?;
+                }
+            }
+            // a place that had no board here and no current one in the export keeps having none: an imported earlier or
+            // gone board must not become current by its row order
+            let mut without_current = std::collections::BTreeSet::new();
+            for b in &data.boards {
+                if !places_with_board.contains(&b.address) && !data.boards.iter().any(|o| o.address == b.address && o.current) {
+                    without_current.insert(b.address);
+                }
+            }
+            for address in without_current {
+                if let Some(b) = s.current_board(&target, address)? {
+                    s.db.execute("UPDATE boards SET gone = ?2 WHERE id = ?1 AND gone IS NULL", params![b.id, now]).map_err(e)?;
                 }
             }
             for (x, block) in &snapshots {
@@ -491,6 +513,49 @@ mod tests {
         assert!(dst.import_open_for(&id).unwrap());
         dst.complete_import("exp-1", 300).unwrap();
         assert!(!dst.import_open_for(&id).unwrap());
+    }
+
+    #[test]
+    fn provenance_and_a_gone_board_travel_in_the_bundle() {
+        let src = store();
+        let i = src.create_installation("Bank A", None, vec![]).unwrap();
+        src.board_seen_canonical(&i.id, 1, &set("SYN-B1"), &set("BAT-1"), true, 100).unwrap();
+        src.board_seen_canonical(&i.id, 3, &set("SYN-B3"), &set("BAT-3"), false, 100).unwrap();
+        let r = src.current_refs(&i.id).unwrap().into_iter().find(|r| r.address == 3).unwrap();
+        assert!(src.board_gone(&i.id, 3, r.id, r.current_at, 150).unwrap());
+        let data = src.export_data(&i.id).unwrap();
+        let b3 = data.boards.iter().find(|b| b.address == 3).unwrap();
+        assert_eq!((b3.current, b3.serial_canonical, b3.gone), (false, Some(false), Some(150)));
+        let dst = store();
+        let h = BTreeMap::new();
+        dst.import_maint(&data, "exp-p", "m", &Into::New { copy: false }, &plan(&h, &|_| None), 200).unwrap();
+        // address 3 still has no current board; address 1 keeps its provenance
+        assert!(dst.current_board(&i.id, 3).unwrap().is_none());
+        let refs = dst.current_refs(&i.id).unwrap();
+        assert_eq!(refs.iter().map(|r| (r.address, r.canonical)).collect::<Vec<_>>(), [(1, Some(true))]);
+        assert_eq!(dst.export_data(&i.id).unwrap().boards.iter().find(|b| b.address == 3).map(|b| (b.serial_canonical, b.gone)), Some((Some(false), Some(150))));
+    }
+
+    #[test]
+    fn an_earlier_board_without_a_current_one_stays_not_current() {
+        let src = store();
+        let i = src.create_installation("Bank A", None, vec![]).unwrap();
+        src.board_seen(&i.id, 2, &set("SYN-OLD"), &SerialValue::NoAnswer, 100).unwrap();
+        src.board_seen(&i.id, 2, &set("SYN-NEW"), &SerialValue::NoAnswer, 110).unwrap();
+        let r = src.current_refs(&i.id).unwrap().into_iter().find(|r| r.address == 2).unwrap();
+        src.board_gone(&i.id, 2, r.id, r.current_at, 120).unwrap();
+        let data = src.export_data(&i.id).unwrap();
+        assert!(data.boards.iter().all(|b| !b.current));
+        let dst = store();
+        let h = BTreeMap::new();
+        dst.import_maint(&data, "exp-q", "m", &Into::New { copy: false }, &plan(&h, &|_| None), 200).unwrap();
+        assert!(dst.current_board(&i.id, 2).unwrap().is_none(), "neither the gone nor the earlier board is current");
+    }
+
+    #[test]
+    fn a_bundle_of_an_earlier_version_reads_without_provenance() {
+        let b: BoardData = serde_json::from_str(r#"{"address":1,"bms_serial":"SYN-1","battery_serial":null,"first_seen":1,"last_seen":2}"#).unwrap();
+        assert_eq!((b.current, b.serial_canonical, b.gone), (false, None, None));
     }
 
     #[test]
