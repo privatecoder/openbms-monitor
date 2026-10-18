@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { Status } from "./api";
-import { uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -79,7 +79,7 @@ describe("errors", () => {
 
 describe("CAN socket parameter service errors", () => {
   it("are told apart and named in both languages", () => {
-    for (const error of ["no-answer", "protocol", "pending", "other-master", "no-identity", "readback"]) {
+    for (const error of ["no-answer", "protocol", "pending", "other-master", "no-identity", "readback", "unchecked", "changed", "duplicate", "elsewhere"]) {
       const e = JSON.stringify({ kind: "uart1", error, code: 0x87 });
       expect(uart1Error(e)?.error).toBe(error);
       for (const lng of ["de", "en"]) expect(i18n.exists(`uart1.${error}`, { lng }), `${lng} ${error}`).toBe(true);
@@ -91,5 +91,20 @@ describe("CAN socket parameter service errors", () => {
     expect(writeError(noId, t, (err) => `X ${err}`)).toBe(t("uart1.no-identity"));
     expect(uart1Error("timeout")).toBeNull();
     expect(uart1Error(JSON.stringify({ kind: "bank" }))).toBeNull();
+  });
+});
+
+describe("CAN socket identity (MAINT 1.3)", () => {
+  it("names the place to sort out and the reasons to take a board over", () => {
+    const t = i18n.getFixedT("de");
+    const e = JSON.stringify({ kind: "uart1", error: "elsewhere", address: 4, board: 7, at: 5 });
+    expect(uart1Error(e)).toEqual({ kind: "uart1", error: "elsewhere", address: 4, board: 7, at: 5 });
+    expect(errorText(e, t)).toContain("04");
+    for (const lng of ["de", "en"]) for (const k of ["markGone", "markGoneConfirm", "markGoneYes", "markGoneNo", "markedGone", "markGoneChanged"]) expect(i18n.exists(`uart1.${k}`, { lng }), `${lng} ${k}`).toBe(true);
+    for (const why of ["legacy", "earlier"] as const) {
+      const text = bankText({ state: "unconfirmed", address: 2, why }, t);
+      expect(text).toBe(t(`bank.refused.${why}`, { pack: "02" }));
+      expect(text).toContain("02");
+    }
   });
 });

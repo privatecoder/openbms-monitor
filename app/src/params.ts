@@ -1,7 +1,9 @@
 /** BMS parameters (0x47): order, grouping, BatteryMonitor XML import/export and the comparison between sources. */
 
 export interface Parameter { index: number; key: string; raw: number; value: number; unit: string }
-export interface Parameters { address: number; parameters: Parameter[]; function_switches: number[]; device_name: string }
+/** `bms_serial`: over the CAN socket (MAINT 1.3) the String 2 read with the block, when it identifies the board; a
+ *  write there must find the same. */
+export interface Parameters { address: number; parameters: Parameter[]; function_switches: number[]; device_name: string; bms_serial?: string | null }
 
 /** Parameter keys in BMS order (P0..P86), as in openbms-proto/src/params.rs. */
 export const KEYS = [
