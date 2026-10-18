@@ -285,5 +285,7 @@ export function packVersionText(firmware: string, probe: PackProbeView | undefin
     const hard = t(probe.hard_stop === true ? "profile.hardStopOn" : probe.hard_stop === false ? "profile.hardStopOff" : "profile.hardStopUnknown");
     return t("maint.packs.versionFull", { base, patch: probe.listed?.split(" MAINT ")[1] ?? maint ?? "", build: probe.build_id ? `${probe.build_id.slice(0, 8)}…` : "?", hard });
   }
-  return t(probe?.state === "negative" ? "maint.packs.versionNoPatch" : "maint.packs.versionUnchecked", { version: firmware });
+  // an older patch is named; another MNT format may be a patch this app does not know: not proven, no more
+  const key = probe?.state === "negative" ? (probe.version ? "maint.packs.versionNoPatch" : "maint.packs.versionUnknownFormat") : "maint.packs.versionUnchecked";
+  return t(key, { version: firmware });
 }

@@ -152,6 +152,7 @@ const resources = {
         pending: "Firmwarekennung: noch ungeprüft",
         proven: "Firmwarekennung: {{version}} (Build {{build}})",
         negative: "Firmwarekennung: {{version}}, ohne Patch-Funktionen",
+        unknownFormat: "Firmwarekennung: Patch-Funktionen von dieser App nicht belegt (Format unbekannt)",
         undecided: "Firmwarekennung: keine Antwort auf 64/03 (ältere oder Original-Firmware möglich)",
         recheck: "Erneut prüfen",
       },
@@ -211,7 +212,7 @@ const resources = {
         packs: {
           title: "Packs", rescan: "Neu suchen", none: "Kein Pack antwortet am Pack-Bus.", cancel: "Abbrechen", cancelled: "Suche abgebrochen; gelistet ist, was bis dahin geantwortet hat.",
           inverter: "Während der Wartung meldet der Master dem Wechselrichter nur sein eigenes Pack.",
-          master: "Master (0)", pack: "Pack {{address}}", version: "Firmware {{version}}", silent: "antwortet nicht", versionFull: "Firmware {{base}} · MAINT {{patch}} (Build {{build}}, Hard-Stop {{hard}})", versionNoPatch: "Firmware {{version}} · ohne Patch-Funktionen (64/03)", versionUnchecked: "Firmware {{version}} · Patch nicht geprüft",
+          master: "Master (0)", pack: "Pack {{address}}", version: "Firmware {{version}}", silent: "antwortet nicht", versionFull: "Firmware {{base}} · MAINT {{patch}} (Build {{build}}, Hard-Stop {{hard}})", versionNoPatch: "Firmware {{version}} · ohne Patch-Funktionen (64/03)", versionUnknownFormat: "Firmware {{version}} · Patch-Funktionen von dieser App nicht belegt (Format unbekannt)", versionUnchecked: "Firmware {{version}} · Patch nicht geprüft",
           flash: "Prüfen & flashen",
           pending: "Pack {{pack}} hängt eventuell im Bootloader. Neu flashen geht in der App noch nicht (das Update braucht eine Antwort der Anwendung).",
           cPrime: "Das gewählte Image hat keine Wartungsfunktion: erst am Master DIP 5–8 auf OFF stellen, dann unten „Master freigeben“, dann „Prüfen & flashen“. Danach DIP 5–8 zurückstellen.",
@@ -1045,6 +1046,7 @@ const resources = {
         pending: "Firmware identity: not checked yet",
         proven: "Firmware identity: {{version}} (build {{build}})",
         negative: "Firmware identity: {{version}}, without patch functions",
+        unknownFormat: "Firmware identity: patch functions not proven by this app (unknown format)",
         undecided: "Firmware identity: no answer to 64/03 (older or original firmware possible)",
         recheck: "Check again",
       },
@@ -1104,7 +1106,7 @@ const resources = {
         packs: {
           title: "Packs", rescan: "Search again", none: "No pack answers on the pack bus.", cancel: "Cancel", cancelled: "Search cancelled; listed is what answered until then.",
           inverter: "During maintenance the master reports only its own pack to the inverter.",
-          master: "Master (0)", pack: "Pack {{address}}", version: "firmware {{version}}", silent: "does not answer", versionFull: "firmware {{base}} · MAINT {{patch}} (build {{build}}, hard stop {{hard}})", versionNoPatch: "firmware {{version}} · without patch functions (64/03)", versionUnchecked: "firmware {{version}} · patch not checked",
+          master: "Master (0)", pack: "Pack {{address}}", version: "firmware {{version}}", silent: "does not answer", versionFull: "firmware {{base}} · MAINT {{patch}} (build {{build}}, hard stop {{hard}})", versionNoPatch: "firmware {{version}} · without patch functions (64/03)", versionUnknownFormat: "firmware {{version}} · patch functions not proven by this app (unknown format)", versionUnchecked: "firmware {{version}} · patch not checked",
           flash: "Check & flash",
           pending: "Pack {{pack}} may hang in its bootloader. Flashing it again is not possible in the app yet (the updater needs an answer of the application).",
           cPrime: "The chosen image has no maintenance functions: first set DIP 5–8 of the master OFF, then “Release master” below, then “Check & flash”. Afterwards set DIP 5–8 back.",

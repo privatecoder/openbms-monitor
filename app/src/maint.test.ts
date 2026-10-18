@@ -220,6 +220,8 @@ describe("the pack list's version", () => {
     expect(packVersionText("16.06", proven, de)).toBe("Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop aus)");
     expect(packVersionText("16.06", { ...proven, listed: null, hard_stop: null }, de)).toBe("Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop unbekannt)");
     expect(packVersionText("16.06", { ...proven, state: "negative", listed: null }, de)).toBe("Firmware 16.06 · ohne Patch-Funktionen (64/03)");
+    // another MNT format: maybe a patch this app does not know, so not „without“
+    expect(packVersionText("16.06", { ...proven, state: "negative", listed: null, version: null, build_id: null, hard_stop: null }, de)).toBe("Firmware 16.06 · Patch-Funktionen von dieser App nicht belegt (Format unbekannt)");
     expect(packVersionText("16.06", { ...proven, state: "undecided", version: null, listed: null, build_id: null, hard_stop: null }, de)).toBe("Firmware 16.06 · Patch nicht geprüft");
     expect(packVersionText("16.06", undefined, de)).toBe("Firmware 16.06 · Patch nicht geprüft");
   });
