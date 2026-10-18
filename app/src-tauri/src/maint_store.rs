@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -146,6 +146,18 @@ fn board_provenance(db: &Connection) -> rusqlite::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 9: the version proof of a pack (`patch_proof`: this board at this place runs a patch with the patch functions; set
+/// after the app flashed a listed patched image there, or by the user's confirmation, always bound to the board's String
+/// 2), and the DIP slave count a master halted by the app must report again after its release (`maint_expected`, per
+/// installation and master board).
+fn patch_proof(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS patch_proof(installation TEXT NOT NULL, address INTEGER NOT NULL, bms_serial TEXT NOT NULL, release TEXT NOT NULL,
+             source TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation, address)) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS maint_expected(installation TEXT PRIMARY KEY, master_board INTEGER, slaves INTEGER NOT NULL, at INTEGER NOT NULL);",
+    )
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -289,6 +301,16 @@ pub fn real(v: &SerialValue) -> Option<&str> {
         SerialValue::Set { value, truncated: false } => Some(value),
         _ => None,
     }
+}
+
+/// A pack's version proof (`set_patch_proof`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PatchProof {
+    pub address: u8,
+    pub bms_serial: String,
+    pub release: String,
+    pub source: String,
+    pub at: i64,
 }
 
 /// A pack that may sit in its bootloader after an interrupted flash: no other address on this pack bus endpoint
@@ -530,6 +552,8 @@ impl Store {
                 "DELETE FROM notifications WHERE installation = ?1",
                 "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
+                "DELETE FROM patch_proof WHERE installation = ?1",
+                "DELETE FROM maint_expected WHERE installation = ?1",
                 // its completed imports (an open one refused the delete): the same files can restore it later
                 "DELETE FROM import_status WHERE installation = ?1",
                 // the files stay; without their installation they are listed as „ohne Anlage“
@@ -585,6 +609,56 @@ impl Store {
             .map_err(e)?;
         let rows = stmt.query_map([], |r| Ok(MarkerOn { installation: r.get(0)?, name: r.get(1)?, at: r.get(2)? })).map_err(e)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
+    }
+
+    /// „Dieses Pack hat die Patch-Funktionen“ for the board with String 2 `serial` at this place (`source`: "flash" or
+    /// "user"); replaces an earlier proof of the place.
+    pub fn set_patch_proof(&self, inst: &str, address: u8, serial: &str, release: &str, source: &str, now: i64) -> Result<(), String> {
+        self.installation(inst)?;
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO patch_proof(installation, address, bms_serial, release, source, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![inst, address, serial, release, source, now],
+            )
+            .map_err(e)?;
+        Ok(())
+    }
+
+    /// The place's proof is gone (a flash with another image began there, or the user took it back).
+    pub fn clear_patch_proof(&self, inst: &str, address: u8) -> Result<(), String> {
+        self.db.execute("DELETE FROM patch_proof WHERE installation = ?1 AND address = ?2", params![inst, address]).map_err(e)?;
+        Ok(())
+    }
+
+    pub fn patch_proof(&self, inst: &str, address: u8) -> Result<Option<PatchProof>, String> {
+        self.db
+            .query_row(
+                "SELECT address, bms_serial, release, source, at FROM patch_proof WHERE installation = ?1 AND address = ?2",
+                params![inst, address],
+                |r| Ok(PatchProof { address: r.get(0)?, bms_serial: r.get(1)?, release: r.get(2)?, source: r.get(3)?, at: r.get(4)? }),
+            )
+            .optional()
+            .map_err(e)
+    }
+
+    /// The DIP slave count read right before the app halted the installation's master (`master_board`: its board row).
+    pub fn set_expected_slaves(&self, inst: &str, master_board: Option<i64>, slaves: u8, now: i64) -> Result<(), String> {
+        self.db
+            .execute("INSERT OR REPLACE INTO maint_expected(installation, master_board, slaves, at) VALUES (?1, ?2, ?3, ?4)", params![inst, master_board, slaves, now])
+            .map_err(e)?;
+        Ok(())
+    }
+
+    /// The stored count, only for the same master board (None on both sides counts as the same).
+    pub fn expected_slaves(&self, inst: &str, master_board: Option<i64>) -> Result<Option<u8>, String> {
+        let row: Option<(Option<i64>, u8)> =
+            self.db.query_row("SELECT master_board, slaves FROM maint_expected WHERE installation = ?1", [inst], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(e)?;
+        Ok(row.filter(|(b, _)| *b == master_board).map(|(_, n)| n))
+    }
+
+    pub fn clear_expected_slaves(&self, inst: &str) -> Result<(), String> {
+        self.db.execute("DELETE FROM maint_expected WHERE installation = ?1", [inst]).map_err(e)?;
+        Ok(())
     }
 
     /// Written before the restart into the bootloader, so a crash or power loss leaves it behind. `bms_serial`: the
@@ -1286,6 +1360,9 @@ impl Store {
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM notifications WHERE installation = ?1",
                 "DELETE FROM devices WHERE installation = ?1",
+                // a version proof and a halted master's slave count belong to the source's places and master: not taken
+                "DELETE FROM patch_proof WHERE installation = ?1",
+                "DELETE FROM maint_expected WHERE installation = ?1",
                 "DELETE FROM installations WHERE id = ?1",
             ] {
                 s.db.execute(sql, [source]).map_err(e)?;

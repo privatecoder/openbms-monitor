@@ -1,4 +1,4 @@
-use openbms_proto::{DeviceInfo, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{DeviceInfo, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use openbms_transport::{list_serial_ports, Bus, Connection, Endpoint};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -23,6 +23,7 @@ mod maint_store;
 mod migrate;
 mod notifications;
 mod notify;
+mod profile;
 mod uart1_id;
 use history::{Format, Settings, SharedHistory};
 
@@ -292,6 +293,8 @@ struct Connected {
     gen: u64,
     /// the first pack address that answered the check (Modbus answer of the master on the CAN socket: 0)
     answered: u8,
+    /// the firmware profile read on this endpoint (`profile.rs`); the UI configures itself from it
+    profile: profile::ProfileView,
 }
 
 /// Ask once whether anything answers: on the CAN socket the master's Modbus values first, then 0x51 of 0..=15
@@ -356,6 +359,9 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         return Err(CONNECT_CANCELLED.into());
     }
     let answered = checked.map_err(|p| no_answer_error(&p))?;
+    // the firmware profile on exactly this endpoint, while the port is ours alone (CAN socket: 0x64; RS485-1/2 has none)
+    let read = (bus == Bus::CanSocketBus).then(|| profile::detect(&mut conn));
+    let found = profile::of(&key, bus, read);
     {
         // opening can take seconds; a flash started meanwhile has already dropped the monitor and owns the bus
         let mut slot = lock(&state.conn)?;
@@ -382,6 +388,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     let gen = link_now(&state).gen;
     let pending = (!can && installation.is_some()).then(|| bank::PendingLink { key: key.clone(), control });
     bank::begin(&state, gen, !can, pending);
+    bank::set_profile(&state, gen, found.clone());
     notifications::begin(&state, gen, installation.as_deref());
     if let (Some(id), Ok(mut h)) = (&installation, state.history.lock()) {
         h.connected(id, if can { "can" } else { "pack" });
@@ -393,7 +400,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         stop_monitor(&state)?;
         return Err(CONNECT_CANCELLED.into());
     }
-    Ok(Connected { linked, answered, gen })
+    Ok(Connected { linked, answered, gen, profile: profile::view(gen, &found) })
 }
 
 /// What answered at the other bus's baud rate on a USB port whose connect check found nothing.
@@ -510,15 +517,6 @@ async fn system_once(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
     if ok { Ok(()) } else { Err("no system values".into()) }
 }
 
-/// Maintenance state of a patched master (CID2 0x64, CAN socket bus). Original firmware: error.
-#[tauri::command]
-async fn maint_status(state: State<'_, AppState>) -> Result<MaintStatus, String> {
-    if *state.bus.lock().map_err(|e| e.to_string())? != Some(Bus::CanSocketBus) {
-        return Err("the maintenance command exists only on the CAN socket bus".into());
-    }
-    with_conn(&state.conn, &state.flashing, |c| c.maint_status())
-}
-
 #[tauri::command]
 async fn telemetry(state: State<'_, AppState>, address: u8) -> Result<Telemetry, String> {
     with_conn(&state.conn, &state.flashing, |c| c.telemetry(address))
@@ -532,32 +530,35 @@ struct SerialRead {
     serials: SerialNumbers,
     board: Option<maint_store::BoardSeen>,
     identity: Option<bank::IdentityView>,
+    /// CAN socket: String 2 came over the binary service (true), refused with 0x81 (false); None: not asked or no answer
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uart1: Option<bool>,
 }
 
 /// Battery and BMS serial number of one pack, as far as the connected bus shows them (RS485-1/2: both; CAN socket
-/// bus: the master's battery serial number only, slaves are not asked). The read is classified first (`bank.rs`): only
-/// a board known at this place is recorded as seen there; an unconfirmed one waits for `bank_confirm`.
+/// bus: String 1/2 of every pack over the binary service when the connection's master offers it, or for this pack when
+/// the user asks (`binary`); else the master's battery serial number only). The read is classified first (`bank.rs`):
+/// only a board known at this place is recorded as seen there; an unconfirmed one waits for `bank_confirm`.
 #[tauri::command]
-async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<SerialRead, String> {
+async fn serial_numbers(state: State<'_, AppState>, address: u8, binary: Option<bool>) -> Result<SerialRead, String> {
     let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
     // read and `board_seen` together: between the 0xA5 of a serial write and its `board_written` a read would take
     // the new String 2 for another board
     let _guard = control::reserve_pack_wait(&state, address, "serial_read")?;
     let before = link_now(&state);
-    // CAN socket: String 1/2 of every pack over the binary service once the master reports it (MAINT 1.3), asked once
-    // per connection; else as before
-    if bus == Bus::CanSocketBus && uart1_serials_offered(&state, before.gen) {
+    // CAN socket: String 1/2 over the binary service when the connection's profile offers it, or asked for this pack
+    if bus == Bus::CanSocketBus && (binary == Some(true) || uart1_serials_offered(&state, before.gen)) {
         let (serials, identity) = uart1_id::serial_numbers(&state, &before, bus, address)?;
         if let (0, Some(inst)) = (address, before.installation.as_deref()) {
             can_master_check(&state, before.gen, inst, &serials.battery);
         }
-        return Ok(SerialRead { serials, board: None, identity });
+        return Ok(SerialRead { serials, board: None, identity, uart1: bank::uart1_of(&state, before.gen, address) });
     }
     let (serials, canonical) = with_conn(&state.conn, &state.flashing, |c| match bus {
         Bus::PackBus => c.serial_numbers_pack_bus_canonical(address),
         Bus::CanSocketBus => c.serial_numbers(bus, address).map(|s| (s, false)),
     })?;
-    let Some(inst) = before.installation.clone() else { return Ok(SerialRead { serials, board: None, identity: None }) };
+    let Some(inst) = before.installation.clone() else { return Ok(SerialRead { serials, board: None, identity: None, uart1: None }) };
     if link_now(&state).gen != before.gen {
         return Err(LINK_CHANGED.into());
     }
@@ -570,7 +571,7 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
         let identity = other.map(|o| bank::IdentityView {
             kind: "unconfirmed", address, serial: None, why: Some(bank::Why::Foreign), installation: Some(o), hint: true,
         });
-        return Ok(SerialRead { serials, board: None, identity });
+        return Ok(SerialRead { serials, board: None, identity, uart1: None });
     }
     let id = maint::with_store(&state, |s| bank::identity(s, &inst, address, &serials.bms)).unwrap_or(bank::Identity::Failed);
     bank::after_read_canonical(&state, &before, address, &id, &serials.bms, &serials.battery, canonical);
@@ -587,21 +588,22 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8) -> Result<Seria
             let _ = app.emit("bank-unconfirmed", &view);
         }
     }
-    Ok(SerialRead { serials, board, identity: Some(view) })
+    Ok(SerialRead { serials, board, identity: Some(view), uart1: None })
 }
 
 /// All parameters and function switches of one pack (0x47). RS485-1/2 knows this command (there the master of a
-/// multi-pack bank does not answer); on the CAN socket only a MAINT 1.2 pack, over its binary service.
+/// multi-pack bank does not answer); on the CAN socket only a patched pack, over its binary service. `patch`: what proves
+/// the pack's patch version (the release bits of Group0 are named only then).
 #[tauri::command]
 async fn parameters(state: State<'_, AppState>, address: u8) -> Result<uart1_id::ParamRead, String> {
     match bms_memory::param_path(&state)? {
-        bms_memory::ParamPath::Ascii => read_parameters_reserved(&state, address).map(|parameters| uart1_id::ParamRead { parameters, bms_serial: None }),
+        bms_memory::ParamPath::Ascii => read_parameters_reserved(&state, address),
         bms_memory::ParamPath::Uart1(bus) => read_parameters_uart1(&state, bus, address),
     }
 }
 
-/// 0x47 over the CAN socket under the pack's reservation, with String 2/1 of MAINT 1.3 in the same port session
-/// (`uart1_id::read`). Only a valid binary answer shows the pack has the service.
+/// 0x47 over the CAN socket under the pack's reservation, with String 2/1 in the same port session (`uart1_id::read`).
+/// Only a valid binary answer shows the pack has the service.
 fn read_parameters_uart1(state: &AppState, bus: Bus, address: u8) -> Result<uart1_id::ParamRead, String> {
     uart1_id::read(state, bus, address)
 }
@@ -609,7 +611,7 @@ fn read_parameters_uart1(state: &AppState, bus: Bus, address: u8) -> Result<uart
 /// 0x47 and its snapshot under the pack's reservation: a write of the same pack keeps it until its own `written`
 /// snapshot and read-back, so a read in between cannot store the new block as `read` before it (the write's previous
 /// state would then be the written block).
-fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters, String> {
+fn read_parameters_reserved(state: &AppState, address: u8) -> Result<uart1_id::ParamRead, String> {
     let _guard = control::reserve_pack_wait(state, address, "read")?;
     let before = link_now(state);
     // the board first (one 0xA4): the values always go to the UI, a snapshot only for a known board or one without a
@@ -619,18 +621,15 @@ fn read_parameters_reserved(state: &AppState, address: u8) -> Result<Parameters,
     if bank::snapshot_allowed(&checked) {
         bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
     }
-    Ok(p)
+    // a version proof counts for the board whose String 2 the check read just now
+    let serial = checked.as_ref().ok().and_then(|(_, read)| maint_store::real(read).map(String::from));
+    let patch = profile::pack_patch(state, &before, address, serial.as_deref());
+    Ok(uart1_id::ParamRead { parameters: p, bms_serial: None, patch })
 }
 
-/// Whether the CAN socket connection `gen`'s master reports String 1/2 over the binary service (patch 1.3 or later),
-/// asked once per connection (0x64 INFO 03 at address 0; no answer counts as no).
+/// Whether the CAN socket connection `gen`'s profile offers String 1/2 over the binary service (read at connect).
 fn uart1_serials_offered(state: &AppState, gen: u64) -> bool {
-    if let Some(v) = bank::uart1_serials(state, gen) {
-        return v;
-    }
-    let offered = with_conn(&state.conn, &state.flashing, |c| Ok(c.maint_info().ok())).ok().flatten().is_some_and(|i| i.patch >= [1, 3]);
-    bank::set_uart1_serials(state, gen, offered);
-    offered
+    bank::profile(state, gen).and_then(|p| p.caps()).is_some_and(|c| c.uart1_identity)
 }
 
 /// Notifications on the CAN socket run only with the installation's own master: compare its battery serial with the one
@@ -1046,7 +1045,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, maint_status, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

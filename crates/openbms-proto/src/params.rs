@@ -1,5 +1,5 @@
 //! CID2 0x47: read all parameters (60 x u16, 27 x u8, 8 function switch bytes, device name); CID2 0xA1 writes the
-//! same 169-byte block back (RS485-1/2 only; the CAN socket of a MAINT 1.2 pack has its binary form, `uart1.rs`).
+//! same 169-byte block back (RS485-1/2 only; the CAN socket of a patched pack has its binary form, `uart1.rs`).
 //!
 //! 0xA1 refuses a wrong marker with RTN 04 and an implausible block with RTN 06 (the app checks the firmware's rules
 //! before sending). The function switches and the name are taken into RAM before that check, so after RTN 06 they

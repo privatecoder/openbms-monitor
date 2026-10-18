@@ -88,7 +88,7 @@ pub fn identity(store: &Store, inst: &str, address: u8, read: &SerialValue) -> R
     }
 }
 
-/// CAN socket (MAINT 1.3): what a fresh canonical String 2 (`serial`) says about the board at `address`, strictly
+/// CAN socket: what a fresh canonical String 2 (`serial`) says about the board at `address`, strictly
 /// (design r5/r7), from the installation's current boards (`refs`, read before the exchange).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Strict {
@@ -231,8 +231,11 @@ pub(crate) struct BankState {
     can_master: Option<bool>,
     /// unconfirmed packs whose String 2 came as canonical raw bytes: „Übernehmen“ records them with that provenance
     canonical: BTreeMap<u8, bool>,
-    /// CAN socket: the master reports a patch with String 1/2 over the binary service (1.3 or later); None: not asked
-    uart1_serials: Option<bool>,
+    /// CAN socket: the firmware profile found on this connection's endpoint (`profile.rs`); None: not determined
+    profile: Option<crate::profile::Profile>,
+    /// CAN socket: per pack whether String 2 came over the binary service (true), was refused with 0x81 (false);
+    /// missing: not asked or no answer
+    uart1: BTreeMap<u8, bool>,
 }
 
 impl BankState {
@@ -301,17 +304,30 @@ fn note_canonical(state: &AppState, gen: u64, address: u8, seen: Seen, canonical
     }
 }
 
-/// CAN socket: whether connection `gen`'s master reports String 1/2 over the binary service; None: not asked yet.
-pub(crate) fn uart1_serials(state: &AppState, gen: u64) -> Option<bool> {
-    state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.uart1_serials))
+/// The firmware profile of connection `gen` (`profile.rs`); None: not determined or another connection.
+pub(crate) fn profile(state: &AppState, gen: u64) -> Option<crate::profile::Profile> {
+    state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.profile.clone()))
 }
 
-pub(crate) fn set_uart1_serials(state: &AppState, gen: u64, offered: bool) {
+pub(crate) fn set_profile(state: &AppState, gen: u64, p: crate::profile::Profile) {
     if let Ok(mut b) = state.bank.lock() {
         if b.gen == gen {
-            b.uart1_serials = Some(offered);
+            b.profile = Some(p);
         }
     }
+}
+
+/// What String 2 over the binary service showed for `address` on connection `gen` (None: no answer, nothing noted).
+pub(crate) fn set_uart1(state: &AppState, gen: u64, address: u8, offered: Option<bool>) {
+    if let (Ok(mut b), Some(v)) = (state.bank.lock(), offered) {
+        if b.gen == gen {
+            b.uart1.insert(address, v);
+        }
+    }
+}
+
+pub(crate) fn uart1_of(state: &AppState, gen: u64, address: u8) -> Option<bool> {
+    state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.uart1.get(&address).copied()))
 }
 
 /// A pack of another installation is unconfirmed on connection `gen`: nothing is stored for it.

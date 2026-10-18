@@ -1,7 +1,7 @@
 //! Blocking transport for the BMS buses: USB-RS485 adapters (serial) and RS485-to-Ethernet
 //! gateways (raw TCP). One request at a time; the BMS answers within a few hundred ms.
 
-use openbms_proto::{calibration, control, frame, memory, modbus, params, serial, uart1, BmsTime, Calibration, Comeback, DeviceInfo, HistoryRecord, Frame, MaintStatus, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
+use openbms_proto::{calibration, control, frame, memory, modbus, params, serial, uart1, BmsTime, Calibration, Comeback, DeviceInfo, HistoryRecord, Frame, Parameters, SerialNumbers, SerialValue, Status, SystemValues, Telemetry};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -476,26 +476,6 @@ impl Connection {
         Ok(modbus::parse_read_response(function, &raw?)?)
     }
 
-    /// Maintenance state of a patched master (CID2 0x64, CAN socket bus). Original firmware answers RTN 04,
-    /// which comes back as an error; the short timeout keeps a missing master from delaying the connect.
-    pub fn maint_status(&mut self) -> Result<MaintStatus> {
-        let saved = self.timeout;
-        self.timeout = Duration::from_millis(600);
-        let f = MaintStatus::request().map_err(Error::from).and_then(|r| self.ascii(&r, 0));
-        self.timeout = saved;
-        Ok(MaintStatus::parse(&f?.info)?)
-    }
-
-    /// Identity of a patched master (CID2 0x64 INFO 03, MAINT 1.1 and later; CAN socket bus). Older firmware answers
-    /// with an RTN or not at all; the short timeout keeps that from delaying the connect.
-    pub fn maint_info(&mut self) -> Result<openbms_proto::MaintInfo> {
-        let saved = self.timeout;
-        self.timeout = Duration::from_millis(600);
-        let f = openbms_proto::MaintInfo::request().map_err(Error::from).and_then(|r| self.ascii(&r, 0));
-        self.timeout = saved;
-        Ok(openbms_proto::MaintInfo::parse(&f?.info)?)
-    }
-
     pub fn system_values(&mut self) -> Result<SystemValues> {
         let regs = self.modbus_read(0x03, SystemValues::START, SystemValues::COUNT)?;
         Ok(SystemValues::from_registers(&regs)?)
@@ -593,7 +573,7 @@ impl Connection {
         ok
     }
 
-    /// One exchange with the binary parameter service of a MAINT 1.2 pack (`uart1.rs`), only on the CAN socket bus.
+    /// One exchange with the binary parameter service of a patched pack (`uart1.rs`), only on the CAN socket bus.
     /// One deadline for the whole answer: an echo of the request, frames of other packs and broken bytes are skipped
     /// without sending again and without extending it. A timeout says only that no answer came, not which firmware runs.
     pub fn binary_exchange(&mut self, bus: Bus, request: &[u8], timeout: Duration) -> Result<uart1::Reply> {
@@ -634,7 +614,7 @@ impl Connection {
         r
     }
 
-    /// All parameters of one pack over the binary service (CAN socket bus, MAINT 1.2). An error code comes back as
+    /// All parameters of one pack over the binary service (CAN socket bus, patched pack). An error code comes back as
     /// `Proto(Uart1(code))`.
     pub fn uart1_parameters(&mut self, bus: Bus, address: u8) -> Result<Parameters> {
         match self.binary_exchange(bus, &uart1::read_request(address)?, UART1_TIMEOUT)? {
@@ -654,8 +634,8 @@ impl Connection {
         }
     }
 
-    /// MAINT 1.3: String 1 (`uart1::CMD_STRING1`) or String 2 (`uart1::CMD_STRING2`) of one pack, the 30 raw bytes.
-    /// 1.2 answers 0x81 (`Proto(Uart1(0x81))`: not offered); a timeout says nothing about the firmware.
+    /// String 1 (`uart1::CMD_STRING1`) or String 2 (`uart1::CMD_STRING2`) of one pack, the 30 raw bytes.
+    /// An image without it answers 0x81 (`Proto(Uart1(0x81))`: not offered); a timeout says nothing about the firmware.
     pub fn uart1_serial(&mut self, bus: Bus, address: u8, cmd: u8) -> Result<Vec<u8>> {
         match self.binary_exchange(bus, &uart1::serial_request(address, cmd)?, UART1_SERIAL_TIMEOUT)? {
             uart1::Reply::Serial(raw) => Ok(raw),
@@ -675,7 +655,7 @@ impl Connection {
 
 /// The whole answer of the binary parameter service (a gateway may deliver it in several parts).
 pub const UART1_TIMEOUT: Duration = Duration::from_secs(3);
-/// A serial number answer of MAINT 1.3 (37 bytes): short, so packs without it do not stretch a connect.
+/// A serial number answer (37 bytes): short, so packs without it do not stretch a connect.
 pub const UART1_SERIAL_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// Silence that counts as an interruption in the restart watch: so many unanswered tries in a row, or this long.

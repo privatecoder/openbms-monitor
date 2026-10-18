@@ -1,13 +1,14 @@
-//! Binary parameter service of the patched firmware 16.06.13 MAINT 1.2 (`UART1_PARAMS`) on the CAN socket bus (UART1,
-//! 9600 baud): `55 ADR CMD LEN DATA[LEN] CRC_HI CRC_LO AA`, CRC-16/XMODEM over ADR..DATA, big endian.
+//! Binary parameter and identity service of the patched firmware (16.06.13 MAINT 1.5 and later) on the CAN socket bus
+//! (UART1, 9600 baud): `55 ADR CMD LEN DATA[LEN] CRC_HI CRC_LO AA`, CRC-16/XMODEM over ADR..DATA, big endian.
 //!
 //! CMD 0x47 (LEN 0) reads, the answer carries the 0x47 INFO without its first byte (168 bytes: markers, P0..P86, the
 //! switches, the device name). CMD 0xA1 writes the first 158 of those bytes (no name) and is acknowledged with LEN 0.
 //! A frame of the right pack can answer with an error code in place of CMD (LEN 0). Every pack answers only its own
 //! address; a broken frame, a wrong length or a foreign address stays unanswered. Other firmware ignores the frame.
 //!
-//! MAINT 1.3 adds CMD 0xA2 (String 1, battery serial) and 0xA4 (String 2, BMS serial, the board's identity): LEN 0,
-//! answered with the 30 stored bytes as they are. MAINT 1.2 answers them with error 0x81.
+//! CMD 0xA2 (String 1, battery serial) and 0xA4 (String 2, BMS serial, the board's identity): LEN 0, answered with the 30
+//! stored bytes as they are; an image without them answers error 0x81. Error 0xE3: the write is locked (Group0 bit 0) or
+//! would change the protected Group0 bit 2; nothing was taken.
 
 use crate::error::{Error, Result};
 use crate::params::{self, Parameters};
@@ -22,7 +23,7 @@ pub const READ_LEN: usize = params::BLOCK_LEN - 1;
 pub const WRITE_LEN: usize = READ_LEN - 10;
 /// The firmware accepts addresses 0..=21 (DIP addresses 0..=15).
 pub const MAX_ADDRESS: u8 = 21;
-/// MAINT 1.3: String 1 (battery serial) and String 2 (BMS serial), 30 raw bytes each.
+/// String 1 (battery serial) and String 2 (BMS serial), 30 raw bytes each.
 pub const CMD_STRING1: u8 = 0xA2;
 pub const CMD_STRING2: u8 = 0xA4;
 pub const SERIAL_LEN: usize = 30;
@@ -47,6 +48,8 @@ pub enum Code {
     Markers,
     /// 0xE2: the firmware's parameter check failed; nothing was taken, not even the switches
     Rejected,
+    /// 0xE3: writing over the CAN socket is locked (Group0 bit 0 off), or the block changes Group0 bit 2; nothing taken
+    Locked,
 }
 
 impl Code {
@@ -56,6 +59,7 @@ impl Code {
             0x87 => Some(Code::WrongLength),
             0x83 => Some(Code::Markers),
             0xE2 => Some(Code::Rejected),
+            0xE3 => Some(Code::Locked),
             _ => None,
         }
     }
@@ -66,6 +70,7 @@ impl Code {
             Code::WrongLength => 0x87,
             Code::Markers => 0x83,
             Code::Rejected => 0xE2,
+            Code::Locked => 0xE3,
         }
     }
 }
@@ -110,7 +115,7 @@ pub fn read_request(address: u8) -> Result<Vec<u8>> {
     encode(address, CMD_READ, &[])
 }
 
-/// MAINT 1.3: read String 1 (`CMD_STRING1`) or String 2 (`CMD_STRING2`).
+/// Read String 1 (`CMD_STRING1`) or String 2 (`CMD_STRING2`).
 pub fn serial_request(address: u8, cmd: u8) -> Result<Vec<u8>> {
     match cmd {
         CMD_STRING1 | CMD_STRING2 => encode(address, cmd, &[]),
@@ -637,7 +642,7 @@ mod tests {
     fn error_codes_and_the_write_acknowledgement() {
         let block = [vec![4], data()].concat();
         let req = write_request(4, &block).unwrap();
-        for (code, c) in [(0x81, Code::UnknownCommand), (0x87, Code::WrongLength), (0x83, Code::Markers), (0xE2, Code::Rejected)] {
+        for (code, c) in [(0x81, Code::UnknownCommand), (0x87, Code::WrongLength), (0x83, Code::Markers), (0xE2, Code::Rejected), (0xE3, Code::Locked)] {
             let mut f = Framer::new();
             f.push(&answer(4, code, &[]));
             assert_eq!(f.next(&req), Some(Reply::Error(c)));

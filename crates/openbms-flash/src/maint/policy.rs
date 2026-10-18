@@ -1,20 +1,44 @@
 //! What the app makes of the master's answer, and the one rule for flashing the master itself (design:
 //! docs/superpowers/specs/2026-10-13-simple-flash-flow.md, scenario C'). Pure, so every case is tested.
+//!
+//! What a patched master offers follows from its format-2 identity's patch version (`known::caps_of`): patch functions
+//! are cumulative, so an unlisted build or a later OEM base with a supported patch version gets them too. The build list
+//! (`known::PATCH_BUILDS`) only names a build; it grants nothing.
 
 use super::dialog::Probe;
-use crate::known::{self, ImageKind};
-use openbms_proto::{MaintInfo, MaintStatus, MarkerWord};
+use crate::known::{self, Caps, ImageKind, PatchBuild};
+use openbms_proto::{MaintInfo, MaintState, MarkerWord};
+
+/// A recognised patched master: its identity, what it offers and its listed name (None: build not listed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Patch {
+    pub info: MaintInfo,
+    pub caps: Caps,
+    pub listed: Option<&'static str>,
+}
+
+impl Patch {
+    /// The identity against `table`: capabilities by its patch version (None: not a supported patch), the name if listed.
+    pub fn recognise_in(table: &'static [PatchBuild], info: MaintInfo) -> Option<Self> {
+        let caps = known::caps_of(info.format, info.patch)?;
+        let listed = known::patch_in(table, info.format, info.base, info.patch, &info.build_id_hex()).map(|b| b.name);
+        Some(Self { info, caps, listed })
+    }
+
+    pub fn recognise(info: MaintInfo) -> Option<Self> {
+        Self::recognise_in(known::PATCH_BUILDS, info)
+    }
+}
 
 /// The master as read over the CAN socket bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Master {
-    /// MAINT 1.1 with a build ID from the catalog
-    Maint { info: MaintInfo, release: &'static str },
-    /// an `MNT` answer with a build ID the catalog does not know: shown, never started or stopped
-    UnknownBuild(MaintInfo),
-    /// RTN 05 to `03`, a valid `02`: MAINT 1.0 compatible
-    Legacy(MaintStatus),
-    /// RTN 04: no 0x64 (original or another build)
+    /// a supported patch (format 2, patch version with the patch functions); `state`: its `02` answer (None: not read)
+    Patched { patch: Patch, state: Option<MaintState> },
+    /// a patch the app does not support: format 1 or another layout, RTN 05 to `03`, or format 2 below the supported
+    /// patch version (then with its identity); shown, never started or stopped, no patch functions
+    UnknownPatch(Option<MaintInfo>),
+    /// RTN 04: no 0x64 (original or another build; the firmware is not proven)
     No0x64,
     /// no valid answer, or no CAN socket endpoint
     Unknown,
@@ -22,56 +46,73 @@ pub enum Master {
 
 impl Master {
     pub fn of(probe: Option<Probe>) -> Self {
+        Self::of_in(known::PATCH_BUILDS, probe)
+    }
+
+    pub fn of_in(table: &'static [PatchBuild], probe: Option<Probe>) -> Self {
         match probe {
-            Some(Probe::Info(info)) => match known::maint_build(&info.build_id_hex()) {
-                Some(r) => Master::Maint { info, release: r.name },
-                None => Master::UnknownBuild(info),
+            Some(Probe::Info(info)) => match Patch::recognise_in(table, info) {
+                Some(patch) => Master::Patched { patch, state: None },
+                None => Master::UnknownPatch(Some(info)),
             },
-            Some(Probe::Legacy(s)) => Master::Legacy(s),
+            Some(Probe::OtherPatch) => Master::UnknownPatch(None),
             Some(Probe::No0x64) => Master::No0x64,
             Some(Probe::Failed) | None => Master::Unknown,
         }
     }
 
-    /// The marker as the master reports it; None without 0x64.
-    pub fn marker(&self) -> Option<MarkerWord> {
+    /// The same master with its `02` state.
+    pub fn with_state(self, state: Option<MaintState>) -> Self {
         match self {
-            Master::Maint { info, .. } | Master::UnknownBuild(info) => Some(info.marker()),
-            Master::Legacy(s) => Some(if s.marker { MarkerWord::On } else { MarkerWord::Off }),
-            Master::No0x64 | Master::Unknown => None,
+            Master::Patched { patch, .. } => Master::Patched { patch, state },
+            m => m,
         }
+    }
+
+    pub fn caps(&self) -> Option<Caps> {
+        match self {
+            Master::Patched { patch, .. } => Some(patch.caps),
+            _ => None,
+        }
+    }
+
+    pub fn state(&self) -> Option<MaintState> {
+        match self {
+            Master::Patched { state, .. } => *state,
+            _ => None,
+        }
+    }
+
+    /// The marker as the master reports it; None without a supported patch or without a state read.
+    pub fn marker(&self) -> Option<MarkerWord> {
+        self.state().map(|s| s.marker())
     }
 
     /// The slave count the master works with (0 while its marker holds the bus quiet, or with DIP 5–8 OFF).
     pub fn effective_slaves(&self) -> Option<u8> {
-        match self {
-            Master::Maint { info, .. } | Master::UnknownBuild(info) => Some(info.effective_slaves),
-            Master::Legacy(s) => Some(s.effective_slaves),
-            Master::No0x64 | Master::Unknown => None,
-        }
+        self.state().map(|s| s.effective_slaves)
     }
 
-    /// A known maintenance build: the app may send it start and stop.
+    /// The app may send it start and stop.
     pub fn trusted(&self) -> bool {
-        matches!(self, Master::Maint { .. } | Master::Legacy(_))
+        self.caps().is_some_and(|c| c.status_split)
     }
 
-    /// „Master anhalten“ is offered: a trusted build with the marker off.
+    /// „Master anhalten“ is offered: a trusted master with the marker off.
     pub fn may_halt(&self) -> bool {
         self.trusted() && self.marker() == Some(MarkerWord::Off)
     }
 
-    /// „Master freigeben“ is offered (and `stop` sent) only when 0x64 shows the marker on; a foreign marker
-    /// word or an unknown build never gets a `stop`.
+    /// „Master freigeben“ is offered (and `stop` sent) only when `02` shows the marker on; a foreign marker word or an
+    /// unknown patch never gets a `stop`.
     pub fn may_release(&self) -> bool {
         self.trusted() && self.marker() == Some(MarkerWord::On)
     }
 }
 
-/// Scenario C': a trusted patched master whose marker is on gets no image that is not a maintenance build. The
-/// original ignores the marker: it would poll right after the flash and the marker word would stay hidden in
-/// flash. The user releases the master first (DIP 5–8 OFF keep the bus quiet meanwhile). Every other master is
-/// left to the bus check.
+/// Scenario C': a trusted patched master whose marker is on gets no image that is not a patched build. The original
+/// ignores the marker: it would poll right after the flash and the marker word would stay hidden in flash. The user
+/// releases the master first (DIP 5–8 OFF keep the bus quiet meanwhile). Every other master is left to the bus check.
 pub fn release_first(master: &Master, image: ImageKind) -> bool {
     image != ImageKind::Maintenance && master.may_release()
 }
@@ -80,62 +121,80 @@ pub fn release_first(master: &Master, image: ImageKind) -> bool {
 mod tests {
     use super::*;
 
-    fn info(marker_word: u32, slaves: u8, build_id: [u8; 8]) -> MaintInfo {
-        MaintInfo { base: [16, 6, 13], patch: [1, 1], marker_word, effective_slaves: slaves, build_id }
+    fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
+        MaintInfo { format: 2, base, patch, build_id }
     }
-    const KNOWN: [u8; 8] = [0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0];
+    fn state(word: u32, slaves: u8) -> Option<MaintState> {
+        Some(MaintState { marker_word: word, effective_slaves: slaves })
+    }
+    const LISTED: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
     const OTHER: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
-    #[test]
-    fn the_build_id_decides_trust() {
-        let m = Master::of(Some(Probe::Info(info(u32::MAX, 3, KNOWN))));
-        assert!(matches!(m, Master::Maint { release: "16.06.13 MAINT 1.1", .. }));
-        assert!(m.trusted() && m.may_halt() && !m.may_release());
-        let u = Master::of(Some(Probe::Info(info(0, 0, OTHER))));
-        assert!(matches!(u, Master::UnknownBuild(_)));
-        assert!(!u.trusted() && !u.may_halt() && !u.may_release());
-        assert_eq!(u.marker(), Some(MarkerWord::On));
+    fn patched(i: MaintInfo, s: Option<MaintState>) -> Master {
+        Master::of(Some(Probe::Info(i))).with_state(s)
     }
 
     #[test]
-    fn maint_1_2_is_trusted_like_1_1() {
-        const V12: [u8; 8] = [0x5C, 0x9F, 0x13, 0x58, 0x22, 0x22, 0x71, 0xFA];
-        let i = MaintInfo { patch: [1, 2], ..info(u32::MAX, 3, V12) };
-        assert_eq!(i.version(), "16.06.13 MAINT 1.2");
-        let m = Master::of(Some(Probe::Info(i)));
-        assert!(matches!(m, Master::Maint { release: "16.06.13 MAINT 1.2", .. }));
+    fn the_listed_build_is_named_and_trusted() {
+        let m = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
+        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.5"), .. }, .. }));
         assert!(m.trusted() && m.may_halt() && !m.may_release());
+        assert_eq!(m.caps(), known::caps_of(2, [1, 5]));
     }
 
     #[test]
-    fn legacy_no_0x64_and_unknown() {
-        let on = Master::of(Some(Probe::Legacy(MaintStatus { marker: true, effective_slaves: 0 })));
-        assert!(on.trusted() && on.may_release() && !on.may_halt());
-        assert_eq!(on.effective_slaves(), Some(0));
-        for m in [Master::of(Some(Probe::No0x64)), Master::of(Some(Probe::Failed)), Master::of(None)] {
-            assert!(!m.trusted() && !m.may_halt() && !m.may_release());
+    fn an_unlisted_build_with_a_supported_patch_version_gets_the_same_configuration() {
+        let listed = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
+        for i in [info([16, 6, 13], [1, 5], OTHER), info([16, 6, 13], [1, 6], OTHER), info([16, 7, 2], [1, 5], OTHER)] {
+            let m = patched(i, state(u32::MAX, 3));
+            let Master::Patched { patch, .. } = m else { panic!("{m:?}") };
+            assert_eq!(patch.listed, None);
+            assert_eq!((m.caps(), m.trusted(), m.may_halt(), m.may_release()), (listed.caps(), true, true, false));
+        }
+    }
+
+    #[test]
+    fn a_second_listed_entry_is_configured_like_the_first() {
+        static TABLE: [PatchBuild; 2] = [
+            PatchBuild { name: "16.06.13 MAINT 1.5", base: [16, 6, 13], patch: [1, 5], mnt_format: 2, build_id: "909a604e60e9225b", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], mnt_format: 2, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
+        ];
+        let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 5], LISTED)))).with_state(state(0, 0));
+        let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));
+        assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("16.06.14 MAINT 1.6"), .. }, .. }));
+        assert_eq!((second.caps(), second.may_release(), second.may_halt()), (first.caps(), first.may_release(), first.may_halt()));
+    }
+
+    #[test]
+    fn patch_1_4_format_1_no_0x64_and_unknown_offer_nothing() {
+        let old = Master::of(Some(Probe::Info(info([16, 6, 13], [1, 4], OTHER))));
+        assert!(matches!(old, Master::UnknownPatch(Some(_))));
+        for m in [old, Master::of(Some(Probe::OtherPatch)), Master::of(Some(Probe::No0x64)), Master::of(Some(Probe::Failed)), Master::of(None)] {
+            let m = m.with_state(state(0, 0));
+            assert!(!m.trusted() && !m.may_halt() && !m.may_release() && m.caps().is_none());
             assert_eq!((m.marker(), m.effective_slaves()), (None, None));
         }
         assert_eq!(Master::of(Some(Probe::Failed)), Master::Unknown);
     }
 
     #[test]
-    fn a_foreign_marker_word_is_neither_halted_nor_released() {
-        let m = Master::of(Some(Probe::Info(info(0x1234_5678, 0, KNOWN))));
+    fn a_foreign_marker_word_or_no_state_is_neither_halted_nor_released() {
+        let m = patched(info([16, 6, 13], [1, 5], LISTED), state(0x1234_5678, 0));
         assert_eq!(m.marker(), Some(MarkerWord::Foreign(0x1234_5678)));
         assert!(!m.may_halt() && !m.may_release());
+        let m = patched(info([16, 6, 13], [1, 5], LISTED), None);
+        assert!(m.trusted() && !m.may_halt() && !m.may_release());
     }
 
     #[test]
-    fn a_master_with_its_marker_on_is_released_before_a_non_maintenance_image() {
-        let on = Master::of(Some(Probe::Info(info(0, 0, KNOWN))));
-        let off = Master::of(Some(Probe::Info(info(u32::MAX, 0, KNOWN))));
+    fn a_master_with_its_marker_on_is_released_before_a_non_patched_image() {
+        let on = patched(info([16, 6, 13], [1, 5], LISTED), state(0, 0));
+        let off = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 0));
         assert!(release_first(&on, ImageKind::Original));
         assert!(release_first(&on, ImageKind::Custom));
         assert!(!release_first(&on, ImageKind::Maintenance));
         assert!(!release_first(&off, ImageKind::Original));
-        // nothing to release: left to the bus check (DIP way)
-        for m in [Master::No0x64, Master::Unknown, Master::of(Some(Probe::Info(info(0, 0, OTHER))))] {
+        for m in [Master::No0x64, Master::Unknown, Master::UnknownPatch(None)] {
             assert!(!release_first(&m, ImageKind::Original));
         }
     }
