@@ -707,6 +707,12 @@ impl Store {
         Ok(true)
     }
 
+    /// The place's hard-stop observation ends (an app flash of that pack begins: only the new image's behaviour counts).
+    pub fn clear_hard_stop(&self, inst: &str, address: u8) -> Result<(), String> {
+        self.db.execute("DELETE FROM hard_stop_seen WHERE installation = ?1 AND address = ?2", params![inst, address]).map_err(e)?;
+        Ok(())
+    }
+
     /// The hard-stop observations of the installation that hold for the board now current at their place (the same
     /// board row, or the same canonical String 2).
     pub fn hard_stops(&self, inst: &str) -> Result<Vec<HardStopSeen>, String> {
