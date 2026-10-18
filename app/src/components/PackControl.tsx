@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, uart1Error, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
 import { CUTOFF_BIT, getProfile } from "../profile";
@@ -21,7 +21,8 @@ const P79 = 79;
 type Action = "restart" | "on" | "off" | "heater" | "remaining" | "clear";
 type Tone = "ok" | "warn" | "error";
 type Note = { text: string; tone: Tone } | null;
-type Ask = { kind: "restart" } | { kind: "off"; lock: "cutoff" | "cutoffMaybe" | "soft" } | { kind: "clear"; live: PackLive | null };
+/** „Aus“ carries what its confirmation was shown with: the kind and the extended off the backend checks again */
+type Ask = { kind: "restart" } | { kind: "off"; lock: "cutoff" | "cutoffMaybe" | "soft"; expect?: boolean; lockConfirmed: boolean } | { kind: "clear"; live: PackLive | null };
 
 // when the app forced the heater on, per connection and pack: the button reads „Heizung aus“ and the state line shows
 // the expected end. The BMS's own counter (0x200000C8) is not readable over any command.
@@ -57,8 +58,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   const [noteFor, setNoteFor] = useState<Action | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [ah, setAh] = useState("");
-  // Group0 and the patch of this section's own fresh 0x47 (before „Aus“, after ein/aus): newer than the column
-  const [fresh47, setFresh47] = useState<{ g0: number; patch: PackPatch | null } | null>(null);
+  // Group0 and the patch of this section's own fresh 0x47 (before „Aus“, after ein/aus): newer than the column; `g0`
+  // undefined: the read after an action failed, so neither it nor the column's older value says anything now
+  const [fresh47, setFresh47] = useState<{ g0: number | undefined; patch: PackPatch | null } | null>(null);
   const gen = useRef(0);
   const current = useCurrent(address);
   const linkNow = useCurrent(linkKey);
@@ -90,6 +92,8 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     if (!open || !usable || address === null) return;
     void reload(address);
   }, [open, usable, address, linkKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a newer read of the column replaces this section's Group0 (also one marked unreadable)
+  useEffect(() => setFresh47((f) => (f ? { ...f, g0: group0 } : f)), [group0]);
   // P79 only when no column shows it and the field is used: one 0x47 per pack; a pack that does not answer gets the
   // general hint
   const p79 = p79Shown ?? p79Read;
@@ -152,7 +156,10 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
       const f = { g0: p.function_switches[0], patch: p.patch ?? null };
       setFresh47(f);
       return f;
-    } catch { return undefined; }
+    } catch {
+      if (same(a, lk)) setFresh47((f) => ({ g0: undefined, patch: f?.patch ?? null }));
+      return undefined;
+    }
   };
   // the pack cutoff matters here: proven over the CAN socket, or a pack with a patch proof on RS485-1/2 (may have 1.6)
   const cutoffAware = (patch: PackPatch | null | undefined) => (can ? cutoff : !!patch && patch.caps.pack_cutoff !== false);
@@ -160,20 +167,30 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   // „Aus“: where the pack may store a cutoff, Group0 is read fresh first and decides the confirmation
   const askOff = async (a: number) => {
     const lk = linkNow.current;
-    if (can && !cutoff) { setAsk({ kind: "off", lock: "soft" }); return; }
+    if (can && !cutoff) { setAsk({ kind: "off", lock: "soft", lockConfirmed: false }); return; }
     setBusy("off");
     const f = await read47(a, lk);
     setBusy(null);
-    if (same(a, lk)) setAsk({ kind: "off", lock: offKind(mode, cutoff, f?.patch, f?.g0) });
+    if (same(a, lk)) setAsk(offAsk(f));
+  };
+  const offAsk = (f: { g0: number | undefined; patch: PackPatch | null } | undefined): Ask => {
+    const lock = offKind(mode, cutoff, f?.patch, f?.g0);
+    return { kind: "off", lock, ...offExpect(lock, cutoffAware(f?.patch), f?.g0) };
   };
 
-  const onOff = (a: number, on: boolean) => run(on ? "on" : "off", a, async (lk) => {
+  const onOff = (a: number, on: boolean, confirmed?: { expect?: boolean; lockConfirmed: boolean }) => run(on ? "on" : "off", a, async (lk) => {
     // where the pack may store a cutoff (RS485-1/2: not known yet without the read before „Aus“) Group0 is read after it
     const before = fresh47, ask47 = cutoffAware(before?.patch) || (!can && !before);
-    try { await api.packOnOff(a, on); }
+    try { await api.packOnOff(a, on, confirmed?.expect, confirmed?.lockConfirmed); }
     catch (e) {
+      const changed = uart1Error(e)?.error === "cutoff-changed";
       // also after a refusal (RTN 08: the lock not stored): the state and Group0 as they are now
-      if (same(a, lk) && ask47) { await reload(a); await read47(a, lk); }
+      if (same(a, lk) && (ask47 || changed)) {
+        await reload(a);
+        const f = await read47(a, lk);
+        // the extended off changed since the confirmation: nothing was sent, ask again with the pack's state now
+        if (changed && f && same(a, lk)) { setAsk(offAsk(f)); return { text: errorText(e, t), tone: "warn" }; }
+      }
       throw e;
     }
     // the output follows at the next 1-s evaluation of the BMS
@@ -191,7 +208,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && aware && f
       ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (f.g0 >> 5) & 1, state: t((f.g0 & 0x20) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
     if (can && cut === "stillLocked") return slaves({ text: t("ctl.cutoff.stillLocked"), tone: "error" });
-    if (can && cut === "locked" && !on) return slaves({ text: t("ctl.cutoff.offDone", { pack: no(a) }), tone: l ? "ok" : "warn" });
+    // off: a stored lock (bit 5 at 0) or an unreadable Group0 never reads „Laden möglich“, on either way
+    const offText = !on ? offCutoffText(cut, !can) : null;
+    if (offText) return slaves({ text: t(offText, { pack: no(a) }), tone: cut === "locked" && l ? "ok" : "warn" });
     const unread = can && cut === "unread" ? ` ${t("ctl.cutoff.unread")}` : "";
     const withUnread = (n: NonNullable<Note>): NonNullable<Note> => (unread ? { text: `${n.text}${unread}`, tone: n.tone === "ok" ? "warn" : n.tone } : n);
     if (!l) return slaves(maybe(withUnread({ text: t("ctl.sentUnread"), tone: "warn" })));
@@ -257,10 +276,10 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   };
 
   // the newest Group0 seen: this section's own read, else the parameters column
-  const g0 = fresh47?.g0 ?? group0;
+  const g0 = fresh47 ? fresh47.g0 : group0;
   const lock = lockState(can && cutoff, !can && cutoffAware(fresh47?.patch), g0);
   // a stored lock is released by „Ein“, whatever the off bit shows
-  const off = (st ? commandedOff(st) : false) || lock === "active";
+  const off = (st ? commandedOff(st) : false) || lock === "active" || lock === "maybeActive";
   const extendedOff = can && cutoff && g0 !== undefined && (g0 & CUTOFF_BIT) === 0;
   const forcedAt = forced.get(`${linkKey}|${address}`);
   const heaterForced = forcedAt !== undefined && Date.now() < forcedAt + HEATER_MS;
@@ -347,7 +366,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
           onConfirm={() => {
             setAsk(null);
             if (ask.kind === "restart") void restart(address);
-            else if (ask.kind === "off") void onOff(address, false);
+            else if (ask.kind === "off") void onOff(address, false, { expect: ask.expect, lockConfirmed: ask.lockConfirmed });
             else void clear(address);
           }}>
           {ask.kind === "clear" ? (

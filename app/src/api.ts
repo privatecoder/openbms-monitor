@@ -464,7 +464,9 @@ const tauriApi = {
    *  watching for the pack to answer again. Restart and on/off also over the CAN socket of a pack with the power and
    *  clock service (identity and lock bit instead of the 0x51 before) */
   packRestart: (address: number) => written(address, invoke<{ value: RestartResult; unchecked: boolean }>("pack_restart", { address, installation: chosen })),
-  packOnOff: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen })),
+  /** `expect`: for off, the extended off (Group0 bit 4 at 0) the confirmation showed; the backend compares it with a fresh
+   *  0x47 right before sending (`cutoff-changed`); `lockConfirmed`: the confirmation named the stored pack cutoff */
+  packOnOff: (address: number, on: boolean, expect?: boolean, lockConfirmed?: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen, expect: expect ?? null, lockConfirmed: lockConfirmed ?? false })),
   packHeater: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_heater", { address, on, installation: chosen })),
   /** history, energy counters and cycle count to 0; not reversible */
   packClearHistory: (address: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_clear_history", { address, installation: chosen })),

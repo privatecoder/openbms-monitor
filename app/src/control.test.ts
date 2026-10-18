@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { PackPatch, Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -169,5 +169,28 @@ describe("the stored pack cutoff in „Steuern“ (MAINT 1.6)", () => {
     expect(e).toMatch(/nicht freigegeben/);
     expect(i18n.t("ctl.cutoff.offText", { lng: "de" })).toBe("Gespeicherte Packsperre: sperrt Laden und Entladen bis zum gezielten Ein, auch über Neustarts.");
     expect(i18n.t("ctl.cutoff.releasedHeld", { lng: "de" })).toBe("Sperre gelöst; Schutz hält die MOSFETs aus (siehe Zustand).");
+  });
+});
+
+describe("„Aus“ of a pack that may store a cutoff, round 1", () => {
+  it("hands the backend the extended off the confirmation showed", () => {
+    expect(offExpect("cutoff", true, 0xe7)).toEqual({ expect: true, lockConfirmed: true });
+    expect(offExpect("soft", true, 0xf7)).toEqual({ expect: false, lockConfirmed: false });
+    expect(offExpect("cutoffMaybe", true, 0xdf)).toEqual({ expect: false, lockConfirmed: true });
+    // not readable before, or nothing to compare: nothing expected
+    expect(offExpect("cutoff", true, undefined)).toEqual({ expect: undefined, lockConfirmed: true });
+    expect(offExpect("soft", false, 0xe7)).toEqual({ expect: undefined, lockConfirmed: false });
+  });
+  it("never reports „Laden möglich“ once bit 5 is 0 or Group0 is unreadable, on either way", () => {
+    expect(offCutoffText("locked", false)).toBe("ctl.cutoff.offDone");
+    expect(offCutoffText("locked", true)).toBe("ctl.cutoff.offDoneMaybe");
+    expect(offCutoffText("unread", true)).toBe("ctl.cutoff.offUnread");
+    expect(offCutoffText(null, true)).toBeNull();
+    expect(offCutoffText("notLocked", false)).toBeNull();
+    for (const lng of ["de", "en"]) for (const k of ["ctl.cutoff.offDoneMaybe", "ctl.cutoff.offUnread", "uart1.cutoff-changed", "uart1.cutoff-unread"]) {
+      expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+      expect(i18n.t(k, { lng, pack: "03" })).not.toMatch(/Laden möglich|charging possible/);
+    }
+    expect(errorText(JSON.stringify({ kind: "uart1", error: "cutoff-changed" }), (k, o) => i18n.t(k, { ...o, lng: "de" }))).toMatch(/^Erweitertes Aus hat sich geändert: bitte neu bestätigen/);
   });
 });

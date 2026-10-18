@@ -238,6 +238,42 @@ fn switch_command(r: openbms_transport::Result<()>) -> openbms_transport::Result
     }
 }
 
+/// The exchanges of ein/aus on RS485-1/2: the connection, or a script in tests.
+pub(crate) trait SwitchDev {
+    /// Group0 of a fresh 0x47 of exactly this pack
+    fn group0(&mut self, address: u8) -> openbms_transport::Result<u8>;
+    fn on_off(&mut self, address: u8, on: bool) -> openbms_transport::Result<()>;
+}
+
+impl SwitchDev for openbms_transport::Connection {
+    fn group0(&mut self, address: u8) -> openbms_transport::Result<u8> {
+        let p = self.parameters(address)?;
+        // byte 0 is the pack's own address: another pack's switches say nothing here
+        if p.address != address {
+            return Err(openbms_transport::Error::Io(std::io::Error::other("0x47 of another address")));
+        }
+        Ok(p.function_switches[0])
+    }
+    fn on_off(&mut self, address: u8, on: bool) -> openbms_transport::Result<()> {
+        openbms_transport::Connection::on_off(self, address, on)
+    }
+}
+
+/// Ein/aus on RS485-1/2. For an off of a pack with a patch proof (`expect`: the extended off its confirmation showed) a
+/// fresh 0x47 right before: a changed bit 4 sends nothing (`cutoff-changed`); an unreadable one neither
+/// (`cutoff-unread`), unless the confirmation already named the possible stored cutoff (`lock_confirmed`).
+pub(crate) fn ascii_switch(dev: &mut impl SwitchDev, address: u8, on: bool, expect: Option<bool>, lock_confirmed: bool) -> openbms_transport::Result<Result<(), String>> {
+    if !on && expect.is_some() {
+        match dev.group0(address) {
+            Ok(g0) if crate::profile::extended_changed(expect, g0) => return Ok(Err(uart1_refusal("cutoff-changed"))),
+            Ok(_) => {}
+            Err(_) if lock_confirmed => {}
+            Err(_) => return Ok(Err(uart1_refusal("cutoff-unread"))),
+        }
+    }
+    switch_command(dev.on_off(address, on))
+}
+
 /// One control frame of RS485-1/2: the pack reserved first, then the connection and its bus taken together
 /// (`bound_pack_bus`), the right-bank check, the frame on exactly that link.
 fn control_frame(state: &AppState, installation: Option<&str>, address: u8, action: &'static str, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<Written<()>, String> {
@@ -294,17 +330,19 @@ fn watch(sent: Instant, answered: impl FnMut() -> Result<bool, String>) -> Resta
 }
 
 /// Switch one pack on or off (0x45 type 4). The UI reads the status again 2 s later. Over the CAN socket the master's
-/// ACK confirms only the master: its original broadcast to the slaves is not confirmed by it.
+/// ACK confirms only the master: its original broadcast to the slaves is not confirmed by it. `expect` (off of a pack
+/// that may store a cutoff): the extended off the confirmation showed, compared with a fresh 0x47 under the reservation
+/// right before the frame; `lock_confirmed`: the confirmation named the stored cutoff.
 #[tauri::command]
-pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<Written<()>, String> {
+pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool, expect: Option<bool>, lock_confirmed: Option<bool>) -> Result<Written<()>, String> {
     let _guard = reserve_pack_wait(&state, address, "on_off")?;
     let (link, bus) = bound_bus(&state, installation.as_deref())?;
     match way(bus) {
         Way::Power => {
-            crate::power::run(&state, &link, address, Act::Switch { on })?;
+            crate::power::run(&state, &link, address, Act::Switch { on, expect })?;
             Ok(Written { value: (), unchecked: false })
         }
-        Way::Ascii => ascii_frame(&state, &link, address, |c| switch_command(c.on_off(address, on))),
+        Way::Ascii => ascii_frame(&state, &link, address, |c| ascii_switch(c, address, on, expect, lock_confirmed.unwrap_or(false))),
     }
 }
 
@@ -422,6 +460,49 @@ mod tests {
         assert_eq!((json(&e)["kind"].as_str(), json(&e)["error"].as_str()), (Some("uart1"), Some("cutoff-failed")));
         assert_eq!(switch_command(Ok(())).unwrap(), Ok(()));
         assert_eq!(switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
+    }
+
+    /// Group0 answers in order and what was sent.
+    struct Script {
+        reads: Vec<openbms_transport::Result<u8>>,
+        sent: Vec<bool>,
+    }
+
+    impl SwitchDev for Script {
+        fn group0(&mut self, _address: u8) -> openbms_transport::Result<u8> {
+            self.reads.remove(0)
+        }
+        fn on_off(&mut self, _address: u8, on: bool) -> openbms_transport::Result<()> {
+            self.sent.push(on);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rs485_off_checks_the_confirmed_extended_off_right_before() {
+        let script = |r: openbms_transport::Result<u8>| Script { reads: vec![r], sent: vec![] };
+        let error = |r: Result<(), String>| json(&r.unwrap_err())["error"].as_str().unwrap().to_string();
+        // confirmed as soft off, bit 4 now 0 (and the reverse): nothing sent
+        for (g0, expect) in [(0xEF, false), (0xFF, true)] {
+            let mut d = script(Ok(g0));
+            assert_eq!(error(ascii_switch(&mut d, 3, false, Some(expect), false).unwrap()), "cutoff-changed");
+            assert!(d.sent.is_empty());
+        }
+        // as confirmed: sent
+        let mut d = script(Ok(0xEF));
+        assert_eq!(ascii_switch(&mut d, 3, false, Some(true), true).unwrap(), Ok(()));
+        assert_eq!(d.sent, [false]);
+        // unreadable: refused after a soft confirmation, sent after the cutoff one
+        let mut d = script(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))));
+        assert_eq!(error(ascii_switch(&mut d, 3, false, Some(false), false).unwrap()), "cutoff-unread");
+        assert!(d.sent.is_empty());
+        let mut d = script(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))));
+        assert_eq!(ascii_switch(&mut d, 3, false, Some(true), true).unwrap(), Ok(()));
+        // no proof (nothing expected) and on: no read, as before
+        let mut d = Script { reads: vec![], sent: vec![] };
+        assert_eq!(ascii_switch(&mut d, 3, false, None, false).unwrap(), Ok(()));
+        assert_eq!(ascii_switch(&mut d, 3, true, Some(false), false).unwrap(), Ok(()));
+        assert_eq!(d.sent, [false, true]);
     }
 
     #[test]
