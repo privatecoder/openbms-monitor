@@ -1148,10 +1148,22 @@ mod tests {
         assert!(s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 2, |_| Err("disk I/O error".into())).is_err());
         assert!(s.all_pending().unwrap().is_empty());
         assert!(s.patch_proof(&a.id, 0).unwrap().is_some());
-        // both succeed: the record is there and the proof gone
-        s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 3, |st| st.clear_patch_proof(&a.id, 0)).unwrap();
+        s.note_hard_stop(&a.id, 0, true, 2).unwrap();
+        // a failing step after both clears: nothing of it stays
+        assert!(s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 2, |st| {
+            st.clear_patch_proof(&a.id, 0)?;
+            st.clear_hard_stop(&a.id, 0)?;
+            Err("disk I/O error".into())
+        }).is_err());
+        assert!(s.all_pending().unwrap().is_empty() && s.patch_proof(&a.id, 0).unwrap().is_some() && s.hard_stops(&a.id).unwrap().len() == 1);
+        // all succeed: the record is there, the proof and the hard-stop observation gone
+        s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 3, |st| {
+            st.clear_patch_proof(&a.id, 0)?;
+            st.clear_hard_stop(&a.id, 0)
+        }).unwrap();
         assert_eq!(s.all_pending().unwrap().len(), 1);
         assert!(s.patch_proof(&a.id, 0).unwrap().is_none());
+        assert!(s.hard_stops(&a.id).unwrap().is_empty());
     }
 
     #[test]

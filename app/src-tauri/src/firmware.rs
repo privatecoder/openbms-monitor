@@ -365,9 +365,13 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind; in the same transaction the place's version
-    // proof ends (also for a flash that breaks off): either both or neither, so a failed step leaves no pending record.
+    // proof and its hard-stop observation end (also for a flash that breaks off): all or nothing, so a failed step leaves no pending record.
     // Only a finished flash of an image with the patch functions sets the proof again, for the String 2 read back.
-    let pending = maint::with_store(&state, |s| s.add_pending_with(&key, address, &info.release, target.as_deref(), crate::history::now_ms(), |s| s.clear_patch_proof(&owner.id, address))).map_err(to_text)?;
+    let pending = maint::with_store(&state, |s| s.add_pending_with(&key, address, &info.release, target.as_deref(), crate::history::now_ms(), |s| {
+        s.clear_patch_proof(&owner.id, address)?;
+        // what the old image showed about the hard stop no longer holds
+        s.clear_hard_stop(&owner.id, address)
+    })).map_err(to_text)?;
     maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} marker={} log={}", info.release, info.custom, marker.unwrap_or("-"), log_path.display()));
     let patch_image = known::patch_image(&info.sha256);
     let owner_id = owner.id.clone();
