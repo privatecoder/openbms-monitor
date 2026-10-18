@@ -397,11 +397,6 @@ pub(crate) fn can_master_read(state: &AppState, gen: u64, matched: bool) {
     }
 }
 
-/// The CAN socket connection `gen`'s master matched the installation (true), another (false); None: not read yet.
-pub(crate) fn can_master(state: &AppState, gen: u64) -> Option<bool> {
-    state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.can_master))
-}
-
 /// Connection `gen` is on the CAN socket and its master's battery serial has not been read yet (the poll thread asks).
 pub(crate) fn can_master_unread(state: &AppState, gen: u64) -> bool {
     state.bank.lock().is_ok_and(|b| b.current(gen).is_some_and(|b| !b.pack_bus && b.can_master.is_none()))

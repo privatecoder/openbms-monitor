@@ -706,8 +706,8 @@ pub struct PackScan {
     /// stopped by „Abbrechen“: `packs` holds what answered until then
     cancelled: bool,
     /// each pack's own 64/03 as far as known (the pack bus cannot give it: UART0 answers RTN 04): a live finding of the
-    /// installation's current CAN socket link, else a short read over its control channel; only when the scan matched the
-    /// master's String 2 and the CAN master's battery serial matched too; missing: not checked
+    /// installation's current CAN socket link or a short read over its control channel, only for a pack whose String 2 read
+    /// fresh on the pack bus equals the one read fresh over the CAN socket; missing: not checked
     identities: Vec<crate::profile::PackProbeView>,
 }
 
@@ -747,18 +747,23 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
         Some(_) => bank_view(&Bank::Unchecked),
         None => BankView { state: "none", serial: None },
     };
-    // per pack: String 2 on the pack bus (canonical, unique among the found), for the board-level proof below
-    let bus_serials = if inst.is_some() && !cancelled { unique_serials(found.iter().map(|a| (*a, canonical_string2(&mut link, *a))).collect()) } else { vec![] };
+    // a CAN version belongs to a pack only by its board: String 2 read fresh on the pack bus (canonical, unique among the
+    // found) equals the one read fresh over the CAN socket; „Abbrechen“ is checked before every read
+    let mut bus_read = vec![];
+    let mut stopped = inst.is_some() && !cancelled
+        && probe_until_cancel::<_, ()>(&found, &state.scan_cancel, &mut bus_read, |a| Ok(canonical_string2(&mut link, a))).unwrap_or(false);
+    let bus_serials = unique_serials(bus_read);
     drop(link);
-    // a CAN version belongs to these packs when both banks are positively this installation's (the pack bus scan matched
-    // the master's String 2, the CAN master's battery serial matched); else per pack when its String 2 on the CAN side is
-    // the one read on the pack bus (a single board without master, too)
-    let (identities, stopped) = match &inst {
-        Some(i) if !cancelled && bank.state == "match" && can_master_confirmed(&state, i) => pack_identities(&state, i, &found, &state.scan_cancel),
-        Some(i) if !cancelled && !bus_serials.is_empty() => board_identities(&state, i, &bus_serials, &state.scan_cancel),
-        _ => (vec![], false),
+    let identities = match &inst {
+        Some(i) if !cancelled && !stopped && !bus_serials.is_empty() => {
+            let (v, s) = board_identities(&state, i, &bus_serials, &state.scan_cancel);
+            stopped = s;
+            v
+        }
+        _ => vec![],
     };
-    Ok(PackScan { packs, bank, cleared, cancelled: cancelled || stopped, identities })
+    let cancelled = cancelled || stopped;
+    Ok(PackScan { packs, bank, cleared, cancelled, identities })
 }
 
 /// String 2 of a pack on the pack bus as a board identity (canonical raw bytes, a real value), or None.
@@ -782,14 +787,17 @@ pub fn same_board(pack_bus: &str, can: Option<&str>) -> bool {
     can == Some(pack_bus)
 }
 
-/// Per pack over the installation's control channel: binary String 2 (canonical) and 64/03 at the address; kept only
-/// where String 2 is the board read on the pack bus. „Abbrechen“ is checked before each pack.
+/// Per pack over the installation's control channel: binary String 2 (canonical) fresh, and only where it is the board read
+/// on the pack bus the 64/03 (a live finding of the installation's current link is reused for such a pack). „Abbrechen“
+/// is checked before every CAN read.
 fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String)], cancel: &std::sync::atomic::AtomicBool) -> (Vec<crate::profile::PackProbeView>, bool) {
     use openbms_flash::maint::policy::PackFinding;
     if inst.control.is_none() {
         return (vec![], false);
     }
-    let gen = crate::link_now(state).gen;
+    let link = crate::link_now(state);
+    let gen = link.gen;
+    let mine = link.installation.as_deref() == Some(inst.id.as_str());
     let mut out: Vec<(u8, PackFinding)> = vec![];
     let mut stopped = false;
     let ask: Vec<u8> = boards.iter().map(|(a, _)| *a).collect();
@@ -797,65 +805,36 @@ fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String
         stopped = probe_until_cancel(&ask, cancel, &mut out, |a| {
             let expected = boards.iter().find(|(b, _)| *b == a).map(|(_, s)| s.as_str()).unwrap_or_default();
             let can = c.uart1_serial(Bus::CanSocketBus, a, openbms_proto::uart1::CMD_STRING2).ok().and_then(|raw| openbms_proto::serial::canonical(&raw));
-            if !same_board(expected, can.as_deref()) {
-                return Ok(PackFinding::Undecided);
-            }
-            dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of)
+            let live = mine.then(|| crate::bank::live(state, gen, a)).flatten();
+            let cancelled = cancel.load(std::sync::atomic::Ordering::SeqCst);
+            board_finding(expected, can.as_deref(), live, cancelled, || dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of))
         })?;
         Ok(())
     });
+    // a cancel seen before a 64/03 ends the phase too
+    stopped |= cancel.swap(false, std::sync::atomic::Ordering::SeqCst);
     // a pack whose String 2 did not match is no finding of this board: left out (shown as unchecked)
     let shown = out.iter().filter(|(_, f)| *f != PackFinding::Undecided).map(|(a, f)| crate::profile::probe_view(gen, *a, f)).collect();
     (shown, stopped)
 }
 
-/// The CAN master of the installation is positively its own: on the monitor's current CAN link of this installation
-/// (`bank::can_master` true), else read over its control channel against the stored battery serial (none stored: not
-/// confirmed).
-fn can_master_confirmed(state: &AppState, inst: &Installation) -> bool {
-    let link = crate::link_now(state);
-    if link.installation.as_deref() == Some(inst.id.as_str()) && crate::bank::can_master(state, link.gen) == Some(true) {
-        return true;
-    }
-    if inst.control.is_none() {
-        return false;
-    }
-    let Ok(Some(stored)) = with_store(state, |s| Ok(s.current_board(&inst.id, 0)?.and_then(|b| b.battery_serial))) else { return false };
-    let read = with_control(state, inst, |c| c.master_battery_serial()).ok().and_then(|r| r.ok());
-    can_master_check(&stored, read.as_ref())
-}
-
-/// `can_master_confirmed` on a stored battery serial and the read: only a real matching one confirms.
-pub fn can_master_check(stored: &str, read: Option<&SerialValue>) -> bool {
-    master_check(stored, read).is_ok()
-}
-
-/// The full version of the found packs for the pack list: from live 64/03 findings of the installation's current CAN
-/// socket link, the others by a short read-only addressed 64/03 (600 ms each) over its control channel when that is
-/// reachable. Nothing is inferred from 0x51 or from a refusal on the pack bus; a pack without answer stays unchecked.
-/// „Abbrechen“ (`cancel`) is checked before every probe: what was found until then is returned, with true.
-fn pack_identities(state: &AppState, inst: &Installation, found: &[u8], cancel: &std::sync::atomic::AtomicBool) -> (Vec<crate::profile::PackProbeView>, bool) {
+/// One pack of the board-level proof: only when String 2 read over the CAN socket is the one read on the pack bus may a
+/// 64/03 count; then a live finding of the installation's current link is reused, else it is asked (not after a cancel).
+pub fn board_finding<E>(pack_bus: &str, can: Option<&str>, live: Option<openbms_flash::maint::policy::PackFinding>, cancelled: bool,
+    probe: impl FnOnce() -> Result<openbms_flash::maint::policy::PackFinding, E>) -> Result<openbms_flash::maint::policy::PackFinding, E> {
     use openbms_flash::maint::policy::PackFinding;
-    let link = crate::link_now(state);
-    let mine = link.installation.as_deref() == Some(inst.id.as_str());
-    let mut out: Vec<(u8, PackFinding)> = found.iter().filter_map(|a| mine.then(|| crate::bank::live(state, link.gen, *a)).flatten().map(|f| (*a, f))).collect();
-    let ask: Vec<u8> = found.iter().copied().filter(|a| !out.iter().any(|(b, _)| b == a)).collect();
-    let mut stopped = false;
-    if !ask.is_empty() && inst.control.is_some() {
-        let mut v = vec![];
-        let _ = with_control(state, inst, |c| -> Result<(), openbms_flash::Error> {
-            stopped = probe_until_cancel(&ask, cancel, &mut v, |a| dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of))?;
-            Ok(())
-        });
-        out.extend(v);
+    if !same_board(pack_bus, can) {
+        return Ok(PackFinding::Undecided);
     }
-    out.sort_by_key(|(a, _)| *a);
-    (out.iter().map(|(a, f)| crate::profile::probe_view(link.gen, *a, f)).collect(), stopped)
+    match live {
+        Some(f) => Ok(f),
+        None if cancelled => Ok(PackFinding::Undecided),
+        None => probe(),
+    }
 }
 
 /// Probe `ask` in order into `found`, checking „Abbrechen“ before each; Ok(true) when cancelled (what came stays).
-pub fn probe_until_cancel<E>(ask: &[u8], cancel: &std::sync::atomic::AtomicBool, found: &mut Vec<(u8, openbms_flash::maint::policy::PackFinding)>,
-    mut probe: impl FnMut(u8) -> Result<openbms_flash::maint::policy::PackFinding, E>) -> Result<bool, E> {
+pub fn probe_until_cancel<T, E>(ask: &[u8], cancel: &std::sync::atomic::AtomicBool, found: &mut Vec<(u8, T)>, mut probe: impl FnMut(u8) -> Result<T, E>) -> Result<bool, E> {
     for a in ask {
         if cancel.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Ok(true);
@@ -1348,7 +1327,7 @@ mod tests {
         let mut found = vec![];
         let mut asked = vec![];
         // „Abbrechen“ during the probe of pack 2: pack 3 and later are not asked, what came is kept
-        let stopped = probe_until_cancel::<()>(&[1, 2, 3, 4], &cancel, &mut found, |a| {
+        let stopped = probe_until_cancel::<_, ()>(&[1, 2, 3, 4], &cancel, &mut found, |a| {
             asked.push(a);
             if a == 2 {
                 cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1359,8 +1338,29 @@ mod tests {
         assert_eq!(asked, vec![1, 2]);
         assert_eq!(found.len(), 2);
         let mut found = vec![];
-        assert!(!probe_until_cancel::<()>(&[1, 2], &cancel, &mut found, |_| Ok(PackFinding::Undecided)).unwrap());
+        assert!(!probe_until_cancel::<_, ()>(&[1, 2], &cancel, &mut found, |_| Ok(PackFinding::Undecided)).unwrap());
+        // the same rule before every pack bus String 2 read
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut serials: Vec<(u8, Option<String>)> = vec![];
+        assert!(probe_until_cancel::<_, ()>(&[1, 2], &cancel, &mut serials, |_| Ok(Some("SYN".into()))).unwrap());
+        assert!(serials.is_empty());
         assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn a_cached_finding_counts_only_for_a_pack_whose_string_2_matches_now() {
+        use openbms_flash::maint::dialog::PackAnswer;
+        use openbms_flash::maint::policy::PackFinding;
+        let info = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false) };
+        let cached = PackFinding::of(PackAnswer::Info(info));
+        let never = || -> Result<PackFinding, ()> { panic!("no 64/03 without a matching String 2") };
+        // another board on the CAN side: neither the cached finding nor a probe
+        assert_eq!(board_finding("SYN-1", Some("SYN-B"), Some(cached), false, never).unwrap(), PackFinding::Undecided);
+        assert_eq!(board_finding("SYN-1", None, Some(cached), false, never).unwrap(), PackFinding::Undecided);
+        // the same board: the cached finding without asking, else a fresh probe; after „Abbrechen“ none
+        assert_eq!(board_finding("SYN-1", Some("SYN-1"), Some(cached), false, never).unwrap(), cached);
+        assert_eq!(board_finding::<()>("SYN-1", Some("SYN-1"), None, false, || Ok(cached)).unwrap(), cached);
+        assert_eq!(board_finding("SYN-1", Some("SYN-1"), None, true, never).unwrap(), PackFinding::Undecided);
     }
 
     #[test]
@@ -1375,52 +1375,6 @@ mod tests {
         assert_eq!(unique_serials(vec![(1, None)]), vec![]);
         // a serial shared by two found packs proves nothing
         assert_eq!(unique_serials(vec![(1, Some("SYN-A".into())), (2, Some("SYN-A".into())), (3, Some("SYN-C".into()))]), vec![(3, "SYN-C".to_string())]);
-    }
-
-    #[test]
-    fn a_can_version_needs_a_confirmed_can_master() {
-        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
-        assert!(can_master_check("BAT-A", Some(&set("BAT-A"))));
-        assert!(!can_master_check("BAT-A", Some(&set("BAT-B"))));
-        assert!(!can_master_check("BAT-A", None));
-        assert!(!can_master_check("BAT-A", Some(&SerialValue::NoAnswer)));
-        // the current CAN link of the installation: only can_master true counts; nothing stored and no control: no
-        let state = AppState::default();
-        let s = store_at("can-confirmed");
-        let a = s.create_installation("A", None, vec![]).unwrap();
-        *state.maint.lock().unwrap() = Some(s);
-        crate::new_link(&state, Some(a.id.clone()));
-        let link = crate::link_now(&state);
-        crate::bank::begin(&state, link.gen, false, None);
-        assert!(!can_master_confirmed(&state, &a), "not read yet");
-        crate::bank::can_master_read(&state, link.gen, false);
-        assert!(!can_master_confirmed(&state, &a), "another bank's master");
-        crate::bank::can_master_read(&state, link.gen, true);
-        assert!(can_master_confirmed(&state, &a));
-    }
-
-    #[test]
-    fn the_pack_list_takes_live_findings_of_its_own_link_and_infers_nothing() {
-        use openbms_flash::maint::dialog::PackAnswer;
-        use openbms_flash::maint::policy::PackFinding;
-        let state = AppState::default();
-        let s = store_at("identities");
-        let a = s.create_installation("A", None, vec![]).unwrap();
-        let b = s.create_installation("B", None, vec![]).unwrap();
-        *state.maint.lock().unwrap() = Some(s);
-        crate::new_link(&state, Some(a.id.clone()));
-        let link = crate::link_now(&state);
-        crate::bank::begin(&state, link.gen, false, None);
-        let info = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop: Some(false) };
-        crate::bank::set_live(&state, link.gen, 1, PackFinding::of(PackAnswer::Info(info)));
-        // no control channel: only what the link found; pack 2 stays unchecked
-        let no = std::sync::atomic::AtomicBool::new(false);
-        let (v, stopped) = pack_identities(&state, &a, &[1, 2], &no);
-        assert!(!stopped);
-        assert_eq!(v.iter().map(|p| (p.address, p.state)).collect::<Vec<_>>(), vec![(1, "proven")]);
-        assert_eq!(v[0].version.as_deref(), Some("16.06.13 MAINT 1.5"));
-        // the link belongs to another installation: its findings do not count here
-        assert!(pack_identities(&state, &b, &[1, 2], &no).0.is_empty());
     }
 
     #[test]
