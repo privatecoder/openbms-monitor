@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { RULES, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations, fullRequests } from "./paramWrite";
-import { KEYS, UNITS, type Parameters } from "./params";
+import { RULES, afterUart1Write, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations, fullRequests } from "./paramWrite";
+import { KEYS, UNITS, type Parameters, type Source } from "./params";
 
 /** A synthetic, plausible configuration (display values, P0..P86). */
 const GOOD = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -297,5 +297,23 @@ describe("the editor's full-capacity reads", () => {
     const again = reqs.begin(2);
     expect(pack2(2)).toBe(false);
     expect(again(2)).toBe(true);
+  });
+});
+
+describe("pack column after a CAN socket write", () => {
+  const p = (address: number, raw: number): Parameters => ({ address, device_name: "SYN", function_switches: [0, 0, 0, 0, 0, 0, 0, 0],
+    parameters: KEYS.map((key, index) => ({ index, key, raw, value: raw, unit: "" })) });
+  const col = (raw: number, extra: Partial<Source> = {}): Source => ({ id: "pack-1", kind: "pack", address: 1, label: "01", read: p(1, raw), values: [raw], ...extra });
+  const earlier = p(1, 10);
+  it("a confirmed write sets the last write and the block it replaced", () => {
+    const r = afterUart1Write(col(20, { lastWritten: 5, previous: earlier }), col(30), true, p(1, 20), 99);
+    expect([r.read?.parameters[0].raw, r.lastWritten, r.previous?.parameters[0].raw]).toEqual([30, 99, 20]);
+  });
+  it("an unclear attempt shows its read-back but keeps the earlier confirmed write", () => {
+    const r = afterUart1Write(col(20, { lastWritten: 5, previous: earlier }), col(25), false, p(1, 20), 99);
+    expect([r.read?.parameters[0].raw, r.lastWritten, r.previous?.parameters[0].raw]).toEqual([25, 5, 10]);
+    // without a read-back the column stays as it was, also without an earlier write
+    const n = afterUart1Write(col(20), null, false, p(1, 20), 99);
+    expect([n.read?.parameters[0].raw, n.lastWritten, n.previous]).toEqual([20, undefined, undefined]);
   });
 });
