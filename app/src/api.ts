@@ -292,6 +292,8 @@ export interface MasterView {
   marker: "off" | "on" | "foreign" | null; marker_word: string | null; slaves: number | null;
   may_halt: boolean; may_release: boolean; polling?: "unverified" | "no-slaves";
 }
+/** What a pack's own behaviour showed about the hard stop (waiting for recharge with the charge MOSFET off: observed). */
+export interface HardStopSeen { address: number; observed: boolean; at: number }
 /** The release bits of a Group0 value, each only where the capability has it. */
 export interface Gates { write: boolean | null; start: boolean | null }
 /** The firmware profile of the monitor connection, read on its endpoint right after connecting (`profile.rs`). */
@@ -357,6 +359,9 @@ const tauriApi = {
   firmwareProfileCheck: (gen: number) => invoke<ProfileView>("firmware_profile_check", { gen }).then((p) => { setProfile(p); return p; }),
   /** „Dieses Pack hat die Patch-Funktionen“, bound to String 2 read now (`serial`: the one the column was read with) */
   patchProofConfirm: (installation: string, address: number, serial: string, gen: number) => invoke<PackPatch>("patch_proof_confirm", { installation, address, serial, gen }),
+  /** the hard-stop observations of the connection's installation for the boards now current */
+  hardStops: () => invoke<HardStopSeen[]>("hard_stops"),
+  onHardStop: (f: (h: HardStopSeen) => void) => listen<HardStopSeen>("hard-stop", (e) => f(e.payload)),
   /** „Beleg zurücknehmen“ */
   patchProofRevoke: (installation: string, address: number) => invoke<void>("patch_proof_revoke", { installation, address }),
   /** USB port only: asks at the other bus's baud rate (read-only) after a connect found nothing */
@@ -564,6 +569,8 @@ function demoApi(): typeof tauriApi {
     firmwareProfileCheck: async () => DEMO_PROFILE,
     patchProofConfirm: async () => { throw new Error("desktop app only"); },
     patchProofRevoke: async () => { throw new Error("desktop app only"); },
+    hardStops: async () => [],
+    onHardStop: async () => () => {},
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     connectCancel: async () => {},
     disconnect: async () => { clearInterval(timer); setProfile(null); },

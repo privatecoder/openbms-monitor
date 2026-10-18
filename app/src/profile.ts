@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Gates, MasterView, PackPatch, ProfileView } from "./api";
+import type { Gates, HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -43,11 +43,15 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
   }
 }
 
-/** „Hard-Stop: an / aus / unbekannt“ for a recognised patch: a property of the image (format 3 reports it, format 2 not),
- *  apart from the maintenance state, the release bits and the MOSFETs. */
-export function hardStopLine(m: MasterView | null | undefined, t: T): string | null {
-  if (!m || m.kind !== "patched") return null;
-  return t("profile.hardStop", { state: t(m.hard_stop === true ? "profile.hardStopOn" : m.hard_stop === false ? "profile.hardStopOff" : "profile.hardStopUnknown") });
+/** „Hard-Stop: …“ of one pack: the image's own flag wins (a format-3 master, `flag` true/false); else what the pack's
+ *  behaviour showed (`seen`: waiting for recharge with the charge MOSFET off or on, with its date); else unknown. Never
+ *  from a version number or a flash. */
+export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSeen | undefined, t: T, lang = "de"): string {
+  const at = (ms: number) => new Date(ms).toLocaleDateString(lang);
+  const state = flag === true ? t("profile.hardStopOn") : flag === false ? t("profile.hardStopOff")
+    : seen ? t(seen.observed ? "profile.hardStopSeen" : "profile.hardStopNotSeen", { at: at(seen.at) })
+    : t("profile.hardStopUnknown");
+  return t("profile.hardStop", { state });
 }
 
 /** The master's release bits as a short line („Schreiben über CAN-Buchse: erlaubt · Wartungsstart: gesperrt“). */

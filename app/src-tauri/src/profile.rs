@@ -175,6 +175,44 @@ pub fn after_master_write(state: &AppState, link: &Link, address: u8, r: Option<
     }
 }
 
+/// What one fresh 0x44 status says about the hard stop: waiting for intermittent recharge (event 6 bit 1) with the
+/// charge MOSFET off is a hard stop seen (true), with it on none (false); not waiting says nothing (None).
+pub fn hard_stop_observation(status: &openbms_proto::Status) -> Option<bool> {
+    (status.events[5] & 0x02 != 0).then(|| !status.charge_mosfet_on())
+}
+
+/// The image itself reports the hard stop for this pack on connection `gen` (a format-3 master at address 0): then no
+/// observation is kept or shown for it.
+pub fn hard_stop_reported(profile: Option<&Profile>, address: u8) -> bool {
+    address == 0 && profile.is_some_and(|p| p.caps().is_some() && matches!(&p.master, Master::Patched { patch, .. } if patch.info.hard_stop.is_some()))
+}
+
+/// The poll thread's fresh status of `address` on connection `link`: a hard-stop observation is kept for the board current
+/// there (not for an unconfirmed or foreign pack, not where the image reports the flag) and the UI is told of a change.
+pub fn observe_hard_stop(state: &AppState, link: &Link, address: u8, status: &openbms_proto::Status) {
+    let Some(observed) = hard_stop_observation(status) else { return };
+    if bank::unconfirmed(state, link.gen, address) || hard_stop_reported(bank::profile(state, link.gen).as_ref(), address) {
+        return;
+    }
+    let now = crate::history::now_ms();
+    if crate::for_link(state, link, "hard stop", |s, inst| s.note_hard_stop(inst, address, observed, now)) == Some(true) {
+        if let Some(app) = state.app.get() {
+            let _ = app.emit("hard-stop", crate::maint_store::HardStopSeen { address, observed, at: now });
+        }
+    }
+}
+
+/// The hard-stop observations of the connection's installation for the boards now current (none with „Nur ansehen“);
+/// the place whose image reports the flag is left out.
+#[tauri::command]
+pub async fn hard_stops(state: tauri::State<'_, AppState>) -> Result<Vec<crate::maint_store::HardStopSeen>, String> {
+    let link = link_now(&state);
+    let Some(inst) = link.installation.as_deref() else { return Ok(vec![]) };
+    let profile = bank::profile(&state, link.gen);
+    let all = crate::maint::with_store(&state, |s| s.hard_stops(inst)).map_err(|e| format!("{e:?}"))?;
+    Ok(all.into_iter().filter(|h| !hard_stop_reported(profile.as_ref(), h.address)).collect())
+}
+
 /// What proves the patch version of one pack: the master's identity on this link ("master"), or a stored proof for the
 /// board with this String 2 ("flash", "user").
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -439,6 +477,50 @@ mod tests {
         after_master_write(&state, &link, 0, None);
         let p = bank::profile(&state, link.gen).unwrap();
         assert!(p.gates_stale && view(link.gen, &p).gates_stale);
+    }
+
+    fn status(event6: u8, switch_state: u8) -> openbms_proto::Status {
+        let mut events = [0u8; 8];
+        events[5] = event6;
+        openbms_proto::Status {
+            address: 0, cell_limits: vec![], cell_temperature_limits: vec![], ambient_temperature_limit: openbms_proto::status::LimitState::Normal, power_temperature_limit: openbms_proto::status::LimitState::Normal,
+            current_limit: openbms_proto::status::LimitState::Normal, pack_voltage_limit: openbms_proto::status::LimitState::Normal, events, switch_state, balancing: 0, system_status: 0, alarms: vec![],
+        }
+    }
+
+    #[test]
+    fn a_hard_stop_is_seen_only_while_waiting_for_recharge() {
+        assert_eq!(hard_stop_observation(&status(0x02, 0x01)), Some(true), "waiting, charge MOSFET off");
+        assert_eq!(hard_stop_observation(&status(0x02, 0x03)), Some(false), "waiting, charge MOSFET on");
+        assert_eq!(hard_stop_observation(&status(0x00, 0x01)), None, "not waiting: says nothing");
+        assert_eq!(hard_stop_observation(&status(0x7D, 0x00)), None, "other event 6 bits");
+    }
+
+    #[test]
+    fn a_format_3_master_keeps_no_observation_its_flag_shows() {
+        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false) };
+        let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: None };
+        let p3 = profile(m3, Bus::CanSocketBus);
+        assert!(hard_stop_reported(Some(&p3), 0));
+        assert!(!hard_stop_reported(Some(&p3), 1), "a slave keeps the observation path");
+        assert!(!hard_stop_reported(Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), 0), "format 2: flag unknown");
+        assert!(!hard_stop_reported(None, 0));
+        // the poll thread's status with waiting and charge MOSFET off: nothing recorded for the format-3 master
+        let state = AppState::default();
+        let dir = std::env::temp_dir().join(format!("openbms-hardstop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::maint_store::Store::open(&dir.join("maintenance.sqlite")).unwrap();
+        let inst = store.create_installation("A", None, vec![]).unwrap();
+        *state.maint.lock().unwrap() = Some(store);
+        crate::new_link(&state, Some(inst.id.clone()));
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        bank::set_profile(&state, link.gen, p3);
+        observe_hard_stop(&state, &link, 0, &status(0x02, 0x01));
+        observe_hard_stop(&state, &link, 2, &status(0x02, 0x01));
+        let seen = crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap();
+        assert_eq!(seen.iter().map(|h| (h.address, h.observed)).collect::<Vec<_>>(), vec![(2, true)]);
     }
 
     #[test]
