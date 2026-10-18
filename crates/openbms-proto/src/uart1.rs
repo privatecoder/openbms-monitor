@@ -226,17 +226,37 @@ impl Framer {
     }
 
     /// The first complete valid frame (start, length). With `protect`, a started frame that can be the answer to
-    /// `request` (same address; 0x47 with 168 bytes to a read, 0xA1 with none to a write, an error code with none) or
-    /// its echo (a prefix of the request) is waited for up to its LEN boundary: a valid-looking frame inside its data
-    /// (switch bytes may read `55 00 E2 00 76 D0 AA`) is not taken while it is still arriving. Only its end byte or CRC
-    /// disprove it, then the search goes on at a later start byte. Any other header is skipped at once.
+    /// `request` (same address; 0x47 with 168 bytes to a read, 0xA1 with none to a write, an error code with none) is
+    /// waited for up to its LEN boundary: a valid-looking frame inside its data (switch bytes may read
+    /// `55 00 E2 00 76 D0 AA`) is not taken while it is still arriving. Only its end byte, CRC or a marker disprove it,
+    /// then the search goes on at a later start byte. A started echo of the request (its header) keeps its whole LEN
+    /// range even when cut off and followed by other bytes: no frame starting inside it is an answer (`finish` makes
+    /// such a candidate `Truncated`). Any other header is skipped at once.
     fn first_frame(&self, request: &[u8], protect: bool) -> Option<(usize, usize)> {
+        // candidates starting before this offset lie inside a started echo of the request: never an answer
+        let mut echo_end = 0;
         for i in (0..self.buf.len()).filter(|i| self.buf[*i] == START) {
+            if protect && i < echo_end {
+                continue;
+            }
             let rest = &self.buf[i..];
             if protect && rest.len() < 4 {
                 return None;
             }
-            if protect && (plausible(rest, request) || (rest.len() < request.len() && request.starts_with(rest))) && rest.len() < usize::from(rest[3]) + OVERHEAD {
+            if protect && request.len() >= 4 && rest[..4] == request[..4] {
+                // an echo began: up to its LEN boundary its bytes stay its own, also when different bytes follow
+                if rest.len() < request.len() && request.starts_with(rest) {
+                    return None;
+                }
+                if rest.len() >= request.len() {
+                    if let Some(n) = frame_at(rest) {
+                        return Some((i, n));
+                    }
+                }
+                echo_end = i + request.len();
+                continue;
+            }
+            if protect && plausible(rest, request) && rest.len() < usize::from(rest[3]) + OVERHEAD {
                 return None;
             }
             if let Some(n) = frame_at(rest) {
@@ -476,12 +496,15 @@ mod tests {
         f.push(&[started, answer(0, 0xE2, &[])].concat());
         assert_eq!(f.next(&read), None);
         assert_eq!(f.finish(&read), Finish::Truncated);
-        // an echo of the write is waited for while it arrives (its data may hold a valid-looking frame); once the bytes
-        // part from the request it is no echo, and the ACK after it counts
+        // an echo of the write keeps its whole length: an ACK starting inside that range is no answer, one after it is
         let mut f = Framer::new();
         f.push(&write[..40]);
         assert_eq!(f.next(&write), None);
         f.push(&answer(0, CMD_WRITE, &[]));
+        assert_eq!(f.next(&write), None);
+        assert_eq!(f.finish(&write), Finish::Truncated);
+        let mut f = Framer::new();
+        f.push(&[write[..40].to_vec(), vec![0; WRITE_LEN + 7 - 40], answer(0, CMD_WRITE, &[])].concat());
         assert_eq!(f.next(&write), Some(Reply::Ack));
         let mut sw = data();
         sw[150..157].copy_from_slice(&hex("55 00 E2 00 76 D0 AA"));
@@ -499,6 +522,32 @@ mod tests {
         let mut f = Framer::new();
         f.push(&answer(0, 0xE2, &[]));
         assert_eq!(f.finish(&read), Finish::Reply(Reply::Error(Code::Rejected)));
+    }
+
+    #[test]
+    fn a_cut_off_write_echo_with_an_ack_in_its_switch_bytes_gives_no_false_ack() {
+        let mut d = data();
+        d[150..157].copy_from_slice(&answer(0, CMD_WRITE, &[]));
+        let w = write_request(0, &[vec![0], d].concat()).unwrap();
+        assert_eq!(w.len(), 165);
+        // (a) cut after 161 bytes, one differing byte follows
+        let mut f = Framer::new();
+        f.push(&[w[..161].to_vec(), vec![0x13]].concat());
+        assert_eq!(f.next(&w), None);
+        assert_eq!(f.finish(&w), Finish::Truncated);
+        // (b) cut after 161 bytes, a real E2 answer follows: it starts inside the echo's range, the outcome stays open
+        let mut f = Framer::new();
+        f.push(&[w[..161].to_vec(), answer(0, 0xE2, &[])].concat());
+        assert_eq!(f.next(&w), None);
+        assert_eq!(f.finish(&w), Finish::Truncated);
+        // the whole echo, then the real E2: found
+        let mut f = Framer::new();
+        f.push(&[w.clone(), answer(0, 0xE2, &[])].concat());
+        assert_eq!(f.next(&w), Some(Reply::Error(Code::Rejected)));
+        // a cut echo, then a real ACK after the echo's range: found
+        let mut f = Framer::new();
+        f.push(&[w[..161].to_vec(), vec![0; 4], answer(0, CMD_WRITE, &[])].concat());
+        assert_eq!(f.next(&w), Some(Reply::Ack));
     }
 
     #[test]
