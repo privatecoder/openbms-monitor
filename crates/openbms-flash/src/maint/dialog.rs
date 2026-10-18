@@ -429,6 +429,17 @@ mod tests {
     }
 
     #[test]
+    fn a_measured_slave_answer_at_address_1_is_read() {
+        let measured = b"~20014600A0244D4E540310060D0105297F9F2AA8402E9F00F5D1\r".to_vec();
+        let (mut link, t) = pack_link(move |a| if a == 1 { vec![(ms(40), measured.clone())] } else { vec![] });
+        let PackAnswer::Info(i) = probe_pack(&mut link, &t, 1, ms(600)).unwrap() else { panic!() };
+        assert_eq!((i.format, i.base, i.patch, i.build_id_hex().as_str(), i.hard_stop), (3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f", Some(false)));
+        assert!(matches!(super::super::policy::PackFinding::of(PackAnswer::Info(i)), super::super::policy::PackFinding::Proven { listed: Some("16.06.13 MAINT 1.5"), .. }));
+        // the same answer does not belong to address 2
+        assert_eq!(probe_pack(&mut link, &t, 2, ms(600)).unwrap(), PackAnswer::Undecided);
+    }
+
+    #[test]
     fn another_valid_mnt_is_classified_errors_and_silence_are_undecided() {
         // the historic 22-byte format 1, format 4, MNT03 with a wrong length: classified as another MNT
         let mut f1 = b"MNT".to_vec();

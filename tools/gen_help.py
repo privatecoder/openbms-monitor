@@ -12,7 +12,8 @@ def _patch_info():
     block = src[src.index("pub const PATCH_BUILDS"):]
     names = re.findall(r'name: "([^"]+)"', block[:block.index("];")])
     low = re.search(r"pub const MIN_PATCH: \[u8; 2\] = \[(\d+), (\d+)\];", src)
-    return ", ".join(names), f"{low.group(1)}.{low.group(2)}"
+    # several builds may share a name (format 2 and format 3 of the same patch version)
+    return ", ".join(dict.fromkeys(names)), f"{low.group(1)}.{low.group(2)}"
 
 
 PATCH_BUILDS, MIN_PATCH = _patch_info()
