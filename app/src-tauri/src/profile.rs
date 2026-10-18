@@ -310,7 +310,7 @@ mod tests {
     use openbms_proto::{MaintInfo, MaintState};
 
     fn patched(patch: [u8; 2], build: [u8; 8]) -> Master {
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: build };
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: build, hard_stop: None };
         Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) }
     }
     const LISTED: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
@@ -348,6 +348,17 @@ mod tests {
         assert_eq!(later.release, "16.06.13 MAINT 1.6");
         let v = view(1, &profile(patched([1, 6], [9; 8]), Bus::CanSocketBus));
         assert_eq!((v.master.kind, v.master.listed.as_deref(), v.gates), ("patched", None, Some(Gates { write: Some(true), start: Some(true) })));
+    }
+
+    #[test]
+    fn formats_2_and_3_configure_the_master_alike() {
+        let f2 = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None).unwrap();
+        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(true) };
+        let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) };
+        let f3 = pack_patch_of(0, Some(&profile(m3, Bus::CanSocketBus)), None, None).unwrap();
+        assert_eq!(f3.caps, f2.caps);
+        let v = view(1, &profile(m3, Bus::CanSocketBus));
+        assert_eq!((v.master.hard_stop, v.gates), (Some(true), Some(Gates { write: Some(true), start: Some(true) })));
     }
 
     #[test]

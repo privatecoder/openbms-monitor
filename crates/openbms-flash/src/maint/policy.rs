@@ -122,7 +122,7 @@ mod tests {
     use super::*;
 
     fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
-        MaintInfo { format: 2, base, patch, build_id }
+        MaintInfo { format: 2, base, patch, build_id, hard_stop: None }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })
@@ -156,13 +156,24 @@ mod tests {
     #[test]
     fn a_second_listed_entry_is_configured_like_the_first() {
         static TABLE: [PatchBuild; 2] = [
-            PatchBuild { name: "16.06.13 MAINT 1.5", base: [16, 6, 13], patch: [1, 5], mnt_format: 2, build_id: "909a604e60e9225b", code_sha256: "a", ehex_sha256: "b" },
-            PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], mnt_format: 2, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
+            PatchBuild { name: "16.06.13 MAINT 1.5", base: [16, 6, 13], patch: [1, 5], mnt_format: 2, hard_stop: None, build_id: "909a604e60e9225b", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], mnt_format: 2, hard_stop: None, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
         ];
         let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 5], LISTED)))).with_state(state(0, 0));
         let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));
         assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("16.06.14 MAINT 1.6"), .. }, .. }));
         assert_eq!((second.caps(), second.may_release(), second.may_halt()), (first.caps(), first.may_release(), first.may_halt()));
+    }
+
+    #[test]
+    fn formats_2_and_3_with_the_same_patch_version_offer_the_same() {
+        let f2 = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
+        let f3 = patched(MaintInfo { format: 3, hard_stop: Some(true), ..info([16, 6, 13], [1, 5], OTHER) }, state(u32::MAX, 3));
+        let (c2, c3) = (f2.caps().unwrap(), f3.caps().unwrap());
+        assert_eq!(Caps { mnt_format: 2, ..c3 }, c2);
+        assert_eq!((f3.trusted(), f3.may_halt()), (true, true));
+        // a format-3 build is told apart from the listed format-2 build by format and build ID
+        assert!(matches!(f3, Master::Patched { patch: Patch { listed: None, .. }, .. }));
     }
 
     #[test]

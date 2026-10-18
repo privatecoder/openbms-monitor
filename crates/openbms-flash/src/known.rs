@@ -42,7 +42,7 @@ pub const RELEASES: &[Release] = &[
 /// app asks these, never a version number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
-    /// layout of the `0x64/03` identity (2: 17 bytes, no runtime state)
+    /// layout of the `0x64/03` identity (2: 17 bytes; 3: 18 bytes with image flags; neither has runtime state)
     pub mnt_format: u8,
     /// `0x64/02` and start/stop answer with the 5-byte state (marker word, effective slaves)
     pub status_split: bool,
@@ -71,9 +71,12 @@ pub struct CapMin {
     pub start_gate_bit2: [u8; 2],
 }
 
+/// The `0x64/03` formats the app decodes; both carry the same identity fields (format 3 adds the image flags).
+pub const MNT_FORMATS: [u8; 2] = [2, 3];
+
 /// The capabilities of a `0x64/03` identity (`format`, `patch`): None for another format or a patch below `MIN_PATCH`.
 pub fn caps_of(format: u8, patch: [u8; 2]) -> Option<Caps> {
-    if format != 2 || patch < MIN_PATCH {
+    if !MNT_FORMATS.contains(&format) || patch < MIN_PATCH {
         return None;
     }
     Some(Caps {
@@ -97,8 +100,10 @@ pub struct PatchBuild {
     pub base: [u8; 3],
     /// patch version major, minor as `0x64/03` reports it
     pub patch: [u8; 2],
-    /// the `0x64/03` format of this build
+    /// the `0x64/03` format of this build (builds are told apart by format and build ID)
     pub mnt_format: u8,
+    /// format 3: the hard-stop patch is compiled in; None for a format-2 build (not reported)
+    pub hard_stop: Option<bool>,
     /// the build ID of `0x64/03`, 16 lower-case hex digits
     pub build_id: &'static str,
     /// SHA-256 of the decoded application code (`ehex::Image::code_sha256`)
@@ -119,6 +124,7 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[PatchBuild {
     base: [16, 6, 13],
     patch: [1, 5],
     mnt_format: 2,
+    hard_stop: None,
     build_id: "909a604e60e9225b",
     code_sha256: "5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12",
     ehex_sha256: "346959edab55e857c2ae8a47cb2f4a7a2be2b279024857ce83ed612304060ee1",
@@ -215,6 +221,8 @@ mod tests {
         assert_eq!(caps_of(2, [1, 5]), Some(full));
         assert_eq!(caps_of(2, [1, 6]), Some(full));
         assert_eq!(caps_of(2, [2, 0]), Some(full));
+        assert_eq!(caps_of(3, [1, 5]), Some(Caps { mnt_format: 3, ..full }), "format 3: the same patch functions");
+        assert_eq!(caps_of(4, [1, 5]), None, "format 4");
         assert_eq!(caps_of(2, [1, 4]), None, "1.4: format 2 without release bits");
         assert_eq!(caps_of(1, [1, 5]), None, "format 1");
         assert_eq!(PATCH_BUILDS[0].caps(), Some(full));

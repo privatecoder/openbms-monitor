@@ -10,7 +10,7 @@ use std::time::Duration;
 /// What the master at address 0 answered to `03`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Probe {
-    /// the 17-byte format-2 identity (any patch version; `policy::Master` decides what it offers)
+    /// the format-2 or format-3 identity (any patch version; `policy::Master` decides what it offers)
     Info(MaintInfo),
     /// `MNT` with another format or length (the historic 22-byte format 1), or RTN 05: a patch the app does not support
     OtherPatch,
@@ -61,7 +61,7 @@ pub enum DialogError {
 /// Minimum time after `stop` when the slave count does not change (N = 0): one full master cycle.
 pub const ZERO_SLAVES_SETTLE: Duration = Duration::from_millis(1100);
 
-/// Which answers belong to the request sent: `03` gets 17 bytes (or the historic 22, to name an unknown patch) or RTN
+/// Which answers belong to the request sent: `03` gets 17 or 18 bytes (or the historic 22, to name an unknown patch) or RTN
 /// 04/05; `02`, start and stop get five bytes or a rejection. A late answer to an earlier request (other length), our own
 /// echo (CID2 0x64 in the RTN field) and foreign traffic do not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +74,7 @@ impl Bound {
     fn accepts(self, f: &frame::Frame) -> bool {
         f.address == 0
             && match self {
-                Bound::Info => (f.rtn == 0x00 && (f.info.len() == MaintInfo::LEN || f.info.len() == 22)) || f.rtn == 0x04 || f.rtn == 0x05,
+                Bound::Info => (f.rtn == 0x00 && [MaintInfo::LEN, MaintInfo::LEN3, 22].contains(&f.info.len())) || f.rtn == 0x04 || f.rtn == 0x05,
                 Bound::Status => (f.rtn == 0x00 && f.info.len() == MaintState::LEN) || (0x01..=0x0F).contains(&f.rtn),
             }
     }
@@ -133,7 +133,7 @@ pub fn probe(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Pro
     Ok(match exchange(link, clock, &request, Bound::Info, b.answer)? {
         None => Probe::Failed,
         Some(f) if f.rtn == 0x00 => match MaintInfo::classify(&f.info) {
-            InfoAnswer::Format2(i) => Probe::Info(i),
+            InfoAnswer::Known(i) => Probe::Info(i),
             InfoAnswer::OtherFormat => Probe::OtherPatch,
             InfoAnswer::Broken => Probe::Failed,
         },
@@ -323,6 +323,27 @@ mod tests {
         assert_eq!((m.marker(), m.effective_slaves()), (Some(MarkerWord::Off), Some(3)));
         assert!(m.may_halt());
         assert_eq!(link.sent, vec![MaintInfo::request().unwrap(), MaintState::request().unwrap()]);
+    }
+
+    #[test]
+    fn a_format_3_identity_is_bound_and_read_then_02() {
+        let t = VTime::default();
+        let mut id3 = b"MNT".to_vec();
+        id3.extend_from_slice(&[3, 16, 6, 13, 1, 5, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 1]);
+        let mut link = FakeLink::new(t.clone(), move |req, now| match frame::parse(req) {
+            Ok(f) if f.info == [0x03] => vec![(now + ms(40), answer(0, 0x00, &id3))],
+            Ok(f) if f.info == [0x02] => vec![(now + ms(40), answer(0, 0x00, &state(false, 2)))],
+            _ => vec![],
+        });
+        let m = read(&mut link, &t, Budgets::default()).unwrap();
+        assert!(matches!(m, Master::Patched { patch, .. } if patch.info.hard_stop == Some(true) && patch.info.format == 3));
+        assert_eq!(m.effective_slaves(), Some(2));
+        // format 4 (18 bytes): unknown patch, no 02
+        let mut id4 = b"MNT".to_vec();
+        id4.extend_from_slice(&[4, 16, 6, 13, 1, 5, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 1]);
+        let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(40), answer(0, 0x00, &id4))]);
+        assert_eq!(read(&mut link, &t, Budgets::default()).unwrap(), Master::UnknownPatch(None));
+        assert_eq!(link.sent.len(), 1);
     }
 
     #[test]
