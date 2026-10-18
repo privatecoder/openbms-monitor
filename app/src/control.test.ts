@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import type { Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
+import type { PackPatch, Status } from "./api";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, socOf } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -121,5 +121,53 @@ describe("„Aus“ after its acknowledgement", () => {
     // the master's texts promise no blocked bank and no other packs staying on
     expect(i18n.t("ctl.off.masterText", { lng: "de", pack: "00" })).not.toMatch(/ganze Bank|bleiben an/);
     expect(i18n.t("ctl.tip.offMaster", { lng: "en" })).not.toMatch(/whole bank|stay on/);
+  });
+});
+
+describe("the stored pack cutoff in „Steuern“ (MAINT 1.6)", () => {
+  const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
+  const patch = (pack_cutoff: boolean | null, source: PackPatch["source"] = "live"): PackPatch => ({ source, release: "16.06.13 MAINT 1.6", caps: { ...caps, power_rtc: true, pack_cutoff }, at: null });
+  it("asks for the stored lock before „Aus“ by bit 4 (and on RS485-1/2 bit 5) of the fresh read", () => {
+    // CAN socket with the proven cutoff: bit 4 at 0 locks, at 1 the soft off; not readable: the lock to be safe
+    expect(offKind("power", true, patch(true), 0xe7)).toBe("cutoff");
+    expect(offKind("power", true, patch(true), 0xf7)).toBe("soft");
+    expect(offKind("power", true, null, undefined)).toBe("cutoff");
+    expect(offKind("power", false, patch(null), 0xe7)).toBe("soft");
+    // RS485-1/2: any proof with bit 4 or 5 at 0 „falls MAINT 1.6“; without a proof as before
+    expect(offKind("full", false, patch(null, "user"), 0xef)).toBe("cutoffMaybe");
+    expect(offKind("full", false, patch(null, "flash"), 0xdf)).toBe("cutoffMaybe");
+    expect(offKind("full", false, patch(null, "flash"), 0xff)).toBe("soft");
+    expect(offKind("full", false, null, 0xcf)).toBe("soft");
+    expect(offKind("full", false, patch(false), 0xcf)).toBe("soft");
+  });
+  it("reports the result from the fresh bit 5 and status, never from the acknowledgement", () => {
+    const free = status(0x00, 0x03), held = status(0x00, 0x02);
+    expect(cutoffOutcome(false, 0xc7, status(0x20, 0x00))).toBe("locked");
+    expect(cutoffOutcome(false, 0xe7, status(0x20, 0x02))).toBe("notLocked");
+    expect(cutoffOutcome(false, 0xf7, status(0x20, 0x02))).toBeNull();
+    expect(cutoffOutcome(true, 0xc7, free)).toBe("stillLocked");
+    expect(cutoffOutcome(true, 0xe7, free)).toBe("released");
+    expect(cutoffOutcome(true, 0xe7, held)).toBe("releasedHeld");
+    // released also with bit 4 off meanwhile
+    expect(cutoffOutcome(true, 0xf7, free)).toBe("released");
+    expect(cutoffOutcome(true, undefined, free)).toBe("unread");
+    expect(cutoffOutcome(false, undefined, null)).toBe("unread");
+  });
+  it("shows the lock in the state line only where it means one", () => {
+    expect(lockState(true, false, 0xc7)).toBe("active");
+    expect(lockState(true, false, 0xe7)).toBe("none");
+    expect(lockState(false, true, 0xc7)).toBe("maybeActive");
+    expect(lockState(false, true, 0xe7)).toBeNull();
+    expect(lockState(false, false, 0xc7)).toBeNull();
+    expect(lockState(true, false, undefined)).toBeNull();
+  });
+  it("has its texts in both languages and never calls RTN 08 a success", () => {
+    const keys = ["offTitle", "offConfirm", "offText", "maybe", "offMore", "master", "ccl", "offDone", "notLocked", "released", "releasedHeld", "stillLocked", "unread", "bit5", "bit5Locked", "bit5Free", "state", "active", "none", "maybeActive", "tipOff", "tipOn"];
+    for (const lng of ["de", "en"]) for (const k of [...keys.map((k) => `ctl.cutoff.${k}`), "uart1.cutoff-failed"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
+    const e = errorText(JSON.stringify({ kind: "uart1", error: "cutoff-failed" }), (k, o) => i18n.t(k, { ...o, lng: "de" }));
+    expect(e).toMatch(/RTN 08/);
+    expect(e).toMatch(/nicht freigegeben/);
+    expect(i18n.t("ctl.cutoff.offText", { lng: "de" })).toBe("Gespeicherte Packsperre: sperrt Laden und Entladen bis zum gezielten Ein, auch über Neustarts.");
+    expect(i18n.t("ctl.cutoff.releasedHeld", { lng: "de" })).toBe("Sperre gelöst; Schutz hält die MOSFETs aus (siehe Zustand).");
   });
 });

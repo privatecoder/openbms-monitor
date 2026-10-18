@@ -1,5 +1,6 @@
 /** Pack control (0x45, 0x49 index 59): pure helpers for the „Steuern“ block of the Parameters view. */
-import type { Status } from "./api";
+import type { PackPatch, Status } from "./api";
+import { CUTOFF_BIT, LOCK_BIT } from "./profile";
 import { parseNumber } from "./calibration";
 
 /** System status bit 5: switched off by command (0x45 type 4). */
@@ -32,6 +33,35 @@ export const blockingAlarms = (s: Status, dir: "discharge" | "charge") => {
 export function offOutcome(s: Status): "off" | "on" | "unclear" {
   if (!commandedOff(s)) return "on";
   return dischargeFree(s) ? "unclear" : "off";
+}
+
+/** The confirmation „Aus“ gets, from Group0 read fresh before it (`g0`, undefined: not readable) and the patch the read
+ *  names. CAN socket (`mode` "power"): with the pack cutoff proven on this connection (`cutoff`) and bit 4 at 0 (or not
+ *  readable) the stored lock, else the soft off. RS485-1/2: a pack with a patch proof (any source) whose bit 4 or 5 is 0
+ *  may lock if it has MAINT 1.6 ("cutoffMaybe"); without a proof as before. */
+export function offKind(mode: "full" | "power", cutoff: boolean, patch: PackPatch | null | undefined, g0: number | undefined): "cutoff" | "cutoffMaybe" | "soft" {
+  if (mode === "power") return cutoff && (g0 === undefined || (g0 & CUTOFF_BIT) === 0) ? "cutoff" : "soft";
+  if (!patch || patch.caps.pack_cutoff === false) return "soft";
+  return g0 === undefined || (g0 & CUTOFF_BIT) === 0 || (g0 & LOCK_BIT) === 0 ? "cutoffMaybe" : "soft";
+}
+
+/** What the fresh Group0 (`g0`, undefined: the 0x47 after the action failed) and status say about the pack cutoff after
+ *  an ein/aus. Off: locked, or bit 4 on but no lock („notLocked“), or null (soft off, the usual outcome). On: still
+ *  locked, released, or released but a protection holds the discharge MOSFET off. Never a release from the ACK alone. */
+export function cutoffOutcome(on: boolean, g0: number | undefined, s: Status | null): "locked" | "notLocked" | "stillLocked" | "released" | "releasedHeld" | "unread" | null {
+  if (g0 === undefined) return "unread";
+  const locked = (g0 & LOCK_BIT) === 0;
+  if (on) return locked ? "stillLocked" : s && !dischargeFree(s) ? "releasedHeld" : "released";
+  return locked ? "locked" : (g0 & CUTOFF_BIT) === 0 ? "notLocked" : null;
+}
+
+/** The lock line of the state: with the proven cutoff „aktiv“ or „keine“; on RS485-1/2 with a proof only a set bit 5,
+ *  as „aktiv, falls MAINT 1.6“; else nothing. */
+export function lockState(cutoff: boolean, proof: boolean, g0: number | undefined): "active" | "none" | "maybeActive" | null {
+  if (g0 === undefined) return null;
+  const locked = (g0 & LOCK_BIT) === 0;
+  if (cutoff) return locked ? "active" : "none";
+  return proof && locked ? "maybeActive" : null;
 }
 
 /** Reasons the firmware switches a pack off again right after „on“: cell or pack undervoltage, SOC protection. */
@@ -113,7 +143,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
-  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer";
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "cutoff-failed";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;

@@ -24,7 +24,7 @@ import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
 import { cutoffBits, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
-import { controlHint, controlMode, powerLocked, powerRtc } from "../power";
+import { controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -543,6 +543,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
+          cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} linkKey={link} />
         {chosen !== null && controlHint({ connected, bus, demo: isDemo, installation: !!installation, power: powerOf(chosen) }) && (
