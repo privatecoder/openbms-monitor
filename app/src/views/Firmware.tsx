@@ -7,7 +7,7 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { confirmationPhrase, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
+import { confirmationPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
 import { errorKey, keyParts, otherBank, packPortOf, packVersion, portKey, releaseFirst, type PortKind } from "../maint";
 import type { Maint } from "../maintStore";
 import { KindSelect, PortInput } from "./MaintSetup";
@@ -81,7 +81,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // the master read belongs to the port it came from
   useEffect(() => { setMaster(null); }, [port]);
   const s = steps({ running, done: done !== null, port: mPort, address, image, target, checkedFor, typed, busy, inst: inst?.id ?? null });
-  const inputsLocked = running || busy;
+  const inputsLocked = firmwareInputsLocked(running, busy);
   const phrase = confirmationPhrase(address, image?.custom);
 
   const chooseImage = async () => {
@@ -162,7 +162,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-4">
         <Button variant="secondary" size="sm" disabled={inputsLocked} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
-        <label className="flex items-center gap-2 text-sm text-muted"><Switch checked={allowCustom} onChange={toggleCustom} disabled={inputsLocked} />{t("fw.allowCustom")}</label>
+        {/* like every other input: fixed while a flash (or a check) runs */}
+        <label className={cn("flex items-center gap-2 text-sm text-muted", inputsLocked && "opacity-60")}><Switch checked={allowCustom} onChange={toggleCustom} disabled={inputsLocked} />{t("fw.allowCustom")}</label>
       </div>
       {image && <div className="text-sm"><p>{t("fw.imageInfo", { release: imageLabel(image, t, true), blocks: image.blocks, bytes: image.bytes })}</p><p className="break-all text-muted">{t("fw.sha", { sha: image.sha256 })}</p></div>}
       {image && imageWarning(image) && (imageWarningIsAlarm(image)

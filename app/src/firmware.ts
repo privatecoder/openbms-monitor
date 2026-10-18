@@ -78,3 +78,7 @@ export function flashGateKeys(g0: number): string[] {
   if (!write && !start) return ["fw.patch.bothLocked"];
   return [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
 }
+
+/** The image, „Eigene Firmware zulassen“, port and address are fixed while a flash runs (until its end event) or a pack
+ *  check runs: a change then could not reach the running flash and would only mislead. */
+export const firmwareInputsLocked = (running: boolean, busy: boolean) => running || busy;
