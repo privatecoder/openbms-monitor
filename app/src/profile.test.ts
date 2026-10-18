@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { cutoffBits, firmwareText, gateBits, gateRowLabel, hardStopLine, invertedBit, keepMask, lockChanged, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
+import { cutoffBits, cutoffRowLabel, firmwareText, gateBits, gateRowLabel, hardStopLine, invertedBit, keepMask, lockChanged, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -138,6 +138,14 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
     expect(lockChanged(0xff, 0xdf)).toBe(true);
     expect(lockChanged(0xff, 0xef)).toBe(false);
     expect(lockChanged(undefined, 0xdf)).toBe(false);
+  });
+  it("names the shared rows only where every column may have the cutoff", () => {
+    expect(cutoffRowLabel([{ patch: live(true), switches: true }, { patch: live(null), switches: true }])).toBe("named");
+    // a proven 1.5 pack, or an original one, beside a 1.6 pack: neutral „Bit 0.4/0.5“
+    expect(cutoffRowLabel([{ patch: live(true), switches: true }, { patch: live(false), switches: true }])).toBe("neutral");
+    expect(cutoffRowLabel([{ patch: live(true), switches: true }, { patch: null, switches: true }])).toBe("neutral");
+    expect(cutoffRowLabel([{ patch: live(false), switches: true }])).toBe("unnamed");
+    expect(cutoffRowLabel([{ patch: live(true), switches: true }, { patch: live(false), switches: false }])).toBe("named");
   });
   it("has its texts in both languages", () => {
     for (const lng of ["de", "en"]) for (const k of ["par.gateCutoffUnknown", "par.gateCutoffAbsent", "par.gateCutoffFixed", "par.gateLockFixed", "par.gateInverted", "par.packLock", "par.packLockHint", "pw.lockChanged", "pw.lockedRead"])

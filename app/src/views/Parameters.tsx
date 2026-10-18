@@ -22,7 +22,7 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { cutoffBits, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
+import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
 import { StatusLine } from "../components/Section";
@@ -477,6 +477,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // have the power and clock service (its image flag set or not known), bits 4 and 5 (extended off, the lock state) only
   // where one may have the stored pack cutoff
   const gateLabel = gateRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
+  // bits 4 and 5 are named only where every column may have the pack cutoff (a proven 1.5 pack makes them neutral)
+  const cutoffLabel = cutoffRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
+  const rowLabel = (b: number) => (b >= 4 ? cutoffLabel : gateLabel);
   const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
   const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
   const cutoffRow = cols.some((c) => c.read?.patch && c.read.patch.caps.pack_cutoff !== false);
@@ -739,7 +742,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                           const off = deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined)));
                           return (
                             <tr key={b}>
-                              {gateBit(g, b) && gateLabel !== "named" ? <NameCell id="topic.patchGates" label={t(gateLabel === "neutral" ? "par.gateNeutral" : "par.gateUnnamed", { b })} sub={t("par.bit", { b })} />
+                              {gateBit(g, b) && rowLabel(b) !== "named" ? <NameCell id="topic.patchGates" label={t(rowLabel(b) === "neutral" ? "par.gateNeutral" : "par.gateUnnamed", { b })} sub={t("par.bit", { b })} />
                                 : <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />}
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                               {cols.map((c, ci) => {
@@ -748,7 +751,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 // bit 5 is status only, never editable
                                 const fixed = gate && !(b === 0 ? gate.writeEditable : b === 2 ? gate.startEditable : b === 3 ? gate.powerEditable : b === 4 ? cut!.cutoffEditable : false);
                                 // bits 4 and 5 of a proven column read inverted: on = bit 0
-                                const inverted = invertedBit(g, b, !!gate?.named);
+                                // (not where the build has no cutoff: there the raw bit, without function)
+                                const inverted = invertedBit(g, b, !!gate?.named && cut?.cutoff !== false);
                                 // the meaning only in proven columns; the shared row stays neutral in a mixed table
                                 const meaning = gate?.named && (b !== 3 || gate.power !== false) && (b < 4 || cut!.cutoff !== false) ? helpTitle(`switch.0.${b}`, lang) : undefined;
                                 // bit 3 acts only in a build with the power and clock service, bits 4 and 5 with the pack cutoff
@@ -762,7 +766,10 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
-                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{c.switches ? <OnOff on={switchOn(c.switches[g], b, inverted)} /> : null}</ValueCell>
+                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false
+                                    // a build without the cutoff: the raw bit, no on/off meaning
+                                    ? <span className="text-muted">{(c.switches[g] >> b) & 1}</span>
+                                    : <OnOff on={switchOn(c.switches[g], b, inverted)} />}</ValueCell>
                                 );
                               })}
                             </tr>
