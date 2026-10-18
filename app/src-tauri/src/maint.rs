@@ -706,7 +706,8 @@ pub struct PackScan {
     /// stopped by „Abbrechen“: `packs` holds what answered until then
     cancelled: bool,
     /// each pack's own 64/03 as far as known (the pack bus cannot give it: UART0 answers RTN 04): a live finding of the
-    /// installation's current CAN socket link, else a short read over its control channel; missing: not checked
+    /// installation's current CAN socket link, else a short read over its control channel; only when the scan matched the
+    /// master's String 2 and the CAN master's battery serial matched too; missing: not checked
     identities: Vec<crate::profile::PackProbeView>,
 }
 
@@ -747,11 +748,34 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
         None => BankView { state: "none", serial: None },
     };
     drop(link);
+    // a CAN version belongs to these packs only when both banks are positively this installation's: the pack bus scan
+    // matched the master's String 2, and the CAN master's battery serial matched
     let identities = match &inst {
-        Some(i) if !cancelled => pack_identities(&state, i, &found),
+        Some(i) if !cancelled && bank.state == "match" && can_master_confirmed(&state, i) => pack_identities(&state, i, &found),
         _ => vec![],
     };
     Ok(PackScan { packs, bank, cleared, cancelled, identities })
+}
+
+/// The CAN master of the installation is positively its own: on the monitor's current CAN link of this installation
+/// (`bank::can_master` true), else read over its control channel against the stored battery serial (none stored: not
+/// confirmed).
+fn can_master_confirmed(state: &AppState, inst: &Installation) -> bool {
+    let link = crate::link_now(state);
+    if link.installation.as_deref() == Some(inst.id.as_str()) && crate::bank::can_master(state, link.gen) == Some(true) {
+        return true;
+    }
+    if inst.control.is_none() {
+        return false;
+    }
+    let Ok(Some(stored)) = with_store(state, |s| Ok(s.current_board(&inst.id, 0)?.and_then(|b| b.battery_serial))) else { return false };
+    let read = with_control(state, inst, |c| c.master_battery_serial()).ok().and_then(|r| r.ok());
+    can_master_check(&stored, read.as_ref())
+}
+
+/// `can_master_confirmed` on a stored battery serial and the read: only a real matching one confirms.
+pub fn can_master_check(stored: &str, read: Option<&SerialValue>) -> bool {
+    master_check(stored, read).is_ok()
 }
 
 /// The full version of the found packs for the pack list: from live 64/03 findings of the installation's current CAN
@@ -1254,6 +1278,28 @@ mod tests {
         let b = s.create_installation("B", None, vec![]).unwrap();
         s.set_master_read_keep_marker(&b.id, "{}", 4).unwrap();
         assert!(!s.marker_last_on(&b.id).unwrap());
+    }
+
+    #[test]
+    fn a_can_version_needs_a_confirmed_can_master() {
+        let set = |v: &str| SerialValue::Set { value: v.into(), truncated: false };
+        assert!(can_master_check("BAT-A", Some(&set("BAT-A"))));
+        assert!(!can_master_check("BAT-A", Some(&set("BAT-B"))));
+        assert!(!can_master_check("BAT-A", None));
+        assert!(!can_master_check("BAT-A", Some(&SerialValue::NoAnswer)));
+        // the current CAN link of the installation: only can_master true counts; nothing stored and no control: no
+        let state = AppState::default();
+        let s = store_at("can-confirmed");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        *state.maint.lock().unwrap() = Some(s);
+        crate::new_link(&state, Some(a.id.clone()));
+        let link = crate::link_now(&state);
+        crate::bank::begin(&state, link.gen, false, None);
+        assert!(!can_master_confirmed(&state, &a), "not read yet");
+        crate::bank::can_master_read(&state, link.gen, false);
+        assert!(!can_master_confirmed(&state, &a), "another bank's master");
+        crate::bank::can_master_read(&state, link.gen, true);
+        assert!(can_master_confirmed(&state, &a));
     }
 
     #[test]
