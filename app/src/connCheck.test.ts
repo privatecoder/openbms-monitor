@@ -177,3 +177,17 @@ describe("which packs a connection polls", () => {
     expect(fillFields(inst, "pack", { kind: "serial", target: "/dev/x", bus: "pack", packs: 2 }, "installation")?.packs).toEqual({ mode: "count", n: 2 });
   });
 });
+
+describe("after a fallback search", () => {
+  it("keeps the expected packs and adds the ones found elsewhere", async () => {
+    const { mergeAfterSearch } = await import("./connCheck");
+    const { default: i18n } = await import("./i18n");
+    // „Anzahl 12“ (0–11), pack 5 silent at connect, pack 12 found outside: 5 stays polled, 12 joins
+    const twelve = Array.from({ length: 12 }, (_, i) => i);
+    expect(mergeAfterSearch(twelve, [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12])).toEqual([...twelve, 12]);
+    // „feste Adresse 0“ silent, a pack at 1: both polled
+    expect(mergeAfterSearch([0], [1])).toEqual([0, 1]);
+    expect(mergeAfterSearch([2, 1], [1, 3])).toEqual([1, 2, 3]);
+    expect(i18n.t("conn.expectedSilent", { count: 1, list: "05", lng: "de" })).toBe("Pack 05 ohne aktuelle Antwort, wird weiter abgefragt.");
+  });
+});
