@@ -236,6 +236,8 @@ pub(crate) struct BankState {
     /// CAN socket: per pack whether String 2 came over the binary service (true), was refused with 0x81 (false);
     /// missing: not asked or no answer
     uart1: BTreeMap<u8, bool>,
+    /// CAN socket: what each pack's own addressed 64/03 showed on this connection (missing: not asked yet)
+    live: BTreeMap<u8, openbms_flash::maint::policy::PackFinding>,
 }
 
 impl BankState {
@@ -324,6 +326,32 @@ pub(crate) fn set_uart1(state: &AppState, gen: u64, address: u8, offered: Option
             b.uart1.insert(address, v);
         }
     }
+}
+
+/// The live finding of a pack's own 64/03 on connection `gen` (None: not asked on it).
+pub(crate) fn live(state: &AppState, gen: u64, address: u8) -> Option<openbms_flash::maint::policy::PackFinding> {
+    state.bank.lock().ok().and_then(|b| b.current(gen).and_then(|b| b.live.get(&address).copied()))
+}
+
+pub(crate) fn set_live(state: &AppState, gen: u64, address: u8, finding: openbms_flash::maint::policy::PackFinding) {
+    if let Ok(mut b) = state.bank.lock() {
+        if b.gen == gen {
+            b.live.insert(address, finding);
+        }
+    }
+}
+
+/// A flash of the pack begins: its live finding of this connection no longer holds.
+pub(crate) fn clear_live(state: &AppState, gen: u64, address: u8) {
+    if let Ok(mut b) = state.bank.lock() {
+        if b.gen == gen {
+            b.live.remove(&address);
+        }
+    }
+}
+
+pub(crate) fn lives(state: &AppState, gen: u64) -> Vec<(u8, openbms_flash::maint::policy::PackFinding)> {
+    state.bank.lock().ok().and_then(|b| b.current(gen).map(|b| b.live.iter().map(|(a, f)| (*a, *f)).collect())).unwrap_or_default()
 }
 
 pub(crate) fn uart1_of(state: &AppState, gen: u64, address: u8) -> Option<bool> {

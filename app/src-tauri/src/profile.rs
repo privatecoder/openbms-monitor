@@ -16,7 +16,7 @@ use crate::maint::{master_view, MasterView};
 use crate::{bank, link_now, with_link, AppState, Link};
 use openbms_flash::known::{self, Caps};
 use openbms_flash::maint::dialog::{self, Budgets};
-use openbms_flash::maint::policy::Master;
+use openbms_flash::maint::policy::{Master, PackFinding};
 use openbms_flash::maint::SystemClock;
 use openbms_proto::uart1;
 use openbms_transport::{Bus, Connection};
@@ -203,10 +203,13 @@ pub fn hard_stop_observation(status: &openbms_proto::Status) -> bool {
     status.events[5] & 0x02 != 0 && !status.charge_mosfet_on() && !other && !status.current_limiter_on() && !status.heater_on() && status.system_status & 0x20 == 0
 }
 
-/// The image itself reports the hard stop for this pack on connection `gen` (a format-3 master at address 0): then no
-/// observation is kept or shown for it.
-pub fn hard_stop_reported(profile: Option<&Profile>, address: u8) -> bool {
-    address == 0 && profile.is_some_and(|p| p.caps().is_some() && matches!(&p.master, Master::Patched { patch, .. } if patch.info.hard_stop.is_some()))
+/// The image itself reports the hard stop for this pack on connection `gen` (a format-3 master at address 0, or a pack's
+/// own format-3 64/03 with a supported patch): then no observation is kept or shown for it.
+pub fn hard_stop_reported(profile: Option<&Profile>, live: Option<&PackFinding>, address: u8) -> bool {
+    if address == 0 {
+        return profile.is_some_and(|p| p.caps().is_some() && matches!(&p.master, Master::Patched { patch, .. } if patch.info.hard_stop.is_some()));
+    }
+    matches!(live, Some(PackFinding::Proven { info, .. }) if info.hard_stop.is_some())
 }
 
 /// The poll thread's fresh status of `address` on connection `link`: a hard-stop sighting is kept for the board current
@@ -216,7 +219,7 @@ pub fn observe_hard_stop(state: &AppState, link: &Link, address: u8, status: &op
     if !hard_stop_observation(status) {
         return;
     }
-    if !bank::board_storable(state, link.gen, address) || hard_stop_reported(bank::profile(state, link.gen).as_ref(), address) {
+    if !bank::board_storable(state, link.gen, address) || hard_stop_reported(bank::profile(state, link.gen).as_ref(), bank::live(state, link.gen, address).as_ref(), address) {
         return;
     }
     let now = crate::history::now_ms();
@@ -235,42 +238,140 @@ pub async fn hard_stops(state: tauri::State<'_, AppState>) -> Result<Vec<crate::
     let Some(inst) = link.installation.as_deref() else { return Ok(vec![]) };
     let profile = bank::profile(&state, link.gen);
     let all = crate::maint::with_store(&state, |s| s.hard_stops(inst)).map_err(|e| format!("{e:?}"))?;
-    Ok(all.into_iter().filter(|h| !hard_stop_reported(profile.as_ref(), h.address)).collect())
+    Ok(all.into_iter().filter(|h| !hard_stop_reported(profile.as_ref(), bank::live(&state, link.gen, h.address).as_ref(), h.address)).collect())
 }
 
-/// What proves the patch version of one pack: the master's identity on this link ("master"), or a stored proof for the
-/// board with this String 2 ("flash", "user").
+/// What proves the patch version of one pack: the master's identity on this link ("master"), the pack's own 64/03 on
+/// this link ("live", not retractable), or a stored proof for the board with this String 2 ("flash", "user").
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PackPatch {
     pub source: String,
+    /// "master" (address 0: Group0 bit 2 is its start release) or "pack" (bit 2 stored, acts only at the master)
+    pub role: &'static str,
     /// the listed name, or the version the master reports, or the proof's release
     pub release: String,
     pub caps: CapsView,
     pub at: Option<i64>,
 }
 
-/// The pure decision of `pack_patch`: the master's profile for address 0 on the CAN socket, else a proof of the same
-/// board (String 2 `serial`, canonical as read now).
-pub fn pack_patch_of(address: u8, profile: Option<&Profile>, proof: Option<&crate::maint_store::PatchProof>, serial: Option<&str>) -> Option<PackPatch> {
+/// The pure decision of `pack_patch`: the master's profile for address 0 on the CAN socket; for another pack its own live
+/// 64/03 on this link (proven: "live"; negative: no patch functions, also over a stored proof); else a stored proof of
+/// the same board (String 2 `serial`, canonical as read now).
+pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackFinding>, proof: Option<&crate::maint_store::PatchProof>, serial: Option<&str>) -> Option<PackPatch> {
+    let role = if address == 0 { "master" } else { "pack" };
     if address == 0 {
         if let (Some(p), Some(caps)) = (profile, profile.and_then(|p| p.caps())) {
             if let Master::Patched { patch, .. } = &p.master {
                 let release = patch.listed.map(String::from).unwrap_or_else(|| patch.info.version());
-                return Some(PackPatch { source: "master".into(), release, caps: caps_view(caps), at: Some(p.at) });
+                return Some(PackPatch { source: "master".into(), role, release, caps: caps_view(caps), at: Some(p.at) });
             }
+        }
+    } else {
+        match live {
+            Some(PackFinding::Proven { info, listed, .. }) => {
+                let caps = known::caps_of(info.format, info.patch)?;
+                return Some(PackPatch { source: "live".into(), role, release: listed.map(String::from).unwrap_or_else(|| info.version()), caps: caps_view(caps), at: None });
+            }
+            // another MNT or a patch below the supported one: a stored proof no longer holds on this connection
+            Some(PackFinding::Negative(_)) => return None,
+            Some(PackFinding::Undecided) | None => {}
         }
     }
     let proof = proof.filter(|p| serial == Some(p.bms_serial.as_str()))?;
     // a proof means „at least the lowest supported patch“: its capabilities
     let caps = known::caps_of(2, known::MIN_PATCH)?;
-    Some(PackPatch { source: proof.source.clone(), release: proof.release.clone(), caps: caps_view(caps), at: Some(proof.at) })
+    Some(PackPatch { source: proof.source.clone(), role, release: proof.release.clone(), caps: caps_view(caps), at: Some(proof.at) })
 }
 
-/// `pack_patch_of` with the connection's profile and the installation's stored proof.
+/// `pack_patch_of` with the connection's profile, the pack's live finding and the installation's stored proof.
 pub fn pack_patch(state: &AppState, link: &Link, address: u8, serial: Option<&str>) -> Option<PackPatch> {
     let profile = bank::profile(state, link.gen);
+    let live = bank::live(state, link.gen, address);
     let proof = link.installation.as_deref().and_then(|inst| crate::maint::with_store(state, |s| s.patch_proof(inst, address)).ok().flatten());
-    pack_patch_of(address, profile.as_ref(), proof.as_ref(), serial)
+    pack_patch_of(address, profile.as_ref(), live.as_ref(), proof.as_ref(), serial)
+}
+
+/// The answer time of a pack's own 64/03: older slaves stay silent, so each costs at most this.
+pub const PACK_PROBE: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// A pack's live finding as the UI shows it in its pack view (never in the master profile).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct PackProbeView {
+    pub address: u8,
+    /// "proven" | "negative" | "undecided"
+    pub state: &'static str,
+    pub version: Option<String>,
+    pub listed: Option<String>,
+    pub build_id: Option<String>,
+    /// format 3: the image's hard stop; None with format 2 or no identity
+    pub hard_stop: Option<bool>,
+}
+
+pub fn probe_view(address: u8, f: &PackFinding) -> PackProbeView {
+    let (state, info, listed) = match f {
+        PackFinding::Proven { info, listed, .. } => ("proven", Some(*info), listed.map(String::from)),
+        PackFinding::Negative(info) => ("negative", *info, None),
+        PackFinding::Undecided => ("undecided", None, None),
+    };
+    PackProbeView { address, state, version: info.map(|i| i.version()), listed, build_id: info.map(|i| i.build_id_hex()), hard_stop: info.filter(|_| state == "proven").and_then(|i| i.hard_stop) }
+}
+
+/// Ask the pack at `address` (not the master: its profile holds) for its own 64/03 on connection `link`, under the port
+/// lock with the generation check; the finding is kept for this connection and the UI is told. A link failure is an error;
+/// silence is a finding („undecided“), never a lost pack or original firmware.
+pub fn probe_pack_on(state: &AppState, link: &Link, address: u8) -> Result<PackFinding, String> {
+    let answer = with_link(&state.conn, &state.flashing, &state.link, link, |c| {
+        dialog::probe_pack(c, &SystemClock::new(), address, PACK_PROBE).map_err(|e| openbms_transport::Error::Io(std::io::Error::other(e.to_string())))
+    })?;
+    let f = PackFinding::of(answer);
+    bank::set_live(state, link.gen, address, f);
+    if let Some(app) = state.app.get() {
+        let _ = app.emit("pack-probe", probe_view(address, &f));
+    }
+    Ok(f)
+}
+
+/// The live finding of a slave on `link`, asking it once per connection (CAN socket only; the master has its profile).
+pub fn live_or_probe(state: &AppState, link: &Link, address: u8) -> Option<PackFinding> {
+    if address == 0 || bank::profile(state, link.gen).is_none_or(|p| p.bus != Bus::CanSocketBus) {
+        return None;
+    }
+    bank::live(state, link.gen, address).or_else(|| probe_pack_on(state, link, address).ok())
+}
+
+/// Whether the serial numbers of `address` are read over the binary service without being asked: the master by its
+/// profile; another pack with a live proof, a stored proof for the place, or an A4 that already came on this link
+/// (a negative live finding overrides the stored proof).
+pub fn binary_serials(master_identity: bool, address: u8, live: Option<&PackFinding>, stored_proof: bool, a4_seen: bool) -> bool {
+    if address == 0 {
+        return master_identity;
+    }
+    match live {
+        Some(PackFinding::Proven { caps, .. }) => caps.uart1_identity,
+        Some(PackFinding::Negative(_)) => a4_seen,
+        _ => stored_proof || a4_seen,
+    }
+}
+
+/// „Erneut prüfen“ of one pack (and the first check where the serial read did not run it): its own 64/03 now.
+#[tauri::command]
+pub async fn pack_probe(state: tauri::State<'_, AppState>, address: u8, gen: u64) -> Result<PackProbeView, String> {
+    let link = link_now(&state);
+    if link.gen != gen {
+        return Err(crate::LINK_CHANGED.into());
+    }
+    if address == 0 || bank::profile(&state, gen).is_none_or(|p| p.bus != Bus::CanSocketBus) {
+        return Err("64/03 of a pack is asked on the CAN socket, for packs other than the master".into());
+    }
+    let _guard = crate::control::reserve_pack_wait(&state, address, "probe")?;
+    probe_pack_on(&state, &link, address).map(|f| probe_view(address, &f))
+}
+
+/// The live findings of the current connection.
+#[tauri::command]
+pub async fn pack_probes(state: tauri::State<'_, AppState>) -> Result<Vec<PackProbeView>, String> {
+    let link = link_now(&state);
+    Ok(bank::lives(&state, link.gen).iter().map(|(a, f)| probe_view(*a, f)).collect())
 }
 
 /// What a write may do with the release bits of Group0.
@@ -393,21 +494,21 @@ mod tests {
     #[test]
     fn the_master_proves_itself_only_at_address_0_on_the_can_socket() {
         let p = profile(patched([1, 5], LISTED), Bus::CanSocketBus);
-        let m = pack_patch_of(0, Some(&p), None, None).unwrap();
+        let m = pack_patch_of(0, Some(&p), None, None, None).unwrap();
         assert_eq!((m.source.as_str(), m.release.as_str(), m.caps.write_gate, m.caps.start_gate), ("master", "16.06.13 MAINT 1.5", true, true));
         // a slave is not proven by its master
-        assert_eq!(pack_patch_of(3, Some(&p), None, Some("SYN-3")), None);
+        assert_eq!(pack_patch_of(3, Some(&p), None, None, Some("SYN-3")), None);
         // RS485-1/2 knows no 0x64
-        assert_eq!(pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::PackBus)), None, None), None);
+        assert_eq!(pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::PackBus)), None, None, None), None);
         for m in [Master::No0x64, Master::Unknown, Master::UnknownPatch(None)] {
-            assert_eq!(pack_patch_of(0, Some(&profile(m, Bus::CanSocketBus)), None, None), None);
+            assert_eq!(pack_patch_of(0, Some(&profile(m, Bus::CanSocketBus)), None, None, None), None);
         }
     }
 
     #[test]
     fn an_unlisted_master_with_a_supported_patch_is_configured_the_same() {
-        let listed = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None).unwrap();
-        let later = pack_patch_of(0, Some(&profile(patched([1, 6], [9; 8]), Bus::CanSocketBus)), None, None).unwrap();
+        let listed = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap();
+        let later = pack_patch_of(0, Some(&profile(patched([1, 6], [9; 8]), Bus::CanSocketBus)), None, None, None).unwrap();
         assert_eq!(later.caps, listed.caps);
         assert_eq!(later.release, "16.06.13 MAINT 1.6");
         let v = view(1, &profile(patched([1, 6], [9; 8]), Bus::CanSocketBus));
@@ -416,10 +517,10 @@ mod tests {
 
     #[test]
     fn formats_2_and_3_configure_the_master_alike() {
-        let f2 = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None).unwrap();
+        let f2 = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap();
         let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(true) };
         let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) };
-        let f3 = pack_patch_of(0, Some(&profile(m3, Bus::CanSocketBus)), None, None).unwrap();
+        let f3 = pack_patch_of(0, Some(&profile(m3, Bus::CanSocketBus)), None, None, None).unwrap();
         assert_eq!(f3.caps, f2.caps);
         let v = view(1, &profile(m3, Bus::CanSocketBus));
         assert_eq!((v.master.hard_stop, v.gates), (Some(true), Some(Gates { write: Some(true), start: Some(true) })));
@@ -428,10 +529,10 @@ mod tests {
     #[test]
     fn a_slave_proof_counts_only_for_the_same_string_2() {
         let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.5".into(), source: "flash".into(), at: 7 };
-        let p = pack_patch_of(3, None, Some(&proof), Some("SYN-3")).unwrap();
+        let p = pack_patch_of(3, None, None, Some(&proof), Some("SYN-3")).unwrap();
         assert_eq!((p.source.as_str(), p.caps.write_gate), ("flash", true));
-        assert_eq!(pack_patch_of(3, None, Some(&proof), Some("SYN-OTHER")), None);
-        assert_eq!(pack_patch_of(3, None, Some(&proof), None), None);
+        assert_eq!(pack_patch_of(3, None, None, Some(&proof), Some("SYN-OTHER")), None);
+        assert_eq!(pack_patch_of(3, None, None, Some(&proof), None), None);
     }
 
     #[test]
@@ -451,7 +552,7 @@ mod tests {
 
     #[test]
     fn with_proof_a_locked_pack_or_a_changed_start_bit_is_refused_before_sending() {
-        let p = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None);
+        let p = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None);
         let rule = group0_rule(true, p.as_ref());
         assert_eq!(rule, Group0::Gated { write: true, start: true });
         let locked = apply_group0(rule, &block(0xFE, 0), &mut block(0xFF, 0)).unwrap_err();
@@ -547,10 +648,10 @@ mod tests {
         let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false) };
         let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: None };
         let p3 = profile(m3, Bus::CanSocketBus);
-        assert!(hard_stop_reported(Some(&p3), 0));
-        assert!(!hard_stop_reported(Some(&p3), 1), "a slave keeps the observation path");
-        assert!(!hard_stop_reported(Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), 0), "format 2: flag unknown");
-        assert!(!hard_stop_reported(None, 0));
+        assert!(hard_stop_reported(Some(&p3), None, 0));
+        assert!(!hard_stop_reported(Some(&p3), None, 1), "a slave keeps the observation path");
+        assert!(!hard_stop_reported(Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, 0), "format 2: flag unknown");
+        assert!(!hard_stop_reported(None, None, 0));
         // the poll thread's status with waiting and charge MOSFET off: nothing recorded for the format-3 master
         let state = AppState::default();
         let dir = std::env::temp_dir().join(format!("openbms-hardstop-{}", std::process::id()));
@@ -609,6 +710,73 @@ mod tests {
         bank::uart1_unconfirmed(&state, &link, 4, "SYN-B4", &SerialValue::NoAnswer, bank::Why::Foreign, None);
         observe_hard_stop(&state, &link, 6, &status(0x02, 0x01));
         assert_eq!(seen(&state), 1);
+    }
+
+    fn live(patch: [u8; 2], format: u8, hard_stop: Option<bool>) -> PackFinding {
+        use openbms_flash::maint::dialog::PackAnswer;
+        PackFinding::of(PackAnswer::Info(MaintInfo { format, base: [16, 6, 13], patch, build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop }))
+    }
+
+    #[test]
+    fn a_slaves_own_03_proves_it_live_and_a_negative_one_overrides_a_stored_proof() {
+        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "MAINT ≥ 1.5".into(), source: "user".into(), at: 7 };
+        // proven live: source live, role pack, the version it reports
+        let p = pack_patch_of(3, None, Some(&live([1, 5], 3, Some(false))), None, None).unwrap();
+        assert_eq!((p.source.as_str(), p.role, p.caps.write_gate), ("live", "pack", true));
+        // a live proof also without a stored one, and before it
+        assert_eq!(pack_patch_of(3, None, Some(&live([1, 5], 2, None)), Some(&proof), Some("SYN-3")).unwrap().source, "live");
+        // negative (patch 1.4, another MNT): no patch functions on this connection, over the stored proof
+        assert_eq!(pack_patch_of(3, None, Some(&live([1, 4], 3, None)), Some(&proof), Some("SYN-3")), None);
+        assert_eq!(pack_patch_of(3, None, Some(&PackFinding::Negative(None)), Some(&proof), Some("SYN-3")), None);
+        // undecided (silence, an error): the stored proof holds
+        assert_eq!(pack_patch_of(3, None, Some(&PackFinding::Undecided), Some(&proof), Some("SYN-3")).unwrap().source, "user");
+        // the master never takes a slave's answer: address 0 keeps its profile path
+        assert_eq!(pack_patch_of(0, None, Some(&live([1, 5], 3, Some(true))), None, None), None);
+        assert_eq!(pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap().role, "master");
+    }
+
+    #[test]
+    fn serial_numbers_go_binary_per_target_pack() {
+        let proven = live([1, 5], 3, None);
+        assert!(binary_serials(true, 0, None, false, false));
+        assert!(!binary_serials(false, 0, Some(&proven), true, true), "the master by its profile only");
+        assert!(binary_serials(false, 4, Some(&proven), false, false), "a patched slave behind an original master");
+        assert!(binary_serials(false, 4, Some(&PackFinding::Undecided), true, false), "stored proof");
+        assert!(binary_serials(false, 4, None, false, true), "an A4 that came");
+        assert!(!binary_serials(false, 4, Some(&PackFinding::Negative(None)), true, false), "negative overrides the stored proof");
+        assert!(!binary_serials(true, 4, None, false, false), "not from the master's profile");
+    }
+
+    #[test]
+    fn a_slaves_fresh_flag_wins_over_observations() {
+        assert!(hard_stop_reported(None, Some(&live([1, 5], 3, Some(false))), 4));
+        assert!(!hard_stop_reported(None, Some(&live([1, 5], 2, None)), 4), "MNT02: unknown, observations go on");
+        assert!(!hard_stop_reported(None, Some(&live([1, 4], 3, Some(true))), 4), "not a supported patch");
+        assert!(!hard_stop_reported(None, Some(&PackFinding::Undecided), 4));
+        let v = probe_view(4, &live([1, 5], 3, Some(false)));
+        assert_eq!((v.state, v.hard_stop, v.build_id.as_deref(), v.listed), ("proven", Some(false), Some("297f9f2aa8402e9f"), None));
+        assert_eq!(probe_view(4, &PackFinding::Negative(None)).state, "negative");
+        assert_eq!(probe_view(4, &PackFinding::Undecided).hard_stop, None);
+        // no sighting is kept for a slave with a fresh MNT03 flag
+        let state = AppState::default();
+        let dir = std::env::temp_dir().join(format!("openbms-slaveflag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::maint_store::Store::open(&dir.join("maintenance.sqlite")).unwrap();
+        let inst = store.create_installation("A", None, vec![]).unwrap();
+        *state.maint.lock().unwrap() = Some(store);
+        crate::new_link(&state, Some(inst.id.clone()));
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        bank::can_master_read(&state, link.gen, true);
+        bank::set_live(&state, link.gen, 4, live([1, 5], 3, Some(false)));
+        observe_hard_stop(&state, &link, 4, &status(0x02, 0x01));
+        observe_hard_stop(&state, &link, 5, &status(0x02, 0x01));
+        let seen = crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap();
+        assert_eq!(seen.iter().map(|h| h.address).collect::<Vec<_>>(), vec![5]);
+        // a flash of the pack: its live finding ends
+        bank::clear_live(&state, link.gen, 4);
+        assert_eq!(bank::live(&state, link.gen, 4), None);
     }
 
     #[test]

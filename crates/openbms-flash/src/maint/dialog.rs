@@ -143,6 +143,62 @@ pub fn probe(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Pro
     })
 }
 
+/// What the pack at an address answered to its own `03` (no `02` follows; that is the master's alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackAnswer {
+    /// a format-2 (17 bytes) or format-3 (18 bytes) identity
+    Info(MaintInfo),
+    /// any other valid `MNT` answer (another format or length, e.g. the historic 22-byte format 1)
+    OtherMnt,
+    /// silence, an error RTN (04, 05 or any other), or an answer without `MNT`: says nothing
+    Undecided,
+}
+
+/// Which frame is the answer to the addressed `03`: VER 20, CID1 46, the address asked, RTN 00 and `MNT` in the INFO
+/// (classified, whatever its length), or an error RTN (undecided). Our echo (CID2 0x64 in that field), foreign traffic,
+/// other addresses and INFO without `MNT` are not.
+fn pack_answer_of(f: &frame::Frame, address: u8) -> Option<PackAnswer> {
+    if f.version != 0x20 || f.cid1 != 0x46 || f.address != address || f.rtn == 0x64 {
+        return None;
+    }
+    if f.rtn != 0x00 {
+        return Some(PackAnswer::Undecided);
+    }
+    if !f.info.starts_with(b"MNT") {
+        return None;
+    }
+    Some(match MaintInfo::classify(&f.info) {
+        InfoAnswer::Known(i) => PackAnswer::Info(i),
+        _ => PackAnswer::OtherMnt,
+    })
+}
+
+/// Ask the pack at `address` for its identity (`03` only) and wait at most `timeout`. `Err` only for a link failure.
+pub fn probe_pack(link: &mut impl Link, clock: &impl Clock, address: u8, timeout: Duration) -> Result<PackAnswer> {
+    let request = MaintInfo::request_at(address)?;
+    link.clear_input()?;
+    link.write_raw(&request)?;
+    let deadline = clock.now() + timeout;
+    let mut pending = Vec::new();
+    let mut buf = [0u8; 256];
+    while clock.now() < deadline {
+        let n = link.read_raw(&mut buf)?;
+        pending.extend_from_slice(&buf[..n]);
+        while let Some(end) = pending.iter().position(|b| *b == b'\r') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            let Some(start) = line.iter().position(|b| *b == b'~') else { continue };
+            if let Some(a) = frame::parse(&line[start..]).ok().and_then(|f| pack_answer_of(&f, address)) {
+                return Ok(a);
+            }
+        }
+        // the bounded frame size: an endless line is no answer
+        if pending.len() > 1024 {
+            pending.clear();
+        }
+    }
+    Ok(PackAnswer::Undecided)
+}
+
 /// The master on this link: `03`, and only after it showed a build with the split status, the 5-byte `02` state.
 pub fn read(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Master> {
     let m = Master::of(Some(probe(link, clock, b)?));
@@ -344,6 +400,67 @@ mod tests {
         let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(40), answer(0, 0x00, &id4))]);
         assert_eq!(read(&mut link, &t, Budgets::default()).unwrap(), Master::UnknownPatch(None));
         assert_eq!(link.sent.len(), 1);
+    }
+
+    fn mnt3(patch: [u8; 2], flags: u8) -> Vec<u8> {
+        let mut v = b"MNT".to_vec();
+        v.extend_from_slice(&[3, 16, 6, 13, patch[0], patch[1], 1, 2, 3, 4, 5, 6, 7, 8, flags]);
+        v
+    }
+
+    fn pack_link(answer_of: impl Fn(u8) -> Vec<(Duration, Vec<u8>)> + 'static) -> (FakeLink, VTime) {
+        let t = VTime::default();
+        let link = FakeLink::new(t.clone(), move |req, now| match frame::parse(req) {
+            Ok(f) if f.info == [0x03] => answer_of(f.address).into_iter().map(|(d, b)| (now + d, b)).collect(),
+            _ => vec![],
+        });
+        (link, t)
+    }
+
+    #[test]
+    fn a_pack_answers_its_own_addressed_03_and_no_02_follows() {
+        let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &mnt3([1, 5], 1)))]);
+        let r = probe_pack(&mut link, &t, 7, ms(600)).unwrap();
+        assert!(matches!(r, PackAnswer::Info(i) if i.hard_stop == Some(true) && i.format == 3));
+        assert_eq!(link.sent, vec![MaintInfo::request_at(7).unwrap()]);
+        // MNT02 with 17 bytes
+        let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &mnt([1, 5], ID15)))]);
+        assert!(matches!(probe_pack(&mut link, &t, 3, ms(600)).unwrap(), PackAnswer::Info(i) if i.hard_stop.is_none()));
+    }
+
+    #[test]
+    fn another_valid_mnt_is_classified_errors_and_silence_are_undecided() {
+        // the historic 22-byte format 1, format 4, MNT03 with a wrong length: classified as another MNT
+        let mut f1 = b"MNT".to_vec();
+        f1.extend_from_slice(&[1, 16, 6, 13, 1, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0]);
+        let mut f4 = mnt3([1, 5], 0);
+        f4[3] = 4;
+        let short = mnt3([1, 5], 0)[..17].to_vec();
+        for info in [f1, f4, short] {
+            let (mut link, t) = pack_link(move |a| vec![(ms(40), answer(a, 0x00, &info))]);
+            assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::OtherMnt);
+        }
+        // RTN 04, RTN 05, another error, silence, INFO without MNT: undecided
+        for rtn in [0x04, 0x05, 0x02] {
+            let (mut link, t) = pack_link(move |a| vec![(ms(40), answer(a, rtn, &[]))]);
+            assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::Undecided);
+        }
+        let (mut link, t) = pack_link(|_| vec![]);
+        assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::Undecided);
+        assert!(t.now() >= ms(600) && t.now() <= ms(800), "{:?}", t.now());
+        let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &[1, 2, 3, 4]))]);
+        assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::Undecided);
+    }
+
+    #[test]
+    fn only_the_address_asked_and_never_our_echo_answers() {
+        // another address's answer first, our echo, then ours
+        let (mut link, t) = pack_link(|a| vec![(ms(10), answer(a + 1, 0x00, &mnt3([1, 5], 0))), (ms(20), MaintInfo::request_at(a).unwrap()), (ms(60), answer(a, 0x00, &mnt3([1, 5], 0)))]);
+        assert!(matches!(probe_pack(&mut link, &t, 4, ms(600)).unwrap(), PackAnswer::Info(_)));
+        // only another address answers: undecided
+        let (mut link, t) = pack_link(|a| vec![(ms(10), answer(a + 1, 0x00, &mnt3([1, 5], 0)))]);
+        assert_eq!(probe_pack(&mut link, &t, 4, ms(600)).unwrap(), PackAnswer::Undecided);
+        assert!(probe_pack(&mut link, &t, 22, ms(600)).is_err(), "address beyond 21");
     }
 
     #[test]

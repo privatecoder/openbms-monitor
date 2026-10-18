@@ -4,7 +4,8 @@
 //! polling the pack bus (RS485-1/2) and answers there itself, so its parameters can be read and it can be updated.
 //! Original firmware answers 0x64 with RTN 04 (unknown command); slaves never answer 0x64.
 //!
-//! `INFO=03` reads the identity ([`MaintInfo`], no runtime state): format 2 with 17 bytes, or format 3 with 18 bytes and
+//! `INFO=03` reads the identity ([`MaintInfo`], no runtime state; newer builds answer it at every pack's own address, the
+//! address only in the frame): format 2 with 17 bytes, or format 3 with 18 bytes and
 //! an image flag byte (bit 0: the hard-stop patch is compiled in). `INFO=02` reads the state
 //! ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout holds only once a format-2
 //! identity of a supported build was read on the same connection.
@@ -106,9 +107,18 @@ impl MaintInfo {
     /// the revision byte of an unknown OEM revision
     pub const REVISION_UNKNOWN: u8 = 0xFF;
 
-    /// Read the identity (changes nothing). Only the master at address 0 answers.
+    /// Read the master's identity (changes nothing): `request_at(0)`.
     pub fn request() -> Result<Vec<u8>> {
-        encode_request(0, 0x64, &[0x03])
+        Self::request_at(0)
+    }
+
+    /// Read the identity of the pack at `address` (0–21): a build with addressed 64/03 answers at its own address; older
+    /// slaves stay silent or answer an error.
+    pub fn request_at(address: u8) -> Result<Vec<u8>> {
+        if address > 21 {
+            return Err(Error::Layout("0x64/03 address must be 0..=21"));
+        }
+        encode_request(address, 0x64, &[0x03])
     }
 
     /// Exactly the 17-byte format 2 or the 18-byte format 3.
@@ -239,6 +249,14 @@ mod tests {
         f4[3] = 4;
         assert_eq!(MaintInfo::classify(&f4), InfoAnswer::OtherFormat);
         assert!(MaintInfo::parse(&f4).is_err());
+    }
+
+    #[test]
+    fn the_identity_request_is_addressed() {
+        let f = crate::frame::parse(&MaintInfo::request_at(11).unwrap()).unwrap();
+        assert_eq!((f.address, f.cid1, f.rtn, f.info.as_slice()), (11, 0x46, 0x64, &[0x03][..]));
+        assert_eq!(MaintInfo::request().unwrap(), MaintInfo::request_at(0).unwrap());
+        assert!(MaintInfo::request_at(22).is_err());
     }
 
     #[test]
