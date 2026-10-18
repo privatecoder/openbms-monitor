@@ -7,6 +7,10 @@
 //! (locked) sends nothing. Identity, lock and command run in one port session under the pack's reservation with host
 //! polling held. Reading the clock needs neither. A restart is sent once, never repeated; its comeback is watched after
 //! the session (`control::pack_restart`).
+//!
+//! MAINT 1.6 keeps the same 0x45: with Group0 bit 4 at 0 an addressed off stores the pack cutoff, an addressed on clears
+//! it (whatever bit 4). RTN 08 to ein/aus then means the lock could not be stored or verified (`switch_error`); the UI
+//! reads 0x47 and the status again after every ein/aus.
 
 use crate::bms_memory::{refusal_error, uart1_error, uart1_pending, uart1_refusal};
 use crate::uart1_id::{identity, keep, Conn, Dev, Expected, Facts, Session};
@@ -84,6 +88,15 @@ pub(crate) fn power_error(e: openbms_transport::Error) -> String {
     }
 }
 
+/// Ein/aus of a build with the stored pack cutoff (MAINT 1.6) answers RTN 08 when storing or verifying the lock failed:
+/// the pack stays or becomes locked, never a success or a release. Every other error as `power_error`.
+pub(crate) fn switch_error(e: openbms_transport::Error) -> String {
+    match e {
+        openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)) => uart1_refusal("cutoff-failed"),
+        e => power_error(e),
+    }
+}
+
 /// The port session of one command: the strict identity, a fresh binary 0x47 with Group0 bit 3 clear, the command (for
 /// the clock its read-back). Every refusal before the command sends nothing to the pack.
 pub(crate) fn session(dev: &mut impl PowerDev, inst: &str, address: u8, expected: &str, facts: &Facts, act: Act) -> Session<Done> {
@@ -111,7 +124,7 @@ fn command(dev: &mut impl PowerDev, address: u8, act: Act) -> Result<Done, Strin
         return Err(uart1_refusal("power-locked"));
     }
     match act {
-        Act::Switch { on } => dev.on_off(address, on).map(|_| Done::Switched).map_err(power_error),
+        Act::Switch { on } => dev.on_off(address, on).map(|_| Done::Switched).map_err(switch_error),
         // once, no retry: a timeout proves nothing either way
         Act::Restart => dev.restart(address).map(Done::Restarted).map_err(power_error),
         Act::SetClock(time) => {
@@ -314,6 +327,13 @@ mod tests {
         let mut d = script(0xF7, Ok(()));
         d.read_back = Some(Err(E::Proto(openbms_proto::Error::Rtn(0x08))));
         assert_eq!(err(&run(&mut d, Act::SetClock(TIME)))["error"], "rtc-failed");
+        // ein/aus: RTN 08 is a failed store of the pack cutoff, in both directions; RTN 05 stays the refusal
+        for on in [false, true] {
+            let mut d = script(0xE7, Err(E::Proto(openbms_proto::Error::Rtn(0x08))));
+            assert_eq!(err(&run(&mut d, Act::Switch { on }))["error"], "cutoff-failed");
+        }
+        let mut d = script(0xE7, Err(E::Proto(openbms_proto::Error::Rtn(0x05))));
+        assert_eq!(err(&run(&mut d, Act::Switch { on: false }))["code"], 5);
         // silence, RS485-1/2 refusals, a broken link
         assert_eq!(power_error(E::Timeout(std::time::Duration::from_millis(1500))), uart1_refusal("power-no-answer"));
         assert_eq!(power_error(E::Proto(openbms_proto::Error::Rtn(0x04))), r#"{"kind":"invalid"}"#);

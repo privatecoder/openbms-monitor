@@ -14,7 +14,7 @@
 //! further frame is sent.
 
 use crate::bank::{check_target, Written};
-use crate::bms_memory::{bound_bus, bound_pack_bus, refusable, refusal_error};
+use crate::bms_memory::{bound_bus, bound_pack_bus, refusable, refusal_error, uart1_refusal};
 use crate::power::{way, Act, Done, Way};
 use crate::maint::{refused, MaintError};
 use crate::{current_action, reserve_port, with_link, AppState, Link, PortSlot};
@@ -229,18 +229,28 @@ fn command<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Resu
     }
 }
 
+/// Ein/aus (0x45 type 4): RTN 08 is a build with the stored pack cutoff that could not store or verify it, never done
+/// (`power::switch_error`); the rest as `command`.
+fn switch_command(r: openbms_transport::Result<()>) -> openbms_transport::Result<Result<(), String>> {
+    match r {
+        Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => Ok(Err(uart1_refusal("cutoff-failed"))),
+        r => command(r),
+    }
+}
+
 /// One control frame of RS485-1/2: the pack reserved first, then the connection and its bus taken together
 /// (`bound_pack_bus`), the right-bank check, the frame on exactly that link.
 fn control_frame(state: &AppState, installation: Option<&str>, address: u8, action: &'static str, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<Written<()>, String> {
     let _guard = reserve_pack_wait(state, address, action)?;
     let link = bound_pack_bus(state, installation)?;
-    ascii_frame(state, &link, address, f)
+    ascii_frame(state, &link, address, |c| command(f(c)))
 }
 
-/// The right-bank check and one control frame on `link`; the caller holds the pack and took the link with its bus.
-fn ascii_frame(state: &AppState, link: &Link, address: u8, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<Written<()>, String> {
+/// The right-bank check and one control frame on `link` (`f` with its answer mapped, `command`); the caller holds the
+/// pack and took the link with its bus.
+fn ascii_frame(state: &AppState, link: &Link, address: u8, f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<Result<(), String>>) -> Result<Written<()>, String> {
     let checked = check_target(state, link, address)?;
-    with_link(&state.conn, &state.flashing, &state.link, link, |c| command(f(c)))??;
+    with_link(&state.conn, &state.flashing, &state.link, link, f)??;
     Ok(Written { value: (), unchecked: checked.unchecked })
 }
 
@@ -294,7 +304,7 @@ pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: 
             crate::power::run(&state, &link, address, Act::Switch { on })?;
             Ok(Written { value: (), unchecked: false })
         }
-        Way::Ascii => ascii_frame(&state, &link, address, |c| c.on_off(address, on)),
+        Way::Ascii => ascii_frame(&state, &link, address, |c| switch_command(c.on_off(address, on))),
     }
 }
 
@@ -404,6 +414,14 @@ mod tests {
         let refused = command::<()>(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap();
         assert_eq!(refused.unwrap_err(), r#"{"kind":"refused"}"#);
         assert!(command::<()>(Err(openbms_transport::Error::Closed)).is_err());
+    }
+
+    #[test]
+    fn a_failed_store_of_the_pack_cutoff_is_never_done() {
+        let e = switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)))).unwrap().unwrap_err();
+        assert_eq!((json(&e)["kind"].as_str(), json(&e)["error"].as_str()), (Some("uart1"), Some("cutoff-failed")));
+        assert_eq!(switch_command(Ok(())).unwrap(), Ok(()));
+        assert_eq!(switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
     }
 
     #[test]
