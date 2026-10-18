@@ -90,11 +90,11 @@ pub(crate) fn power_error(e: openbms_transport::Error) -> String {
     }
 }
 
-/// Ein/aus of a build with the stored pack cutoff (MAINT 1.6) answers RTN 08 when storing or verifying the lock failed:
-/// the pack stays or becomes locked, never a success or a release. Every other error as `power_error`.
-pub(crate) fn switch_error(e: openbms_transport::Error) -> String {
+/// Ein/aus of a build with the stored pack cutoff (MAINT 1.6) answers RTN 08 when storing or verifying the lock failed
+/// (`control::cutoff_failed`): never a success or a release. Every other error as `power_error`.
+pub(crate) fn switch_error(e: openbms_transport::Error, on: bool) -> String {
     match e {
-        openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)) => uart1_refusal("cutoff-failed"),
+        openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)) => uart1_refusal(crate::control::cutoff_failed(on)),
         e => power_error(e),
     }
 }
@@ -128,7 +128,7 @@ fn command(dev: &mut impl PowerDev, address: u8, act: Act) -> Result<Done, Strin
     match act {
         // a soft off confirmed must not become a stored cutoff, nor the reverse
         Act::Switch { on: false, expect } if crate::profile::extended_changed(expect, fresh.function_switches[0]) => Err(uart1_refusal("cutoff-changed")),
-        Act::Switch { on, .. } => dev.on_off(address, on).map(|_| Done::Switched).map_err(switch_error),
+        Act::Switch { on, .. } => dev.on_off(address, on).map(|_| Done::Switched).map_err(|e| switch_error(e, on)),
         // once, no retry: a timeout proves nothing either way
         Act::Restart => dev.restart(address).map(Done::Restarted).map_err(power_error),
         Act::SetClock(time) => {
@@ -334,7 +334,7 @@ mod tests {
         // ein/aus: RTN 08 is a failed store of the pack cutoff, in both directions; RTN 05 stays the refusal
         for on in [false, true] {
             let mut d = script(0xE7, Err(E::Proto(openbms_proto::Error::Rtn(0x08))));
-            assert_eq!(err(&run(&mut d, Act::Switch { on, expect: None }))["error"], "cutoff-failed");
+            assert_eq!(err(&run(&mut d, Act::Switch { on, expect: None }))["error"], crate::control::cutoff_failed(on));
         }
         let mut d = script(0xE7, Err(E::Proto(openbms_proto::Error::Rtn(0x05))));
         assert_eq!(err(&run(&mut d, Act::Switch { on: false, expect: None }))["code"], 5);

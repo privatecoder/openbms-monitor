@@ -14,7 +14,7 @@
 //! further frame is sent.
 
 use crate::bank::{check_target, Written};
-use crate::bms_memory::{bound_bus, bound_pack_bus, refusable, refusal_error, uart1_refusal};
+use crate::bms_memory::{bound_bus, bound_pack_bus, refusable, refusal_error};
 use crate::power::{way, Act, Done, Way};
 use crate::maint::{refused, MaintError};
 use crate::{current_action, reserve_port, with_link, AppState, Link, PortSlot};
@@ -229,11 +229,22 @@ fn command<T>(r: openbms_transport::Result<T>) -> openbms_transport::Result<Resu
     }
 }
 
-/// Ein/aus (0x45 type 4): RTN 08 is a build with the stored pack cutoff that could not store or verify it, never done
-/// (`power::switch_error`); the rest as `command`.
-fn switch_command(r: openbms_transport::Result<()>) -> openbms_transport::Result<Result<(), String>> {
+/// An ein/aus of RS485-1/2 refused by the app or failed at the pack's cutoff store, as JSON for the UI (`switchError` in
+/// control.ts): `cutoff-changed`, `cutoff-unread`, `cutoff-off-failed`, `cutoff-on-failed`.
+pub(crate) fn switch_refusal(error: &str) -> String {
+    serde_json::json!({ "kind": "switch", "error": error }).to_string()
+}
+
+/// The error of RTN 08 to ein/aus (both ports): MAINT 1.6 detected a store or verify fault of the pack cutoff. Off: the
+/// lock may hold in RAM only; on: not released. Never done, whatever a later read of bit 5 shows.
+pub(crate) fn cutoff_failed(on: bool) -> &'static str {
+    if on { "cutoff-on-failed" } else { "cutoff-off-failed" }
+}
+
+/// Ein/aus (0x45 type 4): RTN 08 never done (`cutoff_failed`); the rest as `command` (silence: open whether it switched).
+fn switch_command(r: openbms_transport::Result<()>, on: bool) -> openbms_transport::Result<Result<(), String>> {
     match r {
-        Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => Ok(Err(uart1_refusal("cutoff-failed"))),
+        Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => Ok(Err(switch_refusal(cutoff_failed(on)))),
         r => command(r),
     }
 }
@@ -259,19 +270,18 @@ impl SwitchDev for openbms_transport::Connection {
     }
 }
 
-/// Ein/aus on RS485-1/2. For an off of a pack with a patch proof (`expect`: the extended off its confirmation showed) a
-/// fresh 0x47 right before: a changed bit 4 sends nothing (`cutoff-changed`); an unreadable one neither
-/// (`cutoff-unread`), unless the confirmation already named the possible stored cutoff (`lock_confirmed`).
-pub(crate) fn ascii_switch(dev: &mut impl SwitchDev, address: u8, on: bool, expect: Option<bool>, lock_confirmed: bool) -> openbms_transport::Result<Result<(), String>> {
-    if !on && expect.is_some() {
-        match dev.group0(address) {
-            Ok(g0) if crate::profile::extended_changed(expect, g0) => return Ok(Err(uart1_refusal("cutoff-changed"))),
-            Ok(_) => {}
-            Err(_) if lock_confirmed => {}
-            Err(_) => return Ok(Err(uart1_refusal("cutoff-unread"))),
+/// Ein/aus on RS485-1/2. Every off carries the extended off its confirmation showed (`expect`, from a fresh 0x47 of any
+/// pack: a 1.6 pack may store a cutoff there whatever the app knows of its patch) and is compared with a fresh 0x47 right
+/// before: changed sends nothing (`cutoff-changed`), unreadable or nothing confirmed neither (`cutoff-unread`).
+pub(crate) fn ascii_switch(dev: &mut impl SwitchDev, address: u8, on: bool, expect: Option<bool>) -> openbms_transport::Result<Result<(), String>> {
+    if !on {
+        match (expect, dev.group0(address)) {
+            (Some(_), Ok(g0)) if crate::profile::extended_changed(expect, g0) => return Ok(Err(switch_refusal("cutoff-changed"))),
+            (Some(_), Ok(_)) => {}
+            _ => return Ok(Err(switch_refusal("cutoff-unread"))),
         }
     }
-    switch_command(dev.on_off(address, on))
+    switch_command(dev.on_off(address, on), on)
 }
 
 /// One control frame of RS485-1/2: the pack reserved first, then the connection and its bus taken together
@@ -332,9 +342,9 @@ fn watch(sent: Instant, answered: impl FnMut() -> Result<bool, String>) -> Resta
 /// Switch one pack on or off (0x45 type 4). The UI reads the status again 2 s later. Over the CAN socket the master's
 /// ACK confirms only the master: its original broadcast to the slaves is not confirmed by it. `expect` (off of a pack
 /// that may store a cutoff): the extended off the confirmation showed, compared with a fresh 0x47 under the reservation
-/// right before the frame; `lock_confirmed`: the confirmation named the stored cutoff.
+/// right before the frame (on RS485-1/2 required for every off). No retry: silence leaves open whether it switched.
 #[tauri::command]
-pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool, expect: Option<bool>, lock_confirmed: Option<bool>) -> Result<Written<()>, String> {
+pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool, expect: Option<bool>) -> Result<Written<()>, String> {
     let _guard = reserve_pack_wait(&state, address, "on_off")?;
     let (link, bus) = bound_bus(&state, installation.as_deref())?;
     match way(bus) {
@@ -342,7 +352,7 @@ pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: 
             crate::power::run(&state, &link, address, Act::Switch { on, expect })?;
             Ok(Written { value: (), unchecked: false })
         }
-        Way::Ascii => ascii_frame(&state, &link, address, |c| ascii_switch(c, address, on, expect, lock_confirmed.unwrap_or(false))),
+        Way::Ascii => ascii_frame(&state, &link, address, |c| ascii_switch(c, address, on, expect)),
     }
 }
 
@@ -456,10 +466,15 @@ mod tests {
 
     #[test]
     fn a_failed_store_of_the_pack_cutoff_is_never_done() {
-        let e = switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)))).unwrap().unwrap_err();
-        assert_eq!((json(&e)["kind"].as_str(), json(&e)["error"].as_str()), (Some("uart1"), Some("cutoff-failed")));
-        assert_eq!(switch_command(Ok(())).unwrap(), Ok(()));
-        assert_eq!(switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
+        for (on, error) in [(false, "cutoff-off-failed"), (true, "cutoff-on-failed")] {
+            let e = switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))), on).unwrap().unwrap_err();
+            assert_eq!((json(&e)["kind"].as_str(), json(&e)["error"].as_str()), (Some("switch"), Some(error)));
+        }
+        assert_eq!(switch_command(Ok(()), false).unwrap(), Ok(()));
+        assert_eq!(switch_command(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06))), true).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
+        // silence: no-answer (open whether it switched), never a retry
+        let silent = switch_command(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))), false).unwrap().unwrap_err();
+        assert_eq!(json(&silent)["kind"], "no-answer");
     }
 
     /// Group0 answers in order and what was sent.
@@ -481,28 +496,36 @@ mod tests {
     #[test]
     fn rs485_off_checks_the_confirmed_extended_off_right_before() {
         let script = |r: openbms_transport::Result<u8>| Script { reads: vec![r], sent: vec![] };
-        let error = |r: Result<(), String>| json(&r.unwrap_err())["error"].as_str().unwrap().to_string();
+        let error = |r: Result<(), String>| {
+            let e = json(&r.unwrap_err());
+            assert_eq!(e["kind"], "switch");
+            e["error"].as_str().unwrap().to_string()
+        };
         // confirmed as soft off, bit 4 now 0 (and the reverse): nothing sent
         for (g0, expect) in [(0xEF, false), (0xFF, true)] {
             let mut d = script(Ok(g0));
-            assert_eq!(error(ascii_switch(&mut d, 3, false, Some(expect), false).unwrap()), "cutoff-changed");
+            assert_eq!(error(ascii_switch(&mut d, 3, false, Some(expect)).unwrap()), "cutoff-changed");
             assert!(d.sent.is_empty());
         }
-        // as confirmed: sent
-        let mut d = script(Ok(0xEF));
-        assert_eq!(ascii_switch(&mut d, 3, false, Some(true), true).unwrap(), Ok(()));
-        assert_eq!(d.sent, [false]);
-        // unreadable: refused after a soft confirmation, sent after the cutoff one
-        let mut d = script(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))));
-        assert_eq!(error(ascii_switch(&mut d, 3, false, Some(false), false).unwrap()), "cutoff-unread");
+        // as confirmed: sent, whatever the app knows of the pack's patch
+        for (g0, expect) in [(0xEF, true), (0xFF, false)] {
+            let mut d = script(Ok(g0));
+            assert_eq!(ascii_switch(&mut d, 3, false, Some(expect)).unwrap(), Ok(()));
+            assert_eq!(d.sent, [false]);
+        }
+        // unreadable right before, also after the cutoff confirmation, or nothing confirmed: nothing sent
+        for expect in [Some(false), Some(true), None] {
+            let mut d = script(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))));
+            assert_eq!(error(ascii_switch(&mut d, 3, false, expect).unwrap()), "cutoff-unread");
+            assert!(d.sent.is_empty());
+        }
+        let mut d = script(Ok(0xFF));
+        assert_eq!(error(ascii_switch(&mut d, 3, false, None).unwrap()), "cutoff-unread");
         assert!(d.sent.is_empty());
-        let mut d = script(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500))));
-        assert_eq!(ascii_switch(&mut d, 3, false, Some(true), true).unwrap(), Ok(()));
-        // no proof (nothing expected) and on: no read, as before
+        // on: no read, sent
         let mut d = Script { reads: vec![], sent: vec![] };
-        assert_eq!(ascii_switch(&mut d, 3, false, None, false).unwrap(), Ok(()));
-        assert_eq!(ascii_switch(&mut d, 3, true, Some(false), false).unwrap(), Ok(()));
-        assert_eq!(d.sent, [false, true]);
+        assert_eq!(ascii_switch(&mut d, 3, true, Some(false)).unwrap(), Ok(()));
+        assert_eq!(d.sent, [true]);
     }
 
     #[test]
