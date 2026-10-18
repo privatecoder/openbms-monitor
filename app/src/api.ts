@@ -314,7 +314,8 @@ export type MaintError =
 export interface LiveStatus { bus: "quiet" | "polling" | "traffic" | "no-port" | "error"; polled: number[]; bus_error: string | null; master: MasterView | null; master_error: MaintError | null }
 export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked" | "none"; serial: string | null }
 /** `cancelled`: stopped by „Abbrechen“, `packs` holds what answered until then */
-export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean }
+/** `identities`: each pack's own 64/03 as far as known (the pack bus cannot give it); missing: not checked */
+export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean; identities?: PackProbeView[] }
 /** A pack that may hang in its bootloader after an interrupted flash, per pack bus endpoint. */
 export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number; bms_serial?: string | null }
 /** `latent`: the marker was last seen on and the master now runs an image without 0x64 (the marker word stays in flash). */
