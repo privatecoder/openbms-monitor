@@ -189,9 +189,19 @@ impl Framer {
 
     /// The answer to `request` (a frame from `encode`), once a fitting frame has arrived completely.
     pub fn next(&mut self, request: &[u8]) -> Option<Reply> {
+        self.take(request, true)
+    }
+
+    /// At the end of the exchange's deadline: the first complete answer to `request` anywhere in what arrived, also
+    /// behind a started frame that never completed (a cut-off prefix must not hide a short answer).
+    pub fn finish(&mut self, request: &[u8]) -> Option<Reply> {
+        self.take(request, false)
+    }
+
+    fn take(&mut self, request: &[u8], protect: bool) -> Option<Reply> {
         let (address, cmd) = (*request.get(1)?, *request.get(2)?);
         loop {
-            let (start, len) = self.first_frame()?;
+            let (start, len) = self.first_frame(request, protect)?;
             let f: Vec<u8> = self.buf.drain(..start + len).skip(start).collect();
             if f == request || f[1] != address {
                 continue;
@@ -206,23 +216,19 @@ impl Framer {
             return Some(reply);
         }
     }
-}
 
-impl Framer {
-    /// The first complete valid frame (start, length). A start byte with a plausible header protects its frame up to
-    /// its LEN boundary: a valid-looking frame inside its data (switch bytes may read `55 00 E2 00 76 D0 AA`) is not
-    /// taken while it is still arriving. Only when its end byte or CRC disprove it does the search go on at a later
-    /// start byte; a start byte whose header is no known shape is skipped at once.
-    fn first_frame(&self) -> Option<(usize, usize)> {
+    /// The first complete valid frame (start, length). With `protect`, a started frame that can be the answer to
+    /// `request` (same address; 0x47 with 168 bytes to a read, 0xA1 with none to a write, an error code with none) or
+    /// its echo (a prefix of the request) is waited for up to its LEN boundary: a valid-looking frame inside its data
+    /// (switch bytes may read `55 00 E2 00 76 D0 AA`) is not taken while it is still arriving. Only its end byte or CRC
+    /// disprove it, then the search goes on at a later start byte. Any other header is skipped at once.
+    fn first_frame(&self, request: &[u8], protect: bool) -> Option<(usize, usize)> {
         for i in (0..self.buf.len()).filter(|i| self.buf[*i] == START) {
             let rest = &self.buf[i..];
-            if rest.len() < 4 {
+            if protect && rest.len() < 4 {
                 return None;
             }
-            if !known_shape(rest[1], rest[2], usize::from(rest[3])) {
-                continue;
-            }
-            if rest.len() < usize::from(rest[3]) + OVERHEAD {
+            if protect && (expected(rest, request) || (rest.len() < request.len() && request.starts_with(rest))) && rest.len() < usize::from(rest[3]) + OVERHEAD {
                 return None;
             }
             if let Some(n) = frame_at(rest) {
@@ -231,6 +237,17 @@ impl Framer {
         }
         None
     }
+}
+
+/// The header at `rest` (at least 4 bytes) is one of the answers `request` can get.
+fn expected(rest: &[u8], request: &[u8]) -> bool {
+    let (adr, cmd, len) = (rest[1], rest[2], usize::from(rest[3]));
+    adr == request[1]
+        && match cmd {
+            CMD_READ => request[2] == CMD_READ && len == READ_LEN,
+            CMD_WRITE => request[2] == CMD_WRITE && len == 0,
+            c => Code::of(c).is_some() && len == 0,
+        }
 }
 
 fn markers_ok(data: &[u8]) -> bool {
@@ -400,6 +417,48 @@ mod tests {
         let mut f = Framer::new();
         f.push(&[bad_end, clean.clone()].concat());
         assert_eq!(f.next(&req), Some(Reply::Params(data())));
+    }
+
+    #[test]
+    fn a_cut_off_long_prefix_hides_no_short_answer() {
+        let block = [vec![0], data()].concat();
+        let write = write_request(0, &block).unwrap();
+        let prefix = hex("55 00 47 A8");
+        // to a write, a 0x47 header is no expected answer: skipped at once, the ACK or E2 behind it counts
+        for (tail, reply) in [(answer(0, CMD_WRITE, &[]), Reply::Ack), (answer(0, 0xE2, &[]), Reply::Error(Code::Rejected))] {
+            for echo in [vec![], write.clone()] {
+                let mut f = Framer::new();
+                f.push(&[echo, prefix.clone(), tail.clone()].concat());
+                assert_eq!(f.next(&write), Some(reply.clone()));
+            }
+        }
+        // to a read, the prefix could be the answer: waited for, and at the deadline the E2 behind it is still found
+        let read = read_request(0).unwrap();
+        for echo in [vec![], read.clone()] {
+            let mut f = Framer::new();
+            f.push(&[echo, prefix.clone(), answer(0, 0xE2, &[])].concat());
+            assert_eq!(f.next(&read), None);
+            assert_eq!(f.finish(&read), Some(Reply::Error(Code::Rejected)));
+        }
+        // an echo of the write is waited for while it arrives (its data may hold a valid-looking frame); once the bytes
+        // part from the request it is no echo, and the ACK after it counts
+        let mut f = Framer::new();
+        f.push(&write[..40]);
+        assert_eq!(f.next(&write), None);
+        f.push(&answer(0, CMD_WRITE, &[]));
+        assert_eq!(f.next(&write), Some(Reply::Ack));
+        let mut sw = data();
+        sw[150..157].copy_from_slice(&hex("55 00 E2 00 76 D0 AA"));
+        let w = write_request(0, &[vec![0], sw].concat()).unwrap();
+        let mut f = Framer::new();
+        f.push(&w[..161]);
+        assert_eq!(f.next(&w), None, "the inner frame of an arriving echo is not taken");
+        f.push(&[w[161..].to_vec(), answer(0, CMD_WRITE, &[])].concat());
+        assert_eq!(f.next(&w), Some(Reply::Ack));
+        // nothing complete: still nothing at the deadline
+        let mut f = Framer::new();
+        f.push(&prefix);
+        assert_eq!(f.finish(&read), None);
     }
 
     #[test]
