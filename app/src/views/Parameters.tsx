@@ -85,9 +85,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [chosen, setChosen] = usePackChoice(packs);
   // „Nur ansehen“ writes nothing to a pack
   const writable = connected && (isDemo || (bus === "pack" && !!installation));
-  // the CAN socket's parameter service of MAINT 1.2 reads; writing there waits for a firmware that shows the board's
-  // identity (the backend refuses it until then), so its columns get no pencil
+  // the CAN socket's parameter service reads from MAINT 1.2 on and writes from 1.3 on (the backend checks the board's
+  // identity before every write and names why it refuses); the other writes stay on RS485-1/2
   const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
+  const paramWritable = writable || (connected && bus === "can" && !!installation);
+  // a CAN socket write that found the same board still listed at another address it could not check there: the
+  // explicit, confirmed „no longer there“ for that entry
+  const [gone, setGone] = useState<{ address: number; board: number; at: number | null; armed: boolean } | null>(null);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
   const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, ctl: false, multi: false });
@@ -185,7 +189,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         const p = await api.parameters(address);
         if (linkNow() !== l) break;
         // over the CAN socket nothing is stored, so there is no stored last write either
-        next = packCol(p, address, l, path); seen(address, p); if (!path) void loadHistory(address);
+        // over the CAN socket only a block of an identified board is stored (MAINT 1.3), so only then is there a last write
+        next = packCol(p, address, l, path); seen(address, p); if (!path || p.bms_serial) void loadHistory(address);
       } catch (e) {
         if (linkNow() !== l) break;
         next = { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) };
@@ -254,7 +259,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
    *  another link is left alone. */
   const send = async (a: number, base: Wire, raws: Raws, switches: number[], restore: boolean, l: string): Promise<{ r?: ParamWrite; error?: unknown; out: Outcome }> => {
     let r: ParamWrite;
-    try { r = await api.writeParameters(a, base, toWire(raws, switches), restore); }
+    // the board the column was read from: a write over the CAN socket must find the same one
+    const serial = sources.find((x) => x.id === `pack-${a}`)?.read?.bms_serial ?? null;
+    try { r = await api.writeParameters(a, base, toWire(raws, switches), restore, serial); }
     catch (error) { return { error, out: failure(error) }; }
     // the pending refusal is kept per site and pack and holds whatever the link: the switches are live on that pack
     if (r.kind === "refused") {
@@ -295,11 +302,15 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     const pack = packNo(a);
     const sent = restore ? rawsOf(restore) : e0!.raws, sentSwitches = restore ? restore.function_switches : e0!.switches;
     const base = restore ? toWire(sent, sentSwitches) : toWire(e0!.base, e0!.baseSwitches);
-    busyFor("params")(true); setNote(null);
+    busyFor("params")(true); setNote(null); setGone(null);
     const say = (n: Note) => setNote({ address: a, note: n });
     try {
       const { r, error, out } = await send(a, base, sent, sentSwitches, !!restore, linkNow());
-      if (!r) say({ text: writeError(error, t, (err) => t("pw.error", { err })), error: true });
+      if (!r) {
+        say({ text: writeError(error, t, (err) => t("pw.error", { err })), error: true });
+        const u = uart1Error(error);
+        if (u?.error === "elsewhere" && u.address !== undefined && u.board !== undefined) setGone({ address: u.address, board: u.board, at: u.at ?? null, armed: false });
+      }
       else if (r.kind === "stale") {
         // nothing written: the column shows the pack now, the user's changes stay on top of it
         rebaseEdit(a, r.fresh);
@@ -426,7 +437,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   }) : [];
   const takeOverSources = cols.filter((c) => c.id !== editId && c.values && c.switches && !c.error && (c.suspectFrom === undefined || c.suspectFrom === null))
     .map((c) => ({ id: c.id, label: c.kind === "pack" ? t("par.pack", { n: c.label }) : c.label }));
-  const editable = (c: Source) => writable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
+  const editable = (c: Source) => paramWritable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
   const candidates = edit ? packs.filter((a) => a !== edit.address).map((a) => ({ address: a, readable: !!targetRead(a) })) : [];
   const chosenTargets = targets.filter((a) => candidates.some((c) => c.address === a && c.readable));
   // at a pause the paused pack's restore is free; everything else waits for the run
@@ -569,6 +580,22 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
             return r ? [<RefusedPanel key={c.id} refused={r} fullAh={full && "ah" in full && full.address === c.address ? full.ah : null} pack={c.label}
               busy={writing.params} locked={restoreLocked(c.address!)} onRestore={(stored) => write(c.address!, stored)} />] : [];
           })}
+          {gone && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              {!gone.armed
+                ? <Button size="sm" variant="ghost" onClick={() => setGone({ ...gone, armed: true })}>{t("uart1.markGone", { pack: packNo(gone.address) })}</Button>
+                : <>
+                    <span className="text-discharge">{t("uart1.markGoneConfirm", { pack: packNo(gone.address) })}</span>
+                    <Button size="sm" onClick={() => {
+                      const g = gone; setGone(null);
+                      api.bankMarkGone(g.address, g.board, g.at).then(
+                        (done) => setNote({ address: g.address, note: { text: t(done ? "uart1.markedGone" : "uart1.markGoneChanged", { pack: packNo(g.address) }), error: !done } }),
+                        (e) => setNote({ address: g.address, note: { text: String(e), error: true } }));
+                    }}>{t("uart1.markGoneYes")}</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setGone(null)}>{t("uart1.markGoneNo")}</Button>
+                  </>}
+            </div>
+          )}
           {note && note.address !== edit?.address && (
             <p className={cn("text-sm", note.note.error ? "text-alarm" : "text-ok")}>{t("par.pack", { n: packNo(note.address) })}: {note.note.text}</p>
           )}

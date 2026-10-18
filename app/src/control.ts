@@ -82,7 +82,7 @@ export function packBusy(e: unknown): { address: number; action: string } | null
 
 /** A write refused before anything was sent because the pack's bank is not confirmed or could not be checked
  *  (backend `bank.rs`); null for any other error. */
-export type BankRefusal = { state: "unconfirmed" | "failed"; address: number; why?: "new" | "moved" | "foreign"; installation?: { id: string; name: string } | null; error?: string };
+export type BankRefusal = { state: "unconfirmed" | "failed"; address: number; why?: "new" | "moved" | "foreign" | "legacy" | "earlier"; installation?: { id: string; name: string } | null; error?: string };
 export function bankRefusal(e: unknown): BankRefusal | null {
   let v: unknown = e;
   if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
@@ -100,11 +100,13 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
     return t("bank.refused.failed", { pack, err: t(`bank.reason.${reason}`) });
   }
   if (b.why === "foreign") return t("bank.refused.foreign", { pack, name: b.installation?.name ?? "" });
+  if (b.why === "legacy" || b.why === "earlier") return t(`bank.refused.${b.why}`, { pack });
   return t(b.why === "moved" ? "bank.refused.moved" : "bank.refused.new", { pack });
 }
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
-export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback"; code?: number };
+export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere";
+  code?: number; address?: number; board?: number; at?: number | null };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;
   if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
@@ -124,7 +126,7 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   const bank = bankRefusal(e);
   if (bank) return bankText(bank, t);
   const u = uart1Error(e);
-  if (u) return t(`uart1.${u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0") });
+  if (u) return t(`uart1.${u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0") });
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
   const b = packBusy(e);

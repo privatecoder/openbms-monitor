@@ -393,7 +393,10 @@ const tauriApi = {
   setCanProtocol: (address: number, protocol: number) => written(address, invoke<{ value: CanProtocolSet; unchecked: boolean }>("set_can_protocol", { address, protocol, installation: chosen })),
   /** RS485-1/2 only: reads 0x47 again, writes `edited` (changes against `base`) on top of it and reads back;
    *  `restore` sends `edited` as it is (the stored block after a refusal) */
-  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean) => written(address, invoke<{ value: ParamWrite; unchecked: boolean }>("write_parameters", { address, base, edited, restore, installation: chosen })),
+  /** `serial`: the String 2 read with the edited column (CAN socket); the write checks the pack still has it. */
+  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean, serial?: string | null) => written(address, invoke<{ value: ParamWrite; unchecked: boolean }>("write_parameters", { address, base, edited, restore, serial: serial ?? null, installation: chosen })),
+  /** After the user confirmed it: the board row at `address` a CAN socket write found still listed is no longer there. */
+  bankMarkGone: (address: number, board: number, at: number | null) => invoke<boolean>("bank_mark_gone", { installation: chosen, address, board, at }),
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
   /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
   setSerial: (address: number, which: "battery" | "bms", text: string) => written(address, invoke<{ value: SerialSet; unchecked: boolean }>("set_serial", { address, which, text, installation: chosen })),
@@ -584,6 +587,7 @@ function demoApi(): typeof tauriApi {
       demoWritten.set(address, { raws: signed, switches: edited.switches, at: Date.now(), previous: stored });
       return { kind: "written", read_back: demoParams(address), read_error: null };
     },
+    bankMarkGone: async () => true,
     paramHistory: async (address) => {
       const w = demoWritten.get(address);
       return { last_written: w?.at ?? null, previous: w?.previous ?? null };
