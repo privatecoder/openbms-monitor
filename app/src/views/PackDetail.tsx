@@ -4,6 +4,7 @@ import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMe
 import { api, effectiveCurrent, packState, type Bus, type SerialRead } from "../api";
 import { hardStopLine, useProfile } from "../profile";
 import { useHardStops } from "../hardStops";
+import { packProbeLine, usePackProbes } from "../packProbes";
 import { errorText } from "../control";
 import { serialText } from "../serial";
 import type { PackEntry } from "../store";
@@ -38,11 +39,19 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const profile = useProfile();
   const [asked, setAsked] = useState<SerialRead | { error: string } | null>(null);
   useEffect(() => setAsked(null), [p.address, profile?.gen]);
-  const askable = bus === "can" && !!profile && !profile.master.caps?.uart1_identity;
+  // the manual binary read is always offered on the CAN socket (also without any proof)
+  const askable = bus === "can" && !!profile;
+  // a slave's own 64/03 (the master has its profile)
+  const probes = usePackProbes();
+  const probe = probes[p.address];
+  const slaveProbe = bus === "can" && !!profile && p.address !== 0;
+  const [probing, setProbing] = useState(false);
+  const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).catch(() => {}).finally(() => setProbing(false)); };
   const serials = asked && "bms" in asked ? asked : p.serials;
   const hardStops = useHardStops();
   // the image's own flag only for the master of a format-3 profile; every other pack by its behaviour
-  const hardFlag = p.address === 0 && profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null;
+  const hardFlag = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null)
+    : probe?.state === "proven" ? probe.hard_stop : null;
   const askBinary = () => api.serialNumbers(p.address, true).then(setAsked, (e) => setAsked({ error: errorText(e, t) }));
 
   return (
@@ -64,6 +73,11 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             {askable && <button className="underline" title={t("sn.askBinaryHint")} onClick={() => void askBinary()}>{t("sn.askBinary")}</button>}
             {asked && "bms" in asked && asked.uart1 === false && <span>{t("sn.noBinary")}</span>}
             {asked && "error" in asked && <span className="text-alarm">{asked.error}</span>}
+            {slaveProbe && (
+              <span className="flex items-center gap-1">{packProbeLine(probe, t)}<InfoIcon id="topic.firmwareProfile" />
+                <button className="underline disabled:opacity-40" disabled={probing} onClick={recheck}>{t("probe.recheck")}</button>
+              </span>
+            )}
             <span className="flex items-center gap-1">{hardStopLine(hardFlag, hardFlag === null || hardFlag === undefined ? hardStops[p.address] : undefined, t, i18n.language)}<InfoIcon id="topic.hardStop" /></span>
           </p>
         </div>

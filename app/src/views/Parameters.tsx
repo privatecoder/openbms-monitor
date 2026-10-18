@@ -652,7 +652,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                   {cols.map((c) => (
                     <ColumnHead key={c.id} c={c} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
                       onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
-                      onRevokePatch={c.kind === "pack" && installation && c.read?.patch && c.read.patch.source !== "master" ? () => void revokePatch(c) : undefined}
+                      onRevokePatch={c.kind === "pack" && installation && (c.read?.patch?.source === "flash" || c.read?.patch?.source === "user") ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
                   ))}
                 </tr>
@@ -714,7 +714,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 const fixed = gate && !(b === 0 ? gate.writeEditable : gate.startEditable);
                                 // the meaning only in proven columns; the shared row stays neutral in a mixed table
                                 const meaning = gate?.named ? helpTitle(`switch.0.${b}`, lang) : undefined;
-                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, b === 2 && fixed ? t("par.gateStartFixed") : null].filter(Boolean).join(" · ");
+                                // on a slave, bit 2 is the master's start release, stored here: it acts only at address 0
+                                const slaveStart = b === 2 && gate?.named && c.address !== undefined && c.address !== 0 ? t("par.gateStartMasterOnly") : null;
+                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, b === 2 && fixed ? t("par.gateStartFixed") : null].filter(Boolean).join(" · ");
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (

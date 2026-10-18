@@ -754,7 +754,8 @@ mod tests {
         assert!(!hard_stop_reported(None, Some(&live([1, 4], 3, Some(true))), 4), "not a supported patch");
         assert!(!hard_stop_reported(None, Some(&PackFinding::Undecided), 4));
         let v = probe_view(4, &live([1, 5], 3, Some(false)));
-        assert_eq!((v.state, v.hard_stop, v.build_id.as_deref(), v.listed), ("proven", Some(false), Some("297f9f2aa8402e9f"), None));
+        // the measured slave-addressed build is listed
+        assert_eq!((v.state, v.hard_stop, v.build_id.as_deref(), v.listed.as_deref()), ("proven", Some(false), Some("297f9f2aa8402e9f"), Some("16.06.13 MAINT 1.5")));
         assert_eq!(probe_view(4, &PackFinding::Negative(None)).state, "negative");
         assert_eq!(probe_view(4, &PackFinding::Undecided).hard_stop, None);
         // no sighting is kept for a slave with a fresh MNT03 flag
