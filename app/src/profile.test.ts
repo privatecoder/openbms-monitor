@@ -30,8 +30,8 @@ describe("firmware profile of the connection", () => {
     const seen = { address: 0, at: Date.UTC(2026, 0, 2, 12) };
     expect(hardStopLine(true, seen, tr("de"))).toBe("Hard-Stop: an");
     expect(hardStopLine(false, seen, tr("en"))).toBe("Hard stop: off");
-    expect(hardStopLine(null, seen, tr("de"), "de")).toBe(`Hard-Stop: unbekannt – Hinweis: Lade-MOSFET beim Warten auf Nachladung aus, ohne sichtbare andere Sperrursache (am ${new Date(seen.at).toLocaleDateString("de")}); Ursache nicht eindeutig`);
-    expect(hardStopLine(null, seen, tr("en"), "en")).toBe(`Hard stop: unknown – note: charge MOSFET off while waiting for recharge, with no other visible blocking cause (on ${new Date(seen.at).toLocaleDateString("en")}); cause not certain`);
+    expect(hardStopLine(null, seen, tr("de"), "de")).toBe(`Hard-Stop: an (beobachtet am ${new Date(seen.at).toLocaleDateString("de")})`);
+    expect(hardStopLine(null, seen, tr("en"), "en")).toBe(`Hard stop: on (observed ${new Date(seen.at).toLocaleDateString("en")})`);
     for (const lng of ["de", "en"]) expect(i18n.exists("profile.hardStopNotSeen", { lng })).toBe(false);
     expect(hardStopLine(null, undefined, tr("de"))).toBe("Hard-Stop: unbekannt");
     // an unknown OEM revision shows in the base
