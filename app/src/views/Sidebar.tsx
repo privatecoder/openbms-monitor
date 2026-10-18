@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
-import { gatesLine, patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
+import { gatesLine, hardStopLine, patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
@@ -652,6 +652,7 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
         <span className="truncate" title={line.text}>{line.text}</span><InfoIcon id="topic.firmwareProfile" />
       </p>
       {gates && <p className="text-xs text-muted">{gates}</p>}
+      {hardStopLine(p.master, t) && <p className="flex items-center gap-1 text-xs text-muted">{hardStopLine(p.master, t)}<InfoIcon id="topic.hardStop" /></p>}
       {recheckable(p) && (
         <button className="text-xs text-ink underline disabled:opacity-40" disabled={locked || checking} onClick={() => void recheck()}>{t("profile.recheck")}</button>
       )}

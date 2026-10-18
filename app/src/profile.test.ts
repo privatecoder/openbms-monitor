@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { gateBits, gateRowLabel, gatesLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
+import { gateBits, gateRowLabel, gatesLine, hardStopLine, patchName, profileLine, recheckable, selfLock, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
 const master = (m: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b",
-  listed: "16.06.13 MAINT 1.5", caps, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m });
+  listed: "16.06.13 MAINT 1.5", caps, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m });
 const profile = (m: Partial<MasterView>, bus: "can" | "pack" = "can"): ProfileView => ({ gen: 1, bus, endpoint: "tcp:gw:4196", master: master(m), gates: null, at: 0 });
 const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
 const proof: PackPatch = { source: "user", release: "MAINT ≥ 1.5", caps, at: 1 };
@@ -25,6 +25,14 @@ describe("firmware profile of the connection", () => {
     // RS485-1/2 knows no 0x64: nothing to say
     expect(profileLine(profile({}, "pack"), tr("de"))).toBeNull();
     expect(profileLine(null, tr("de"))).toBeNull();
+  });
+  it("shows the image's hard stop: on, off or unknown (format 2)", () => {
+    expect(hardStopLine(master({ hard_stop: true }), tr("de"))).toBe("Hard-Stop: an");
+    expect(hardStopLine(master({ hard_stop: false }), tr("en"))).toBe("Hard stop: off");
+    expect(hardStopLine(master({ hard_stop: null }), tr("de"))).toBe("Hard-Stop: unbekannt");
+    expect(hardStopLine(master({ kind: "no-0x64", caps: null }), tr("de"))).toBeNull();
+    // an unknown OEM revision shows in the base
+    expect(profileLine(profile({ listed: null, base: "16.06.?", patch: "1.5", version: "16.06.? MAINT 1.5" }), tr("de"))?.text).toBe("MAINT 1.5 (Basis 16.06.?, Build nicht gelistet) · Wartung aus");
   });
   it("shows the master's release bits separately from its maintenance state", () => {
     expect(gatesLine({ write: true, start: false }, tr("de"))).toBe("Schreiben über CAN: erlaubt · Wartungsstart: gesperrt");

@@ -287,6 +287,8 @@ export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1
 export interface MasterView {
   kind: "patched" | "unknown-patch" | "no-0x64" | "unknown";
   version: string | null; patch: string | null; base: string | null; build_id: string | null; listed: string | null; caps: PatchCaps | null;
+  /** MNT format 3: the hard-stop patch is compiled into the image; null: not reported (format 2) */
+  hard_stop: boolean | null;
   marker: "off" | "on" | "foreign" | null; marker_word: string | null; slaves: number | null;
   may_halt: boolean; may_release: boolean; polling?: "unverified" | "no-slaves";
 }
@@ -338,7 +340,7 @@ const written = <T,>(address: number, p: Promise<{ value: T; unchecked: boolean 
 /** The demo has no device: a CAN socket whose master does not know 0x64. */
 const DEMO_PROFILE: ProfileView = {
   gen: 0, bus: "can", endpoint: "demo", gates: null, at: 0,
-  master: { kind: "no-0x64", version: null, patch: null, base: null, build_id: null, listed: null, caps: null, marker: null, marker_word: null, slaves: null, may_halt: false, may_release: false },
+  master: { kind: "no-0x64", version: null, patch: null, base: null, build_id: null, listed: null, caps: null, hard_stop: null, marker: null, marker_word: null, slaves: null, may_halt: false, may_release: false },
 };
 
 const tauriApi = {
