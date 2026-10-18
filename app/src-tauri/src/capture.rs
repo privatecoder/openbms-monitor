@@ -3,7 +3,7 @@
 
 use chrono::{Local, Offset, TimeZone};
 use openbms_flash::Lang;
-use openbms_proto::{frame, modbus};
+use openbms_proto::{frame, modbus, uart1};
 use openbms_transport::capture::{self, Full, Kind, Line, Snapshot, GLOBAL};
 use openbms_transport::{Bus, Endpoint};
 use serde::Serialize;
@@ -90,6 +90,8 @@ pub async fn capture_export(path: String, lang: String) -> Result<usize, String>
 enum Req {
     Ascii { address: u8, cid2: u8, info0: Option<u8>, info1: Option<u8> },
     Modbus,
+    /// the binary parameter service of the CAN socket (MAINT 1.2)
+    Uart1 { address: u8, cmd: u8 },
     Other,
 }
 
@@ -211,6 +213,12 @@ fn decode_tx(bytes: &[u8], l: Lang) -> (Row, Req) {
         }
         return (row, Req::Other);
     }
+    if let (Some(&uart1::START), [(address, cmd, _)]) = (bytes.first(), uart1::headers(bytes).as_slice()) {
+        row.address = format!("{address:02X}");
+        row.command = format!("{cmd:02X}");
+        row.meaning = uart1_name(*cmd, l);
+        return (row, Req::Uart1 { address: *address, cmd: *cmd });
+    }
     if bytes.len() == 8 && matches!(bytes[1], 0x03 | 0x04) && modbus_crc_ok(bytes) {
         let start = u16::from_be_bytes([bytes[2], bytes[3]]);
         let count = u16::from_be_bytes([bytes[4], bytes[5]]);
@@ -226,8 +234,54 @@ fn decode_tx(bytes: &[u8], l: Lang) -> (Row, Req) {
     (row, Req::Other)
 }
 
+fn uart1_name(cmd: u8, l: Lang) -> String {
+    let name = match cmd {
+        uart1::CMD_READ => l.pick("Parameter lesen", "read parameters"),
+        uart1::CMD_WRITE => l.pick("Parameter schreiben", "write parameters"),
+        _ => l.pick("Befehl", "command"),
+    };
+    format!("UART1: {name} (55/{cmd:02X})")
+}
+
+/// The frames of a binary answer of the parameter service, in order.
+fn uart1_rx(bytes: &[u8], address: u8, cmd: u8, l: Lang) -> (String, String, String) {
+    let frames = uart1::headers(bytes);
+    let Some(&(a, c, _)) = frames.iter().find(|(a, _, _)| *a == address).or(frames.first()) else {
+        return (String::new(), String::new(), l.pick("kein gültiger Frame", "not a valid frame").into());
+    };
+    let request_len = if cmd == uart1::CMD_WRITE { uart1::WRITE_LEN } else { 0 };
+    let parts: Vec<String> = frames.iter().map(|&(fa, fc, len)| {
+        if fa != address {
+            format!("{} ({} {fa:02X})", l.pick("nicht für uns", "not for us"), l.pick("Adresse", "address"))
+        } else if fc == cmd && len == request_len {
+            l.pick("Echo der Anfrage", "echo of the request").into()
+        } else if fc == uart1::CMD_READ {
+            match l {
+                Lang::De => format!("Antwort: Parameter, {len} Byte"),
+                Lang::En => format!("answer: parameters, {len} bytes"),
+            }
+        } else if fc == uart1::CMD_WRITE {
+            l.pick("Quittung: übernommen", "acknowledged: taken").into()
+        } else {
+            let what = match uart1::Code::of(fc) {
+                Some(uart1::Code::UnknownCommand) => l.pick("Befehl unbekannt", "command unknown"),
+                Some(uart1::Code::WrongLength) => l.pick("Länge falsch", "length wrong"),
+                Some(uart1::Code::Markers) => l.pick("Blockmarker falsch", "block markers wrong"),
+                Some(uart1::Code::Rejected) => l.pick("Parameterprüfung fehlgeschlagen, nichts übernommen", "parameter check failed, nothing taken"),
+                None => l.pick("unbekannter Code", "unknown code"),
+            };
+            format!("{} {fc:02X}: {what}", l.pick("Fehler", "error"))
+        }
+    }).collect();
+    (format!("{a:02X}"), format!("{c:02X}"), parts.join("; "))
+}
+
 fn decode_rx(bytes: &[u8], req: Option<Req>, l: Lang) -> Row {
     let mut row = Row { address: String::new(), command: String::new(), data: data_text(bytes), meaning: String::new() };
+    if let Some(Req::Uart1 { address, cmd }) = req {
+        (row.address, row.command, row.meaning) = uart1_rx(bytes, address, cmd, l);
+        return row;
+    }
     if matches!(req, Some(Req::Modbus)) && bytes.first() != Some(&b'~') {
         if bytes.len() < 5 {
             row.meaning = l.pick("Modbus-Antwort unvollständig", "Modbus answer incomplete").into();
@@ -515,6 +569,38 @@ mod tests {
         assert_eq!(cols(&lines[12])[7], "bootloader traffic left out (12,345 bytes sent, 678 received)");
         assert_eq!((cols(&lines[13])[3], cols(&lines[13])[6]), ("Error", "I/O: broken pipe"));
         assert!(lines.iter().skip(3).all(|l| cols(l).len() == 8));
+    }
+
+    #[test]
+    fn uart1_parameter_frames() {
+        let req = uart1::read_request(1).unwrap();
+        let mut data = vec![0x3C];
+        data.resize(121, 0);
+        data.push(0x1B);
+        data.resize(149, 0);
+        data.push(0x08);
+        data.resize(uart1::READ_LEN, b' ');
+        let frame = |a: u8, c: u8, d: &[u8]| {
+            let mut body = vec![a, c, d.len() as u8];
+            body.extend_from_slice(d);
+            let crc = uart1::crc16_xmodem(&body);
+            [vec![0x55], body, crc.to_be_bytes().to_vec(), vec![0xAA]].concat()
+        };
+        let ans = [req.clone(), frame(1, 0x47, &data)].concat();
+        let block = [vec![1], data.clone()].concat();
+        let write = uart1::write_request(1, &block).unwrap();
+        let lines = export(vec![
+            entry(1, Kind::Tx, &req, 0),
+            entry(1, Kind::Rx, &ans[..50], 10),
+            entry(1, Kind::Rx, &ans[50..], 20),
+            entry(1, Kind::Tx, &write, 30),
+            entry(1, Kind::Rx, &frame(1, 0xE2, &[]), 40),
+        ], 0, Lang::En);
+        let tx = cols(&lines[4]);
+        assert_eq!((tx[4], tx[5], tx[7]), ("01", "47", "UART1: read parameters (55/47)"));
+        assert_eq!(cols(&lines[5])[7], "echo of the request; answer: parameters, 168 bytes");
+        assert_eq!(cols(&lines[6])[7], "UART1: write parameters (55/A1)");
+        assert_eq!(cols(&lines[7])[7], "error E2: parameter check failed, nothing taken");
     }
 
     #[test]

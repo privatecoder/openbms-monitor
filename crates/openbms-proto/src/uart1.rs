@@ -148,6 +148,21 @@ fn frame_at(buf: &[u8]) -> Option<usize> {
     (crc16_xmodem(&buf[1..total - 3]) == crc).then_some(total)
 }
 
+/// Every valid frame in `bytes`, in order, as (address, command, data length): for the capture export.
+pub fn headers(bytes: &[u8]) -> Vec<(u8, u8, usize)> {
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < bytes.len() {
+        match frame_at(&bytes[i..]) {
+            Some(n) => {
+                out.push((bytes[i + 1], bytes[i + 2], n - OVERHEAD));
+                i += n;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
 /// Collects the received bytes of one exchange and finds the answer to `request` in them. Frames are cut by their LEN,
 /// never at the first `AA` or `0D`; TCP may split or join them. A start byte whose frame is broken or incomplete does
 /// not hold up a valid frame after it. An exact echo of the request is skipped, as is every frame of another address,
