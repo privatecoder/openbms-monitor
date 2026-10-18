@@ -174,7 +174,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
-      {image?.kind === "maintenance" && <PatchImageNotes inst={inst?.id ?? null} port={mPort} start={address} release={image.release} powerRtc={!!image.power_rtc} locked={inputsLocked}
+      {image?.kind === "maintenance" && <PatchImageNotes inst={inst?.id ?? null} port={mPort} start={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
         latent={!!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
     </div>
   );
@@ -289,7 +289,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
 /** Before flashing an image with the patch functions: the update way, and the target's release bits, which the flash
  *  takes over unchanged (a fresh read on the pack bus, else the last stored block with its age, not checked). */
-function PatchImageNotes({ inst, port, start, release, powerRtc, locked, latent }: { inst: string | null; port: string; start: number; release: string; powerRtc: boolean; locked: boolean; latent: boolean }) {
+function PatchImageNotes({ inst, port, start, release, powerRtc, packCutoff, locked, latent }: { inst: string | null; port: string; start: number; release: string; powerRtc: boolean; packCutoff: boolean; locked: boolean; latent: boolean }) {
   const { t, i18n } = useTranslation();
   const [address, setAddress] = useState(start);
   const [fresh, setFresh] = useState<number | null | undefined>(undefined);
@@ -311,7 +311,7 @@ function PatchImageNotes({ inst, port, start, release, powerRtc, locked, latent 
     try { setFresh(await api.firmwareGroup0(port, address)); } catch { setFresh(null); } finally { setReading(false); }
   };
   const g0 = fresh ?? snap?.g0 ?? null;
-  const keys = g0 === null ? [] : flashGateKeys(g0, powerRtc);
+  const keys = g0 === null ? [] : flashGateKeys(g0, powerRtc, packCutoff);
   return (
     <div className="space-y-1 rounded-md border border-line p-3 text-sm">
       <p className="flex items-center gap-1 font-medium">{t("fw.patch.title", { release })}<InfoIcon id="topic.patchGates" /></p>
@@ -330,7 +330,7 @@ function PatchImageNotes({ inst, port, start, release, powerRtc, locked, latent 
         <p className="text-discharge">{t("fw.patch.snapshot", { value: snap.g0.toString(16).toUpperCase().padStart(2, "0"), at: new Date(snap.at).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })}</p>
       )}
       {g0 === null && fresh !== undefined && !snap && <p className="text-muted">{t("fw.patch.none")}</p>}
-      {keys.map((k) => <p key={k} className={k === "fw.patch.ok" || k === "fw.patch.powerOpen" ? "text-ok" : "text-discharge"}>{t(k)}</p>)}
+      {keys.map((k) => <p key={k} className={k === "fw.patch.ok" || k === "fw.patch.powerOpen" || k === "fw.patch.cutoffOff" ? "text-ok" : k === "fw.patch.lockKept" ? "text-alarm" : "text-discharge"}>{t(k)}</p>)}
       <p className="text-muted">{t("fw.patch.wayBack")}</p>
     </div>
   );
