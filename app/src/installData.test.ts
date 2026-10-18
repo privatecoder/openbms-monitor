@@ -109,3 +109,21 @@ describe("cell type writes of one installation", () => {
     expect(shown).toBe("stored");
   });
 });
+
+describe("an unresolved cell type cache", () => {
+  it("stays marked until a read back succeeds, and the next write tries again", async () => {
+    const q: CellQueue = { tail: Promise.resolve(), gen: 0, stale: true };
+    let shown = "both", reads = 0;
+    const restore = (b: Record<string, unknown>) => { shown = String(b.v); };
+    // the write goes through, the read back fails: still unresolved
+    const failing = async () => { reads++; throw new Error("locked"); };
+    expect(await queueCellTypes(q, async () => undefined, failing, { v: "x" }, restore)).toBeNull();
+    expect(shown).toBe("both");
+    expect(q.stale).toBe(true);
+    // the next write reads again; now it works and the cache is the stored state
+    expect(await queueCellTypes(q, async () => undefined, async () => { reads++; return { v: "stored" }; }, { v: "x" }, restore)).toBeNull();
+    expect(q.stale).toBe(false);
+    expect(shown).toBe("stored");
+    expect(reads).toBe(2);
+  });
+});
