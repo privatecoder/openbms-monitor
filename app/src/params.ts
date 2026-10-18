@@ -192,3 +192,10 @@ export const SWITCH_BITS: Record<number, number[]> = {
   0: [1], 1: [0, 1, 2, 3, 4, 5, 6, 7], 2: [0, 1, 2, 3, 4, 5, 6, 7], 3: [0, 1, 2, 3, 4, 5, 6, 7],
   4: [0, 1, 2, 3, 4, 5, 6, 7], 5: [0, 1, 2, 3, 4, 6, 7], 6: [0, 1, 2, 3, 4, 5, 6, 7], 7: [0, 1, 3, 4, 5, 7],
 };
+
+/** A parameter history answer (last write, the block it replaced) asked for pack `address` on `link`: only that pack's
+ *  column of the same link takes it. A late answer after a change of connection or installation, whose column was read
+ *  again on the new link meanwhile, changes nothing. */
+export function withHistory(sources: Source[], address: number, link: string, h: { last_written: number | null; previous: Parameters | null }): Source[] {
+  return sources.map((x) => (x.id === `pack-${address}` && x.link === link ? { ...x, lastWritten: h.last_written, previous: h.previous } : x));
+}

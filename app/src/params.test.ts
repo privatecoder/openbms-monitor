@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BM_NAMES, KEYS, UNITS, deviating, exportName, parseExport, toExport, type Parameters } from "./params";
+import { BM_NAMES, KEYS, UNITS, deviating, exportName, parseExport, toExport, withHistory, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -61,5 +61,20 @@ describe("deviating", () => {
   it("marks nothing when all agree or only one has a value", () => {
     expect(deviating(["5", "5"]).size).toBe(0);
     expect(deviating(["5", undefined]).size).toBe(0);
+  });
+});
+
+describe("a late parameter history", () => {
+  it("only the pack's column of the link it was asked on takes it", () => {
+    const prev = { address: 1 } as unknown as Parameters;
+    const cols: Source[] = [
+      { id: "pack-1", kind: "pack", label: "01", link: "inst-b|2" },
+      { id: "pack-2", kind: "pack", label: "02", link: "inst-a|1" },
+    ];
+    // asked for pack 1 on A's link; pack 1 meanwhile read on B's: nothing changes
+    expect(withHistory(cols, 1, "inst-a|1", { last_written: 5, previous: prev })).toEqual(cols);
+    const same = withHistory(cols, 1, "inst-b|2", { last_written: 5, previous: prev });
+    expect(same[0].previous).toBe(prev);
+    expect(same[1].previous).toBeUndefined();
   });
 });
