@@ -192,10 +192,18 @@ impl Framer {
         self.take(request, true)
     }
 
-    /// At the end of the exchange's deadline: the first complete answer to `request` anywhere in what arrived, also
-    /// behind a started frame that never completed (a cut-off prefix must not hide a short answer).
-    pub fn finish(&mut self, request: &[u8]) -> Option<Reply> {
-        self.take(request, false)
+    /// At the end of the exchange (deadline or a closed connection), once: an answer as `next` finds it; else a valid
+    /// frame that lies inside a started answer which never completed is no answer of its own (it may be the data of a
+    /// cut-off 0x47, whose switch bytes can read `55 00 E2 00 76 D0 AA`): `Truncated`, an open outcome, never a refusal.
+    pub fn finish(&mut self, request: &[u8]) -> Finish {
+        if let Some(r) = self.take(request, true) {
+            return Finish::Reply(r);
+        }
+        // what the protected scan held back lies after the start of an answer still open up to the buffer's end
+        match self.take(request, false) {
+            Some(_) => Finish::Truncated,
+            None => Finish::Nothing,
+        }
     }
 
     fn take(&mut self, request: &[u8], protect: bool) -> Option<Reply> {
@@ -228,7 +236,7 @@ impl Framer {
             if protect && rest.len() < 4 {
                 return None;
             }
-            if protect && (expected(rest, request) || (rest.len() < request.len() && request.starts_with(rest))) && rest.len() < usize::from(rest[3]) + OVERHEAD {
+            if protect && (plausible(rest, request) || (rest.len() < request.len() && request.starts_with(rest))) && rest.len() < usize::from(rest[3]) + OVERHEAD {
                 return None;
             }
             if let Some(n) = frame_at(rest) {
@@ -237,6 +245,24 @@ impl Framer {
         }
         None
     }
+}
+
+/// The end of an exchange (`Framer::finish`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finish {
+    Reply(Reply),
+    /// a started answer never completed, with a valid-looking frame inside it: open whether the pack answered
+    Truncated,
+    Nothing,
+}
+
+/// The block markers of a 0x47 answer, as offsets from its start byte.
+const MARKERS: [(usize, u8); 3] = [(4, 0x3C), (125, 0x1B), (153, 0x08)];
+
+/// A started answer that can still be the one to `request`: an expected header (`expected`), and for a 0x47 answer no
+/// marker byte already received that contradicts it.
+fn plausible(rest: &[u8], request: &[u8]) -> bool {
+    expected(rest, request) && (rest[2] != CMD_READ || MARKERS.iter().all(|&(i, v)| rest.get(i).is_none_or(|b| *b == v)))
 }
 
 /// The header at `rest` (at least 4 bytes) is one of the answers `request` can get.
@@ -392,6 +418,11 @@ mod tests {
         assert_eq!(f.next(&req), None);
         f.push(&ans[161..]);
         assert_eq!(f.next(&req), Some(Reply::Params(d.clone())));
+        // the last 14 bytes never come: at the end the inner frame is no E2 of the pack, the outcome is open
+        let mut f = Framer::new();
+        f.push(&ans[..161]);
+        assert_eq!(f.next(&req), None);
+        assert_eq!(f.finish(&req), Finish::Truncated);
         // the same after the echo of the request
         let mut f = Framer::new();
         f.push(&[req.clone(), ans[..161].to_vec()].concat());
@@ -432,14 +463,19 @@ mod tests {
                 assert_eq!(f.next(&write), Some(reply.clone()));
             }
         }
-        // to a read, the prefix could be the answer: waited for, and at the deadline the E2 behind it is still found
+        // to a read, the prefix is disproved by its first marker byte (0x55, not 0x3C): the E2 behind it counts
         let read = read_request(0).unwrap();
         for echo in [vec![], read.clone()] {
             let mut f = Framer::new();
             f.push(&[echo, prefix.clone(), answer(0, 0xE2, &[])].concat());
-            assert_eq!(f.next(&read), None);
-            assert_eq!(f.finish(&read), Some(Reply::Error(Code::Rejected)));
+            assert_eq!(f.next(&read), Some(Reply::Error(Code::Rejected)));
         }
+        // a longer cut-off start whose markers so far fit: waited for, and at the end the E2 behind it is open, no refusal
+        let started = answer(0, CMD_READ, &data())[..30].to_vec();
+        let mut f = Framer::new();
+        f.push(&[started, answer(0, 0xE2, &[])].concat());
+        assert_eq!(f.next(&read), None);
+        assert_eq!(f.finish(&read), Finish::Truncated);
         // an echo of the write is waited for while it arrives (its data may hold a valid-looking frame); once the bytes
         // part from the request it is no echo, and the ACK after it counts
         let mut f = Framer::new();
@@ -458,7 +494,11 @@ mod tests {
         // nothing complete: still nothing at the deadline
         let mut f = Framer::new();
         f.push(&prefix);
-        assert_eq!(f.finish(&read), None);
+        assert_eq!(f.finish(&read), Finish::Nothing);
+        // a complete answer at the end is a reply
+        let mut f = Framer::new();
+        f.push(&answer(0, 0xE2, &[]));
+        assert_eq!(f.finish(&read), Finish::Reply(Reply::Error(Code::Rejected)));
     }
 
     #[test]
