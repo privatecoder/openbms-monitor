@@ -110,6 +110,35 @@ impl Master {
     }
 }
 
+/// What a pack's own `03` says about its patch, for this connection only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackFinding {
+    /// a format-2/3 identity with a supported patch version: its capabilities and its listed name (None: not listed)
+    Proven { info: MaintInfo, caps: known::PackCaps, listed: Option<&'static str> },
+    /// any other valid `MNT`, or a patch below the supported one: no patch functions; overrides a stored proof
+    Negative(Option<MaintInfo>),
+    /// silence or an error: says nothing; a stored proof keeps holding
+    Undecided,
+}
+
+impl PackFinding {
+    pub fn of(answer: super::dialog::PackAnswer) -> Self {
+        Self::of_in(known::PATCH_BUILDS, answer)
+    }
+
+    pub fn of_in(table: &'static [PatchBuild], answer: super::dialog::PackAnswer) -> Self {
+        use super::dialog::PackAnswer;
+        match answer {
+            PackAnswer::Info(info) => match known::pack_caps_of(info.format, info.patch) {
+                Some(caps) => PackFinding::Proven { info, caps, listed: known::patch_in(table, info.format, info.base, info.patch, &info.build_id_hex()).map(|b| b.name) },
+                None => PackFinding::Negative(Some(info)),
+            },
+            PackAnswer::OtherMnt => PackFinding::Negative(None),
+            PackAnswer::Undecided => PackFinding::Undecided,
+        }
+    }
+}
+
 /// Scenario C': a trusted patched master whose marker is on gets no image that is not a patched build. The original
 /// ignores the marker: it would poll right after the flash and the marker word would stay hidden in flash. The user
 /// releases the master first (DIP 5–8 OFF keep the bus quiet meanwhile). Every other master is left to the bus check.
@@ -195,6 +224,17 @@ mod tests {
         assert!(!m.may_halt() && !m.may_release());
         let m = patched(info([16, 6, 13], [1, 5], LISTED), None);
         assert!(m.trusted() && !m.may_halt() && !m.may_release());
+    }
+
+    #[test]
+    fn a_packs_own_03_is_proven_negative_or_undecided() {
+        use super::super::dialog::PackAnswer;
+        let p = PackFinding::of(PackAnswer::Info(MaintInfo { format: 3, hard_stop: Some(false), ..info([16, 6, 13], [1, 6], OTHER) }));
+        assert!(matches!(p, PackFinding::Proven { caps, listed: None, .. } if caps.write_gate_bit0 && caps.uart1_identity));
+        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 5], LISTED))), PackFinding::Proven { listed: Some("16.06.13 MAINT 1.5"), .. }));
+        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 4], OTHER))), PackFinding::Negative(Some(_))));
+        assert_eq!(PackFinding::of(PackAnswer::OtherMnt), PackFinding::Negative(None));
+        assert_eq!(PackFinding::of(PackAnswer::Undecided), PackFinding::Undecided);
     }
 
     #[test]

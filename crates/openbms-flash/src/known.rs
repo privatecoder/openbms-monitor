@@ -56,6 +56,39 @@ pub struct Caps {
     pub start_gate_bit2: bool,
 }
 
+/// What every pack with the patch offers at its own address: the binary parameter and identity service and the local
+/// write release (Group0 bit 0). The Group0 bit 2 a pack stores is a master setting: it acts only at address 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackCaps {
+    pub uart1_params: bool,
+    pub uart1_identity: bool,
+    pub write_gate_bit0: bool,
+    /// a binary 0xA1 must not change Group0 bit 2 (E3), whether or not the pack is the master
+    pub keeps_start_bit2: bool,
+}
+
+/// What only the master (address 0) offers: the 5-byte `0x64/02` state, start/stop, and the start release Group0 bit 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MasterCaps {
+    pub status_split: bool,
+    pub start_gate_bit2: bool,
+}
+
+impl Caps {
+    pub fn pack(&self) -> PackCaps {
+        PackCaps { uart1_params: self.uart1_params, uart1_identity: self.uart1_identity, write_gate_bit0: self.write_gate_bit0, keeps_start_bit2: self.start_gate_bit2 }
+    }
+
+    pub fn master(&self) -> MasterCaps {
+        MasterCaps { status_split: self.status_split, start_gate_bit2: self.start_gate_bit2 }
+    }
+}
+
+/// The pack capabilities of a `0x64/03` identity read at any address (None: another format or below `MIN_PATCH`).
+pub fn pack_caps_of(format: u8, patch: [u8; 2]) -> Option<PackCaps> {
+    caps_of(format, patch).map(|c| c.pack())
+}
+
 /// The lowest patch version of each capability: (status_split, uart1_params, uart1_identity, write_gate_bit0,
 /// start_gate_bit2). The app supports the patch functions as a whole from `MIN_PATCH` on.
 pub const CAP_MIN: CapMin = CapMin { status_split: [1, 5], uart1_params: [1, 5], uart1_identity: [1, 5], write_gate_bit0: [1, 5], start_gate_bit2: [1, 5] };
@@ -226,6 +259,16 @@ mod tests {
         assert_eq!(caps_of(2, [1, 4]), None, "1.4: format 2 without release bits");
         assert_eq!(caps_of(1, [1, 5]), None, "format 1");
         assert_eq!(PATCH_BUILDS[0].caps(), Some(full));
+    }
+
+    #[test]
+    fn pack_and_master_capabilities_are_apart() {
+        let c = caps_of(3, [1, 5]).unwrap();
+        assert_eq!(c.pack(), PackCaps { uart1_params: true, uart1_identity: true, write_gate_bit0: true, keeps_start_bit2: true });
+        assert_eq!(c.master(), MasterCaps { status_split: true, start_gate_bit2: true });
+        assert_eq!(pack_caps_of(2, [1, 5]), Some(c.pack()));
+        assert_eq!(pack_caps_of(2, [1, 4]), None);
+        assert_eq!(pack_caps_of(1, [1, 5]), None);
     }
 
     #[test]

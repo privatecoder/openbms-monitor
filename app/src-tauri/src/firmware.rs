@@ -330,6 +330,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
     let slot = FlashSlot(state.flashing.clone());
+    // the pack's live 64/03 finding of this connection no longer holds once its flash begins (the stored proof ends with
+    // the pending record below); the next CAN connect confirms or replaces the provisional proof
+    crate::bank::clear_live(&state, crate::link_now(&state).gen, address);
     stop_monitor(&state)?;
     let mut link = open_port(&key, l)?;
     let bank = match &inst {
