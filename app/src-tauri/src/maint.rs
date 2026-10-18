@@ -1111,6 +1111,21 @@ mod tests {
     }
 
     #[test]
+    fn a_flash_start_writes_its_pending_record_and_ends_the_proof_together() {
+        let s = store_at("pending-with");
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        s.set_patch_proof(&a.id, 0, "SYN-0", "16.06.13 MAINT 1.5", "flash", 1).unwrap();
+        // the second step fails: no pending record stays behind, the proof is untouched
+        assert!(s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 2, |_| Err("disk I/O error".into())).is_err());
+        assert!(s.all_pending().unwrap().is_empty());
+        assert!(s.patch_proof(&a.id, 0).unwrap().is_some());
+        // both succeed: the record is there and the proof gone
+        s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 3, |st| st.clear_patch_proof(&a.id, 0)).unwrap();
+        assert_eq!(s.all_pending().unwrap().len(), 1);
+        assert!(s.patch_proof(&a.id, 0).unwrap().is_none());
+    }
+
+    #[test]
     fn a_timeout_names_the_marker_it_saw() {
         let last = MaintState { marker_word: 0x1234_5678, effective_slaves: 2 };
         let e = MaintError::from(DialogError::Timeout { after: Duration::from_secs(3), last });

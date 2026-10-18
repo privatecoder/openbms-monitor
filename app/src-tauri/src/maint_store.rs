@@ -663,6 +663,15 @@ impl Store {
 
     /// Written before the restart into the bootloader, so a crash or power loss leaves it behind. `bms_serial`: the
     /// target's String 2, if read as a real serial.
+    /// `add_pending` and `then` (the flash start's other store step) in one transaction: a failure of either leaves no row.
+    pub fn add_pending_with(&self, endpoint: &str, pack: u8, release: &str, bms_serial: Option<&str>, now: i64, then: impl FnOnce(&Self) -> Result<(), String>) -> Result<i64, String> {
+        self.atomic(|s| {
+            let id = s.add_pending(endpoint, pack, release, bms_serial, now)?;
+            then(s)?;
+            Ok(id)
+        })
+    }
+
     pub fn add_pending(&self, endpoint: &str, pack: u8, release: &str, bms_serial: Option<&str>, now: i64) -> Result<i64, String> {
         self.db
             .execute(

@@ -51,7 +51,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [progress, setProgress] = useState<FirmwareProgress | null>(null);
   const [done, setDone] = useState<FirmwareDone | null>(null);
   // what the last run flashed: the pack, the image and the version known before (for the result's version line)
-  const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string } | null>(null);
+  const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string; marker?: string } | null>(null);
   const [flashTick, setFlashTick] = useState(0);
   const [tab, setTab] = useState<"bus" | "manual">("bus");
   const [closeRefused, setCloseRefused] = useState(false);
@@ -119,7 +119,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
       const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, inst.id, checks);
-      setFlashed({ address: a, image, checked: from, bank: r.bank });
+      setFlashed({ address: a, image, checked: from, bank: r.bank, marker: r.marker });
       // the pending record is written now
       void maint.loadLists();
     } catch (e) {
@@ -139,8 +139,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   // the master read and the installation's checks count only on the installation's own port
   const samePort = mPort === port;
-  // C': a master with its marker on needs „Master freigeben“ before an image without maintenance functions
-  const release = samePort && releaseFirst(master, address, image?.kind ?? null);
+  // C': a master with its marker on needs „Master freigeben“ before an image without maintenance functions; the master
+  // belongs to the installation, whatever pack bus endpoint is chosen (the backend checks again)
+  const release = releaseFirst(master, address, image?.kind ?? null);
   const targetVersion = target ? packVersion(address, target.firmware_version, samePort ? master : null) : null;
   const manualStart = async () => {
     const confirmation = typed;
@@ -246,6 +247,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <section className="space-y-3 border-t border-line pt-5">
           <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
           {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
+          {flashed?.marker === "unchecked" && <p className="text-sm text-discharge">{t("fw.markerUnchecked")}</p>}
           {running && (
             <>
               <p>{progress ? t(`fw.stage.${progress.stage}`, { n: (progress.block ?? 0) + 1, total: progress.total ?? 0 }) : t("fw.stage.preflight")}</p>

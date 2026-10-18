@@ -58,6 +58,25 @@ struct FirmwareDone {
 #[derive(Serialize, Clone)]
 pub struct FlashStarted {
     bank: &'static str,
+    /// address 0: "checked" (a fresh control channel read decided C'), "unchecked" (no fresh read; the marker last seen
+    /// was not on, the flash goes on with that hint); None for another address
+    #[serde(skip_serializing_if = "Option::is_none")]
+    marker: Option<&'static str>,
+}
+
+/// What a flash of the master needs from its marker (C'), for the installation whatever pack bus endpoint is used: a fresh
+/// read of the installation's control channel (`fresh`: None without a control channel or when the read failed or showed
+/// nothing) decides; without one the marker last seen counts. Err: the refusal key; Ok: "checked" or "unchecked".
+pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&Master>, last_on: bool) -> Result<Option<&'static str>, &'static str> {
+    if address != 0 {
+        return Ok(None);
+    }
+    match fresh.filter(|m| **m != Master::Unknown) {
+        Some(m) if policy::release_first(m, image) => Err("release-master-first"),
+        Some(_) => Ok(Some("checked")),
+        None if image != known::ImageKind::Maintenance && last_on => Err("release-master-first-unread"),
+        None => Ok(Some("unchecked")),
+    }
 }
 
 fn lang(code: &str) -> Lang {
@@ -283,17 +302,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
     let owner = maint::installation(&state, &installation).map_err(to_text)?;
     let inst = checks.then(|| owner.clone());
-    if let Some(i) = inst.as_ref().filter(|i| address == 0 && i.control.is_some()) {
-        let master = maint::read_master(&state, i).unwrap_or(Master::Unknown);
-        let kind = maint_kind(info.kind);
-        if policy::release_first(&master, kind) {
-            return Err(to_text(maint::refused("release-master-first")));
-        }
-        // no fresh read: the marker last seen on still counts
-        if master == Master::Unknown && kind != known::ImageKind::Maintenance && maint::with_store(&state, |s| s.marker_last_on(&i.id)).map_err(to_text)? {
-            return Err(to_text(maint::refused("release-master-first-unread")));
-        }
-    }
+    // C' belongs to the installation's master, not to the pack bus endpoint chosen: also a manual endpoint (another
+    // gateway channel or adapter on the same bus) gets the check
+    let fresh = if address == 0 && owner.control.is_some() { maint::read_master(&state, &owner).ok() } else { None };
+    let last_on = address == 0 && maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
+    let marker = master_marker_check(address, maint_kind(info.kind), fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?;
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
@@ -321,13 +334,12 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
     let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
-    // written before the restart, so a crash or power loss leaves it behind
-    let pending = maint::with_store(&state, |s| s.add_pending(&key, address, &info.release, target.as_deref(), crate::history::now_ms())).map_err(to_text)?;
-    maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} log={}", info.release, info.custom, log_path.display()));
-    // the place's version proof ends with the start of every flash (also one that breaks off); only a finished flash of
-    // an image with the patch functions sets it again, for the String 2 read back
+    // written before the restart, so a crash or power loss leaves it behind; in the same transaction the place's version
+    // proof ends (also for a flash that breaks off): either both or neither, so a failed step leaves no pending record.
+    // Only a finished flash of an image with the patch functions sets the proof again, for the String 2 read back.
+    let pending = maint::with_store(&state, |s| s.add_pending_with(&key, address, &info.release, target.as_deref(), crate::history::now_ms(), |s| s.clear_patch_proof(&owner.id, address))).map_err(to_text)?;
+    maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} marker={} log={}", info.release, info.custom, marker.unwrap_or("-"), log_path.display()));
     let patch_image = known::patch_image(&info.sha256);
-    maint::with_store(&state, |s| s.clear_patch_proof(&owner.id, address)).map_err(to_text)?;
     let owner_id = owner.id.clone();
     let store = state.maint.clone();
     let stored = target.clone();
@@ -365,7 +377,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         drop(port_slot);
         let _ = app.emit("firmware-done", done);
     });
-    Ok(FlashStarted { bank })
+    Ok(FlashStarted { bank, marker })
 }
 
 /// The String 2 a version proof after a finished patched flash is bound to: the one read back, and only if it is the
@@ -430,6 +442,30 @@ mod tests {
     fn utc_stamp_handles_leap_day() {
         // 2024-02-29 23:59:59 UTC
         assert_eq!(utc_stamp(1_709_251_199), "20240229-235959Z");
+    }
+
+    #[test]
+    fn the_master_marker_is_checked_for_the_installation_whatever_endpoint() {
+        use openbms_flash::maint::policy::Patch;
+        use openbms_proto::{MaintInfo, MaintState};
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B] };
+        let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
+        let (on, off) = (with(0), with(u32::MAX));
+        let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);
+        // fresh read: the marker decides
+        assert_eq!(master_marker_check(0, orig, Some(&on), false), Err("release-master-first"));
+        assert_eq!(master_marker_check(0, maint, Some(&on), true), Ok(Some("checked")));
+        assert_eq!(master_marker_check(0, orig, Some(&off), true), Ok(Some("checked")));
+        assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), false), Ok(Some("checked")));
+        // no control channel or no answer: the marker last seen on refuses, else the flash goes on marked unchecked
+        for fresh in [None, Some(&Master::Unknown)] {
+            assert_eq!(master_marker_check(0, orig, fresh, true), Err("release-master-first-unread"));
+            assert_eq!(master_marker_check(0, known::ImageKind::Custom, fresh, true), Err("release-master-first-unread"));
+            assert_eq!(master_marker_check(0, orig, fresh, false), Ok(Some("unchecked")));
+            assert_eq!(master_marker_check(0, maint, fresh, true), Ok(Some("unchecked")));
+        }
+        // another address: no marker question
+        assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
     }
 
     #[test]

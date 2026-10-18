@@ -219,7 +219,9 @@ export interface FirmwareProgress { stage: FirmwareStage; block: number | null; 
  *  pack may hang in its bootloader and its record stays. */
 export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null }
 /** The right-bank check of a flash: "none" without an installation. */
-export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none" }
+/** `marker` (master only): "checked" when a fresh read of the installation's control channel decided C', "unchecked"
+ *  without one (the marker last seen was not on). */
+export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" }
 
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
 /** An installation: endpoints may belong to several installations; `master_serial`, `archived`, `legacy` (the endpoint
