@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
-import { api, type PackLive } from "../api";
+import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, dischargeFree, energyText, errorText, heaterOn, noAnswer, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
-import { getProfile } from "../profile";
+import { CUTOFF_BIT, getProfile } from "../profile";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
 import { SectionHead, StatusLine } from "./Section";
@@ -21,7 +21,7 @@ const P79 = 79;
 type Action = "restart" | "on" | "off" | "heater" | "remaining" | "clear";
 type Tone = "ok" | "warn" | "error";
 type Note = { text: string; tone: Tone } | null;
-type Ask = { kind: "restart" | "off" } | { kind: "clear"; live: PackLive | null };
+type Ask = { kind: "restart" } | { kind: "off"; lock: "cutoff" | "cutoffMaybe" | "soft" } | { kind: "clear"; live: PackLive | null };
 
 // when the app forced the heater on, per connection and pack: the button reads „Heizung aus“ and the state line shows
 // the expected end. The BMS's own counter (0x200000C8) is not readable over any command.
@@ -30,11 +30,15 @@ const HEATER_MS = 3600 * 1000;
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack; over the
  *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
-export function PackControlSection({ address, usable, mode = "full", powerLocked = null, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
+export function PackControlSection({ address, usable, mode = "full", powerLocked = null, cutoff = false, group0, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
   mode?: "full" | "power";
   /** CAN socket: Group0 bit 3 as last seen (true: locked, the buttons wait); null: not known, the backend reads it */
   powerLocked?: boolean | null;
+  /** CAN socket: the stored pack cutoff (MAINT 1.6) proven for this pack on this connection */
+  cutoff?: boolean;
+  /** Group0 of the pack's parameters column read on this connection (bits 4/5: extended off, lock state) */
+  group0?: number;
   /** after a restart: the pack's parameters column (if shown) is read again */
   onChanged?: (address: number) => void;
   /** P79 (SOC protection, %) from the pack's read or stored column; null: read once when the field is used */
@@ -53,6 +57,8 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   const [noteFor, setNoteFor] = useState<Action | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [ah, setAh] = useState("");
+  // Group0 and the patch of this section's own fresh 0x47 (before „Aus“, after ein/aus): newer than the column
+  const [fresh47, setFresh47] = useState<{ g0: number; patch: PackPatch | null } | null>(null);
   const gen = useRef(0);
   const current = useCurrent(address);
   const linkNow = useCurrent(linkKey);
@@ -80,7 +86,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     finally { if (gen.current === mine) setReading(false); }
   };
   useEffect(() => {
-    setLive(null); setNote(null); setAh(""); setP79(null); setAsk(null); p79Asked.current.clear();
+    setLive(null); setNote(null); setAh(""); setP79(null); setAsk(null); setFresh47(null); p79Asked.current.clear();
     if (!open || !usable || address === null) return;
     void reload(address);
   }, [open, usable, address, linkKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -138,23 +144,71 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
       : { text: t("ctl.restart.notReachable"), tone: "error" };
   });
 
-  const onOff = (a: number, on: boolean) => run(on ? "on" : "off", a, async () => {
-    await api.packOnOff(a, on);
+  // a fresh 0x47 of this pack (Group0 and the patch proof it names); undefined when not readable
+  const read47 = async (a: number, lk: string) => {
+    try {
+      const p = await api.parameters(a);
+      if (!same(a, lk)) return undefined;
+      const f = { g0: p.function_switches[0], patch: p.patch ?? null };
+      setFresh47(f);
+      return f;
+    } catch { return undefined; }
+  };
+  // the pack cutoff matters here: proven over the CAN socket, or a pack with a patch proof on RS485-1/2 (may have 1.6)
+  const cutoffAware = (patch: PackPatch | null | undefined) => (can ? cutoff : !!patch && patch.caps.pack_cutoff !== false);
+
+  // „Aus“: where the pack may store a cutoff, Group0 is read fresh first and decides the confirmation
+  const askOff = async (a: number) => {
+    const lk = linkNow.current;
+    if (can && !cutoff) { setAsk({ kind: "off", lock: "soft" }); return; }
+    setBusy("off");
+    const f = await read47(a, lk);
+    setBusy(null);
+    if (same(a, lk)) setAsk({ kind: "off", lock: offKind(mode, cutoff, f?.patch, f?.g0) });
+  };
+
+  const onOff = (a: number, on: boolean) => run(on ? "on" : "off", a, async (lk) => {
+    // where the pack may store a cutoff (RS485-1/2: not known yet without the read before „Aus“) Group0 is read after it
+    const before = fresh47, ask47 = cutoffAware(before?.patch) || (!can && !before);
+    try { await api.packOnOff(a, on); }
+    catch (e) {
+      // also after a refusal (RTN 08: the lock not stored): the state and Group0 as they are now
+      if (same(a, lk) && ask47) { await reload(a); await read47(a, lk); }
+      throw e;
+    }
     // the output follows at the next 1-s evaluation of the BMS
     await wait(2000);
     const l = await reload(a);
-    // the master's acknowledgement over the CAN socket covers only itself, not its broadcast to the slaves
-    const slaves = (n: NonNullable<Note>): Note => (masterBroadcast(mode, a) ? { text: `${n.text} ${t("ctl.onOff.slaves")}`, tone: n.tone } : n);
-    if (!l) return slaves({ text: t("ctl.sentUnread"), tone: "warn" });
+    // the lock state from that fresh 0x47, never from the ACK alone
+    const f = ask47 ? await read47(a, lk) : undefined;
+    const aware = cutoffAware(f?.patch ?? before?.patch);
+    const cut = aware ? cutoffOutcome(on, f?.g0, l?.status ?? null) : null;
+    // the master's acknowledgement over the CAN socket covers only itself, not its broadcast to the slaves; with the pack
+    // cutoff its lock stays its own and the master's charge limit follows only after the next polling
+    const slaves = (n: NonNullable<Note>): Note => (masterBroadcast(mode, a)
+      ? { text: `${n.text} ${t("ctl.onOff.slaves")}${cutoff ? ` ${t("ctl.cutoff.master")} ${t("ctl.cutoff.ccl")}` : ""}`, tone: n.tone } : n);
+    // RS485-1/2: bit 5 only means a lock if the pack has MAINT 1.6
+    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && aware && f
+      ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (f.g0 >> 5) & 1, state: t((f.g0 & 0x20) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
+    if (can && cut === "stillLocked") return slaves({ text: t("ctl.cutoff.stillLocked"), tone: "error" });
+    if (can && cut === "locked" && !on) return slaves({ text: t("ctl.cutoff.offDone", { pack: no(a) }), tone: l ? "ok" : "warn" });
+    const unread = can && cut === "unread" ? ` ${t("ctl.cutoff.unread")}` : "";
+    const withUnread = (n: NonNullable<Note>): NonNullable<Note> => (unread ? { text: `${n.text}${unread}`, tone: n.tone === "ok" ? "warn" : n.tone } : n);
+    if (!l) return slaves(maybe(withUnread({ text: t("ctl.sentUnread"), tone: "warn" })));
     if (on && commandedOff(l.status)) {
       const why = offReasons(l.status);
-      return slaves({ text: t("ctl.onOff.offAgain", { reason: why.length ? names(why) : t("ctl.onOff.protection") }), tone: "error" });
+      return slaves(maybe(withUnread({ text: t("ctl.onOff.offAgain", { reason: why.length ? names(why) : t("ctl.onOff.protection") }), tone: "error" })));
     }
-    if (on) return slaves(dischargeFree(l.status) ? { text: t("ctl.onOff.onDone"), tone: "ok" } : { text: t("ctl.onOff.onBlocked"), tone: "warn" });
+    if (on && can && cut === "releasedHeld") return slaves({ text: t("ctl.cutoff.releasedHeld"), tone: "warn" });
+    if (on) {
+      const n = dischargeFree(l.status) ? { text: t("ctl.onOff.onDone"), tone: "ok" as const } : { text: t("ctl.onOff.onBlocked"), tone: "warn" as const };
+      return slaves(maybe(withUnread(can && cut === "released" ? { text: `${t("ctl.cutoff.released")} ${n.text}`, tone: n.tone } : n)));
+    }
+    if (can && cut === "notLocked") return slaves({ text: t("ctl.cutoff.notLocked"), tone: "warn" });
     // „done“ only when the read shows it: charging current may have lifted „off“ meanwhile
     const out = offOutcome(l.status);
-    return slaves(out === "off" ? { text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" }
-      : { text: t(out === "on" ? "ctl.onOff.offBackOn" : "ctl.onOff.offUnclear", { pack: no(a) }), tone: "warn" });
+    return slaves(maybe(withUnread(out === "off" ? { text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" }
+      : { text: t(out === "on" ? "ctl.onOff.offBackOn" : "ctl.onOff.offUnclear", { pack: no(a) }), tone: "warn" })));
   });
 
   const heater = (a: number, on: boolean) => run("heater", a, async (lk) => {
@@ -202,7 +256,12 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     if (same(a, lk)) setAsk({ kind: "clear", live: l });
   };
 
-  const off = st ? commandedOff(st) : false;
+  // the newest Group0 seen: this section's own read, else the parameters column
+  const g0 = fresh47?.g0 ?? group0;
+  const lock = lockState(can && cutoff, !can && cutoffAware(fresh47?.patch), g0);
+  // a stored lock is released by „Ein“, whatever the off bit shows
+  const off = (st ? commandedOff(st) : false) || lock === "active";
+  const extendedOff = can && cutoff && g0 !== undefined && (g0 & CUTOFF_BIT) === 0;
   const forcedAt = forced.get(`${linkKey}|${address}`);
   const heaterForced = forcedAt !== undefined && Date.now() < forcedAt + HEATER_MS;
   const heaterEnd = heaterForced ? new Date(forcedAt! + HEATER_MS).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" }) : null;
@@ -235,12 +294,14 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
                 <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}{heaterOn(live.status) && heaterEnd && <span className="text-muted"> ({t("ctl.state.heaterUntil", { time: heaterEnd })})</span>}</div>
                 <div>{t("ctl.state.soc", { soc: nf(1).format(live.telemetry.soc), rem: nf(2).format(live.telemetry.remaining_capacity_ah), full: nf(2).format(live.telemetry.full_capacity_ah) })}</div>
                 <div>{t("ctl.state.cycles", { count: live.telemetry.cycles })}</div>
+                {lock && <div>{t("ctl.cutoff.state")} <span className={lock === "none" ? "text-ok" : "font-semibold text-alarm"}>{t(`ctl.cutoff.${lock}`)}</span></div>}
                 </>}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" disabled={disabled || powerHeld} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
-            <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : setAsk({ kind: "off" }))} title={t(off ? "ctl.tip.on" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
+            <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
+              title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>
             {!can && (
@@ -279,9 +340,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
       )}
       {ask && (
         <Confirm
-          title={t(`ctl.${ask.kind}.title`, { pack })}
-          danger={ask.kind === "clear"}
-          confirm={t(`ctl.${ask.kind}.confirm`)}
+          title={ask.kind === "off" && ask.lock !== "soft" ? t("ctl.cutoff.offTitle", { pack }) : t(`ctl.${ask.kind}.title`, { pack })}
+          danger={ask.kind === "clear" || (ask.kind === "off" && ask.lock === "cutoff")}
+          confirm={ask.kind === "off" && ask.lock !== "soft" ? t("ctl.cutoff.offConfirm") : t(`ctl.${ask.kind}.confirm`)}
           onCancel={() => setAsk(null)}
           onConfirm={() => {
             setAsk(null);
@@ -297,6 +358,12 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
                   discharged: ask.live.telemetry.energy_discharged_kwh !== null ? energyText(ask.live.telemetry.energy_discharged_kwh, lang) : "–" })
                 : t("ctl.clear.whatUnread", { pack })}</p>
               <p>{t("ctl.clear.text")}</p>
+            </>
+          ) : ask.kind === "off" && ask.lock !== "soft" ? (
+            <>
+              <p className="font-medium">{t("ctl.cutoff.offText")}{ask.lock === "cutoffMaybe" ? ` ${t("ctl.cutoff.maybe")}` : ""}</p>
+              <p>{t("ctl.cutoff.offMore", { pack })}</p>
+              {masterBroadcast(mode, address) && <p>{t("ctl.cutoff.master")} {t("ctl.cutoff.ccl")}</p>}
             </>
           ) : <p>{t(ask.kind === "off" && masterBroadcast(mode, address) ? "ctl.off.masterText" : `ctl.${ask.kind}.text`, { pack })}</p>}
         </Confirm>

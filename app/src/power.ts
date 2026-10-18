@@ -13,6 +13,13 @@ export function powerRtc(address: number | null, profile: ProfileView | null, pr
   return probe?.gen === profile.gen && probe.state === "proven" && probe.power_rtc === true;
 }
 
+/** The stored pack cutoff (MAINT 1.6, image flag bit 2) of `address` as this connection proved it, like `powerRtc`. */
+export function packCutoff(address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): boolean {
+  if (address === null || profile?.bus !== "can") return false;
+  if (address === 0) return profile.master.kind === "patched" && profile.master.caps?.pack_cutoff === true;
+  return probe?.gen === profile.gen && probe.state === "proven" && probe.pack_cutoff === true;
+}
+
 /** Group0 bit 3 in the last state seen: the pack's column read on this connection, else the master's release bits of the
  *  profile; null: not known (a command still reads it fresh first). */
 export function powerLocked(address: number | null, group0: number | undefined, profile: ProfileView | null): boolean | null {

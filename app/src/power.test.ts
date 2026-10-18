@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MasterView, PackProbeView, ProfileView } from "./api";
-import { clockAccess, clockTargets, controlHint, controlMode, masterBroadcast, powerLocked, powerRtc } from "./power";
+import { clockAccess, clockTargets, controlHint, controlMode, masterBroadcast, packCutoff, powerLocked, powerRtc } from "./power";
 
 const caps = (power_rtc: boolean | null) => ({ status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, power_rtc });
 const master = (m: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "0011223344556677",
@@ -83,5 +83,18 @@ describe("power and clock over the CAN socket", () => {
     expect(masterBroadcast("power", 0)).toBe(true);
     expect(masterBroadcast("power", 2)).toBe(false);
     expect(masterBroadcast("full", 0)).toBe(false);
+  });
+});
+
+describe("the stored pack cutoff of a pack (MAINT 1.6)", () => {
+  it("counts only as this connection proved it for exactly this pack", () => {
+    expect(packCutoff(0, profile({ caps: { ...caps(true), pack_cutoff: true } }), undefined)).toBe(true);
+    expect(packCutoff(0, profile({ caps: { ...caps(true), pack_cutoff: false } }), undefined)).toBe(false);
+    expect(packCutoff(0, profile({ caps: { ...caps(true), pack_cutoff: true } }, "pack"), undefined)).toBe(false);
+    expect(packCutoff(3, profile(), probe({ pack_cutoff: true }))).toBe(true);
+    expect(packCutoff(3, profile(), probe({ pack_cutoff: true, gen: 3 }))).toBe(false);
+    expect(packCutoff(3, profile(), probe({ pack_cutoff: true, state: "undecided" }))).toBe(false);
+    expect(packCutoff(3, profile({ caps: { ...caps(true), pack_cutoff: true } }), undefined)).toBe(false);
+    expect(packCutoff(null, profile(), undefined)).toBe(false);
   });
 });
