@@ -204,6 +204,17 @@ export function fullRequests() {
   };
 }
 
+/** A pack column re-read after a write (read-back, stale or refused state): the block the backend returns carries no
+ *  patch proof and no board identity, those belong to the pack's read on this link and a write does not change them.
+ *  They stay from the column as it was unless the new read brings its own. */
+export function keepProof(prev: Source | undefined, next: Source): Source {
+  if (!prev?.read || !next.read || prev.link !== next.link || prev.address !== next.address) return next;
+  const read = { ...next.read };
+  if (read.patch === undefined && prev.read.patch !== undefined) read.patch = prev.read.patch;
+  if (read.bms_serial === undefined && prev.read.bms_serial !== undefined) read.bms_serial = prev.read.bms_serial;
+  return { ...next, read };
+}
+
 /** A pack column after a write over the CAN socket (the answer carries the block before it): a read-back becomes the
  *  column's read (`readCol`); „zuletzt geschrieben“ and the block it replaced change only for a confirmed write. An
  *  unclear attempt keeps the earlier confirmed ones. */

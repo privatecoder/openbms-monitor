@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RULES, afterUart1Write, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations, fullRequests } from "./paramWrite";
+import { RULES, afterUart1Write, keepProof, applyChange, blockers, capacityEffects, changeOf, planTarget, sameBlock, capacityResets, changes, fromRaw, notTaken, outOfRange, ratedFor, rawsOf, switchDiff, takeOver, toRaw, toWire, violations, fullRequests } from "./paramWrite";
 import { KEYS, UNITS, type Parameters, type Source } from "./params";
 
 /** A synthetic, plausible configuration (display values, P0..P86). */
@@ -315,5 +315,20 @@ describe("pack column after a CAN socket write", () => {
     // without a read-back the column stays as it was, also without an earlier write
     const n = afterUart1Write(col(20), null, false, p(1, 20), 99);
     expect([n.read?.parameters[0].raw, n.lastWritten, n.previous]).toEqual([20, undefined, undefined]);
+  });
+});
+
+describe("pack column re-read after a write", () => {
+  const patch = { release: "16.06.13 MAINT 1.6", source: "live", caps: { write_gate: true, start_gate: true, power_rtc: true, pack_cutoff: true } } as unknown as NonNullable<Parameters["patch"]>;
+  const p = (extra: Partial<Parameters> = {}): Parameters => ({ address: 1, device_name: "SYN", function_switches: [0xef, 0, 0, 0, 0, 0, 0, 0],
+    parameters: KEYS.map((key, index) => ({ index, key, raw: 1, value: 1, unit: "" })), ...extra });
+  const col = (read: Parameters, link = "L1"): Source => ({ id: "pack-1", kind: "pack", address: 1, label: "01", read, values: [1], link });
+  it("keeps the patch proof and board identity the read-back does not carry", () => {
+    const r = keepProof(col(p({ patch, bms_serial: "SYN-0001" })), col(p()));
+    expect([r.read?.patch, r.read?.bms_serial]).toEqual([patch, "SYN-0001"]);
+  });
+  it("a read with its own proof (also none) wins, another link keeps nothing", () => {
+    expect(keepProof(col(p({ patch })), col(p({ patch: null }))).read?.patch).toBeNull();
+    expect(keepProof(col(p({ patch })), col(p(), "L2")).read?.patch).toBeUndefined();
   });
 });
