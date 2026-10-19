@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { PackPatch, Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, shownOff, socOf, switchUnclear } from "./control";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, relockAsk, relockable, shownOff, socOf, switchUnclear } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -239,5 +239,25 @@ describe("ein/aus after the request left, round 3", () => {
     expect(de("ctl.onOff.lostAnswer")).toMatch(/Ergebnis ungeklärt/);
     expect(de("ctl.onOff.lostAnswer")).toMatch(/Bit 5 nach dem Wiederverbinden/);
     expect(errorText(JSON.stringify({ kind: "uart1", error: "power-lost" }), de)).not.toMatch(/Nicht ausgeführt/);
+  });
+});
+
+describe("off and lock at a pack already off", () => {
+  it("offered only off, unlocked and with the extended off on; CAN socket only with the proven cutoff", () => {
+    expect(relockable(true, "none", true, true, 0xef)).toBe(true);
+    expect(relockable(true, null, false, false, 0xef)).toBe(true);
+    expect(relockable(false, "none", true, true, 0xef)).toBe(false);
+    expect(relockable(true, "active", true, true, 0xcf)).toBe(false);
+    expect(relockable(true, "maybeActive", false, false, 0xcf)).toBe(false);
+    expect(relockable(true, "none", true, true, 0xff)).toBe(false);
+    expect(relockable(true, null, true, false, 0xef)).toBe(false);
+    expect(relockable(true, null, false, false, undefined)).toBe(false);
+  });
+  it("the fresh read decides: confirm, already locked, extended off gone, unread", () => {
+    expect(relockAsk("cutoff", 0xef)).toBe("ask");
+    expect(relockAsk("cutoffMaybe", 0xef)).toBe("ask");
+    expect(relockAsk("cutoff", 0xcf)).toBe("locked");
+    expect(relockAsk("soft", 0xff)).toBe("soft");
+    expect(relockAsk("unread", undefined)).toBe("unread");
   });
 });

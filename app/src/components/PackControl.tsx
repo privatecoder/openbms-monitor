@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, cutoffError, shownOff, switchUnclear, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
 import { CUTOFF_BIT, getProfile } from "../profile";
@@ -167,7 +167,8 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
 
   // „Aus“: where the pack may store a cutoff, Group0 is read fresh first and decides the confirmation; unreadable: no
   // command, read again (CAN socket without the cutoff: the soft off as before)
-  const askOff = async (a: number) => {
+  // `relock`: the pack is off already (soft off) and gets the addressed off again to store the lock
+  const askOff = async (a: number, relock = false) => {
     const lk = linkNow.current;
     if (!aware) { setAsk({ kind: "off", lock: "soft" }); return; }
     setBusy("off"); setNote(null); setNoteFor("off");
@@ -175,6 +176,11 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     setBusy(null);
     if (!same(a, lk)) return;
     const ask = offAsk(f);
+    if (relock && ask) {
+      const r = relockAsk(offKind(mode, cutoff, f?.patch, f?.g0), f?.g0);
+      if (r === "locked") { setNote({ text: t("ctl.cutoff.relockLocked", { pack: no(a) }), tone: "ok" }); return; }
+      if (r === "soft") { setNote({ text: t("ctl.cutoff.relockSoft"), tone: "warn" }); return; }
+    }
     if (ask) setAsk(ask); else setNote({ text: t("ctl.cutoff.readFirst"), tone: "error" });
   };
   const offAsk = (f: { g0: number | undefined; patch: PackPatch | null } | undefined): Ask | null => {
@@ -292,6 +298,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   // „maybeActive“ (RS485-1/2, bit 5 only means a lock with 1.6) is an uncertainty line, never the command state
   const off = shownOff(st, lock);
   const extendedOff = can && cutoff && g0 !== undefined && (g0 & CUTOFF_BIT) === 0;
+  const relock = relockable(off, lock, can, cutoff, g0);
   const forcedAt = forced.get(`${linkKey}|${address}`);
   const heaterForced = forcedAt !== undefined && Date.now() < forcedAt + HEATER_MS;
   const heaterEnd = heaterForced ? new Date(forcedAt! + HEATER_MS).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" }) : null;
@@ -334,6 +341,11 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
               title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>
+            {relock && (
+              <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>
+                {t("ctl.cutoff.offConfirm")}
+              </Button>
+            )}
             {!can && (
               <Button size="sm" disabled={disabled} onClick={() => void heater(address, !heaterForced)} title={t(heaterForced ? "ctl.tip.heaterOff" : "ctl.tip.heaterOn")}>
                 {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
