@@ -503,7 +503,9 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
   const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
   const cutoffRow = cols.some((c) => c.read?.patch && c.read.patch.caps.pack_cutoff !== false);
-  const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2, ...(powerRow ? [3] : []), ...(cutoffRow ? [4, 5] : [])] : SWITCH_BITS[g]);
+  const bitsOf0 = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2, ...(powerRow ? [3] : []), ...(cutoffRow ? [4, 5] : [])] : SWITCH_BITS[g]);
+  // an unclear lock state shows bit 5 also without a proof (unnamed there), with its „neu lesen“
+  const bitsOf = (g: number) => { const b = bitsOf0(g); return g === 0 && unclearCols.length && !b.includes(5) ? [...b, 5] : b; };
   const bitsOff = (g: number) => bitsOf(g).filter((b) => (g === 0 && b === 5 && unclearCols.length > 0) || deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
   const gateBit = (g: number, b: number) => g === 0 && b !== 1 && b <= 5;
   const nothingLeft = filtered && GROUPS.every((g) => !g.indices.some((i) => diffParams[i].size || outside.includes(i))) && diffSwitches.every((d) => !d.size);
