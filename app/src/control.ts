@@ -77,10 +77,11 @@ export const relockable = (off: boolean, lock: ReturnType<typeof lockState>, can
   off && lock !== "active" && (!can || cutoff) && g0 !== undefined && (g0 & CUTOFF_BIT) === 0 && (g0 & LOCK_BIT) !== 0;
 
 /** „Ausschalten und sperren“ at a pack already off, from Group0 read fresh: the lock confirmation, or why nothing is
- *  sent (already locked; the extended off is no longer on, a repeated soft off would only repeat the master's broadcast). */
-export function relockAsk(kind: ReturnType<typeof offKind>, g0: number | undefined): "ask" | "locked" | "soft" | "unread" {
+ *  sent (already locked, or bit 5 at 0 without a proof; the extended off is no longer on, a repeated soft off would only repeat the master's broadcast). */
+export function relockAsk(kind: ReturnType<typeof offKind>, g0: number | undefined): "ask" | "locked" | "lockedMaybe" | "soft" | "unread" {
   if (kind === "unread" || g0 === undefined) return "unread";
-  if ((g0 & LOCK_BIT) === 0) return "locked";
+  // bit 5 at 0 is a lock only with the proven cutoff; without (RS485-1/2) the raw finding
+  if ((g0 & LOCK_BIT) === 0) return kind === "cutoff" ? "locked" : "lockedMaybe";
   return kind === "soft" ? "soft" : "ask";
 }
 

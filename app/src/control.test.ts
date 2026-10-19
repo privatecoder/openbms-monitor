@@ -257,6 +257,8 @@ describe("off and lock at a pack already off", () => {
     expect(relockAsk("cutoff", 0xef)).toBe("ask");
     expect(relockAsk("cutoffMaybe", 0xef)).toBe("ask");
     expect(relockAsk("cutoff", 0xcf)).toBe("locked");
+    // without a proof bit 5 at 0 is only the raw finding
+    expect(relockAsk("cutoffMaybe", 0xcf)).toBe("lockedMaybe");
     expect(relockAsk("soft", 0xff)).toBe("soft");
     expect(relockAsk("unread", undefined)).toBe("unread");
   });
