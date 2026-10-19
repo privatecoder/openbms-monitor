@@ -69,6 +69,21 @@ export function offCutoffText(cut: ReturnType<typeof cutoffOutcome>, maybe: bool
   return null;
 }
 
+/** A pack already off (soft off) without a lock, whose last Group0 shows the extended off on (bit 4 at 0, bit 5 at 1):
+ *  „Ausschalten und sperren“ sends the addressed off again, which stores the lock in MAINT 1.6 without switching on
+ *  first. CAN socket only with the cutoff proven on this connection (`cutoff`); RS485-1/2 any pack (confirmed „falls
+ *  MAINT 1.6“ unless proven). */
+export const relockable = (off: boolean, lock: ReturnType<typeof lockState>, can: boolean, cutoff: boolean, g0: number | undefined) =>
+  off && lock !== "active" && (!can || cutoff) && g0 !== undefined && (g0 & CUTOFF_BIT) === 0 && (g0 & LOCK_BIT) !== 0;
+
+/** „Ausschalten und sperren“ at a pack already off, from Group0 read fresh: the lock confirmation, or why nothing is
+ *  sent (already locked; the extended off is no longer on, a repeated soft off would only repeat the master's broadcast). */
+export function relockAsk(kind: ReturnType<typeof offKind>, g0: number | undefined): "ask" | "locked" | "soft" | "unread" {
+  if (kind === "unread" || g0 === undefined) return "unread";
+  if ((g0 & LOCK_BIT) === 0) return "locked";
+  return kind === "soft" ? "soft" : "ask";
+}
+
 /** Whether „Steuern“ shows the pack as off (the button offers „Ein“): the fresh status, or a lock this connection proved
  *  („active“); a possible lock (`maybeActive`) never. */
 export const shownOff = (s: Status | null, lock: ReturnType<typeof lockState>) => (s ? commandedOff(s) : false) || lock === "active";
