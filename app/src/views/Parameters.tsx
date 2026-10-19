@@ -214,7 +214,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     setReading(null);
   };
 
-  /** After a restart: the pack's column, if shown, is read again (a refused write's live switches are gone then). */
+  /** After a restart (a refused write's live switches are gone then) or ein/aus (the lock state, Group0 bit 5): the pack's column, if shown, is read again. */
   const rereadPack = (address: number) => {
     if (!sources.some((x) => x.id === `pack-${address}`)) return;
     const l = linkNow();

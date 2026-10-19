@@ -40,7 +40,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   cutoff?: boolean;
   /** Group0 of the pack's parameters column read on this connection (bits 4/5: extended off, lock state) */
   group0?: number;
-  /** after a restart: the pack's parameters column (if shown) is read again */
+  /** after a restart, and after ein/aus where the pack may store a cutoff: the pack's parameters column (if shown) is read again */
   onChanged?: (address: number) => void;
   /** P79 (SOC protection, %) from the pack's read or stored column; null: read once when the field is used */
   p79?: number | null;
@@ -190,6 +190,8 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
       if (same(a, lk) && (aware || silent)) {
         await reload(a);
         const f = aware ? await read47(a, lk) : undefined;
+        // the parameters column follows the pack (bits 4 and 5 of Group0)
+        if (aware && same(a, lk)) onChanged?.(a);
         // the extended off changed since the confirmation: nothing was sent, ask again with the pack's state now
         if (err === "cutoff-changed" && same(a, lk)) {
           const ask = offAsk(f);
@@ -205,6 +207,8 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     const l = await reload(a);
     // the lock state from that fresh 0x47, never from the ACK alone
     const f = aware ? await read47(a, lk) : undefined;
+    // the parameters column follows the pack: bit 5 shows the lock state now
+    if (aware && same(a, lk)) onChanged?.(a);
     const cut = aware ? cutoffOutcome(on, f?.g0, l?.status ?? null) : null;
     // the master's acknowledgement over the CAN socket covers only itself, not its broadcast to the slaves; with the pack
     // cutoff its lock stays its own and the master's charge limit follows only after the next polling
