@@ -640,7 +640,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
               <p className="text-sm text-discharge">
                 {t("bank.new", { count: line.packs.length, packs: packList(line.packs), name: instName })}
               </p>
-              <Button variant="secondary" size="sm" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
+              <div className="flex flex-wrap gap-1">
+                <Button variant="secondary" size="sm" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
+                {/* not this installation: nothing is adopted, the connection ends (another installation is chosen above) */}
+                <Button variant="ghost" size="sm" disabled={confirming || locked || busy} onClick={() => void disconnect()}>{t("bank.notOurs")}</Button>
+              </div>
             </div>
           )}
           {noSerial.length > 0 && (

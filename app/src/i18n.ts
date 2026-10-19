@@ -689,7 +689,7 @@ const resources = {
       bank: {
         new_one: "Diese Anlage kennt die Platine an {{packs}} noch nicht oder hat sie nicht bestätigt (neu, umgesteckt oder einmal zu bestätigen). Gehört sie zu „{{name}}“?",
         new_other: "Diese Anlage kennt die Platinen an {{packs}} noch nicht oder hat sie nicht bestätigt (neu, umgesteckt oder einmal zu bestätigen). Gehören sie zu „{{name}}“?",
-        adopt: "Ja, übernehmen",
+        adopt: "Ja, übernehmen", notOurs: "Nein, trennen",
         foreign_one: "Pack {{packs}} gehört zur Anlage „{{other}}“. Ist hier eine andere Bank angeschlossen?",
         foreign_other: "Packs {{packs}} gehören zur Anlage „{{other}}“. Ist hier eine andere Bank angeschlossen?",
         disconnect: "Trennen", connectOther: "Mit „{{other}}“ verbinden", adoptAnyway: "Trotzdem zu „{{name}}“ übernehmen",
@@ -1647,7 +1647,7 @@ const resources = {
       bank: {
         new_one: "This installation does not know or has not confirmed the board at {{packs}} yet (new, moved or to confirm once). Does it belong to “{{name}}”?",
         new_other: "This installation does not know or has not confirmed the boards at {{packs}} yet (new, moved or to confirm once). Do they belong to “{{name}}”?",
-        adopt: "Yes, take over",
+        adopt: "Yes, take over", notOurs: "No, disconnect",
         foreign_one: "Pack {{packs}} belongs to installation “{{other}}”. Is another bank connected here?",
         foreign_other: "Packs {{packs}} belong to installation “{{other}}”. Is another bank connected here?",
         disconnect: "Disconnect", connectOther: "Connect with “{{other}}”", adoptAnyway: "Take over into “{{name}}” anyway",
