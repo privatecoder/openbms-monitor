@@ -7,7 +7,7 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, type Parameters, type Source } from "../params";
-import { afterUart1Write, blockers, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
+import { afterUart1Write, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
@@ -178,7 +178,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   /** A read of a pack with a pending refusal: once it shows the stored block again (restart), the pack is free. */
   const seen = (a: number, p: Parameters) => { const r = refusedOf(a); if (r && sameBlock(p, r.stored)) setRefused(a, null); };
 
-  const replace = (next: Source) => setSources((s) => s.map((x) => (x.id === next.id ? { ...next, lastWritten: x.lastWritten, previous: x.previous } : x)));
+  const replace = (next: Source) => setSources((s) => s.map((x) => (x.id === next.id ? { ...keepProof(x, next), lastWritten: x.lastWritten, previous: x.previous } : x)));
   // last write and the parameters it replaced, kept per installation and pack in the history database
   // the answer belongs to the link it was asked on (`withHistory`): a late one after a change is dropped
   const loadHistory = (address: number) => {
@@ -308,7 +308,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       else if ((r.kind === "written" || r.kind === "unclear") && r.before) {
         // CAN socket: „Vorherigen Stand“ is the block before this write, for the session; only a confirmed write sets it
         const before = r.before, read = r.read_back, written = r.kind === "written";
-        setSources((s) => s.map((x) => (x.id === `pack-${a}` ? afterUart1Write(x, read ? col(read) : null, written, before, Date.now()) : x)));
+        setSources((s) => s.map((x) => (x.id === `pack-${a}` ? afterUart1Write(x, read ? keepProof(x, col(read)) : null, written, before, Date.now()) : x)));
       } else if (r.kind === "written") {
         void loadHistory(a);
         if (r.read_back) replace(col(r.read_back));
