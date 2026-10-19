@@ -41,6 +41,8 @@ const keptRefused = new Map<string, Refused>();
 const unlink = (s: Source[]) => s.filter((x) => !(x.kind === "pack" && x.error && !x.values))
   .map((x) => (x.kind === "pack" ? { ...x, read: undefined, link: undefined, previous: undefined, lastWritten: undefined, notTaken: undefined } : x));
 /** A pack column from a read, tagged with the link it was read on and, over the CAN socket, its path. */
+// a stored or file column without a patch proof: its Group0 patch bits are shown raw, never with a function name
+const rawGate = (c: Source) => c.kind !== "pack" && !c.read?.patch;
 const packCol = (p: Parameters, address: number, link: string, path?: "uart1"): Source => ({ ...fromPack(p, address), link, ...(path ? { path } : {}) });
 // the datasheet chosen for the check; null = follow the packs' cell type
 let keptRef: Assignment | "none" | null = null;
@@ -476,9 +478,11 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // patch; named only when a column's patch is proven (before, they meant nothing). Bit 3 only where a proven pack may
   // have the power and clock service (its image flag set or not known), bits 4 and 5 (extended off, the lock state) only
   // where one may have the stored pack cutoff
-  const gateLabel = gateRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
+  // a stored or file column without a proof does not make the rows neutral: it shows its patch bits raw (rawGate)
+  const labelCols = cols.filter((c) => !rawGate(c)).map((c) => ({ patch: c.read?.patch, switches: !!c.switches }));
+  const gateLabel = gateRowLabel(labelCols);
   // bits 4 and 5 are named only where every column may have the pack cutoff (a proven 1.5 pack makes them neutral)
-  const cutoffLabel = cutoffRowLabel(cols.map((c) => ({ patch: c.read?.patch, switches: !!c.switches })));
+  const cutoffLabel = cutoffRowLabel(labelCols);
   const rowLabel = (b: number) => (b >= 4 ? cutoffLabel : gateLabel);
   const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
   const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
@@ -686,7 +690,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                     </th>
                   )}
                   {cols.map((c) => (
-                    <ColumnHead key={c.id} c={c} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                    <ColumnHead key={c.id} c={c} twin={c.kind === "pack" && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
                       onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
                       onRevokePatch={c.kind === "pack" && installation && (c.read?.patch?.source === "flash" || c.read?.patch?.source === "user") ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
@@ -762,12 +766,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 const slaveStart = b === 2 && gate?.named && c.address !== undefined && c.address !== 0 ? t("par.gateStartMasterOnly") : null;
                                 const fixedWhy = !fixed ? null : b === 2 ? t("par.gateStartFixed") : b === 3 && gate.power !== false ? t("par.gatePowerFixed")
                                   : b === 4 && cut!.cutoff !== false ? t("par.gateCutoffFixed") : b === 5 ? t("par.gateLockFixed") : null;
-                                const why = !gate ? undefined : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, inverted ? t("par.gateInverted") : null, fixedWhy].filter(Boolean).join(" · ");
+                                const why = !gate ? undefined : rawGate(c) ? t("par.gateRaw") : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, inverted ? t("par.gateInverted") : null, fixedWhy].filter(Boolean).join(" · ");
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
-                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false
-                                    // a build without the cutoff: the raw bit, no on/off meaning
+                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false || (gate && rawGate(c))
+                                    // a build without the cutoff, a stored or file column without a proof: the raw bit, no on/off meaning
                                     ? <span className="text-muted">{(c.switches[g] >> b) & 1}</span>
                                     : <OnOff on={switchOn(c.switches[g], b, inverted)} />}</ValueCell>
                                 );
@@ -786,8 +790,10 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   );
 }
 
-function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious, onConfirmPatch, onRevokePatch }: {
+function ColumnHead({ c, twin, busy, onSave, onRemove, onEdit, onPrevious, onConfirmPatch, onRevokePatch }: {
   c: Source; busy: boolean; onSave: () => void; onRemove: () => void;
+  /** a live pack column next to the stored state of the same pack: labelled „aktuell“ */
+  twin?: boolean;
   /** set when this pack column can be edited now; „Vorherigen Stand“ only after a write of this pack */
   onEdit?: () => void; onPrevious?: () => void;
   /** a CAN socket column with a board identity and no proof: „Patch-Funktionen bestätigen“; a stored proof: take it back */
@@ -800,7 +806,7 @@ function ColumnHead({ c, busy, onSave, onRemove, onEdit, onPrevious, onConfirmPa
       <div className="flex items-center justify-end gap-1">
         {c.suspectFrom !== undefined && c.suspectFrom !== null && <TriangleAlert className="h-3.5 w-3.5 text-discharge" aria-label={t("par.suspectShort")} />}
         <span className={cn("truncate font-medium text-ink", c.kind === "file" && "max-w-40")} title={c.label}>
-          {c.kind === "pack" ? t("par.pack", { n: c.label }) : c.kind === "stored" ? t("par.storedCol", { n: c.label }) : c.label}
+          {c.kind === "pack" ? t(twin ? "par.packNow" : "par.pack", { n: c.label }) : c.kind === "stored" ? t("par.storedCol", { n: c.label }) : c.label}
         </span>
         {c.path === "uart1" && <span className="rounded bg-sunken px-1 text-xs text-muted" title={t("par.uart1ColHint")}>{t("par.uart1Col")}</span>}
         {onEdit && (
