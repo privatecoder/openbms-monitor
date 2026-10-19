@@ -119,6 +119,8 @@ export interface Source {
   previous?: Parameters | null;
   /** after a write: values and switch bytes the read-back does not show as sent */
   notTaken?: { params: Set<number>; switches: Set<number> };
+  /** pack columns: an ein/aus changed the pack and its re-read failed; bit 5 (the lock state) is shown unclear until a read */
+  lockUnclear?: boolean;
   /** stored columns: when and how the block was kept, and whether it is of the place's current board */
   stored?: { at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null; unconfirmed?: boolean };
 }
