@@ -179,6 +179,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     if (relock && ask) {
       const r = relockAsk(offKind(mode, cutoff, f?.patch, f?.g0), f?.g0);
       if (r === "locked") { setNote({ text: t("ctl.cutoff.relockLocked", { pack: no(a) }), tone: "ok" }); return; }
+      if (r === "lockedMaybe") { setNote({ text: t("ctl.cutoff.relockMaybe"), tone: "warn" }); return; }
       if (r === "soft") { setNote({ text: t("ctl.cutoff.relockSoft"), tone: "warn" }); return; }
     }
     if (ask) setAsk(ask); else setNote({ text: t("ctl.cutoff.readFirst"), tone: "error" });

@@ -220,7 +220,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const rereadPack = (address: number) => {
     if (!sources.some((x) => x.id === `pack-${address}`)) return;
     const l = linkNow();
-    api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l, path)); seen(address, p); } },
+    // an open edit of this pack moves onto the state now (bit 5 after ein/aus), the user's changes stay on top of it
+    api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p); } },
       (e) => setNote({ address, note: { text: t("ctl.reread", { pack: packNo(address), err: errorText(e, t) }), error: true } }));
   };
   // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
@@ -690,7 +691,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                     </th>
                   )}
                   {cols.map((c) => (
-                    <ColumnHead key={c.id} c={c} twin={c.kind === "pack" && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                    <ColumnHead key={c.id} c={c} twin={c.kind === "pack" && !!c.read && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
                       onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
                       onRevokePatch={c.kind === "pack" && installation && (c.read?.patch?.source === "flash" || c.read?.patch?.source === "user") ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
@@ -772,7 +773,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 ) : (
                                   <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false || (gate && rawGate(c))
                                     // a build without the cutoff, a stored or file column without a proof: the raw bit, no on/off meaning
-                                    ? <span className="text-muted">{(c.switches[g] >> b) & 1}</span>
+                                    ? <span className="text-muted">{t("par.rawBit", { v: (c.switches[g] >> b) & 1 })}</span>
                                     : <OnOff on={switchOn(c.switches[g], b, inverted)} />}</ValueCell>
                                 );
                               })}
