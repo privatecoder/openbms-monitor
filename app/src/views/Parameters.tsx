@@ -22,7 +22,7 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
+import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
 import { StatusLine } from "../components/Section";
@@ -222,7 +222,11 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     const l = linkNow();
     // an open edit of this pack moves onto the state now (bit 5 after ein/aus), the user's changes stay on top of it
     api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p); } },
-      (e) => setNote({ address, note: { text: t("ctl.reread", { pack: packNo(address), err: errorText(e, t) }), error: true } }));
+      (e) => {
+        // the column (and an open edit of it) shows the lock state before the action: marked unclear until a read
+        if (linkNow() === l) setSources((s) => s.map((x) => (x.id === `pack-${address}` ? { ...x, lockUnclear: true } : x)));
+        setNote({ address, note: { text: t("ctl.reread", { pack: packNo(address), err: errorText(e, t) }), error: true } });
+      });
   };
   // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
   const p79Of = (a: number | null) => {
@@ -287,7 +291,14 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const takeOverFrom = (id: string) => {
     const src = sources.find((x) => x.id === id);
     if (!src?.values || !src.switches) return;
-    setEdit((e) => e && { ...e, raws: takeOver(e.raws, src.values!, !e.seriesUnlocked), switches: [...src.switches!], text: {} });
+    // Group0: the lock state (bit 5) and the patch bits this path does not change stay as the pack has them, as at the start
+    setEdit((e) => {
+      if (!e) return e;
+      const own = sources.find((x) => x.id === `pack-${e.address}`);
+      const keep = keepMask(own?.read?.patch, own?.path === "uart1", e.baseSwitches[0]);
+      const switches = src.switches!.map((v, g) => (g === 0 ? (v & ~keep) | (e.baseSwitches[0] & keep) : v));
+      return { ...e, raws: takeOver(e.raws, src.values!, !e.seriesUnlocked), switches, text: {} };
+    });
   };
 
   /** One block to one pack (`base`: what the change was made against), then the pack's column as after every
@@ -326,7 +337,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     setEdit((e) => (e && e.address === a ? {
       ...e, base: fresh, baseSwitches: [...fs],
       raws: e.raws.map((x, i) => (x !== e.base[i] ? x : fresh[i])),
-      switches: e.switches.map((x, g) => { const touched = x ^ e.baseSwitches[g]; return (x & touched) | (fs[g] & ~touched & 0xff); }),
+      // the lock state (Group0 bit 5) is never the user's: always the pack's
+      switches: e.switches.map((x, g) => { const touched = (x ^ e.baseSwitches[g]) & (g === 0 ? ~LOCK_BIT : 0xff); return (x & touched) | (fs[g] & ~touched & 0xff); }),
     } : e));
   };
 
@@ -691,7 +703,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                     </th>
                   )}
                   {cols.map((c) => (
-                    <ColumnHead key={c.id} c={c} twin={c.kind === "pack" && !!c.read && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                    <ColumnHead key={c.id} c={c} twin={c.kind === "pack" && !!c.read && !c.lockUnclear && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
                       onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
                       onRevokePatch={c.kind === "pack" && installation && (c.read?.patch?.source === "flash" || c.read?.patch?.source === "user") ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
@@ -768,6 +780,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 const fixedWhy = !fixed ? null : b === 2 ? t("par.gateStartFixed") : b === 3 && gate.power !== false ? t("par.gatePowerFixed")
                                   : b === 4 && cut!.cutoff !== false ? t("par.gateCutoffFixed") : b === 5 ? t("par.gateLockFixed") : null;
                                 const why = !gate ? undefined : rawGate(c) ? t("par.gateRaw") : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, inverted ? t("par.gateInverted") : null, fixedWhy].filter(Boolean).join(" · ");
+                                // bit 5 after an ein/aus whose re-read failed: the shown state may be old
+                                if (b === 5 && c.lockUnclear) return <ValueCell key={c.id} c={c} off={false} title={t("par.lockUnclearTip")}><span className="text-discharge">{t("par.lockUnclear")}</span></ValueCell>;
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
@@ -853,7 +867,7 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onEdit, onPrevious, onCon
       {writeLocked(c.read?.patch, c.path === "uart1", c.switches?.[0]) && (
         <div className="text-xs whitespace-nowrap text-alarm" title={t("par.writeLockedHint")}>{t("par.writeLocked")}</div>
       )}
-      {packLockActive(c.read?.patch, c.read?.function_switches[0]) && (
+      {!c.lockUnclear && packLockActive(c.read?.patch, c.read?.function_switches[0]) && (
         <div className="text-xs font-semibold whitespace-nowrap text-alarm" title={t("par.packLockHint")}>{t("par.packLock")}</div>
       )}
       {onConfirmPatch && (
