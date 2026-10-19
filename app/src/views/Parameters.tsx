@@ -795,11 +795,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                     )}
                                   </ValueCell>
                                 );
+                                // bits 4 and 5 of an unproven column: raw, also in the edit (never an on/off box)
+                                if (c.id === editId && edit && b >= 4 && gate && !gate.named) return <ValueCell key={c.id} c={c} off={false} title={why}><span className="text-muted">{t("par.rawBit", { v: (edit.switches[g] >> b) & 1 })}</span></ValueCell>;
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
-                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false || (gate && rawGate(c))
-                                    // a build without the cutoff, a stored or file column without a proof: the raw bit, no on/off meaning
+                                  <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false || (gate && rawGate(c)) || (b >= 4 && gate && !gate.named)
+                                    // a build without the cutoff, a stored or file column without a proof, bits 4/5 unproven: the raw bit, no on/off meaning
                                     ? <span className="text-muted">{t("par.rawBit", { v: (c.switches[g] >> b) & 1 })}</span>
                                     : <OnOff on={switchOn(c.switches[g], b, inverted)} />}</ValueCell>
                                 );
