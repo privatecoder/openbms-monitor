@@ -471,7 +471,10 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const paramKeys = (i: number) => cols.map((c) => (c.values ? fmtParam(i, c.values[i]) : undefined));
   const switchKeys = (g: number) => cols.map((c) => (c.switches ? String(c.switches[g]) : undefined));
   const diffParams = KEYS.map((_, i) => deviating(paramKeys(i)));
-  const diffSwitches = Array.from({ length: 8 }, (_, g) => deviating(switchKeys(g)));
+  // a column whose lock state is unclear (re-read after ein/aus failed) counts as a deviation of Group0 bit 5: the filter
+  // never hides it or reports „no differences“
+  const unclearCols = cols.flatMap((c, i) => (c.lockUnclear ? [i] : []));
+  const diffSwitches = Array.from({ length: 8 }, (_, g) => (g === 0 && unclearCols.length ? new Set([...deviating(switchKeys(g)), ...unclearCols]) : deviating(switchKeys(g))));
   const nDiff = diffParams.filter((d) => d.size).length;
   const nDiffSwitches = diffSwitches.filter((d) => d.size).length;
   const withValues = cols.filter((c) => c.values).length;
@@ -501,7 +504,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
   const cutoffRow = cols.some((c) => c.read?.patch && c.read.patch.caps.pack_cutoff !== false);
   const bitsOf = (g: number) => (g === 0 && gateRows ? [0, ...SWITCH_BITS[0], 2, ...(powerRow ? [3] : []), ...(cutoffRow ? [4, 5] : [])] : SWITCH_BITS[g]);
-  const bitsOff = (g: number) => bitsOf(g).filter((b) => deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
+  const bitsOff = (g: number) => bitsOf(g).filter((b) => (g === 0 && b === 5 && unclearCols.length > 0) || deviating(cols.map((c) => (c.switches ? String((c.switches[g] >> b) & 1) : undefined))).size);
   const gateBit = (g: number, b: number) => g === 0 && b !== 1 && b <= 5;
   const nothingLeft = filtered && GROUPS.every((g) => !g.indices.some((i) => diffParams[i].size || outside.includes(i))) && diffSwitches.every((d) => !d.size);
   const lang = i18n.language;
@@ -781,7 +784,15 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                   : b === 4 && cut!.cutoff !== false ? t("par.gateCutoffFixed") : b === 5 ? t("par.gateLockFixed") : null;
                                 const why = !gate ? undefined : rawGate(c) ? t("par.gateRaw") : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, inverted ? t("par.gateInverted") : null, fixedWhy].filter(Boolean).join(" · ");
                                 // bit 5 after an ein/aus whose re-read failed: the shown state may be old
-                                if (b === 5 && c.lockUnclear) return <ValueCell key={c.id} c={c} off={false} title={t("par.lockUnclearTip")}><span className="text-discharge">{t("par.lockUnclear")}</span></ValueCell>;
+                                // „neu lesen“ reads this column alone, also during an edit (which then moves onto it)
+                                if (b === 5 && c.lockUnclear) return (
+                                  <ValueCell key={c.id} c={c} off={false} title={t("par.lockUnclearTip")}>
+                                    <span className="text-discharge">{t("par.lockUnclear")}</span>{" "}
+                                    {c.address !== undefined && c.link === linkNow() && (
+                                      <button className="text-xs underline disabled:opacity-40" disabled={paramsBusy || !!reading} onClick={() => rereadPack(c.address!)}>{t("par.lockReread")}</button>
+                                    )}
+                                  </ValueCell>
+                                );
                                 return c.id === editId && edit ? (
                                   <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
