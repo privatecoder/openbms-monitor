@@ -107,6 +107,9 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
     })??;
     bank::set_uart1(state, link.gen, address, serials.as_ref().and_then(|s| offered(&s.bms)));
     let bms_serial = serials.as_ref().and_then(|s| s.canonical.clone());
+    // a slave's own 64/03 first (asked again where this connection has no finding yet), so the proof it gives counts
+    // for this very read and the read kept with it
+    crate::profile::reask_identity(state, &link, address);
     let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
     if let (Some(s), Some(serial)) = (&serials, &bms_serial) {
         let facts = link.installation.as_deref().and_then(|inst| crate::maint::with_store(state, |st| Ok((st.current_refs(inst)?, st.serial_places(serial)?))).ok());
@@ -127,7 +130,6 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
             }
         }
     }
-    crate::profile::reask_identity(state, &link, address);
     Ok(ParamRead { parameters, bms_serial, patch })
 }
 
