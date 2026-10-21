@@ -133,8 +133,10 @@ pub enum Need {
     LocalBoard,
     /// the master's maintenance marker must be off (start) or on (stop); a foreign word refuses both
     Marker { on: bool },
-    /// the firmware base (16.06.xx from 0x51) at least this
+    /// the firmware base (from the pack's 64/03) at least this
     BaseFrom { base: [u8; 3] },
+    /// the master works with slaves (effective slave count > 0; maintenance sets it to 0)
+    WithSlaves,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -173,7 +175,8 @@ const STOP: &[Need] = &[Need::MasterOnly, Need::Marker { on: true }];
 const LOCK_SET_U0: &[Need] = &[Need::BitClear { group: 0, bit: G0_EXTENDED_OFF }, Need::QuietBus];
 const LOCK_SET_U1: &[Need] = &[Need::BitClear { group: 0, bit: G0_EXTENDED_OFF }, Need::BitClear { group: 0, bit: G0_POWER_LOCK }];
 const STATUS_LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::LocalBoard];
-const SYSTEM_LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::BitSet { group: 7, bit: G7_EXTENDED_DISPLAY }, Need::MasterOnly, Need::LocalBoard];
+const SYSTEM_LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::BitSet { group: 7, bit: G7_EXTENDED_DISPLAY }, Need::MasterOnly, Need::WithSlaves, Need::LocalBoard];
+const TUNNEL_LOCAL: &[Need] = &[Need::BaseFrom { base: [16, 6, 13] }, Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::LocalBoard];
 const MODBUS_SYSTEM: &[Need] = &[Need::MasterOnly, Need::BaseFrom { base: [16, 6, 4] }];
 const MODBUS_STRING1: &[Need] = &[Need::MasterOnly, Need::BaseFrom { base: [16, 6, 11] }];
 
@@ -225,7 +228,7 @@ pub const ROUTES: &[Route] = &[
     r(A::ReadSystem, U1, "Modbus FC03 1000×21", ANY, MODBUS_SYSTEM, true),
     r(A::ReadSystem, U2, "binär 46 erweitert (Systemblock)", ANY, SYSTEM_LOCAL, false),
     r(A::DisplayTunnel, U0, "ASCII AA/AB", ANY, &[Need::BaseFrom { base: [16, 6, 13] }, Need::QuietBus], false),
-    r(A::DisplayTunnel, U2, "binär AA/AB", ANY, LOCAL, false),
+    r(A::DisplayTunnel, U2, "binär AA/AB", ANY, TUNNEL_LOCAL, false),
     r(A::Flash, U0, "Bootloader", ANY, QUIET, true),
 ];
 
@@ -272,8 +275,10 @@ pub struct Facts {
     pub installation: bool,
     /// the master's maintenance marker as its last 64/02 showed it
     pub marker: Option<MarkerWord>,
-    /// the firmware base from 0x51 (16.06.13 → [16, 6, 13])
+    /// the firmware base from the pack's 64/03 (16.06.13 → [16, 6, 13]); None: not known (0x51 shows only 16.06)
     pub base: Option<[u8; 3]>,
+    /// the master's effective slave count as its last 64/02 showed it
+    pub slaves: Option<u8>,
 }
 
 impl Facts {
@@ -318,6 +323,8 @@ pub enum Reason {
     QuietBus,
     LocalBoard,
     NotImplemented,
+    /// the master has no slaves now (`known`), or that is not known
+    WithSlaves { known: Option<u8> },
     /// „Nur ansehen“: the connection has no installation
     ViewOnly,
     /// the marker must be off/on; `known`: "off", "on", "foreign" or None (not read)
@@ -381,6 +388,12 @@ pub fn decide(route: &Route, facts: &Facts) -> Decision {
                     reasons.push(Reason::Marker { on, known });
                 }
             }
+            Need::WithSlaves => {
+                if facts.slaves.is_none_or(|n| n == 0) {
+                    worse(if facts.slaves.is_none() { State::Unknown } else { State::Blocked });
+                    reasons.push(Reason::WithSlaves { known: facts.slaves });
+                }
+            }
             Need::BaseFrom { base } => {
                 if facts.base.is_none_or(|b| b < base) {
                     worse(if facts.base.is_none() { State::Unknown } else { State::Blocked });
@@ -416,7 +429,7 @@ mod tests {
     use super::*;
 
     fn facts(maint: Tri, power: Tri, cutoff: Tri, group0: Option<u8>, address: u8) -> Facts {
-        Facts { maint, power, cutoff, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]) }
+        Facts { maint, power, cutoff, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]), slaves: None }
     }
 
     #[test]
@@ -532,6 +545,16 @@ mod tests {
         // the CAN socket's serial reads: the binary one of a patched pack and the master's shortened String 1
         let serials: Vec<_> = routes(A::ReadSerials).filter(|r| r.channel == U1).map(|r| decide(r, &facts(Tri::No, Tri::No, Tri::No, None, 0)).state).collect();
         assert_eq!(serials, vec![State::Blocked, State::Ready]);
+    }
+
+    #[test]
+    fn the_display_ports_system_block_and_tunnel_name_their_conditions() {
+        let on = Facts { group7: Some((1 << G7_DISPLAY) | (1 << G7_EXTENDED_DISPLAY)), slaves: Some(0), ..facts(Tri::No, Tri::No, Tri::No, None, 0) };
+        let d = decide(route(A::ReadSystem, U2).unwrap(), &on);
+        assert!(d.reasons.contains(&Reason::WithSlaves { known: Some(0) }), "{d:?}");
+        assert!(!decide(route(A::ReadSystem, U2).unwrap(), &Facts { slaves: Some(3), ..on }).reasons.iter().any(|r| matches!(r, Reason::WithSlaves { .. })));
+        let old = decide(route(A::DisplayTunnel, U2).unwrap(), &Facts { base: Some([16, 6, 12]), ..on });
+        assert!(old.reasons.contains(&Reason::Base { from: [16, 6, 13], known: Some([16, 6, 12]) }));
     }
 
     #[test]

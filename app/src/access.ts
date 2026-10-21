@@ -27,6 +27,7 @@ export function reasonText(t: TFunction, r: AccessReason): string {
       const name = t(`acc.bitName.g${r.group}b${r.bit}`, { defaultValue: "" });
       return t(r.known === null ? "acc.bitUnread" : "acc.bitWrong", { g: r.group, b: r.bit, want: r.want ? 1 : 0, now: r.known ? 1 : 0, name: name ? ` (${name})` : "" });
     }
+    case "with-slaves": return t(r.known === null ? "acc.slavesUnknown" : "acc.slavesNone");
     case "marker": return t("acc.marker", { want: t(`acc.markerState.${r.on ? "on" : "off"}`), now: t(`acc.markerState.${r.known ?? "unread"}`) });
     case "base": return t(r.known ? "acc.baseLow" : "acc.baseUnknown", { from: r.from.map((n) => String(n).padStart(2, "0")).join("."), now: r.known?.map((n) => String(n).padStart(2, "0")).join(".") });
     default: return t(`acc.reason.${r.id}`);

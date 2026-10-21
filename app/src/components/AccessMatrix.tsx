@@ -12,10 +12,10 @@ const tone = { ready: "text-ok", unknown: "text-discharge", blocked: "text-alarm
 
 /** „Zugriffswege“: which action goes over which UART for the chosen pack (`openbms_proto::access`), as this connection
  *  knows the pack. A preview: every write still reads the pack and checks it before it sends. */
-export function AccessMatrix({ address, group0, group7, storedProof, version, linkKey }: {
+export function AccessMatrix({ address, group0, group7, storedProof, linkKey }: {
   address: number | null; group0?: number; group7?: number;
   /** this link's read of the pack carried a stored proof (bound to the String 2 read then) */
-  storedProof: boolean; version?: string; linkKey: string;
+  storedProof: boolean; linkKey: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -24,15 +24,16 @@ export function AccessMatrix({ address, group0, group7, storedProof, version, li
   const profile = useProfile();
   const [probes] = usePackProbes();
   const probe = address !== null ? probes[address] : undefined;
-  const proofKey = `${profile?.gen}|${JSON.stringify(profile?.master ?? null)}|${probe?.gen}|${probe?.state}|${probe?.version}`;
+  // the whole finding: two builds of one version differ in their image flags
+  const proofKey = `${profile?.gen}|${JSON.stringify(profile?.master ?? null)}|${JSON.stringify(probe ?? null)}`;
   useEffect(() => {
     // another pack, link or proof: the old view goes at once, not after the answer
     setView(null);
     if (!open || address === null) return;
     let alive = true;
-    api.accessView(address, group0 ?? null, group7 ?? null, storedProof, version ?? null).then((v) => { if (alive) setView(v); }, () => {});
+    api.accessView(address, group0 ?? null, group7 ?? null, storedProof).then((v) => { if (alive) setView(v); }, () => {});
     return () => { alive = false; };
-  }, [open, address, group0, group7, storedProof, version, linkKey, proofKey]);
+  }, [open, address, group0, group7, storedProof, linkKey, proofKey]);
   const rows = view ? accessRows(view.decisions) : [];
   const head = (c: Channel) => (
     <th key={c} className={cn("px-2 py-1 text-left font-medium", view?.channel === c && "text-charge")} title={view?.channel === c ? t("acc.thisLink") : undefined}>

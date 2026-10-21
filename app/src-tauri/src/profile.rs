@@ -333,10 +333,27 @@ pub fn power_rtc(state: &AppState, link: &Link, address: u8) -> bool {
     access::ready(Action::ReadClock, Channel::Uart1, &access_facts(pack_patch(state, link, address, None).as_ref(), None, None, address))
 }
 
-/// The firmware base of a 0x51 version text („16.06.13“, also with a suffix): None when it does not read as one.
-pub fn base_of(version: &str) -> Option<[u8; 3]> {
-    let mut it = version.trim().split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse::<u8>().ok());
-    Some([it.next()??, it.next()??, it.next()??])
+/// The firmware base a valid 64/03 identity reports (16.06.13 → [16, 6, 13]); None with revision FF (not known). 0x51
+/// shows only 16.06, so only the identity gives the base.
+pub fn base_of(info: &openbms_proto::MaintInfo) -> Option<[u8; 3]> {
+    (info.base[2] != 0xFF).then_some(info.base)
+}
+
+/// The identity this connection read of `address`: the master's profile, a slave's own 64/03 (also one the app does
+/// not support: its base still holds).
+fn identity_of(state: &AppState, link: &Link, address: u8) -> Option<openbms_proto::MaintInfo> {
+    if address == 0 {
+        return match bank::profile(state, link.gen)?.master {
+            Master::Patched { patch, .. } => Some(patch.info),
+            Master::UnknownPatch(info) => info,
+            _ => None,
+        };
+    }
+    match bank::live(state, link.gen, address)? {
+        PackFinding::Proven { info, .. } => Some(info),
+        PackFinding::Negative(info) => info,
+        PackFinding::Undecided => None,
+    }
 }
 
 /// The access matrix's facts of one pack from what proves its patch (`pack_patch`) and its last Group0/Group7: a
@@ -347,7 +364,7 @@ pub fn access_facts(patch: Option<&PackPatch>, group0: Option<u8>, group7: Optio
         None => (Tri::Unknown, Tri::Unknown, Tri::Unknown),
     };
     // the app conditions (installation, marker, base) are set by the caller that knows them
-    access::Facts { maint, power, cutoff, group0, group7, address, installation: true, marker: None, base: None }
+    access::Facts { maint, power, cutoff, group0, group7, address, installation: true, marker: None, base: None, slaves: None }
 }
 
 /// The lock state (Group0 bit 5) differs between the read an edit started from and the pack now: a write is not sent
@@ -495,7 +512,7 @@ pub struct AccessView {
 }
 
 #[tauri::command]
-pub async fn access_view(state: tauri::State<'_, AppState>, address: u8, group0: Option<u8>, group7: Option<u8>, stored_proof: bool, version: Option<String>) -> Result<AccessView, String> {
+pub async fn access_view(state: tauri::State<'_, AppState>, address: u8, group0: Option<u8>, group7: Option<u8>, stored_proof: bool) -> Result<AccessView, String> {
     let link = link_now(&state);
     let channel = state.bus.lock().map_err(|e| e.to_string())?.map(|b| if b == Bus::CanSocketBus { access::Channel::Uart1 } else { access::Channel::Uart0 });
     // a stored proof only where this link's read of the pack matched it (`stored_proof`: the UI's column of this link
@@ -505,11 +522,12 @@ pub async fn access_view(state: tauri::State<'_, AppState>, address: u8, group0:
         .flatten();
     let patch = pack_patch(&state, &link, address, serial.as_deref());
     let profile = bank::profile(&state, link.gen);
-    let marker = profile.as_ref().filter(|_| address == 0).and_then(|p| p.master.marker());
+    let master = profile.as_ref().filter(|_| address == 0).map(|p| &p.master);
     let facts = access::Facts {
         installation: link.installation.is_some(),
-        marker,
-        base: version.as_deref().and_then(base_of),
+        marker: master.and_then(|m| m.marker()),
+        slaves: master.and_then(|m| m.effective_slaves()),
+        base: identity_of(&state, &link, address).as_ref().and_then(base_of),
         ..access_facts(patch.as_ref(), group0, group7, address)
     };
     Ok(AccessView { gen: link.gen, channel, decisions: access::view(&facts) })
@@ -955,12 +973,10 @@ mod tests {
     }
 
     #[test]
-    fn the_firmware_base_reads_from_the_version_text() {
-        assert_eq!(base_of("16.06.13"), Some([16, 6, 13]));
-        assert_eq!(base_of("16.06.05 SP80"), Some([16, 6, 5]));
-        assert_eq!(base_of("V16.06.04"), Some([16, 6, 4]));
-        assert_eq!(base_of("16.06"), None);
-        assert_eq!(base_of(""), None);
+    fn the_firmware_base_comes_from_the_identity_with_a_known_revision() {
+        let info = |base| MaintInfo { format: 3, base, patch: [1, 6], build_id: [0; 8], hard_stop: None, power_rtc: true, pack_cutoff: true };
+        assert_eq!(base_of(&info([16, 6, 13])), Some([16, 6, 13]));
+        assert_eq!(base_of(&info([16, 6, 0xFF])), None);
     }
 
     #[test]
