@@ -193,14 +193,14 @@ export interface LinkTiming {
 /** The access matrix (`openbms_proto::access`): every way of every action over the three UARTs, evaluated for one pack. */
 export type Channel = "uart0" | "uart1" | "uart2";
 export type AccessReason =
-  | { id: "firmware"; need: "any" | "maint" | "power-flag" | "cutoff"; known: "yes" | "no" | "unknown" }
+  | { id: "firmware"; need: { kind: "patch-from"; version: [number, number] } | { kind: "image-flag"; bit: number }; known: "yes" | "no" | "unknown" }
   | { id: "bit"; group: number; bit: number; want: boolean; known: boolean | null }
   | { id: "with-slaves"; known: number | null }
   | { id: "master-only" } | { id: "quiet-bus" } | { id: "local-board" } | { id: "not-implemented" } | { id: "view-only" }
   | { id: "marker"; on: boolean; known: "off" | "on" | "foreign" | null }
   | { id: "base"; from: [number, number, number]; known: [number, number, number] | null };
 export interface AccessDecision {
-  route: { action: string; channel: Channel; wire: string; firmware: string; implemented: boolean };
+  route: { action: string; channel: Channel; wire: string; implemented: boolean };
   state: "ready" | "unknown" | "blocked" | "not-implemented";
   reasons: AccessReason[];
 }
@@ -316,7 +316,9 @@ export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: stri
 /** `power_rtc`: image flag bit 1 of the pack's own 64/03 (ein/aus, restart and the clock over the CAN socket with the lock
  *  Group0 bit 3); null: not known (a stored proof carries no image flags). `pack_cutoff`: image flag bit 2 with patch 1.6 or
  *  later, the stored pack cutoff (Group0 bit 4 extended off, bit 5 the lock state); false below 1.6, null: not known */
-export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null; pack_cutoff?: boolean | null }
+export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
+  /** the patch version reported (a stored proof: the one its release names) and the image flag byte (null: not known) */
+  version?: [number, number]; flags?: number | null }
 /** The master as read over the CAN socket bus (0x64/03, then for a supported patch 0x64/02). kind: "patched" (patch
  *  functions by its patch version; `listed`: the build's name, null when the build is not listed), "unknown-patch",
  *  "no-0x64" (firmware not proven), "unknown". `polling` after a release: "unverified" or "no-slaves". */

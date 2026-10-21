@@ -1,7 +1,7 @@
 /** Ein/aus, restart and the clock over the CAN socket (MAINT 1.5 with image flag bit 1): what the Parameters view offers
  *  for one pack. Pure logic; the backend checks identity, flag and lock again before every command (`power.rs`). */
 import type { Bus, Channel, PackProbeView, ProfileView } from "./api";
-import { factsOf, G0, offerable, tri } from "./access";
+import { factsOf, FLAG_POWER, G0, MAINT_MIN, offerable } from "./access";
 
 /** Group0 bit 3: 1 locks ein/aus, restart and setting the clock over the CAN socket. */
 export const POWER_LOCK_BIT = G0.powerLock;
@@ -37,9 +37,12 @@ export function controlMode(w: Where & { power: boolean }): "full" | "power" | n
   if (!w.connected) return null;
   if (w.demo) return "full";
   const ch = channelOf(w.bus);
-  if (!ch || !offerable("power-on-off", ch, factsOf({ power: tri(w.power), installation: w.installation, address: 1 }))) return null;
+  if (!ch || !offerable("power-on-off", ch, factsOf({ ...powerFacts(w.power), installation: w.installation, address: 1 }))) return null;
   return ch === "uart1" ? "power" : "full";
 }
+
+/** The firmware facts behind a proven (or not proven) power and clock flag of this connection. */
+const powerFacts = (power: boolean) => ({ patch: { kind: "version" as const, version: MAINT_MIN }, flags: power ? 1 << FLAG_POWER : 0 });
 
 /** The UART a bus reaches the packs on. */
 export const channelOf = (bus: Bus | null): Channel | null => (bus === "pack" ? "uart0" : bus === "can" ? "uart1" : null);
@@ -50,7 +53,7 @@ export function clockAccess(w: Where & { power: boolean; locked: boolean | null 
   const can = w.connected && w.bus === "can" && !w.demo;
   const ch = channelOf(w.bus);
   // the lock as last seen; not read: the backend reads it fresh before setting
-  const facts = factsOf({ power: tri(w.power), installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked ? G0.powerLock : 0 });
+  const facts = factsOf({ ...powerFacts(w.power), installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked ? G0.powerLock : 0 });
   const read = w.connected && (w.demo || (!!ch && offerable("read-clock", ch, facts)));
   const write = read && (w.demo || (!!ch && offerable("set-clock", ch, facts)));
   return { read, write, unsupported: can && !w.power };

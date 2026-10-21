@@ -23,7 +23,9 @@ export const bestState = (ds: AccessDecision[]) => ds.reduce((b, d) => (rank[d.s
 /** One reason as text (`acc.reason.*`). */
 export function reasonText(t: TFunction, r: AccessReason): string {
   switch (r.id) {
-    case "firmware": return t(`acc.fw.${r.need}.${r.known}`);
+    case "firmware": return r.need.kind === "patch-from"
+      ? t(`acc.fw.patch.${r.known}`, { v: r.need.version.join(".") })
+      : t(`acc.fw.flag.${r.known}`, { bit: r.need.bit, name: t(`acc.fw.flagName.b${r.need.bit}`, { defaultValue: t("acc.fw.flagName.other") }) });
     case "bit": {
       const name = t(`acc.bitName.g${r.group}b${r.bit}`, { defaultValue: "" });
       return t(r.known === null ? "acc.bitUnread" : "acc.bitWrong", { g: r.group, b: r.bit, want: r.want ? 1 : 0, now: r.known ? 1 : 0, name: name ? ` (${name})` : "" });
@@ -44,7 +46,7 @@ export const cellTitle = (t: TFunction, ds: AccessDecision[]) =>
 
 
 export type Tri = "yes" | "no" | "unknown";
-export type Firmware = "any" | "maint" | "power-flag" | "cutoff";
+export type Firmware = { kind: "patch-from"; version: [number, number] } | { kind: "image-flag"; bit: number };
 export type Need =
   | { kind: "bit-set" | "bit-clear"; group: number; bit: number }
   | { kind: "master-only" | "quiet-bus" | "local-board" | "with-slaves" }
@@ -52,8 +54,9 @@ export type Need =
   | { kind: "base-from"; base: [number, number, number] };
 export interface Route { action: string; channel: Channel; wire: string; firmware: Firmware[]; needs: Need[]; implemented: boolean }
 export type Marker = { kind: "off" | "on" } | { kind: "foreign"; word: number };
+export type Patch = { kind: "unknown" | "none" } | { kind: "version"; version: [number, number] };
 export interface Facts {
-  maint: Tri; power: Tri; cutoff: Tri; group0: number | null; group7: number | null; address: number; installation: boolean;
+  patch: Patch; flags: number | null; group0: number | null; group7: number | null; address: number; installation: boolean;
   marker: Marker | null; base: [number, number, number] | null; slaves: number | null;
 }
 export interface Proof { write_gate: boolean; start_gate: boolean; power: Tri; cutoff: Tri }
@@ -64,11 +67,22 @@ export const ROUTES = CATALOG.routes as Route[];
 export const MAINT_MIN = CATALOG.maint_min as [number, number];
 export const CUTOFF_MIN = CATALOG.cutoff_min as [number, number];
 const B = CATALOG.bits;
+/** Image flag bits ways depend on today (`access::FLAG_*`). */
+export const FLAG_POWER = CATALOG.flags.power;
+export const FLAG_CUTOFF = CATALOG.flags.cutoff;
 /** Group0 bits of the patched firmware as masks. */
 export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state };
 const NEEDS_INSTALLATION = new Set(CATALOG.needs_installation);
 
 const cmp3 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+const cmp2 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1];
+
+/** `Facts::firmware`: a pack without a patch identity has none; a version and the image flags as reported. */
+function firmwareKnown(need: Firmware, f: Facts): Tri {
+  if (f.patch.kind === "none") return "no";
+  if (need.kind === "patch-from") return f.patch.kind === "version" ? (cmp2(f.patch.version, need.version) >= 0 ? "yes" : "no") : "unknown";
+  return f.flags === null ? "unknown" : (f.flags & (1 << need.bit)) !== 0 ? "yes" : "no";
+}
 
 /** `access::decide`: blocked wins over unknown; a way the app does not use is not-implemented with its conditions named. */
 export function decide(route: Route, f: Facts): { state: State; reasons: AccessReason[] } {
@@ -76,7 +90,7 @@ export function decide(route: Route, f: Facts): { state: State; reasons: AccessR
   let state: State = "ready";
   const worse = (s: State) => { if (s === "blocked" || (s === "unknown" && state === "ready")) state = s; };
   for (const need of route.firmware) {
-    const known: Tri = need === "any" ? "yes" : need === "maint" ? f.maint : need === "power-flag" ? f.power : f.cutoff;
+    const known = firmwareKnown(need, f);
     if (known !== "yes") { worse(known === "no" ? "blocked" : "unknown"); reasons.push({ id: "firmware", need, known }); }
   }
   for (const n of route.needs) {
@@ -134,7 +148,7 @@ export function group0Plan(channel: Channel, proof: Proof | null): Group0Plan {
 
 /** The facts of a pack with everything not given unknown. */
 export const factsOf = (f: Partial<Facts>): Facts => ({
-  maint: "unknown", power: "unknown", cutoff: "unknown", group0: null, group7: null, address: 0, installation: false, marker: null, base: null, slaves: null, ...f,
+  patch: { kind: "unknown" }, flags: null, group0: null, group7: null, address: 0, installation: false, marker: null, base: null, slaves: null, ...f,
 });
 
 /** What a button offers: the app's way of `action` over `channel` is ready, or open only for a switch not read yet (the

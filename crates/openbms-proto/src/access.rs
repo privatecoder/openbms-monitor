@@ -103,19 +103,19 @@ impl Action {
     }
 }
 
-/// What the firmware of the pack must be for a way.
+/// What the firmware of the pack must be for a way, as data: a new patch function needs a row here, not new code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Firmware {
-    /// every firmware (16.06.x)
-    Any,
-    /// a supported patch (MAINT ≥ `MAINT_MIN`)
-    Maint,
-    /// image flag bit 1 of the pack's own 64/03 (the power and clock build)
-    PowerFlag,
-    /// patch ≥ `CUTOFF_MIN` with image flag bit 2 (the stored pack cutoff)
-    Cutoff,
+    /// a patch of at least this version (major, minor) in the pack's own 64/03
+    PatchFrom { version: [u8; 2] },
+    /// this image flag bit set in the pack's own 64/03 (format 3)
+    ImageFlag { bit: u8 },
 }
+
+/// Image flag bits a way depends on today.
+pub const FLAG_POWER: u8 = 1;
+pub const FLAG_CUTOFF: u8 = 2;
 
 /// A further condition of a way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -159,10 +159,13 @@ const fn r(action: Action, channel: Channel, wire: &'static str, firmware: &'sta
 use Action as A;
 use Channel::{Uart0 as U0, Uart1 as U1, Uart2 as U2};
 const ANY: &[Firmware] = &[];
-const MAINT: &[Firmware] = &[Firmware::Maint];
-const POWER: &[Firmware] = &[Firmware::PowerFlag];
-const CUTOFF: &[Firmware] = &[Firmware::Cutoff];
-const CUTOFF_POWER: &[Firmware] = &[Firmware::Cutoff, Firmware::PowerFlag];
+/// a supported patch (MAINT ≥ `MAINT_MIN`)
+const MAINT: &[Firmware] = &[Firmware::PatchFrom { version: MAINT_MIN }];
+/// the power and clock build (image flag bit 1)
+const POWER: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_POWER }];
+/// the stored pack cutoff: patch ≥ `CUTOFF_MIN` with image flag bit 2
+const CUTOFF: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }];
+const CUTOFF_POWER: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }, Firmware::ImageFlag { bit: FLAG_POWER }];
 
 const QUIET: &[Need] = &[Need::QuietBus];
 const LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::LocalBoard];
@@ -261,13 +264,25 @@ impl From<Option<bool>> for Tri {
     }
 }
 
-/// What is known of one pack: its firmware stage, its last Group0/Group7 (a hint for a preview; a way that writes reads
-/// them fresh before it sends) and its address.
+/// The patch a pack reports in its own 64/03, as far as this connection knows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "kind", content = "version")]
+pub enum Patch {
+    /// not known (no proof on this connection, the pack silent)
+    Unknown,
+    /// known to have no supported patch identity (original firmware, another MNT format)
+    None,
+    /// this patch version (major, minor)
+    Version([u8; 2]),
+}
+
+/// What is known of one pack: its patch and image flags, its last Group0/Group7 (a hint for a preview; a way that writes
+/// reads them fresh before it sends) and its address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Facts {
-    pub maint: Tri,
-    pub power: Tri,
-    pub cutoff: Tri,
+    pub patch: Patch,
+    /// the image flag byte of its own 64/03; None: not known (a stored proof carries none)
+    pub flags: Option<u8>,
     pub group0: Option<u8>,
     pub group7: Option<u8>,
     pub address: u8,
@@ -283,11 +298,11 @@ pub struct Facts {
 
 impl Facts {
     fn firmware(&self, f: Firmware) -> Tri {
-        match f {
-            Firmware::Any => Tri::Yes,
-            Firmware::Maint => self.maint,
-            Firmware::PowerFlag => self.power,
-            Firmware::Cutoff => self.cutoff,
+        match (f, self.patch) {
+            (_, Patch::None) => Tri::No,
+            (Firmware::PatchFrom { .. }, Patch::Unknown) => Tri::Unknown,
+            (Firmware::PatchFrom { version }, Patch::Version(v)) => Tri::from(Some(v >= version)),
+            (Firmware::ImageFlag { bit }, _) => Tri::from(self.flags.map(|f| f & (1 << bit) != 0)),
         }
     }
 
@@ -512,8 +527,20 @@ pub fn apply_group0(plan: Group0Plan, fresh: u8, block: &mut u8) -> Result<(), G
 mod tests {
     use super::*;
 
+    /// The facts of a pack by the stages the tests name: a supported patch (`maint`), the power build and the stored
+    /// cutoff, each known or not; a stored proof (patch known, flags not) is `maint` Yes with power/cutoff Unknown.
     fn facts(maint: Tri, power: Tri, cutoff: Tri, group0: Option<u8>, address: u8) -> Facts {
-        Facts { maint, power, cutoff, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]), slaves: None }
+        let patch = match (maint, cutoff) {
+            (_, Tri::Yes) => Patch::Version([1, 6]),
+            (Tri::Yes, _) => Patch::Version([1, 5]),
+            (Tri::No, _) => Patch::None,
+            (Tri::Unknown, _) => Patch::Unknown,
+        };
+        let flags = match (power, cutoff) {
+            (Tri::Unknown, _) | (_, Tri::Unknown) => None,
+            (p, c) => Some((u8::from(p == Tri::Yes) << FLAG_POWER) | (u8::from(c == Tri::Yes) << FLAG_CUTOFF)),
+        };
+        Facts { patch, flags, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]), slaves: None }
     }
 
     #[test]
@@ -537,9 +564,8 @@ mod tests {
         // a fixed walk over the fact space: every value of each field shows up, combined differently
         let facts: Vec<Facts> = (0..96usize)
             .map(|i| Facts {
-                maint: tris[i % 3],
-                power: tris[(i / 3) % 3],
-                cutoff: tris[(i / 9) % 3],
+                patch: [Patch::Unknown, Patch::None, Patch::Version([1, 4]), Patch::Version([1, 5]), Patch::Version([1, 6]), Patch::Version([1, 7])][i % 6],
+                flags: [None, Some(0x00), Some(0x02), Some(0x04), Some(0x06), Some(0x0E)][(i / 6) % 6],
                 group0: [None, Some(0x00), Some(0xFF), Some(0xF7), Some(0xEF), Some(0xDA)][(i * 7) % 6],
                 group7: [None, Some(0x00), Some(0x08), Some(0x18), Some(0x38)][(i * 5) % 5],
                 address: [0, 3][(i / 2) % 2],
@@ -578,6 +604,7 @@ mod tests {
                 "g0_write": G0_WRITE, "g0_start": G0_START, "g0_power_lock": G0_POWER_LOCK, "g0_extended_off": G0_EXTENDED_OFF,
                 "g0_lock_state": G0_LOCK_STATE, "g7_display": G7_DISPLAY, "g7_extended_display": G7_EXTENDED_DISPLAY, "g7_auto_address": G7_AUTO_ADDRESS,
             },
+            "flags": { "power": FLAG_POWER, "cutoff": FLAG_CUTOFF },
             "needs_installation": Action::ALL.iter().filter(|a| a.needs_installation()).collect::<Vec<_>>(),
             "routes": ROUTES,
         });
@@ -701,7 +728,7 @@ mod tests {
         assert_eq!(decide(route(A::PackLockRelease, U0).unwrap(), &f(0xD7)).state, State::Ready);
         assert_eq!(decide(route(A::PackLockRelease, U1).unwrap(), &f(0xD7)).state, State::Ready);
         // over the CAN socket also the power and clock build
-        let no_power = Facts { power: Tri::No, ..f(0xE7) };
+        let no_power = Facts { flags: Some(1 << FLAG_CUTOFF), ..f(0xE7) };
         assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &no_power).state, State::Blocked);
         assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &no_power).state, State::Ready);
     }

@@ -5,7 +5,7 @@ import VECTORS from "./generated/access.vectors.json";
 import type { AccessDecision } from "./api";
 
 const d = (action: string, channel: "uart0" | "uart1" | "uart2", state: AccessDecision["state"], reasons: AccessDecision["reasons"] = []): AccessDecision =>
-  ({ route: { action, channel, wire: "W", firmware: "any", implemented: state !== "not-implemented" }, state, reasons });
+  ({ route: { action, channel, wire: "W", implemented: state !== "not-implemented" }, state, reasons });
 
 describe("access matrix texts", () => {
   it("groups the ways per action in the backend's order", () => {
@@ -20,7 +20,8 @@ describe("access matrix texts", () => {
       await i18n.changeLanguage(lng);
       const t = i18n.t.bind(i18n);
       for (const r of [
-        { id: "firmware", need: "maint", known: "unknown" }, { id: "firmware", need: "power-flag", known: "no" }, { id: "firmware", need: "cutoff", known: "unknown" },
+        { id: "firmware", need: { kind: "patch-from", version: [1, 5] }, known: "unknown" }, { id: "firmware", need: { kind: "image-flag", bit: 1 }, known: "no" },
+        { id: "firmware", need: { kind: "image-flag", bit: 2 }, known: "unknown" }, { id: "firmware", need: { kind: "image-flag", bit: 5 }, known: "no" },
         { id: "bit", group: 0, bit: 0, want: true, known: false }, { id: "bit", group: 7, bit: 3, want: true, known: null },
         { id: "master-only" }, { id: "quiet-bus" }, { id: "local-board" }, { id: "not-implemented" }, { id: "view-only" },
         { id: "marker", on: false, known: "foreign" }, { id: "marker", on: true, known: null },
@@ -32,6 +33,9 @@ describe("access matrix texts", () => {
         expect(text, JSON.stringify(r)).not.toMatch(/acc\./);
       }
       expect(cellTitle(t, [d("set-can-protocol", "uart2", "not-implemented", [{ id: "local-board" }])])).toMatch(/^W: .+\n· /);
+      // a flag the texts do not name yet (a later build) still reads as a sentence with its bit, the version as „1.7“
+      expect(reasonText(t, { id: "firmware", need: { kind: "image-flag", bit: 5 }, known: "no" })).toMatch(/5/);
+      expect(reasonText(t, { id: "firmware", need: { kind: "patch-from", version: [1, 7] }, known: "no" })).toMatch(/1\.7/);
     }
   });
 });

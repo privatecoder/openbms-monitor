@@ -92,6 +92,9 @@ pub struct MaintInfo {
     /// format 3, image flag bit 2: the stored pack cutoff of MAINT 1.6 (Group0 bit 4 extended off, bit 5 the lock state)
     /// is compiled in; a capability, never the lock itself; false with format 2
     pub pack_cutoff: bool,
+    /// format 3, image flag bits 3–7 as reported (reserved today; a later build may announce a function there); 0 with
+    /// format 2
+    pub reserved_flags: u8,
 }
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
@@ -139,15 +142,20 @@ impl MaintInfo {
         if info.len() < 4 || &info[0..3] != SIGNATURE {
             return InfoAnswer::Broken;
         }
-        let (hard_stop, power_rtc, pack_cutoff) = match (info[3], info.len()) {
-            (2, Self::LEN) => (None, false, false),
+        let (hard_stop, power_rtc, pack_cutoff, reserved_flags) = match (info[3], info.len()) {
+            (2, Self::LEN) => (None, false, false, 0),
             // bits 3–7 are reserved
-            (3, Self::LEN3) => (Some(info[17] & 0x01 != 0), info[17] & 0x02 != 0, info[17] & 0x04 != 0),
+            (3, Self::LEN3) => (Some(info[17] & 0x01 != 0), info[17] & 0x02 != 0, info[17] & 0x04 != 0, info[17] & 0xF8),
             _ => return InfoAnswer::OtherFormat,
         };
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[9..17]);
-        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop, power_rtc, pack_cutoff })
+        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop, power_rtc, pack_cutoff, reserved_flags })
+    }
+
+    /// The image flag byte as reported (format 3); a format-2 identity reports none: 0.
+    pub fn image_flags(&self) -> u8 {
+        u8::from(self.hard_stop == Some(true)) | (u8::from(self.power_rtc) << 1) | (u8::from(self.pack_cutoff) << 2) | self.reserved_flags
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
