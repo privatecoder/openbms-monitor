@@ -119,11 +119,8 @@ export function cutoffBits(patch: PackPatch | null | undefined, uart1: boolean, 
 /** Over the CAN socket bit 4 is offered only while the last read shows writing released there (bit 0). */
 const writeReleased = (group0: number | undefined) => group0 !== undefined && (group0 & G0.write) !== 0;
 
-/** Bits 4 and 5 of Group0 read inverted (on = bit 0) in a proven column: „Erweitertes Aus …“ and „Packsperre aktiv“. */
-export const invertedBit = (g: number, b: number, named: boolean) => named && g === 0 && (b === 4 || b === 5);
-
-/** What a switch cell shows as „an“. */
-export const switchOn = (v: number, b: number, inverted: boolean) => (((v >> b) & 1) === 1) !== inverted;
+/** What a switch cell shows as „an“: its bit at 1, for every switch alike (the row names say what „an“ means). */
+export const switchOn = (v: number, b: number) => ((v >> b) & 1) === 1;
 
 /** The bits of Group0 an edit takes from the pack as it is now instead of the edited (or restored) block: bit 5 always,
  *  and over the CAN socket or in a proven column every patch bit this path does not change. */

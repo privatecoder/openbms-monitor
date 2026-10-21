@@ -24,7 +24,7 @@ import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
+import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { channelOf, controlHint, controlMode, controlOffers, packCutoff, packFirmware, powerLocked } from "../power";
 import { factsOf, MAINT_MIN, offerable } from "../access";
@@ -814,9 +814,6 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 const cut = gate && b >= 4 ? cutoffBits(c.read?.patch, c.path === "uart1", c.read?.function_switches[0]) : null;
                                 // bit 5 is status only, never editable
                                 const fixed = gate && !(b === 0 ? gate.writeEditable : b === 2 ? gate.startEditable : b === 3 ? gate.powerEditable : b === 4 ? cut!.cutoffEditable : false);
-                                // bits 4 and 5 of a proven column read inverted: on = bit 0
-                                // (not where the build has no cutoff: there the raw bit, without function)
-                                const inverted = invertedBit(g, b, !!gate?.named && cut?.cutoff !== false);
                                 // the meaning only in proven columns; the shared row stays neutral in a mixed table
                                 const meaning = gate?.named && (b !== 3 || gate.power !== false) && (b < 4 || cut!.cutoff !== false) ? helpTitle(`switch.0.${b}`, lang) : undefined;
                                 // bit 3 acts only in a build with the power and clock service, bits 4 and 5 with the pack cutoff
@@ -826,7 +823,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 const slaveStart = b === 2 && gate?.named && c.address !== undefined && c.address !== 0 ? t("par.gateStartMasterOnly") : null;
                                 const fixedWhy = !fixed ? null : b === 2 ? t("par.gateStartFixed") : b === 3 && gate.power !== false ? t("par.gatePowerFixed")
                                   : b === 4 && cut!.cutoff !== false ? t("par.gateCutoffFixed") : b === 5 ? t("par.gateLockFixed") : null;
-                                const why = !gate ? undefined : rawGate(c) ? t("par.gateRaw") : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, inverted ? t("par.gateInverted") : null, fixedWhy].filter(Boolean).join(" · ");
+                                const why = !gate ? undefined : rawGate(c) ? t("par.gateRaw") : !gate.named ? t("par.gateUnproven") : [meaning, slaveStart, power, cutoff, fixedWhy].filter(Boolean).join(" · ");
                                 // bit 5 after an ein/aus whose re-read failed: the shown state may be old
                                 // „neu lesen“ reads this column alone, also during an edit (which then moves onto it)
                                 if (b === 5 && c.lockUnclear) return (
@@ -840,12 +837,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                                 // bits 4 and 5 of an unproven column: raw, also in the edit (never an on/off box)
                                 if (c.id === editId && edit && b >= 4 && gate && !gate.named) return <ValueCell key={c.id} c={c} off={false} title={why}><span className="text-muted">{t("par.rawBit", { v: (edit.switches[g] >> b) & 1 })}</span></ValueCell>;
                                 return c.id === editId && edit ? (
-                                  <EditSwitch key={c.id} e={edit} g={g} b={b} inverted={inverted} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
+                                  <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
                                   <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false || (gate && rawGate(c)) || (b >= 4 && gate && !gate.named)
                                     // a build without the cutoff, a stored or file column without a proof, bits 4/5 unproven: the raw bit, no on/off meaning
                                     ? <span className="text-muted">{t("par.rawBit", { v: (c.switches[g] >> b) & 1 })}</span>
-                                    : <OnOff on={switchOn(c.switches[g], b, inverted)} />}</ValueCell>
+                                    : <OnOff on={switchOn(c.switches[g], b)} />}</ValueCell>
                                 );
                               })}
                             </tr>
