@@ -396,6 +396,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     }
     let mut conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     conn.set_label(capture::label(&ep, bus));
+    conn.set_bus(bus);
     // nothing answers (wrong port, bus or baud rate, pack off or in the bootloader): the port is closed again,
     // nothing is linked or recorded
     let checked = check_link(&mut conn, bus, &addresses.unwrap_or_default(), &state.connect_cancel);
@@ -472,6 +473,7 @@ async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, 
     let ep = Endpoint::Serial { path, baud: other.baud() };
     let mut conn = Connection::open(&ep).map_err(|e| e.to_string())?;
     conn.set_label(capture::label(&ep, other));
+    conn.set_bus(other);
     let checked = check_link(&mut conn, other, &addresses.unwrap_or_default(), &state.connect_cancel);
     if state.connect_cancel.swap(false, Ordering::SeqCst) {
         return Err(CONNECT_CANCELLED.into());

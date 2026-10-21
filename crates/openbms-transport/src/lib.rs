@@ -151,6 +151,10 @@ pub struct Connection {
     /// Addresses that gave a valid answer on this connection and did not stay silent through a retry since: only they
     /// get the one longer retry of a read (a pack that never answered is not asked twice).
     answered: std::collections::HashSet<u8>,
+    /// The quiet the bus needs after the last byte heard before we send (`set_bus`; `timing::UART1_QUIET` on the CAN
+    /// socket, none on RS485-1/2), and when that last byte came.
+    quiet: Duration,
+    heard: Option<Instant>,
 }
 
 /// A failed ein/aus (`Connection::on_off_phased`): `sent` whether the request had left completely before `error`.
@@ -216,7 +220,7 @@ impl Connection {
             Endpoint::Serial { path, baud } => format!("USB {path} · {baud} Bd"),
             Endpoint::Tcp { addr } => format!("TCP {addr}"),
         };
-        Ok(Self { port, timeout, gap: timing::GAP, tcp, rx: RxStats::default(), tap: capture::Tap::new(&capture::GLOBAL, label), latency: timing::Latency::new(tcp), answered: Default::default() })
+        Ok(Self { port, timeout, gap: timing::GAP, tcp, rx: RxStats::default(), tap: capture::Tap::new(&capture::GLOBAL, label), latency: timing::Latency::new(tcp), answered: Default::default(), quiet: Duration::ZERO, heard: None })
     }
 
     /// The answer times learnt on this connection (empty and inactive on USB).
@@ -264,17 +268,37 @@ impl Connection {
 
     /// Drop what was received before a request; on TCP a late answer read to drop it shows up in the capture.
     fn drop_input(&mut self) -> std::io::Result<()> {
-        if !self.tap.sink.is_running() {
-            return self.port.clear_input(None);
-        }
         let mut dropped = Vec::new();
         let r = self.port.clear_input(Some(&mut dropped));
-        self.tap.dropped(&dropped);
+        // bytes waiting unread were bus traffic too (a late answer): the quiet before our next request counts from now
+        if !dropped.is_empty() {
+            self.heard = Some(Instant::now());
+        }
+        if self.tap.sink.is_running() {
+            self.tap.dropped(&dropped);
+        }
         r
     }
 
-    /// `write_all` that shows up in the capture.
+    /// The bus this connection talks on: its quiet before a request (`timing::UART1_QUIET` on the CAN socket).
+    pub fn set_bus(&mut self, bus: Bus) {
+        self.quiet = if bus == Bus::CanSocketBus { timing::UART1_QUIET } else { Duration::ZERO };
+    }
+
+    /// Bytes arrived: the bus was busy until now.
+    fn heard_now(&mut self) {
+        self.heard = Some(Instant::now());
+    }
+
+    /// `write_all` that shows up in the capture; first the bus's quiet after the last byte heard (`set_bus`), for every
+    /// kind of request alike.
     fn send(&mut self, data: &[u8]) -> Result<()> {
+        if let Some(t) = self.heard {
+            let wait = (t + self.quiet).saturating_duration_since(Instant::now());
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
+        }
         self.tap.tx(data);
         Ok(self.port.write_all(data)?)
     }
@@ -288,6 +312,7 @@ impl Connection {
                 Ok(0) if self.tcp => return Err(Error::Closed),
                 Ok(0) => {}
                 Ok(n) => {
+                    self.heard_now();
                     self.tap.rx(&buf[..n]);
                     self.rx.bytes += n;
                     out.extend_from_slice(&buf[..n]);
@@ -711,6 +736,7 @@ impl Connection {
                     Ok(0) if self.tcp => return end(&mut framer, Error::Closed),
                     Ok(0) => {}
                     Ok(n) => {
+                        self.heard_now();
                         self.tap.rx(&buf[..n]);
                         framer.push(&buf[..n]);
                         if let Some(reply) = framer.next(request) {
@@ -834,7 +860,10 @@ impl Connection {
             Err(e) => Err(e.into()),
         };
         match &r {
-            Ok(n) if *n > 0 => self.tap.rx(&buf[..*n]),
+            Ok(n) if *n > 0 => {
+                self.heard_now();
+                self.tap.rx(&buf[..*n])
+            }
             _ => self.note_failure(&r, 0),
         }
         r
@@ -939,7 +968,7 @@ mod tests {
     fn foreign_lines_do_not_extend_the_timeout() {
         let port = Box::new(Polling { start: Instant::now(), period: Duration::from_millis(300), sent: 0 });
         let sink = Box::leak(Box::new(capture::Capture::new()));
-        let mut c = Connection { port, timeout: Duration::from_millis(400), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) , latency: timing::Latency::new(false), answered: Default::default() };
+        let mut c = Connection { port, timeout: Duration::from_millis(400), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) , latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: None };
         let t = Instant::now();
         let r = c.ascii(&Telemetry::request(0).unwrap(), 0);
         assert!(matches!(r, Err(Error::Timeout(_))));
@@ -954,7 +983,22 @@ mod tests {
 
     fn scripted_into(script: Vec<(Vec<u8>, Vec<u8>)>, sink: &'static capture::Capture) -> Connection {
         let port = Box::new(Scripted { script, out: Vec::new(), silent: Vec::new(), writes: Default::default() });
-        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) , latency: timing::Latency::new(false), answered: Default::default() }
+        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) , latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: None }
+    }
+
+    #[test]
+    fn the_can_socket_keeps_the_bus_quiet_after_an_answer_before_the_next_request() {
+        let ask = Telemetry::request(1).unwrap();
+        for (bus, at_least, below) in [(Bus::CanSocketBus, timing::UART1_QUIET, Duration::from_secs(5)), (Bus::PackBus, Duration::ZERO, Duration::from_millis(150))] {
+            let mut c = scripted(vec![(ask.clone(), TELE1.to_vec())]);
+            c.set_bus(bus);
+            c.telemetry(1).unwrap();
+            let t = Instant::now();
+            // the second request waits for the quiet after the first answer heard (every kind of request: one `send`)
+            c.telemetry(1).unwrap();
+            assert!(t.elapsed() >= at_least.saturating_sub(Duration::from_millis(5)), "{bus:?} {:?}", t.elapsed());
+            assert!(t.elapsed() < below, "{bus:?} {:?}", t.elapsed());
+        }
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.
@@ -1021,7 +1065,7 @@ mod tests {
     fn late(script: Vec<(Vec<u8>, Vec<u8>)>, delays: Vec<u64>, adaptive: bool) -> (Connection, Arc<Mutex<usize>>) {
         let writes = Arc::new(Mutex::new(0));
         let port = Box::new(Late { script, delays, queue: Vec::new(), writes: writes.clone() });
-        let c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(adaptive), answered: Default::default() };
+        let c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(adaptive), answered: Default::default(), quiet: Duration::ZERO, heard: None };
         (c, writes)
     }
 
@@ -1486,7 +1530,7 @@ mod tests {
     }
 
     fn closing(out: Vec<u8>) -> Connection {
-        Connection { port: Box::new(Closing { out }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default() }
+        Connection { port: Box::new(Closing { out }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: None }
     }
 
     /// A port whose write fails: the request never left.
@@ -1526,7 +1570,7 @@ mod tests {
         let f = scripted(vec![(request.clone(), b"~200146080000FDAB\r".to_vec())]).on_off_phased(1, false).unwrap_err();
         assert!(f.sent && matches!(f.error, Error::Proto(openbms_proto::Error::Rtn(0x08))) && !f.unclear());
         // the request could not be written: nothing left, not switched
-        let mut c = Connection { port: Box::new(Unwritable), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default() };
+        let mut c = Connection { port: Box::new(Unwritable), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: None };
         let f = c.on_off_phased(1, true).unwrap_err();
         assert!(!f.sent && !f.unclear() && matches!(f.error, Error::Io(_)));
     }
@@ -1577,7 +1621,7 @@ mod tests {
         assert!(matches!(r, Err(Error::Timeout(d)) if d == Duration::from_millis(150)));
         assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
         // foreign lines do not extend it either
-        let mut p = Connection { port: Box::new(Polling { start: Instant::now(), period: Duration::from_millis(50), sent: 0 }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default() };
+        let mut p = Connection { port: Box::new(Polling { start: Instant::now(), period: Duration::from_millis(50), sent: 0 }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: None };
         let t = Instant::now();
         assert!(matches!(p.binary_exchange(Bus::CanSocketBus, &read, Duration::from_millis(200)), Err(Error::Timeout(_))));
         assert!(t.elapsed() < Duration::from_millis(400), "{:?}", t.elapsed());
