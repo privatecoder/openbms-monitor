@@ -356,7 +356,7 @@ fn check_link(conn: &mut Connection, bus: Bus, first: &[u8], cancel: &AtomicBool
 const CONNECT_CANCELLED: &str = r#"{"code":"cancelled"}"#;
 
 fn no_answer_error(p: &openbms_transport::Probe) -> String {
-    serde_json::json!({ "code": "no-answer", "noise": p.noise, "intra": p.intra }).to_string()
+    serde_json::json!({ "code": "no-answer", "noise": p.noise, "intra": p.intra, "busy": p.busy }).to_string()
 }
 
 /// Open the monitor connection for an installation (None: „Nur ansehen“, nothing is stored). The endpoint is linked to
@@ -455,6 +455,8 @@ struct OtherBus {
     answered: Option<u8>,
     noise: bool,
     intra: bool,
+    /// the bus never got quiet there: addresses were not asked
+    busy: bool,
     /// the answer at 9600 baud came from RS485-1/2 (it knows 0x47): old firmware 16.04.06 `_9600`, not the CAN socket
     pack_at_9600: bool,
 }
@@ -479,8 +481,8 @@ async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, 
         return Err(CONNECT_CANCELLED.into());
     }
     Ok(match checked {
-        Ok(a) => OtherBus { answered: Some(a), noise: false, intra: false, pack_at_9600: other == Bus::CanSocketBus && conn.answers_parameters(a) },
-        Err(p) => OtherBus { answered: None, noise: p.noise, intra: p.intra, pack_at_9600: false },
+        Ok(a) => OtherBus { answered: Some(a), noise: false, intra: false, busy: false, pack_at_9600: other == Bus::CanSocketBus && conn.answers_parameters(a) },
+        Err(p) => OtherBus { answered: None, noise: p.noise, intra: p.intra, busy: p.busy, pack_at_9600: false },
     })
 }
 
@@ -550,7 +552,8 @@ async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>, connecting
         if connecting && cancel.load(Ordering::SeqCst) {
             break;
         }
-        found.extend(with_conn(&state.conn, &state.flashing, |c| Ok(c.scan([a])))?);
+        // a bus that never got quiet fails the whole query: an address not asked is no missing pack
+        found.extend(with_conn(&state.conn, &state.flashing, |c| c.scan([a]))?);
     }
     Ok(found)
 }

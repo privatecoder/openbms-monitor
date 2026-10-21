@@ -9,7 +9,7 @@ import { setProfile } from "./profile";
 
 export type Bus = "pack" | "can";
 /** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
-export type OtherBus = { answered: number | null; noise: boolean; intra: boolean; pack_at_9600: boolean };
+export type OtherBus = { answered: number | null; noise: boolean; intra: boolean; busy?: boolean; pack_at_9600: boolean };
 
 export type Exported = { path: string; export_id: string; logs: number; logs_missing: number; recording: boolean; bytes: number };
 export type Named = { id: string; name: string };
