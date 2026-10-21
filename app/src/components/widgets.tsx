@@ -60,11 +60,11 @@ export function StateIcon({ state, soc, className, strokeWidth }: { state: PackS
   return I ? <I className={cn(stateTone[state], className)} strokeWidth={strokeWidth} aria-hidden /> : null;
 }
 
-export function StateMark({ state }: { state: PackState }) {
+export function StateMark({ state, large }: { state: PackState; large?: boolean }) {
   const { t } = useTranslation();
   return (
-    <span className={cn("inline-flex items-center gap-1.5 text-sm font-medium", stateTone[state])}>
-      <StateIcon state={state} className="h-4 w-4" />{t(`state.${state}`)}
+    <span className={cn("inline-flex items-center font-medium", large ? "gap-2 text-xl" : "gap-1.5 text-sm", stateTone[state])}>
+      <StateIcon state={state} className={large ? "h-6 w-6" : "h-4 w-4"} />{t(`state.${state}`)}
     </span>
   );
 }
