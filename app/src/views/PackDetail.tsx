@@ -63,10 +63,14 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
       <Button variant="ghost" size="sm" className="-ml-3" onClick={onBack}><ArrowLeft className="h-4 w-4" />{t("dash.back")}</Button>
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-4xl font-semibold tracking-tight">
-            {t("dash.pack")} {String(p.address).padStart(2, "0")}
-            {multi && p.address === 0 && <span className="ml-3 text-2xl font-medium text-muted">{t("dash.master")}</span>}
-          </h1>
+          {/* the state sits next to the name, so it does not shift with the width of the live line */}
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+            <h1 className="font-display text-4xl font-semibold tracking-tight">
+              {t("dash.pack")} {String(p.address).padStart(2, "0")}
+              {multi && p.address === 0 && <span className="ml-3 text-2xl font-medium text-muted">{t("dash.master")}</span>}
+            </h1>
+            <StateMark state={packState(live?.system_status)} large />
+          </div>
           <p className="mt-1 text-muted">{[p.device?.device_name, firmware && `Firmware ${firmware}`, p.device?.can_protocol].filter(Boolean).join(", ")}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-4 text-sm text-muted">
             {(["battery", "bms"] as const).map((k) => {
@@ -85,10 +89,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             <span className="flex items-center gap-1">{hardStopLine(hardFlag, hardFlag === null || hardFlag === undefined ? hardStops[p.address] : undefined, t, i18n.language)}<InfoIcon id="topic.hardStop" /></span>
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <StateMark state={packState(live?.system_status)} />
-          <LiveIndicator updated={p.updated} expected={p.interval} />
-        </div>
+        <LiveIndicator updated={p.updated} expected={p.interval} />
       </header>
 
       {tmOld && <p className="font-medium text-alarm">{t("dash.valuesOld", { s: age(p.updated) })}</p>}
