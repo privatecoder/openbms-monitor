@@ -53,6 +53,8 @@ pub const GAP: Duration = ms(100);
 /// CR), so a request sent sooner is appended to the answer it heard and thrown away with it (the frame's first address
 /// is another pack's). 200 ms leave room for the IRQ and the main loop, measured from our receipt (later than the bus).
 pub const UART1_QUIET: Duration = ms(200);
+/// The longest wait for that quiet: traffic that never pauses (noise, a bus busy with another master) sends nothing.
+pub const QUIET_LIMIT: Duration = ms(2000);
 /// The answer to a restart (0x45 type 6): the board resets before it can answer, so a missing one is expected.
 pub const RESTART_ANSWER: Duration = ms(300);
 /// One 0x51 try of the restart watch; tied to `SILENT_FOR`, so a longer try would hide a short restart.

@@ -366,6 +366,8 @@ impl ParamIo for AsciiIo<'_> {
             Ok(Ok(())) => Sent::Ack,
             // after RTN 06 the switches sent are live
             Ok(Err(refusal)) => Sent::Refused { refusal, switches_live: true },
+            // the bus never got quiet: the block did not go out
+            Err(e @ openbms_transport::Error::BusBusy(_)) => return Err(e.to_string()),
             Err(e) => Sent::Lost(e.to_string()),
         })
     }
@@ -389,6 +391,8 @@ pub(crate) fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
         // since the read
         Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0xE3))) => Sent::Refused { refusal: Refusal::Locked, switches_live: false },
         Err(e @ openbms_transport::Error::Proto(openbms_proto::Error::Uart1(_))) => Sent::Protocol(uart1_error(e)),
+        // the bus never got quiet: nothing went out
+        Err(e @ openbms_transport::Error::BusBusy(_)) => Sent::Protocol(e.to_string()),
         Err(e) => Sent::Lost(e.to_string()),
     }
 }
