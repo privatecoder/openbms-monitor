@@ -27,6 +27,9 @@ pub enum Error {
     /// is open (a write treats it like a lost answer).
     #[error("answer incomplete")]
     Incomplete,
+    /// The bus never got quiet before the request (`timing::QUIET_LIMIT`): nothing was sent.
+    #[error("bus busy for {0:?}: nothing sent")]
+    BusBusy(Duration),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -309,16 +312,21 @@ impl Connection {
 
     /// Wait for a whole quiet period without a byte (`set_bus`): bytes that come in meanwhile (the rest of a late answer)
     /// are dropped and start it again, so the packs' receivers have closed every frame before ours begins.
-    fn await_quiet(&mut self) -> std::io::Result<()> {
+    fn await_quiet(&mut self) -> Result<()> {
         if self.quiet.is_zero() {
             return Ok(());
         }
+        let start = Instant::now();
         loop {
             self.drop_input()?;
             let Some(t) = self.heard else { return Ok(()) };
             let left = (t + self.quiet).saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Ok(());
+            }
+            // never quiet: the request does not go out (callers take it as not sent, not as a missing answer)
+            if start.elapsed() + left > timing::QUIET_LIMIT {
+                return Err(Error::BusBusy(timing::QUIET_LIMIT));
             }
             // in steps, so bytes during the wait are seen and the quiet starts again after them
             std::thread::sleep(left.min(Duration::from_millis(20)));
@@ -1078,6 +1086,22 @@ mod tests {
         c.write_raw(b"~x\r").unwrap();
         let sent = writes.lock().unwrap()[0];
         assert!(sent >= Duration::from_millis(120) + timing::UART1_QUIET - Duration::from_millis(5), "{sent:?}");
+    }
+
+    #[test]
+    fn a_bus_that_never_gets_quiet_sends_nothing() {
+        // a byte every 150 ms for 5 s: no 200-ms quiet within the limit, so the request is not sent at all
+        let writes = Arc::new(Mutex::new(vec![]));
+        let at = (1..=33).map(|i| Duration::from_millis(150 * i)).collect();
+        let port = Box::new(Trickle { start: Instant::now(), at, writes: writes.clone() });
+        let mut c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: Some(Instant::now()) };
+        c.set_bus(Bus::CanSocketBus);
+        let t = Instant::now();
+        assert!(matches!(c.write_raw(b"~x\r"), Err(Error::BusBusy(_))));
+        assert!(t.elapsed() <= timing::QUIET_LIMIT + Duration::from_millis(100), "{:?}", t.elapsed());
+        assert!(writes.lock().unwrap().is_empty());
+        // a restart that could not be sent is an error, never „sent at“
+        assert!(matches!(c.restart(1), Err(Error::BusBusy(_))));
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.
