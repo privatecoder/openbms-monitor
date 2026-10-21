@@ -333,6 +333,12 @@ pub fn power_rtc(state: &AppState, link: &Link, address: u8) -> bool {
     access::ready(Action::ReadClock, Channel::Uart1, &access_facts(pack_patch(state, link, address, None).as_ref(), None, None, address))
 }
 
+/// The firmware base of a 0x51 version text („16.06.13“, also with a suffix): None when it does not read as one.
+pub fn base_of(version: &str) -> Option<[u8; 3]> {
+    let mut it = version.trim().split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse::<u8>().ok());
+    Some([it.next()??, it.next()??, it.next()??])
+}
+
 /// The access matrix's facts of one pack from what proves its patch (`pack_patch`) and its last Group0/Group7: a
 /// stored proof gives the patch, never the image flags; no proof says nothing (unknown, not original).
 pub fn access_facts(patch: Option<&PackPatch>, group0: Option<u8>, group7: Option<u8>, address: u8) -> access::Facts {
@@ -340,7 +346,8 @@ pub fn access_facts(patch: Option<&PackPatch>, group0: Option<u8>, group7: Optio
         Some(p) => (Tri::Yes, Tri::from(p.caps.power_rtc), Tri::from(p.caps.pack_cutoff)),
         None => (Tri::Unknown, Tri::Unknown, Tri::Unknown),
     };
-    access::Facts { maint, power, cutoff, group0, group7, address }
+    // the app conditions (installation, marker, base) are set by the caller that knows them
+    access::Facts { maint, power, cutoff, group0, group7, address, installation: true, marker: None, base: None }
 }
 
 /// The lock state (Group0 bit 5) differs between the read an edit started from and the pack now: a write is not sent
@@ -488,12 +495,24 @@ pub struct AccessView {
 }
 
 #[tauri::command]
-pub async fn access_view(state: tauri::State<'_, AppState>, address: u8, group0: Option<u8>, group7: Option<u8>) -> Result<AccessView, String> {
+pub async fn access_view(state: tauri::State<'_, AppState>, address: u8, group0: Option<u8>, group7: Option<u8>, stored_proof: bool, version: Option<String>) -> Result<AccessView, String> {
     let link = link_now(&state);
     let channel = state.bus.lock().map_err(|e| e.to_string())?.map(|b| if b == Bus::CanSocketBus { access::Channel::Uart1 } else { access::Channel::Uart0 });
-    let serial = link.installation.as_deref().and_then(|inst| crate::maint::with_store(&state, |s| s.current_board(inst, address)).ok().flatten()).map(|b| b.bms_serial);
+    // a stored proof only where this link's read of the pack matched it (`stored_proof`: the UI's column of this link
+    // carries it, bound to the String 2 read then); else only the connection's own proof
+    let serial = stored_proof
+        .then(|| link.installation.as_deref().and_then(|inst| crate::maint::with_store(&state, |s| s.current_board(inst, address)).ok().flatten()).map(|b| b.bms_serial))
+        .flatten();
     let patch = pack_patch(&state, &link, address, serial.as_deref());
-    Ok(AccessView { gen: link.gen, channel, decisions: access::view(&access_facts(patch.as_ref(), group0, group7, address)) })
+    let profile = bank::profile(&state, link.gen);
+    let marker = profile.as_ref().filter(|_| address == 0).and_then(|p| p.master.marker());
+    let facts = access::Facts {
+        installation: link.installation.is_some(),
+        marker,
+        base: version.as_deref().and_then(base_of),
+        ..access_facts(patch.as_ref(), group0, group7, address)
+    };
+    Ok(AccessView { gen: link.gen, channel, decisions: access::view(&facts) })
 }
 
 /// The live findings of the current connection.
@@ -933,6 +952,15 @@ mod tests {
         bank::uart1_unconfirmed(&state, &link, 4, "SYN-B4", &SerialValue::NoAnswer, bank::Why::Foreign, None);
         observe_hard_stop(&state, &link, 6, &status(0x02, 0x01));
         assert_eq!(seen(&state), 1);
+    }
+
+    #[test]
+    fn the_firmware_base_reads_from_the_version_text() {
+        assert_eq!(base_of("16.06.13"), Some([16, 6, 13]));
+        assert_eq!(base_of("16.06.05 SP80"), Some([16, 6, 5]));
+        assert_eq!(base_of("V16.06.04"), Some([16, 6, 4]));
+        assert_eq!(base_of("16.06"), None);
+        assert_eq!(base_of(""), None);
     }
 
     #[test]

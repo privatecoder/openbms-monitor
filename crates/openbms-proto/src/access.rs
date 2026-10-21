@@ -11,6 +11,7 @@
 //! The catalog follows the firmware analysis (UART write matrix, 16.06.13 and the MAINT builds). Its rows are data;
 //! `decide` evaluates one row for one pack's facts. Unknown stays unknown: a stored proof carries no image flags.
 
+use crate::maint::MarkerWord;
 use serde::Serialize;
 
 /// The lowest patch version the app supports as a whole (format-2/3 identity with the release bits; 1.4 has none).
@@ -26,6 +27,7 @@ pub const G0_EXTENDED_OFF: u8 = 4;
 pub const G0_LOCK_STATE: u8 = 5;
 /// Group7 bits that gate a way.
 pub const G7_DISPLAY: u8 = 3;
+pub const G7_EXTENDED_DISPLAY: u8 = 4;
 pub const G7_AUTO_ADDRESS: u8 = 5;
 
 /// The stored pack cutoff of an identity with patch `patch` and image flag bit 2 `flag`: both needed.
@@ -55,7 +57,8 @@ pub enum Action {
     ReadClock,
     SetClock,
     PowerOnOff,
-    PackLock,
+    PackLockSet,
+    PackLockRelease,
     Restart,
     ForceHeater,
     ClearHistory,
@@ -75,9 +78,10 @@ pub enum Action {
 
 impl Action {
     /// In the order the UI lists them.
-    pub const ALL: [Action; 27] = [
+    pub const ALL: [Action; 28] = [
         Action::ReadTelemetry, Action::ReadStatus, Action::ReadInfo, Action::ReadParameters, Action::WriteParameters, Action::WriteName,
-        Action::ReadSerials, Action::WriteSerials, Action::ReadClock, Action::SetClock, Action::PowerOnOff, Action::PackLock, Action::Restart,
+        Action::ReadSerials, Action::WriteSerials, Action::ReadClock, Action::SetClock, Action::PowerOnOff, Action::PackLockSet,
+        Action::PackLockRelease, Action::Restart,
         Action::ForceHeater, Action::ClearHistory, Action::SetRemaining, Action::SetLearnedFull, Action::Calibrate, Action::SetCanProtocol,
         Action::ReadHistory, Action::ReadIdentity, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
         Action::DisplayTunnel, Action::Flash,
@@ -90,6 +94,12 @@ impl Action {
             Action::ReadTelemetry | Action::ReadStatus | Action::ReadInfo | Action::ReadParameters | Action::ReadSerials | Action::ReadClock
                 | Action::ReadHistory | Action::ReadIdentity | Action::MaintStatus | Action::ReadSystem
         )
+    }
+
+    /// A write the app runs only on a connection with an installation (not „Nur ansehen“). The flash and the
+    /// maintenance have flows of their own.
+    pub fn needs_installation(self) -> bool {
+        self.writes() && !matches!(self, Action::Flash | Action::MaintStart | Action::MaintStop)
     }
 }
 
@@ -121,6 +131,10 @@ pub enum Need {
     QuietBus,
     /// only the board the display port is attached to (UART2 ignores the frame's address)
     LocalBoard,
+    /// the master's maintenance marker must be off (start) or on (stop); a foreign word refuses both
+    Marker { on: bool },
+    /// the firmware base (16.06.xx from 0x51) at least this
+    BaseFrom { base: [u8; 3] },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -129,79 +143,98 @@ pub struct Route {
     pub channel: Channel,
     /// command on the wire, as the analysis names it
     pub wire: &'static str,
-    pub firmware: Firmware,
+    /// all of them (e.g. the pack cutoff and, over the CAN socket, the power and clock build)
+    pub firmware: &'static [Firmware],
     pub needs: &'static [Need],
     /// whether this app sends it
     pub implemented: bool,
 }
 
-const fn r(action: Action, channel: Channel, wire: &'static str, firmware: Firmware, needs: &'static [Need], implemented: bool) -> Route {
+const fn r(action: Action, channel: Channel, wire: &'static str, firmware: &'static [Firmware], needs: &'static [Need], implemented: bool) -> Route {
     Route { action, channel, wire, firmware, needs, implemented }
 }
 
 use Action as A;
 use Channel::{Uart0 as U0, Uart1 as U1, Uart2 as U2};
-use Firmware::{Any, Cutoff, Maint, PowerFlag};
+const ANY: &[Firmware] = &[];
+const MAINT: &[Firmware] = &[Firmware::Maint];
+const POWER: &[Firmware] = &[Firmware::PowerFlag];
+const CUTOFF: &[Firmware] = &[Firmware::Cutoff];
+const CUTOFF_POWER: &[Firmware] = &[Firmware::Cutoff, Firmware::PowerFlag];
 
 const QUIET: &[Need] = &[Need::QuietBus];
 const LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::LocalBoard];
 const MASTER: &[Need] = &[Need::MasterOnly];
 const WRITE_RELEASE: &[Need] = &[Need::BitSet { group: 0, bit: G0_WRITE }];
 const POWER_FREE: &[Need] = &[Need::BitClear { group: 0, bit: G0_POWER_LOCK }];
-const START: &[Need] = &[Need::MasterOnly, Need::BitSet { group: 0, bit: G0_START }, Need::BitClear { group: 7, bit: G7_AUTO_ADDRESS }];
+const START: &[Need] = &[Need::MasterOnly, Need::Marker { on: false }, Need::BitSet { group: 0, bit: G0_START }, Need::BitClear { group: 7, bit: G7_AUTO_ADDRESS }];
+const STOP: &[Need] = &[Need::MasterOnly, Need::Marker { on: true }];
+/// a new stored lock: the extended off switched on (Group0 bit 4 = 0); releasing needs it not
+const LOCK_SET_U0: &[Need] = &[Need::BitClear { group: 0, bit: G0_EXTENDED_OFF }, Need::QuietBus];
+const LOCK_SET_U1: &[Need] = &[Need::BitClear { group: 0, bit: G0_EXTENDED_OFF }, Need::BitClear { group: 0, bit: G0_POWER_LOCK }];
+const STATUS_LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::LocalBoard];
+const SYSTEM_LOCAL: &[Need] = &[Need::BitSet { group: 7, bit: G7_DISPLAY }, Need::BitSet { group: 7, bit: G7_EXTENDED_DISPLAY }, Need::MasterOnly, Need::LocalBoard];
+const MODBUS_SYSTEM: &[Need] = &[Need::MasterOnly, Need::BaseFrom { base: [16, 6, 4] }];
+const MODBUS_STRING1: &[Need] = &[Need::MasterOnly, Need::BaseFrom { base: [16, 6, 11] }];
 
 /// Every way the firmware has, also the ones the app does not use (`implemented: false`).
 pub const ROUTES: &[Route] = &[
-    r(A::ReadTelemetry, U0, "ASCII 42", Any, QUIET, true),
-    r(A::ReadTelemetry, U1, "ASCII 42", Any, &[], true),
-    r(A::ReadTelemetry, U2, "binär 46 (spontan)", Any, LOCAL, false),
-    r(A::ReadStatus, U0, "ASCII 44", Any, QUIET, true),
-    r(A::ReadStatus, U1, "ASCII 44", Any, &[], true),
-    r(A::ReadInfo, U0, "ASCII 51", Any, QUIET, true),
-    r(A::ReadInfo, U1, "ASCII 51", Any, &[], true),
-    r(A::ReadParameters, U0, "ASCII 47", Any, QUIET, true),
-    r(A::ReadParameters, U1, "binär 47", Maint, &[], true),
-    r(A::ReadParameters, U2, "binär 47", Any, LOCAL, false),
-    r(A::WriteParameters, U0, "ASCII A1 (169 Byte)", Any, QUIET, true),
-    r(A::WriteParameters, U1, "binär A1 (158 Byte)", Maint, WRITE_RELEASE, true),
-    r(A::WriteParameters, U2, "binär A1 (158 Byte)", Any, LOCAL, false),
-    r(A::WriteName, U0, "ASCII A1", Any, QUIET, false),
-    r(A::ReadSerials, U0, "ASCII A2/A4", Any, QUIET, true),
-    r(A::ReadSerials, U1, "binär A2/A4", Maint, &[], true),
-    r(A::WriteSerials, U0, "ASCII A3/A5", Any, QUIET, true),
-    r(A::ReadClock, U0, "ASCII 4D", Any, QUIET, true),
-    r(A::ReadClock, U1, "ASCII 4D", PowerFlag, &[], true),
-    r(A::SetClock, U0, "ASCII 4E", Any, QUIET, true),
-    r(A::SetClock, U1, "ASCII 4E", PowerFlag, POWER_FREE, true),
-    r(A::PowerOnOff, U0, "ASCII 45/04", Any, QUIET, true),
-    r(A::PowerOnOff, U1, "ASCII 45/04", PowerFlag, POWER_FREE, true),
-    r(A::PackLock, U0, "ASCII 45/04 (gezielt)", Cutoff, QUIET, true),
-    r(A::PackLock, U1, "ASCII 45/04 (gezielt)", Cutoff, POWER_FREE, true),
-    r(A::Restart, U0, "ASCII 45/06", Any, QUIET, true),
-    r(A::Restart, U1, "ASCII 45/06", PowerFlag, POWER_FREE, true),
-    r(A::ForceHeater, U0, "ASCII 45/03", Any, QUIET, true),
-    r(A::ClearHistory, U0, "ASCII 45/05", Any, QUIET, true),
-    r(A::SetRemaining, U0, "ASCII 49/3B", Any, QUIET, true),
-    r(A::SetLearnedFull, U0, "ASCII 49/3A", Any, QUIET, false),
-    r(A::Calibrate, U0, "ASCII A0", Any, QUIET, true),
-    r(A::SetCanProtocol, U0, "ASCII A6", Any, QUIET, true),
-    r(A::SetCanProtocol, U2, "binär 63", Any, LOCAL, false),
-    r(A::ReadHistory, U0, "ASCII 4B", Any, QUIET, true),
-    r(A::ReadIdentity, U1, "ASCII 64/03", Any, &[], true),
-    r(A::MaintStatus, U1, "ASCII 64/02", Maint, MASTER, true),
-    r(A::MaintStart, U1, "ASCII 64/01", Maint, START, true),
-    r(A::MaintStop, U1, "ASCII 64/00", Maint, MASTER, true),
-    r(A::ReadSystem, U1, "Modbus FC03/04", Any, MASTER, true),
-    r(A::DisplayTunnel, U0, "ASCII AA/AB", Any, QUIET, false),
-    r(A::DisplayTunnel, U2, "binär AA/AB", Any, LOCAL, false),
-    r(A::Flash, U0, "Bootloader", Any, QUIET, true),
+    r(A::ReadTelemetry, U0, "ASCII 42", ANY, QUIET, true),
+    r(A::ReadTelemetry, U1, "ASCII 42", ANY, &[], true),
+    r(A::ReadTelemetry, U2, "binär 46 (spontan)", ANY, LOCAL, false),
+    r(A::ReadStatus, U0, "ASCII 44", ANY, QUIET, true),
+    r(A::ReadStatus, U1, "ASCII 44", ANY, &[], true),
+    r(A::ReadStatus, U2, "binär 46 (spontan, Status/Ereignisse)", ANY, STATUS_LOCAL, false),
+    r(A::ReadInfo, U0, "ASCII 51", ANY, QUIET, true),
+    r(A::ReadInfo, U1, "ASCII 51", ANY, &[], true),
+    r(A::ReadParameters, U0, "ASCII 47", ANY, QUIET, true),
+    r(A::ReadParameters, U1, "binär 47", MAINT, &[], true),
+    r(A::ReadParameters, U2, "binär 47", ANY, LOCAL, false),
+    r(A::WriteParameters, U0, "ASCII A1 (169 Byte)", ANY, QUIET, true),
+    r(A::WriteParameters, U1, "binär A1 (158 Byte)", MAINT, WRITE_RELEASE, true),
+    r(A::WriteParameters, U2, "binär A1 (158 Byte)", ANY, LOCAL, false),
+    r(A::WriteName, U0, "ASCII A1", ANY, QUIET, false),
+    r(A::ReadSerials, U0, "ASCII A2/A4", ANY, QUIET, true),
+    r(A::ReadSerials, U1, "binär A2/A4", MAINT, &[], true),
+    r(A::ReadSerials, U1, "Modbus FC04 0000×21 (String 1, 22 Zeichen)", ANY, MODBUS_STRING1, true),
+    r(A::WriteSerials, U0, "ASCII A3/A5", ANY, QUIET, true),
+    r(A::ReadClock, U0, "ASCII 4D", ANY, QUIET, true),
+    r(A::ReadClock, U1, "ASCII 4D", POWER, &[], true),
+    r(A::SetClock, U0, "ASCII 4E", ANY, QUIET, true),
+    r(A::SetClock, U1, "ASCII 4E", POWER, POWER_FREE, true),
+    r(A::PowerOnOff, U0, "ASCII 45/04", ANY, QUIET, true),
+    r(A::PowerOnOff, U1, "ASCII 45/04", POWER, POWER_FREE, true),
+    r(A::PackLockSet, U0, "ASCII 45/04 Aus (gezielt)", CUTOFF, LOCK_SET_U0, true),
+    r(A::PackLockSet, U1, "ASCII 45/04 Aus (gezielt)", CUTOFF_POWER, LOCK_SET_U1, true),
+    r(A::PackLockRelease, U0, "ASCII 45/04 Ein (gezielt)", CUTOFF, QUIET, true),
+    r(A::PackLockRelease, U1, "ASCII 45/04 Ein (gezielt)", CUTOFF_POWER, POWER_FREE, true),
+    r(A::Restart, U0, "ASCII 45/06", ANY, QUIET, true),
+    r(A::Restart, U1, "ASCII 45/06", POWER, POWER_FREE, true),
+    r(A::ForceHeater, U0, "ASCII 45/03", ANY, QUIET, true),
+    r(A::ClearHistory, U0, "ASCII 45/05", ANY, QUIET, true),
+    r(A::SetRemaining, U0, "ASCII 49/3B", ANY, QUIET, true),
+    r(A::SetLearnedFull, U0, "ASCII 49/3A", ANY, QUIET, false),
+    r(A::Calibrate, U0, "ASCII A0", ANY, QUIET, true),
+    r(A::SetCanProtocol, U0, "ASCII A6", ANY, QUIET, true),
+    r(A::SetCanProtocol, U2, "binär 63", ANY, LOCAL, false),
+    r(A::ReadHistory, U0, "ASCII 4B", ANY, QUIET, true),
+    r(A::ReadIdentity, U1, "ASCII 64/03 (Erkennung)", ANY, &[], true),
+    r(A::MaintStatus, U1, "ASCII 64/02", MAINT, MASTER, true),
+    r(A::MaintStart, U1, "ASCII 64/01", MAINT, START, true),
+    r(A::MaintStop, U1, "ASCII 64/00", MAINT, STOP, true),
+    r(A::ReadSystem, U1, "Modbus FC03 1000×21", ANY, MODBUS_SYSTEM, true),
+    r(A::ReadSystem, U2, "binär 46 erweitert (Systemblock)", ANY, SYSTEM_LOCAL, false),
+    r(A::DisplayTunnel, U0, "ASCII AA/AB", ANY, &[Need::BaseFrom { base: [16, 6, 13] }, Need::QuietBus], false),
+    r(A::DisplayTunnel, U2, "binär AA/AB", ANY, LOCAL, false),
+    r(A::Flash, U0, "Bootloader", ANY, QUIET, true),
 ];
 
-/// The ways of `action`, in channel order.
+/// The ways of `action`, in channel order (a channel may have several, e.g. the CAN socket's two serial reads).
 pub fn routes(action: Action) -> impl Iterator<Item = &'static Route> {
     ROUTES.iter().filter(move |r| r.action == action)
 }
 
+/// The first way of `action` over `channel`.
 pub fn route(action: Action, channel: Channel) -> Option<&'static Route> {
     ROUTES.iter().find(|r| r.action == action && r.channel == channel)
 }
@@ -235,6 +268,12 @@ pub struct Facts {
     pub group0: Option<u8>,
     pub group7: Option<u8>,
     pub address: u8,
+    /// the connection has an installation (writes need one; „Nur ansehen“ writes nothing)
+    pub installation: bool,
+    /// the master's maintenance marker as its last 64/02 showed it
+    pub marker: Option<MarkerWord>,
+    /// the firmware base from 0x51 (16.06.13 → [16, 6, 13])
+    pub base: Option<[u8; 3]>,
 }
 
 impl Facts {
@@ -279,6 +318,11 @@ pub enum Reason {
     QuietBus,
     LocalBoard,
     NotImplemented,
+    /// „Nur ansehen“: the connection has no installation
+    ViewOnly,
+    /// the marker must be off/on; `known`: "off", "on", "foreign" or None (not read)
+    Marker { on: bool, known: Option<&'static str> },
+    Base { from: [u8; 3], known: Option<[u8; 3]> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -299,11 +343,13 @@ pub fn decide(route: &Route, facts: &Facts) -> Decision {
             state = s;
         }
     };
-    match facts.firmware(route.firmware) {
-        Tri::Yes => {}
-        known => {
-            worse(if known == Tri::No { State::Blocked } else { State::Unknown });
-            reasons.push(Reason::Firmware { need: route.firmware, known });
+    for &need in route.firmware {
+        match facts.firmware(need) {
+            Tri::Yes => {}
+            known => {
+                worse(if known == Tri::No { State::Blocked } else { State::Unknown });
+                reasons.push(Reason::Firmware { need, known });
+            }
         }
     }
     for need in route.needs {
@@ -324,7 +370,28 @@ pub fn decide(route: &Route, facts: &Facts) -> Decision {
             }
             Need::QuietBus => reasons.push(Reason::QuietBus),
             Need::LocalBoard => reasons.push(Reason::LocalBoard),
+            Need::Marker { on } => {
+                let known = facts.marker.map(|m| match m {
+                    MarkerWord::Off => "off",
+                    MarkerWord::On => "on",
+                    MarkerWord::Foreign(_) => "foreign",
+                });
+                if known != Some(if on { "on" } else { "off" }) {
+                    worse(if known.is_none() { State::Unknown } else { State::Blocked });
+                    reasons.push(Reason::Marker { on, known });
+                }
+            }
+            Need::BaseFrom { base } => {
+                if facts.base.is_none_or(|b| b < base) {
+                    worse(if facts.base.is_none() { State::Unknown } else { State::Blocked });
+                    reasons.push(Reason::Base { from: base, known: facts.base });
+                }
+            }
         }
+    }
+    if route.implemented && route.action.needs_installation() && !facts.installation {
+        worse(State::Blocked);
+        reasons.push(Reason::ViewOnly);
     }
     if !route.implemented {
         state = State::NotImplemented;
@@ -349,7 +416,7 @@ mod tests {
     use super::*;
 
     fn facts(maint: Tri, power: Tri, cutoff: Tri, group0: Option<u8>, address: u8) -> Facts {
-        Facts { maint, power, cutoff, group0, group7: None, address }
+        Facts { maint, power, cutoff, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]) }
     }
 
     #[test]
@@ -358,7 +425,7 @@ mod tests {
             assert!(routes(a).count() > 0, "{a:?}");
         }
         for (i, x) in ROUTES.iter().enumerate() {
-            assert!(!ROUTES[i + 1..].iter().any(|y| y.action == x.action && y.channel == x.channel), "{x:?}");
+            assert!(!ROUTES[i + 1..].iter().any(|y| y.action == x.action && y.channel == x.channel && y.wire == x.wire), "{x:?}");
         }
     }
 
@@ -379,7 +446,7 @@ mod tests {
         // power and clock over the CAN socket: own image flag, Group0 bit 3 clear (reading the clock without it)
         for a in [A::SetClock, A::PowerOnOff, A::Restart] {
             let r = route(a, U1).unwrap();
-            assert_eq!((r.firmware, r.needs), (PowerFlag, POWER_FREE), "{a:?}");
+            assert_eq!((r.firmware, r.needs), (POWER, POWER_FREE), "{a:?}");
         }
         assert_eq!(route(A::ReadClock, U1).unwrap().needs, &[] as &[Need]);
     }
@@ -410,12 +477,17 @@ mod tests {
     #[test]
     fn maintenance_start_only_at_the_master_with_its_release() {
         let r = route(A::MaintStart, U1).unwrap();
-        let ok = Facts { group7: Some(0x00), ..facts(Tri::Yes, Tri::No, Tri::No, Some(0x04), 0) };
+        let ok = Facts { group7: Some(0x00), marker: Some(MarkerWord::Off), ..facts(Tri::Yes, Tri::No, Tri::No, Some(0x04), 0) };
         assert_eq!(decide(r, &ok).state, State::Ready);
         assert_eq!(decide(r, &Facts { address: 1, ..ok }).state, State::Blocked);
         assert_eq!(decide(r, &Facts { group7: Some(1 << G7_AUTO_ADDRESS), ..ok }).state, State::Blocked);
+        // a foreign marker word refuses start and stop; an unread one leaves them open
+        let foreign = Facts { marker: Some(MarkerWord::Foreign(7)), ..ok };
+        assert_eq!(decide(r, &foreign).state, State::Blocked);
+        assert_eq!(decide(route(A::MaintStop, U1).unwrap(), &foreign).state, State::Blocked);
+        assert_eq!(decide(r, &Facts { marker: None, ..ok }).state, State::Unknown);
         // stop does not depend on the start release
-        assert_eq!(decide(route(A::MaintStop, U1).unwrap(), &Facts { group0: Some(0), ..ok }).state, State::Ready);
+        assert_eq!(decide(route(A::MaintStop, U1).unwrap(), &Facts { group0: Some(0), marker: Some(MarkerWord::On), ..ok }).state, State::Ready);
     }
 
     #[test]
@@ -425,6 +497,41 @@ mod tests {
         assert_eq!(d.reasons, vec![Reason::LocalBoard, Reason::NotImplemented]);
         let off = decide(route(A::SetCanProtocol, U2).unwrap(), &Facts { group7: Some(0), ..facts(Tri::No, Tri::No, Tri::No, None, 0) });
         assert!(off.reasons.contains(&Reason::Bit { group: 7, bit: G7_DISPLAY, want: true, known: Some(false) }));
+    }
+
+    #[test]
+    fn a_new_pack_lock_needs_the_extended_off_releasing_it_does_not() {
+        let f = |g0| facts(Tri::Yes, Tri::Yes, Tri::Yes, Some(g0), 4);
+        // F7: power free, extended off disabled (bit 4 = 1), no lock: an off does not lock
+        assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &f(0xF7)).state, State::Blocked);
+        assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &f(0xF7)).state, State::Blocked);
+        assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &f(0xE7)).state, State::Ready);
+        assert_eq!(decide(route(A::PackLockRelease, U0).unwrap(), &f(0xD7)).state, State::Ready);
+        assert_eq!(decide(route(A::PackLockRelease, U1).unwrap(), &f(0xD7)).state, State::Ready);
+        // over the CAN socket also the power and clock build
+        let no_power = Facts { power: Tri::No, ..f(0xE7) };
+        assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &no_power).state, State::Blocked);
+        assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &no_power).state, State::Ready);
+    }
+
+    #[test]
+    fn view_only_blocks_the_writes_not_the_reads() {
+        let f = Facts { installation: false, ..facts(Tri::No, Tri::No, Tri::No, Some(0xFF), 1) };
+        assert_eq!(decide(route(A::WriteParameters, U0).unwrap(), &f).state, State::Blocked);
+        assert!(decide(route(A::WriteParameters, U0).unwrap(), &f).reasons.contains(&Reason::ViewOnly));
+        assert_eq!(decide(route(A::ReadParameters, U0).unwrap(), &f).state, State::Ready);
+        assert_eq!(decide(route(A::Flash, U0).unwrap(), &f).state, State::Ready);
+    }
+
+    #[test]
+    fn the_masters_modbus_ways_name_their_firmware_base() {
+        let system = route(A::ReadSystem, U1).unwrap();
+        assert_eq!(decide(system, &facts(Tri::No, Tri::No, Tri::No, None, 0)).state, State::Ready);
+        assert_eq!(decide(system, &Facts { base: Some([16, 6, 3]), ..facts(Tri::No, Tri::No, Tri::No, None, 0) }).state, State::Blocked);
+        assert_eq!(decide(system, &Facts { base: None, ..facts(Tri::No, Tri::No, Tri::No, None, 0) }).state, State::Unknown);
+        // the CAN socket's serial reads: the binary one of a patched pack and the master's shortened String 1
+        let serials: Vec<_> = routes(A::ReadSerials).filter(|r| r.channel == U1).map(|r| decide(r, &facts(Tri::No, Tri::No, Tri::No, None, 0)).state).collect();
+        assert_eq!(serials, vec![State::Blocked, State::Ready]);
     }
 
     #[test]
