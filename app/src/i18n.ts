@@ -874,7 +874,8 @@ const resources = {
         bitWrong: "Group{{g}}.Bit{{b}}{{name}} muss {{want}} sein, ist {{now}}", bitUnread: "Group{{g}}.Bit{{b}}{{name}} muss {{want}} sein, noch nicht gelesen",
         bitName: { g0b0: "UART1-Schreibfreigabe", g0b2: "Wartungsstart-Freigabe", g0b3: "Power/RTC-Sperre", g7b3: "Displayport aktiv", g7b5: "automatische Adressierung" },
         marker: "Wartungsmarker muss {{want}} sein, ist {{now}}", markerState: { on: "gesetzt", off: "gelöscht", foreign: "fremd (wird nie überschrieben)", unread: "nicht gelesen" },
-        baseLow: "braucht Firmware ab {{from}}, dieses Pack hat {{now}}", baseUnknown: "braucht Firmware ab {{from}}; Version nicht bekannt",
+        baseLow: "braucht Firmware ab {{from}}, dieses Pack hat {{now}}", baseUnknown: "braucht Firmware ab {{from}}; die genaue Version zeigt nur die Firmwarekennung (64/03)",
+        slavesNone: "nur am Master mit Slaves; er arbeitet gerade ohne (Einzelpack oder Wartung)", slavesUnknown: "nur am Master mit Slaves; Slavezahl nicht bekannt",
         reason: { "view-only": "„Nur ansehen“: Schreiben braucht eine Verbindung mit Anlage", "master-only": "nur am Master (Adresse 0)", "quiet-bus": "RS485-1/2: zuverlässig nur bei angehaltenem Master oder einzelnem Pack", "local-board": "nur die Platine, an deren Displayport das Display bzw. Bluetooth-Modul steckt (Displayport aktiv, Group7.Bit3)", "not-implemented": "Die Firmware hat diesen Weg; die App nutzt ihn nicht." },
       },
       cap: {
@@ -1855,7 +1856,8 @@ const resources = {
         bitWrong: "Group{{g}}.bit{{b}}{{name}} must be {{want}}, is {{now}}", bitUnread: "Group{{g}}.bit{{b}}{{name}} must be {{want}}, not read yet",
         bitName: { g0b0: "UART1 write release", g0b2: "maintenance start release", g0b3: "power/RTC lock", g7b3: "display port on", g7b5: "automatic addressing" },
         marker: "maintenance marker must be {{want}}, is {{now}}", markerState: { on: "set", off: "cleared", foreign: "foreign (never overwritten)", unread: "not read" },
-        baseLow: "needs firmware from {{from}}, this pack has {{now}}", baseUnknown: "needs firmware from {{from}}; version not known",
+        baseLow: "needs firmware from {{from}}, this pack has {{now}}", baseUnknown: "needs firmware from {{from}}; only the firmware identity (64/03) shows the exact version",
+        slavesNone: "only at a master with slaves; it works without any now (single pack or maintenance)", slavesUnknown: "only at a master with slaves; slave count not known",
         reason: { "view-only": "“View only”: writing needs a connection with an installation", "master-only": "only at the master (address 0)", "quiet-bus": "RS485-1/2: reliable only with the master halted or a single pack", "local-board": "only the board whose display port the display or Bluetooth module is plugged into (display port on, Group7.bit3)", "not-implemented": "The firmware has this path; the app does not use it." },
       },
       cap: {

@@ -24,6 +24,7 @@ describe("access matrix texts", () => {
         { id: "master-only" }, { id: "quiet-bus" }, { id: "local-board" }, { id: "not-implemented" }, { id: "view-only" },
         { id: "marker", on: false, known: "foreign" }, { id: "marker", on: true, known: null },
         { id: "base", from: [16, 6, 4], known: [16, 6, 3] }, { id: "base", from: [16, 6, 11], known: null },
+        { id: "with-slaves", known: 0 }, { id: "with-slaves", known: null },
       ] as AccessDecision["reasons"]) {
         const text = reasonText(t, r);
         expect(text.length, JSON.stringify(r)).toBeGreaterThan(5);

@@ -65,11 +65,7 @@ function commonAssignment(assigned: Record<number, Assignment>): Assignment | un
 
 /** Read the packs' parameters (RS485-1/2, or the CAN socket of a pack with the patched parameter service), show the stored state of the chosen installation, or open BatteryMonitor
  *  exports, and compare them side by side. Editing needs a connection with that installation. */
-export function ParametersView({ connected, bus, packs, installation, versionOf }: {
-  connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null;
-  /** the firmware version a pack reported (0x51), for the access paths */
-  versionOf?: (address: number) => string | undefined;
-}) {
+export function ParametersView({ connected, bus, packs, installation }: { connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null }) {
   const { t, i18n } = useTranslation();
   const db = useCellDb();
   const site = installation?.id ?? "";
@@ -603,7 +599,7 @@ export function ParametersView({ connected, bus, packs, installation, versionOf 
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}
         {connected && <AccessMatrix address={chosen} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
-          group7={chosen !== null ? targetRead(chosen)?.function_switches[7] : undefined} version={chosen !== null ? versionOf?.(chosen) : undefined}
+          group7={chosen !== null ? targetRead(chosen)?.function_switches[7] : undefined}
           storedProof={chosen !== null && ["flash", "user"].includes(targetRead(chosen)?.patch?.source ?? "")} linkKey={link} />}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>

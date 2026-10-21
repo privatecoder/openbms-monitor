@@ -111,7 +111,7 @@ export default function App() {
           ) : view === "history" ? (
             <History installation={maint.current} connected={connected} bus={bus} packs={packList} />
           ) : view === "params" && maintenance ? (
-            <ParametersView connected={connected} bus={bus} installation={maint.current} packs={packList} versionOf={(a) => live.packs[a]?.device?.firmware_version} />
+            <ParametersView connected={connected} bus={bus} installation={maint.current} packs={packList} />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
           ) : view === "diag" && maintenance ? (
