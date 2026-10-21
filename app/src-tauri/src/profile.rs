@@ -394,11 +394,6 @@ pub fn extended_changed(expect: Option<bool>, group0: u8) -> bool {
     expect.is_some_and(|e| e != (group0 & CUTOFF_BIT == 0))
 }
 
-/// Group0 bit 3 set: ein/aus, restart and setting the clock over the CAN socket are locked at this pack.
-pub fn power_locked(group0: u8) -> bool {
-    group0 & POWER_BIT != 0
-}
-
 /// The answer time of a pack's own 64/03 on `c` (`timing::PACK_IDENTITY`, learning over a gateway up to twice that).
 pub fn identity_budget(c: &Connection) -> std::time::Duration {
     c.latency().probe_budget(Class::Ascii, timing::PACK_IDENTITY)
