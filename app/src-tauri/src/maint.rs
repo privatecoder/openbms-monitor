@@ -209,6 +209,7 @@ pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installati
         let ep = control_endpoint(control);
         let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
         c.set_label(crate::capture::label(&ep, Bus::CanSocketBus));
+        c.set_bus(Bus::CanSocketBus);
         Ok(f(&mut c))
     };
     match route_with(main.as_ref(), &key, guard.is_some()) {
