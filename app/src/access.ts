@@ -78,7 +78,7 @@ const cmp3 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - 
 const cmp2 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1];
 
 /** `Facts::firmware`: a pack without a patch identity has none; a version and the image flags as reported. */
-function firmwareKnown(need: Firmware, f: Facts): Tri {
+export function firmwareKnown(need: Firmware, f: Facts): Tri {
   if (f.patch.kind === "none") return "no";
   if (need.kind === "patch-from") return f.patch.kind === "version" ? (cmp2(f.patch.version, need.version) >= 0 ? "yes" : "no") : "unknown";
   return f.flags === null ? "unknown" : (f.flags & (1 << need.bit)) !== 0 ? "yes" : "no";

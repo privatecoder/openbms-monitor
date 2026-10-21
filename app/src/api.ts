@@ -344,7 +344,9 @@ export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?
  *  negative (another MNT or an older patch), undecided (silence or an error). */
 /** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket); `pack_cutoff`: its
  *  stored pack cutoff (image flag bit 2, patch 1.6 or later). */
-export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null }
+export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
+  /** the patch version of its 64/03 (also a negative finding's) and, when proven, its image flag byte */
+  patch_version?: [number, number] | null; flags?: number | null }
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "start-refused"; reason: string }

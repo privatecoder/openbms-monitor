@@ -26,7 +26,7 @@ import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
-import { channelOf, controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
+import { channelOf, controlHint, controlMode, controlOffers, packCutoff, packFirmware, powerLocked } from "../power";
 import { factsOf, MAINT_MIN, offerable } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
@@ -95,19 +95,20 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // one pack for the clock, the CAN protocol, the calibration and the control
   const [chosen, setChosen] = usePackChoice(packs);
   // what the app writes over this connection's channel (`access.json`); „Nur ansehen“ writes nothing to a pack. The CAN
-  // socket's parameter service needs the patch (the backend checks the board's identity before every write and names
-  // why it refuses); the other writes stay on RS485-1/2
+  // socket's parameter service needs the patch (each column's proof and the backend's identity check before every write
+  // decide per pack)
   const channel = channelOf(bus);
-  const offers = (action: string) => connected && (isDemo || (!!channel && offerable(action, channel, factsOf({ installation: !!installation, patch: { kind: "version", version: MAINT_MIN }, address: 1 }))));
+  const paramWritable = connected && (isDemo || (!!channel && offerable("write-parameters", channel, factsOf({ installation: !!installation, patch: { kind: "version", version: MAINT_MIN }, address: 1 }))));
   const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
-  const paramWritable = offers("write-parameters");
-  // ein/aus, restart and the clock over the CAN socket: per pack, as this connection proved the image flag (the master by
-  // the profile, a slave by its own 64/03), with the lock bit of the newest state seen
+  // the chosen pack's firmware as this connection proved it (over the CAN socket the master by the profile, a slave by
+  // its own 64/03), with the lock bit of the newest state seen: what the catalog offers for it
   const profile = useProfile();
   const [probes] = usePackProbes();
-  const powerOf = (a: number) => powerRtc(a, profile, probes[a]);
+  const fwOf = (a: number) => packFirmware(a, profile, probes[a]);
   const lockOf = (a: number) => powerLocked(a, targetRead(a)?.function_switches[0], profile);
-  const ctlMode = controlMode({ connected, bus, demo: isDemo, installation: !!installation, power: chosen !== null && powerOf(chosen) });
+  const where = { connected, bus, demo: isDemo, installation: !!installation, fw: chosen !== null ? fwOf(chosen) : packFirmware(null, profile, undefined) };
+  const offers = controlOffers(where);
+  const ctlMode = controlMode(where);
   // a CAN socket write that found the same board still listed at another address it could not check there: the
   // explicit, confirmed „no longer there“ for that entry
   // `gen`: the connection the finding came from (the action is refused on another one, and dropped on a link change)
@@ -599,17 +600,17 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         {storedNote && <p className="text-sm text-muted">{storedNote}</p>}
         {chosen !== null && unchecked.has(chosen) && <p className="flex items-center gap-1.5 text-sm text-discharge">{t("bank.unchecked", { pack: packNo(chosen) })}<InfoIcon id="topic.installations" /></p>}
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")}
-          installation={!!installation} power={powerOf} powerLock={lockOf} />
+          installation={!!installation} firmware={fwOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={offers("write-name")} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
         <CalibrationSection address={chosen} usable={offers("calibrate")} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
-        <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
+        <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} offers={offers} powerLocked={chosen !== null ? lockOf(chosen) : null}
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link} />
-        {chosen !== null && controlHint({ connected, bus, demo: isDemo, installation: !!installation, power: powerOf(chosen) }) && (
+        {chosen !== null && controlHint(where) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}
         {connected && <AccessMatrix address={chosen} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}

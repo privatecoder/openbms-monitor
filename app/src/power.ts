@@ -1,24 +1,38 @@
 /** Ein/aus, restart and the clock over the CAN socket (MAINT 1.5 with image flag bit 1): what the Parameters view offers
  *  for one pack. Pure logic; the backend checks identity, flag and lock again before every command (`power.rs`). */
 import type { Bus, Channel, PackProbeView, ProfileView } from "./api";
-import { factsOf, FLAG_POWER, G0, MAINT_MIN, offerable } from "./access";
+import { CUTOFF_MIN, factsOf, firmwareKnown, FLAG_CUTOFF, FLAG_POWER, G0, offerable, type Facts } from "./access";
 
 /** Group0 bit 3: 1 locks ein/aus, restart and setting the clock over the CAN socket. */
 export const POWER_LOCK_BIT = G0.powerLock;
 
-/** The image flag of `address` as this connection proved it: the master by the profile, a slave by its own 64/03. A
- *  stored proof never counts, and nothing is ever sent to find out. */
-export function powerRtc(address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): boolean {
-  if (address === null || profile?.bus !== "can") return false;
-  if (address === 0) return profile.master.kind === "patched" && profile.master.caps?.power_rtc === true;
-  return probe?.gen === profile.gen && probe.state === "proven" && probe.power_rtc === true;
+/** The firmware of `address` as this connection proved it (`access::Facts` patch and image flags): over the CAN socket
+ *  the master by the profile, a slave by its own 64/03. A stored proof never counts here (it carries no image flags), and
+ *  nothing is ever sent to find out. Over RS485-1/2 nothing is proven: unknown. */
+export function packFirmware(address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): Firmware {
+  if (address === null || profile?.bus !== "can") return UNKNOWN;
+  if (address === 0) {
+    const m = profile.master;
+    if (m.kind === "patched" && m.caps?.version) return { patch: { kind: "version", version: m.caps.version }, flags: m.caps.flags ?? null };
+    // another or an older MNT, or no 64/03 at all: no supported patch
+    return m.kind === "unknown-patch" || m.kind === "no-0x64" ? NONE : UNKNOWN;
+  }
+  if (probe?.gen !== profile.gen) return UNKNOWN;
+  if (probe.state === "proven" && probe.patch_version) return { patch: { kind: "version", version: probe.patch_version }, flags: probe.flags ?? null };
+  return probe.state === "negative" ? NONE : UNKNOWN;
 }
+export type Firmware = Pick<Facts, "patch" | "flags">;
+const UNKNOWN: Firmware = { patch: { kind: "unknown" }, flags: null };
+const NONE: Firmware = { patch: { kind: "none" }, flags: null };
 
-/** The stored pack cutoff (MAINT 1.6, image flag bit 2) of `address` as this connection proved it, like `powerRtc`. */
+/** The image flag of `address` as this connection proved it (power and clock over the CAN socket). */
+export const powerRtc = (address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): boolean =>
+  firmwareKnown({ kind: "image-flag", bit: FLAG_POWER }, factsOf(packFirmware(address, profile, probe))) === "yes";
+
+/** The stored pack cutoff (patch from 1.6 with image flag bit 2) of `address` as this connection proved it. */
 export function packCutoff(address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): boolean {
-  if (address === null || profile?.bus !== "can") return false;
-  if (address === 0) return profile.master.kind === "patched" && profile.master.caps?.pack_cutoff === true;
-  return probe?.gen === profile.gen && probe.state === "proven" && probe.pack_cutoff === true;
+  const f = factsOf(packFirmware(address, profile, probe));
+  return firmwareKnown({ kind: "patch-from", version: CUTOFF_MIN }, f) === "yes" && firmwareKnown({ kind: "image-flag", bit: FLAG_CUTOFF }, f) === "yes";
 }
 
 /** Group0 bit 3 in the last state seen: the pack's column read on this connection, else the master's release bits of the
@@ -31,32 +45,41 @@ export function powerLocked(address: number | null, group0: number | undefined, 
 
 type Where = { connected: boolean; bus: Bus | null; demo: boolean; installation: boolean };
 
-/** What „Steuern“ offers: everything on RS485-1/2 with an installation (or the demo); over the CAN socket only restart and
- *  ein/aus of a pack with the flag, with an installation; else nothing. */
-export function controlMode(w: Where & { power: boolean }): "full" | "power" | null {
-  if (!w.connected) return null;
-  if (w.demo) return "full";
-  const ch = channelOf(w.bus);
-  if (!ch || !offerable("power-on-off", ch, factsOf({ ...powerFacts(w.power), installation: w.installation, address: 1 }))) return null;
-  return ch === "uart1" ? "power" : "full";
-}
-
-/** The firmware facts behind a proven (or not proven) power and clock flag of this connection. */
-const powerFacts = (power: boolean) => ({ patch: { kind: "version" as const, version: MAINT_MIN }, flags: power ? 1 << FLAG_POWER : 0 });
-
 /** The UART a bus reaches the packs on. */
 export const channelOf = (bus: Bus | null): Channel | null => (bus === "pack" ? "uart0" : bus === "can" ? "uart1" : null);
 
-/** The clock line: read on RS485-1/2 (and the demo) and over the CAN socket with the flag; set with an installation too,
- *  over the CAN socket not while the lock is known to be on. `unsupported`: the CAN socket hint for a pack without it. */
-export function clockAccess(w: Where & { power: boolean; locked: boolean | null }): { read: boolean; write: boolean; unsupported: boolean } {
+/** The plain control actions of „Steuern“, in the order the section shows them. */
+export const CONTROL_ACTIONS = ["restart", "power-on-off", "force-heater", "set-remaining", "set-learned-full", "clear-history"] as const;
+
+/** What the catalog offers for one pack over this connection's channel (`fw`: its firmware as proven here). The lock
+ *  bits are left out on purpose: a lock seen holds the buttons back in place (the line says why), and the backend reads
+ *  them fresh before sending. */
+export function controlOffers(w: Where & { fw: Firmware }): (action: string) => boolean {
+  if (!w.connected) return () => false;
+  if (w.demo) return () => true;
+  const ch = channelOf(w.bus);
+  const facts = factsOf({ ...w.fw, installation: w.installation, address: 1 });
+  return (action) => !!ch && offerable(action, ch, facts);
+}
+
+/** What „Steuern“ shows: the section when the catalog offers one of its actions; "power" over the CAN socket (its
+ *  texts), else "full". */
+export function controlMode(w: Where & { fw: Firmware }): "full" | "power" | null {
+  const offers = controlOffers(w);
+  if (!CONTROL_ACTIONS.some(offers)) return null;
+  return w.demo || w.bus !== "can" ? "full" : "power";
+}
+
+/** The clock line: read and set where the catalog offers it (over the CAN socket the power and clock build); set with an
+ *  installation too, not while the lock is known to be on. `unsupported`: the CAN socket hint for a pack without it. */
+export function clockAccess(w: Where & { fw: Firmware; locked: boolean | null }): { read: boolean; write: boolean; unsupported: boolean } {
   const can = w.connected && w.bus === "can" && !w.demo;
   const ch = channelOf(w.bus);
   // the lock as last seen; not read: the backend reads it fresh before setting
-  const facts = factsOf({ ...powerFacts(w.power), installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked ? G0.powerLock : 0 });
+  const facts = factsOf({ ...w.fw, installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked ? G0.powerLock : 0 });
   const read = w.connected && (w.demo || (!!ch && offerable("read-clock", ch, facts)));
   const write = read && (w.demo || (!!ch && offerable("set-clock", ch, facts)));
-  return { read, write, unsupported: can && !w.power };
+  return { read, write, unsupported: can && !read };
 }
 
 /** „Alle Packs stellen“: over the CAN socket the packs without the flag are skipped and named. */
@@ -64,8 +87,8 @@ export function clockTargets(packs: number[], canSet: (a: number) => boolean): {
   return { targets: packs.filter(canSet), skipped: packs.filter((a) => !canSet(a)) };
 }
 
-/** Over the CAN socket a pack without the service gets one line where „Steuern“ would be, instead of nothing. */
-export const controlHint = (w: Where & { power: boolean }) => w.connected && w.bus === "can" && !w.demo && !w.power;
+/** Over the CAN socket a pack the catalog offers no control action for gets one line where „Steuern“ would be. */
+export const controlHint = (w: Where & { fw: Firmware }) => w.connected && w.bus === "can" && !w.demo && controlMode(w) === null;
 
 /** After ein/aus at the master over the CAN socket: its acknowledgement covers only the master, its broadcast to the
  *  slaves is not confirmed. */

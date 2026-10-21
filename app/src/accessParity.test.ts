@@ -59,8 +59,9 @@ describe("the catalog's Group0 and button rules match the rules before it", () =
     const bools = [true, false];
     for (const connected of bools) for (const bus of ["pack", "can", null] as const) for (const demo of bools) for (const installation of bools) for (const power of bools) {
       const w = { connected, bus, demo, installation, power };
-      expect(controlMode(w), JSON.stringify(w)).toBe(old.controlMode(w));
-      for (const locked of tris) expect(clockAccess({ ...w, locked }), JSON.stringify({ ...w, locked })).toEqual(old.clockAccess({ ...w, locked }));
+      const now = { ...w, fw: { patch: { kind: "version" as const, version: [1, 5] as [number, number] }, flags: power ? 2 : 0 } };
+      expect(controlMode(now), JSON.stringify(w)).toBe(old.controlMode(w));
+      for (const locked of tris) expect(clockAccess({ ...now, locked }), JSON.stringify({ ...w, locked })).toEqual(old.clockAccess({ ...w, locked }));
     }
   });
 });
