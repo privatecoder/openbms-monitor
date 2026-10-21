@@ -269,11 +269,18 @@ pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installat
 /// Keep a parameter block for the place in the connection's installation (`before`: the link when the exchange
 /// began). Nothing with „Nur ansehen“, nothing for a pack whose board is not confirmed (`bank.rs`); a failure must not
 /// fail the exchange with the pack.
-pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8]) {
+pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8]) -> Option<i64> {
     if crate::bank::unconfirmed(state, before.gen, address) {
-        return;
+        return None;
     }
-    for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot(inst, address, kind, block, now_ms()));
+    for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot(inst, address, kind, block, now_ms()))
+}
+
+/// Keep with a kept read the patch it was taken under (`maint_store::set_snapshot_patch`); a failure only loses that.
+pub fn snapshot_patch(state: &AppState, before: &Link, id: Option<i64>, patch: Option<&crate::profile::PackPatch>) {
+    let (Some(id), Some(p)) = (id, patch) else { return };
+    let Ok(json) = serde_json::to_string(p) else { return };
+    for_link_checked(state, before, "snapshot patch", |s, _| s.set_snapshot_patch(id, &json));
 }
 
 /// How parameters are read and written on the connected bus: ASCII 0x47/0xA1 on RS485-1/2, the binary service of a
@@ -347,7 +354,7 @@ impl ParamIo for AsciiIo<'_> {
     fn read(&mut self, keep: bool) -> Result<Parameters, String> {
         let p = with_link(&self.state.conn, &self.state.flashing, &self.state.link, self.link, |c| c.parameters(self.address))?;
         if keep {
-            snapshot(self.state, self.link, self.address, SnapshotKind::Read, &p.block);
+            let _ = snapshot(self.state, self.link, self.address, SnapshotKind::Read, &p.block);
         }
         Ok(p)
     }
@@ -364,7 +371,7 @@ impl ParamIo for AsciiIo<'_> {
     }
 
     fn snapshot(&mut self, kind: SnapshotKind, block: &[u8]) {
-        snapshot(self.state, self.link, self.address, kind, block);
+        let _ = snapshot(self.state, self.link, self.address, kind, block);
     }
 
     fn uart1(&self) -> bool {

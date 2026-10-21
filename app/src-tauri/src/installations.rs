@@ -304,6 +304,8 @@ pub struct SnapshotView {
     bms_serial: Option<String>,
     parameters: Option<Parameters>,
     switches_unconfirmed: bool,
+    /// the patch the read was taken under (`profile::PackPatch`), None: none proven then
+    patch: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -311,7 +313,8 @@ pub async fn installation_snapshots(state: State<'_, AppState>, installation: St
     let rows = with_store(&state, |s| s.latest_snapshots(&installation))?;
     Ok(rows
         .into_iter()
-        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok(), switches_unconfirmed: x.switches_unconfirmed })
+        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok(), switches_unconfirmed: x.switches_unconfirmed,
+            patch: x.patch.as_deref().and_then(|p| serde_json::from_str(p).ok()) })
         .collect())
 }
 

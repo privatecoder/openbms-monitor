@@ -128,10 +128,11 @@ export interface Source {
 }
 
 /** The stored state of a place as a column (compare, datasheet check and XML save; never edited). */
-export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null; switches_unconfirmed?: boolean }): Source => ({
+/** A stored block as a column; a read keeps the patch it was taken under (`patch`), so its release bits read as then. */
+export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null; switches_unconfirmed?: boolean; patch?: PackPatch | null }): Source => ({
   id: `stored-${s.address}`, kind: "stored", address: s.address, label: String(s.address).padStart(2, "0"),
   device: s.parameters?.device_name, values: s.parameters?.parameters.map((x) => x.value), switches: s.parameters?.function_switches,
-  read: s.parameters ?? undefined, error: s.parameters ? undefined : "unreadable",
+  read: s.parameters ? { ...s.parameters, patch: s.patch ?? undefined } : undefined, error: s.parameters ? undefined : "unreadable",
   stored: { at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial, unconfirmed: !!s.switches_unconfirmed },
 });
 

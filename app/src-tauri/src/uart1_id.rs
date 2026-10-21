@@ -107,6 +107,7 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
     })??;
     bank::set_uart1(state, link.gen, address, serials.as_ref().and_then(|s| offered(&s.bms)));
     let bms_serial = serials.as_ref().and_then(|s| s.canonical.clone());
+    let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
     if let (Some(s), Some(serial)) = (&serials, &bms_serial) {
         let facts = link.installation.as_deref().and_then(|inst| crate::maint::with_store(state, |st| Ok((st.current_refs(inst)?, st.serial_places(serial)?))).ok());
         if let (Some(inst), Some((refs, places))) = (link.installation.as_deref(), facts) {
@@ -115,7 +116,8 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
                     bank::uart1_known(state, &link, address);
                     // this board is checked just now: kept also while another pack of the connection is foreign
                     let now = now_ms();
-                    for_link_checked(state, &link, "parameter snapshot", |st, inst| st.add_param_snapshot_serial(inst, address, serial, SnapshotKind::Read, &parameters.block, now));
+                    let id = for_link_checked(state, &link, "parameter snapshot", |st, inst| st.add_param_snapshot_serial(inst, address, serial, SnapshotKind::Read, &parameters.block, now));
+                    crate::bms_memory::snapshot_patch(state, &link, id, patch.as_ref());
                     for_link_checked(state, &link, "board", |st, inst| st.board_seen_canonical(inst, address, &s.bms, &s.battery, true, now));
                 }
                 Verdict::Unconfirmed(why, other) => {
@@ -126,7 +128,6 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
         }
     }
     crate::profile::reask_identity(state, &link, address);
-    let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
     Ok(ParamRead { parameters, bms_serial, patch })
 }
 

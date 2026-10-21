@@ -673,12 +673,13 @@ fn read_parameters_ascii(state: &AppState, before: &Link, address: u8) -> Result
     // serial; „Nur ansehen“ stores nothing anyway
     let checked = if before.installation.is_some() { bank::check(state, before, address) } else { Err(String::new()) };
     let p = with_link(&state.conn, &state.flashing, &state.link, before, |c| c.parameters(address))?;
-    if bank::snapshot_allowed(&checked) {
-        bms_memory::snapshot(state, before, address, history::SnapshotKind::Read, &p.block);
-    }
     // a version proof counts for the board whose String 2 the check read just now
     let serial = checked.as_ref().ok().and_then(|(_, read)| maint_store::real(read).map(String::from));
     let patch = profile::pack_patch(state, before, address, serial.as_deref());
+    if bank::snapshot_allowed(&checked) {
+        let id = bms_memory::snapshot(state, before, address, history::SnapshotKind::Read, &p.block);
+        bms_memory::snapshot_patch(state, before, id, patch.as_ref());
+    }
     Ok(uart1_id::ParamRead { parameters: p, bms_serial: None, patch })
 }
 
