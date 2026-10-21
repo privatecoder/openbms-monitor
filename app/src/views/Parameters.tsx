@@ -27,7 +27,7 @@ import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { channelOf, controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
-import { factsOf, offerable } from "../access";
+import { factsOf, MAINT_MIN, offerable } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -98,7 +98,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   // socket's parameter service needs the patch (the backend checks the board's identity before every write and names
   // why it refuses); the other writes stay on RS485-1/2
   const channel = channelOf(bus);
-  const offers = (action: string) => connected && (isDemo || (!!channel && offerable(action, channel, factsOf({ installation: !!installation, maint: "yes", address: 1 }))));
+  const offers = (action: string) => connected && (isDemo || (!!channel && offerable(action, channel, factsOf({ installation: !!installation, patch: { kind: "version", version: MAINT_MIN }, address: 1 }))));
   const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
   const paramWritable = offers("write-parameters");
   // ein/aus, restart and the clock over the CAN socket: per pack, as this connection proved the image flag (the master by

@@ -491,7 +491,7 @@ mod tests {
     fn the_master_marker_is_checked_for_the_installation_whatever_endpoint() {
         use openbms_flash::maint::policy::Patch;
         use openbms_proto::{MaintInfo, MaintState};
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false, pack_cutoff: false };
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0};
         let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
         let (on, off) = (with(0), with(u32::MAX));
         let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);
