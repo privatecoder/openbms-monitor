@@ -150,6 +150,13 @@ export type ParamWrite =
   | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered?: boolean; before?: Parameters }
   | { kind: "unclear"; error: string; read_back?: Parameters | null; before?: Parameters }
   | { kind: "refused"; refusal: "refused" | "invalid" | "locked"; stored: Parameters; switches_live?: boolean };
+/** Outcome of a device name write (RS485-1/2). */
+export type NameWrite =
+  | { kind: "stale"; fresh: Parameters }
+  | { kind: "unchanged"; fresh: Parameters }
+  | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered: boolean }
+  | { kind: "refused"; refusal: "refused" | "invalid" | "locked"; stored: Parameters }
+  | { kind: "unclear"; error: string };
 /** The last write of a pack at this installation and the parameters it replaced. */
 export interface ParamHistory { last_written: number | null; previous: Parameters | null }
 /** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed;
@@ -485,6 +492,7 @@ const tauriApi = {
   bankMarkGone: (address: number, board: number, at: number | null, gen: number) => invoke<boolean>("bank_mark_gone", { installation: chosen, address, board, at, gen }),
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
   /** RS485-1/2 only: 0xA3 (battery) / 0xA5 (BMS), read back; a refusal fails like `bmsCalibrate` */
+  writeName: (address: number, expected: string, name: string) => written(address, invoke<{ value: NameWrite; unchecked: boolean }>("write_name", { address, expected, name, installation: chosen })),
   setSerial: (address: number, which: "battery" | "bms", text: string) => written(address, invoke<{ value: SerialSet; unchecked: boolean }>("set_serial", { address, which, text, installation: chosen })),
   /** RS485-1/2 only, one pack each; every one fails with `{"kind":"pack-busy",…}` while another action holds the pack
    *  (see `packBusy` in control.ts) and with a refusal like `bmsCalibrate`. Restart: 0x51 before, then up to 15 s
@@ -499,6 +507,7 @@ const tauriApi = {
   packClearHistory: (address: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_clear_history", { address, installation: chosen })),
   /** remaining capacity in 10 mAh; RAM only until the BMS saves its state */
   packSetRemaining: (address: number, raw: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_set_remaining", { address, raw, installation: chosen })),
+  packSetLearnedFull: (address: number, raw: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_set_learned_full", { address, raw, installation: chosen })),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
@@ -700,6 +709,14 @@ function demoApi(): typeof tauriApi {
       const w = demoWritten.get(address);
       return { last_written: w?.at ?? null, previous: w?.previous ?? null };
     },
+    writeName: async (address, expected, name) => {
+      await new Promise((r) => setTimeout(r, 300));
+      const fresh = demoParams(address);
+      if (fresh.device_name !== expected) return { kind: "stale", fresh };
+      if (expected === name) return { kind: "unchanged", fresh };
+      demoName.set(address, name);
+      return { kind: "written", read_back: demoParams(address), read_error: null, unanswered: false };
+    },
     setSerial: async (_address, _which, text) => ({ value: { kind: "set", value: text.trim(), truncated: false }, read_error: null, master_updated: [], master_unchecked: false, board_unchecked: false }),
     saveParameters: async (name, content) => {
       const a = document.createElement("a");
@@ -776,6 +793,14 @@ function demoApi(): typeof tauriApi {
       const ah = raw / 100;
       demoControl.set(address, { ...p, telemetry: { ...p.telemetry, remaining_capacity_ah: ah, soc: Math.round((ah / p.telemetry.full_capacity_ah) * 1000) / 10 } });
     },
+    packSetLearnedFull: async (address, raw) => {
+      await new Promise((r) => setTimeout(r, 200));
+      const p = await demoPack(address);
+      if (!p) throw new Error("timeout after 1500 ms");
+      if (raw < Math.round(p.telemetry.remaining_capacity_ah * 100)) throw JSON.stringify({ kind: "refused" });
+      const full = raw / 100;
+      demoControl.set(address, { ...p, telemetry: { ...p.telemetry, full_capacity_ah: full, soc: full > 0 ? Math.round((p.telemetry.remaining_capacity_ah / full) * 1000) / 10 : 0 } });
+    },
     bmsHistory: async (address) => {
       demoCancel = false;
       const records: BmsHistoryRecord[] = [];
@@ -843,13 +868,15 @@ function demoApi(): typeof tauriApi {
   };
 }
 /** Preview: parameter blocks written in this session. */
+/** Preview: device names written in this session. */
+const demoName = new Map<number, string>();
 const demoWritten = new Map<number, { raws: number[]; switches: number[]; at: number; previous: Parameters }>();
 /** Preview: the same configuration in every pack, pack 05 with a different balancing start and switch byte. */
 function demoParams(address: number): Parameters {
   const w = demoWritten.get(address);
   const raws = w?.raws ?? DEMO_PARAMS.map((v, i) => toRaw(i, address === 5 && i === 8 ? 3.45 : v));
   return {
-    address, device_name: "1101-SP75",
+    address, device_name: demoName.get(address) ?? "1101-SP75",
     function_switches: w?.switches ?? (address === 5 ? [0xff, 0xff, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f] : [0xff, 0xdf, 0xff, 0x3f, 0xbf, 0x9f, 0xbf, 0x1f]),
     parameters: raws.map((r, index) => ({ index, key: KEYS[index], raw: r < 0 ? r + 0x10000 : r, value: fromRaw(index, r), unit: UNITS[index] })),
   };

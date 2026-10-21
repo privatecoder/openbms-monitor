@@ -424,6 +424,78 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
     r
 }
 
+/// Outcome of a device name write.
+#[derive(Serialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NameWrite {
+    /// The pack holds another name than the one the user saw (`fresh`): nothing was written.
+    Stale { fresh: Parameters },
+    /// The pack already holds the name: nothing was sent (an A1 may reset the learned full capacity).
+    Unchanged { fresh: Parameters },
+    /// Written; the block read back or why that read failed. `unanswered`: the answer to the write was lost, the fresh
+    /// read showed the new name.
+    Written { read_back: Option<Parameters>, read_error: Option<String>, unanswered: bool },
+    /// The BMS refused the block (RTN 06 for a stored value, RTN 04): the new name may be live until a restart, it was
+    /// not stored. `stored` is the read right before.
+    Refused { refusal: Refusal, stored: Parameters },
+    /// The answer was lost and a fresh read showed neither name (or failed).
+    Unclear { error: String },
+}
+
+/// Write the device name (bytes 159..169 of the 0xA1 block; RS485-1/2 only, the CAN socket's binary write has no
+/// name): read 0x47 again, refuse when the pack's name is no longer `expected`, send that block with only the name
+/// replaced, read back.
+#[tauri::command]
+pub async fn write_name(state: State<'_, AppState>, address: u8, installation: Option<String>, expected: String, name: String) -> Result<Written<NameWrite>, String> {
+    let _guard = reserve_pack_wait(&state, address, "name")?;
+    let link = bound_pack_bus(&state, installation.as_deref())?;
+    let checked = check_target(&state, &link, address)?;
+    let value = name_checked(&mut AsciiIo { state: &state, link: &link, address }, address, &expected, &name)?;
+    Ok(Written { value, unchecked: checked.unchecked })
+}
+
+pub(crate) fn name_checked(io: &mut impl ParamIo, address: u8, expected: &str, name: &str) -> Result<NameWrite, String> {
+    // nothing goes out for a name the block cannot hold
+    openbms_proto::params::name_bytes(name).map_err(|e| e.to_string())?;
+    let fresh = io.read(true)?;
+    if fresh.address != address {
+        return Err(format!("the pack at address {address} answered with address {}", fresh.address));
+    }
+    if fresh.device_name != expected {
+        return Ok(NameWrite::Stale { fresh });
+    }
+    if fresh.device_name == name {
+        return Ok(NameWrite::Unchanged { fresh });
+    }
+    let block = openbms_proto::params::with_name(&fresh.block, name).map_err(|e| e.to_string())?;
+    match io.send(&block)? {
+        Sent::Refused { refusal, .. } => {
+            io.snapshot(SnapshotKind::Refused, &block);
+            Ok(NameWrite::Refused { refusal, stored: fresh })
+        }
+        Sent::Protocol(e) => Err(e),
+        Sent::Lost(e) => {
+            let read = io.read(false);
+            match read {
+                // the whole block sent: the values and switches are as before, so only the name tells
+                Ok(p) if p.block == block => {
+                    io.snapshot(SnapshotKind::Written, &block);
+                    Ok(NameWrite::Written { read_back: Some(p), read_error: None, unanswered: true })
+                }
+                Ok(p) if p.block == fresh.block => Err(e),
+                _ => Ok(NameWrite::Unclear { error: e }),
+            }
+        }
+        Sent::Ack => {
+            io.snapshot(SnapshotKind::Written, &block);
+            Ok(match io.read(true) {
+                Ok(p) => NameWrite::Written { read_back: Some(p), read_error: None, unanswered: false },
+                Err(e) => NameWrite::Written { read_back: None, read_error: Some(e), unanswered: false },
+            })
+        }
+    }
+}
+
 /// An open bootloader record of the installation (one of its endpoints) at this address: the pack there may not run its
 /// application, or another board may answer; the record is cleared by the existing way first.
 pub fn pending_blocks(pending: &[crate::maint_store::Pending], endpoints: &[String], address: u8) -> bool {
@@ -796,6 +868,45 @@ mod tests {
         let mut out = b.to_vec();
         out[2..4].copy_from_slice(&p0.to_be_bytes());
         out
+    }
+
+    #[test]
+    fn a_name_write_sends_the_fresh_block_with_only_the_name() {
+        let b = block(4);
+        let named = openbms_proto::params::with_name(&b, "PACK-X").unwrap();
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(named.clone())], Sent::Ack);
+        let r = name_checked(&mut f, 4, "SYN", "PACK-X").unwrap();
+        assert!(matches!(&r, NameWrite::Written { read_back: Some(p), unanswered: false, .. } if p.device_name == "PACK-X"));
+        assert_eq!(f.blocks, std::slice::from_ref(&named));
+        assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Written, SnapshotKind::Read]);
+        // another name on the pack than the one shown, the same name, a name the block cannot hold: nothing sent
+        let mut f = Fake::new(false, vec![Ok(b.clone())], Sent::Ack);
+        assert!(matches!(name_checked(&mut f, 4, "OTHER", "PACK-X").unwrap(), NameWrite::Stale { .. }));
+        let mut f = Fake::new(false, vec![Ok(b.clone())], Sent::Ack);
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "SYN").unwrap(), NameWrite::Unchanged { .. }));
+        let mut f = Fake::new(false, vec![], Sent::Ack);
+        assert!(name_checked(&mut f, 4, "SYN", "ZU-LANGER-NAME").is_err());
+        let mut f = Fake::new(false, vec![Ok(block(5))], Sent::Ack);
+        assert!(name_checked(&mut f, 4, "SYN", "PACK-X").is_err());
+        assert!(f.blocks.is_empty());
+    }
+
+    #[test]
+    fn a_lost_name_answer_is_decided_by_the_whole_block() {
+        let b = block(4);
+        let named = openbms_proto::params::with_name(&b, "PACK-X").unwrap();
+        let lost = || Sent::Lost("timeout".into());
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(named.clone())], lost());
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Written { unanswered: true, .. }));
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(b.clone())], lost());
+        assert!(name_checked(&mut f, 4, "SYN", "PACK-X").is_err());
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(with_p0(&named, 3001))], lost());
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { .. }));
+        let mut f = Fake::new(false, vec![Ok(b.clone()), Err("timeout")], lost());
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { .. }));
+        let mut f = Fake::new(false, vec![Ok(b.clone())], Sent::Refused { refusal: Refusal::Refused, switches_live: true });
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Refused { .. }));
+        assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Refused]);
     }
 
     #[test]

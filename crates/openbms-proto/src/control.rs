@@ -1,10 +1,12 @@
-//! Pack control (CID2 0x45) and the remaining capacity (CID2 0x49 index 59). Like the calibration both exist only on
+//! Pack control (CID2 0x45), the remaining capacity (CID2 0x49 index 59) and the learned full capacity (index 58). Like the calibration both exist only on
 //! RS485-1/2 (a pack with the power and clock service answers on/off and restart on the CAN socket too) and always go
 //! to one pack: the app sends no broadcast (address 0xFF).
 //!
 //! 0x45 INFO: `00 <type> <param>`, answer empty with RTN 00, an unknown type gives RTN 04. Type 6 (restart) is never
 //! answered: the board resets before it could send. 0x49 INFO: `00 <index> <u16 BE>`; index 59 sets the coulomb
-//! counter (10 mAh) when the full capacity is at least the value, else RTN 06. RAM only until the BMS saves its state.
+//! counter (10 mAh) when the full capacity is at least the value, else RTN 06; index 58 sets the learned full capacity
+//! and the counter's maximum when the remaining capacity is at most the value, else RTN 06 (P58 stays). RAM only until the
+//! BMS saves its state.
 
 use crate::error::{Error, Result};
 use serde::Serialize;
@@ -27,6 +29,8 @@ pub const HEATER_OFF: u8 = 0x00;
 
 /// 0x49 index of the remaining capacity (10 mAh).
 pub const INDEX_REMAINING: u8 = 59;
+/// 0x49 index of the learned full capacity (10 mAh).
+pub const INDEX_LEARNED_FULL: u8 = 58;
 
 fn control(address: u8, kind: u8, param: u8) -> Result<Vec<u8>> {
     one_pack(address)?;
@@ -60,11 +64,20 @@ pub fn clear_request(address: u8) -> Result<Vec<u8>> {
     control(address, TYPE_CLEAR, 0x00)
 }
 
-/// 0x49 index 59: the remaining capacity in 10 mAh.
-pub fn set_remaining_request(address: u8, raw: u16) -> Result<Vec<u8>> {
+fn set_value(address: u8, index: u8, raw: u16) -> Result<Vec<u8>> {
     one_pack(address)?;
     let [hi, lo] = raw.to_be_bytes();
-    crate::frame::encode_request(address, CID2_SET_VALUE, &[0x00, INDEX_REMAINING, hi, lo])
+    crate::frame::encode_request(address, CID2_SET_VALUE, &[0x00, index, hi, lo])
+}
+
+/// 0x49 index 59: the remaining capacity in 10 mAh.
+pub fn set_remaining_request(address: u8, raw: u16) -> Result<Vec<u8>> {
+    set_value(address, INDEX_REMAINING, raw)
+}
+
+/// 0x49 index 58: the learned full capacity in 10 mAh.
+pub fn set_learned_full_request(address: u8, raw: u16) -> Result<Vec<u8>> {
+    set_value(address, INDEX_LEARNED_FULL, raw)
 }
 
 /// What 0x51 showed after a restart, the silence counted from sending the 0x45.
@@ -103,11 +116,18 @@ mod tests {
     }
 
     #[test]
+    fn learned_full_frame() {
+        let f = frame::parse(&set_learned_full_request(2, 28000).unwrap()).unwrap();
+        assert_eq!((f.address, f.rtn, f.info.as_slice()), (2, 0x49, &[0, 58, 0x6D, 0x60][..]));
+    }
+
+    #[test]
     fn no_broadcast() {
         for a in [16, 0xFF] {
             assert!(restart_request(a).is_err(), "{a}");
             assert!(on_off_request(a, false).is_err(), "{a}");
             assert!(set_remaining_request(a, 1).is_err(), "{a}");
+            assert!(set_learned_full_request(a, 1).is_err(), "{a}");
         }
         assert!(clear_request(15).is_ok());
     }

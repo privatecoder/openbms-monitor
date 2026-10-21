@@ -8,11 +8,12 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
-import { afterUart1Write, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
+import { afterUart1Write, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
 import { SerialLine } from "../components/SerialWrite";
+import { NameLine } from "../components/NameWrite";
 import { useUnchecked } from "../bank";
 import { useCellDb } from "../cells/store";
 import { useAssignments, type Assignment } from "../cells/packCheck";
@@ -111,7 +112,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [gone, setGone] = useState<{ address: number; board: number; at: number | null; gen: number; armed: boolean } | null>(null);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
-  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, ctl: false, multi: false });
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, multi: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
   const lockedBut = (...ks: (keyof typeof writing)[]) => Object.entries(writing).some(([o, b]) => !ks.includes(o as keyof typeof writing) && b);
   const paramsBusy = writing.params || writing.multi;
@@ -252,11 +253,18 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         setNote({ address, note: { text: t("ctl.reread", { pack: packNo(address), err: errorText(e, t) }), error: true } });
       });
   };
-  // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
-  const p79Of = (a: number | null) => {
-    const c = a === null ? undefined : sources.find((x) => x.id === `pack-${a}` && x.values) ?? sources.find((x) => x.id === `stored-${a}` && x.values);
-    return c?.values?.[79] ?? null;
+  /** A read after a name write: the pack's column (a read of this link), an open edit moves onto it. */
+  const nameRead = (address: number, p: Parameters) => {
+    const l = linkNow();
+    if (!sources.some((x) => x.id === `pack-${address}` && x.link === l)) return;
+    replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p);
   };
+  // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
+  const valueOf = (a: number | null, i: number) => {
+    const c = a === null ? undefined : sources.find((x) => x.id === `pack-${a}` && x.values) ?? sources.find((x) => x.id === `stored-${a}` && x.values);
+    return c?.values?.[i] ?? null;
+  };
+  const p79Of = (a: number | null) => valueOf(a, 79);
 
   const open = async (files: FileList | null) => {
     for (const f of Array.from(files ?? [])) {
@@ -590,11 +598,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
           installation={!!installation} power={powerOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
+        <NameLine address={chosen} usable={writable} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
+          read={chosen !== null ? targetRead(chosen) : undefined} onRead={nameRead} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
-          p79={p79Of(chosen)} linkKey={link} />
+          p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link} />
         {chosen !== null && controlHint({ connected, bus, demo: isDemo, installation: !!installation, power: powerOf(chosen) }) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}

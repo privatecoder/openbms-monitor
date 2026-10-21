@@ -534,6 +534,12 @@ impl Connection {
         Ok(())
     }
 
+    /// The learned full capacity, `raw` in 10 mAh (0x49 index 58); RTN 06 when the remaining capacity exceeds it.
+    pub fn set_learned_full(&mut self, address: u8, raw: u16) -> Result<()> {
+        self.ascii(&control::set_learned_full_request(address, raw)?, address)?;
+        Ok(())
+    }
+
     /// Whether the pack answers 0x51 within the normal timeout; any frame from it counts, also a refusal. Only a broken
     /// link is an error.
     pub fn answers(&mut self, address: u8) -> Result<bool> {

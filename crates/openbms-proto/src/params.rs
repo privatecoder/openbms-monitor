@@ -192,6 +192,31 @@ impl Values {
     }
 }
 
+/// The device name at the end of the block (bytes 159..169).
+pub const NAME_LEN: usize = 10;
+const NAME_AT: usize = BLOCK_LEN - NAME_LEN;
+/// What fills a shorter name up to 10 bytes.
+const NAME_PAD: u8 = b' ';
+
+/// A name as the block stores it: 1..=10 printable ASCII characters (space to `~`), no leading or trailing space, padded.
+pub fn name_bytes(name: &str) -> Result<[u8; NAME_LEN]> {
+    let b = name.as_bytes();
+    if b.is_empty() || b.len() > NAME_LEN || name.trim() != name || !b.iter().all(|c| (0x20..=0x7E).contains(c)) {
+        return Err(Error::Layout("device name: 1 to 10 printable ASCII characters"));
+    }
+    let mut out = [NAME_PAD; NAME_LEN];
+    out[..b.len()].copy_from_slice(b);
+    Ok(out)
+}
+
+/// The block to send for a new device name: `base` (a fresh 0x47 read) as read, only the name replaced.
+pub fn with_name(base: &[u8], name: &str) -> Result<Vec<u8>> {
+    check_block(base)?;
+    let mut out = base[..BLOCK_LEN].to_vec();
+    out[NAME_AT..].copy_from_slice(&name_bytes(name)?);
+    Ok(out)
+}
+
 /// 0xA1 with a complete block (see `Values::apply`).
 pub fn write_request(address: u8, block: &[u8]) -> Result<Vec<u8>> {
     check_block(block)?;
@@ -291,6 +316,22 @@ mod tests {
         assert_eq!(out[154], 0x3F);
         assert_eq!(&out[159..], b"SYN-TEST  ");
         assert_eq!(Parameters::parse(&out).unwrap().values(), v);
+    }
+
+    #[test]
+    fn with_name_changes_only_the_name() {
+        let base = block();
+        let out = with_name(&base, "PACK-B").unwrap();
+        assert_eq!(&out[..159], &base[..159]);
+        assert_eq!(&out[159..], b"PACK-B    ");
+        assert_eq!(Parameters::parse(&out).unwrap().device_name, "PACK-B");
+        assert_eq!(&with_name(&base, "0123456789").unwrap()[159..], b"0123456789");
+        for bad in ["", "01234567890", " LEAD", "TRAIL ", "UMLAUT-Ä", "TAB\tX", "NUL\0"] {
+            assert!(with_name(&base, bad).is_err(), "{bad:?}");
+        }
+        let mut broken = base.clone();
+        broken[150] = 0;
+        assert!(with_name(&broken, "X").is_err());
     }
 
     #[test]

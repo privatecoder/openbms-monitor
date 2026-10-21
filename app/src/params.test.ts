@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BM_NAMES, KEYS, UNITS, deviating, exportName, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
+import { BM_NAMES, KEYS, UNITS, deviating, exportName, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -101,5 +101,12 @@ describe("withPlaceholders", () => {
   it("a pack no longer on the bus keeps a read column, loses its empty one", () => {
     const s = withPlaceholders([col("pack-5", { values: [1] })], [0, 1], true);
     expect(withPlaceholders(s, [0], true).map((x) => x.id)).toEqual(["pack-0", "pack-5"]);
+  });
+});
+
+describe("device name", () => {
+  it("takes 1–10 printable ASCII characters without outer spaces", () => {
+    for (const ok of ["X", "PACK-01", "0123456789", "A B"]) expect(nameInputOk(ok), ok).toBe(true);
+    for (const bad of ["", "01234567890", " X", "X ", "Ä", "A\tB", " "]) expect(nameInputOk(bad), bad).toBe(false);
   });
 });
