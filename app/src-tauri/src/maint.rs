@@ -736,7 +736,8 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     }
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &key)?;
-    let packs = link.scan(scan_addresses(&state.scan_cancel));
+    // RS485-1/2 has no bus quiet to wait for; an error here is the link's
+    let packs = link.scan(scan_addresses(&state.scan_cancel)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
     let cancelled = state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst);
     let found: Vec<u8> = packs.iter().map(|(a, _)| *a).collect();
     // a pending pack clears only when the board that answers is the one flashed (its String 2)

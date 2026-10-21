@@ -200,6 +200,8 @@ pub struct Probe {
     pub noise: bool,
     /// a master polled its slaves (CID2 0x5A) on this bus
     pub intra: bool,
+    /// the bus never got quiet before a request (`Error::BusBusy`): at least one address was not asked at all
+    pub busy: bool,
 }
 
 /// The addresses to check: the given ones first, then the rest of 0..=15.
@@ -719,11 +721,20 @@ impl Connection {
         self.rx = RxStats::default();
         // an answer from that address proves it is reachable, also an answer this version formats differently or a
         // refusal with a BMS RTN code (01–09); an echo of the request is skipped, any other RTN proves nothing
+        let mut busy = false;
         let answered = addresses.into_iter().find(|a| match DeviceInfo::request(*a) {
-            Ok(r) => matches!(self.ascii_within(&r, *a, &|_| true, limit), Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(0x01..=0x09)))),
+            Ok(r) => match self.ascii_within(&r, *a, &|_| true, limit) {
+                Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(0x01..=0x09))) => true,
+                // not sent: says nothing about this address
+                Err(Error::BusBusy(_)) => {
+                    busy = true;
+                    false
+                }
+                Err(_) => false,
+            },
             Err(_) => false,
         });
-        Probe { answered, noise: answered.is_none() && self.rx.bytes > 0 && self.rx.frames == 0, intra: self.rx.intra > 0 }
+        Probe { answered, noise: answered.is_none() && self.rx.bytes > 0 && self.rx.frames == 0, intra: self.rx.intra > 0, busy }
     }
 
     /// The pack answers 0x47 (parameters): UART0 (RS485-1/2) knows it, UART1 (CAN socket) does not. Read-only.
@@ -822,16 +833,20 @@ impl Connection {
         }
     }
 
-    pub fn scan(&mut self, addresses: impl IntoIterator<Item = u8>) -> Vec<(u8, DeviceInfo)> {
+    /// The packs among `addresses` that answer 0x51. A bus that never got quiet before a request is an error
+    /// (`Error::BusBusy`): an address not asked is no missing pack, so no partial list comes back.
+    pub fn scan(&mut self, addresses: impl IntoIterator<Item = u8>) -> Result<Vec<(u8, DeviceInfo)>> {
         let limit = self.latency.probe_budget(Class::Ascii, timing::CAPABILITY_TRY);
-        addresses
-            .into_iter()
-            .filter_map(|a| {
-                let request = DeviceInfo::request(a).ok()?;
-                let f = self.ascii_within(&request, a, &|i| DeviceInfo::parse(i).is_ok(), limit).ok()?;
-                DeviceInfo::parse(&f.info).ok().map(|d| (a, d))
-            })
-            .collect()
+        let mut found = Vec::new();
+        for a in addresses {
+            let Ok(request) = DeviceInfo::request(a) else { continue };
+            match self.ascii_within(&request, a, &|i| DeviceInfo::parse(i).is_ok(), limit) {
+                Ok(f) => found.extend(DeviceInfo::parse(&f.info).ok().map(|d| (a, d))),
+                Err(e @ Error::BusBusy(_)) => return Err(e),
+                Err(_) => {}
+            }
+        }
+        Ok(found)
     }
 }
 
@@ -1090,9 +1105,9 @@ mod tests {
 
     #[test]
     fn a_bus_that_never_gets_quiet_sends_nothing() {
-        // a byte every 150 ms for 5 s: no 200-ms quiet within the limit, so the request is not sent at all
+        // a byte every 150 ms for 12 s: no 200-ms quiet within the limit, so no request is sent at all
         let writes = Arc::new(Mutex::new(vec![]));
-        let at = (1..=33).map(|i| Duration::from_millis(150 * i)).collect();
+        let at = (1..=80).map(|i| Duration::from_millis(150 * i)).collect();
         let port = Box::new(Trickle { start: Instant::now(), at, writes: writes.clone() });
         let mut c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: Some(Instant::now()) };
         c.set_bus(Bus::CanSocketBus);
@@ -1102,6 +1117,10 @@ mod tests {
         assert!(writes.lock().unwrap().is_empty());
         // a restart that could not be sent is an error, never „sent at“
         assert!(matches!(c.restart(1), Err(Error::BusBusy(_))));
+        // a search on such a bus is an error, never „pack not there“; the reachability check says the bus was busy
+        assert!(matches!(c.scan([0, 1]), Err(Error::BusBusy(_))));
+        let p = c.probe([0]);
+        assert!(p.busy && p.answered.is_none(), "{p:?}");
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.
@@ -1431,7 +1450,7 @@ mod tests {
             (DeviceInfo::request(12).unwrap(), answer(12, 0, &[])),
         ]);
         let p = c.probe(probe_order(&[0]));
-        assert_eq!(p, Probe { answered: Some(11), noise: false, intra: false });
+        assert_eq!(p, Probe { answered: Some(11), noise: false, intra: false, busy: false });
         // a refusal is an answer as well
         let mut c = scripted(vec![(DeviceInfo::request(3).unwrap(), answer(3, 0x04, &[]))]);
         assert_eq!(c.probe([3]).answered, Some(3));
@@ -1440,13 +1459,13 @@ mod tests {
     #[test]
     fn probe_tells_noise_and_master_polling_from_silence() {
         let mut c = scripted(vec![]);
-        assert_eq!(c.probe([0]), Probe { answered: None, noise: false, intra: false });
+        assert_eq!(c.probe([0]), Probe { answered: None, noise: false, intra: false, busy: false });
         // a wrong baud rate: bytes, but no frame
         let mut c = scripted(vec![(DeviceInfo::request(0).unwrap(), vec![0xF0, 0x0F, 0x80, 0x00, 0xFE])]);
-        assert_eq!(c.probe([0]), Probe { answered: None, noise: true, intra: false });
+        assert_eq!(c.probe([0]), Probe { answered: None, noise: true, intra: false, busy: false });
         // a master polling its slaves (CID2 0x5A), nobody answering the app
         let mut c = scripted(vec![(DeviceInfo::request(0).unwrap(), answer(1, 0x5A, b"\x01"))]);
-        assert_eq!(c.probe([0]), Probe { answered: None, noise: false, intra: true });
+        assert_eq!(c.probe([0]), Probe { answered: None, noise: false, intra: true, busy: false });
     }
 
     #[test]

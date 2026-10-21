@@ -76,7 +76,7 @@ fn main() {
     c.set_bus(bus);
     let out = match cli.cmd {
         Cmd::Ports => unreachable!(),
-        Cmd::Scan => Ok(serde_json::to_value(c.scan(0..=15).into_iter().map(|(a, d)| serde_json::json!({"address": a, "device": d})).collect::<Vec<_>>()).unwrap()),
+        Cmd::Scan => c.scan(0..=15).map(|found| serde_json::to_value(found.into_iter().map(|(a, d)| serde_json::json!({"address": a, "device": d})).collect::<Vec<_>>()).unwrap()),
         Cmd::Telemetry { address } => c.telemetry(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Status { address } => c.status(address).map(|v| serde_json::to_value(v).unwrap()),
         Cmd::Info { address } => c.device_info(address).map(|v| serde_json::to_value(v).unwrap()),

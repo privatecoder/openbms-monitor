@@ -3,7 +3,7 @@ import type { Bus, Installation, OtherBus } from "./api";
 import { storedPort } from "./maint";
 
 /** what a connect's check heard when no pack answered */
-export type NoAnswer = { noise: boolean; intra: boolean };
+export type NoAnswer = { noise: boolean; intra: boolean; busy?: boolean };
 
 const BAUD: Record<Bus, number> = { pack: 19200, can: 9600 };
 const other = (b: Bus): Bus => (b === "pack" ? "can" : "pack");
@@ -13,7 +13,7 @@ const pad = (a: number) => String(a).padStart(2, "0");
 export function noAnswer(e: unknown): NoAnswer | null {
   try {
     const v = JSON.parse(typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
-    return v?.code === "no-answer" ? { noise: !!v.noise, intra: !!v.intra } : null;
+    return v?.code === "no-answer" ? { noise: !!v.noise, intra: !!v.intra, busy: !!v.busy } : null;
   } catch { return null; }
 }
 
@@ -28,6 +28,8 @@ export function connectCancelled(e: unknown): boolean {
 export function firstLine(bus: Bus, n: NoAnswer, t: TFunction): string {
   const p = { bus: t(`conn.busName.${bus}`), baud: BAUD[bus] };
   if (n.intra) return t("conn.check.intra");
+  // traffic without a pause: requests were not even sent
+  if (n.busy) return t("conn.check.busy", p);
   return n.noise ? t("conn.check.noise", p) : t("conn.check.none", p);
 }
 
@@ -43,7 +45,7 @@ export function explain(bus: Bus, n: NoAnswer, probe: OtherBus | null, t: TFunct
     if (probe.pack_at_9600) return { text: `${first} ${t("conn.check.pack9600", { addr })}`, offer: null };
     return { text: `${first} ${t(o === "can" ? "conn.check.otherCan" : "conn.check.otherPack", { addr })}`, offer: o };
   }
-  const second = probe.noise ? t("conn.check.otherNoise", { baud: BAUD[o] }) : t("conn.check.otherNone", { baud: BAUD[o] });
+  const second = probe.busy ? t("conn.check.otherBusy", { baud: BAUD[o] }) : probe.noise ? t("conn.check.otherNoise", { baud: BAUD[o] }) : t("conn.check.otherNone", { baud: BAUD[o] });
   return { text: `${first} ${second} ${t("conn.check.hintSerial")}`, offer: null };
 }
 
