@@ -38,10 +38,30 @@ pub(crate) fn channel_of(bus: Bus) -> Channel {
     }
 }
 
-/// The channel `action` takes on `bus`; refused when the app has no way for it there (`access::ROUTES`).
+/// The channels the app has a flow for, per action. The plain commands (`power::Act`) and the reads share one flow over
+/// both; the others are written for one channel (their own checks and frames there). A catalog row the app marks as
+/// implemented must find its channel here (`every_implemented_route_has_a_flow`): a new row for a plain command needs no
+/// code, one for an action with its own flow needs that flow first.
+pub(crate) fn flows(action: Action) -> &'static [Channel] {
+    use Action as A;
+    const BOTH: &[Channel] = &[Channel::Uart0, Channel::Uart1];
+    match action {
+        A::ReadTelemetry | A::ReadStatus | A::ReadInfo | A::ReadParameters | A::WriteParameters | A::ReadSerials | A::ReadClock => BOTH,
+        A::SetClock | A::PowerOnOff | A::PackLockSet | A::PackLockRelease | A::Restart | A::ForceHeater | A::ClearHistory | A::SetRemaining
+        | A::SetLearnedFull | A::Calibrate | A::SetCanProtocol => BOTH,
+        // RS485-1/2 only: the name rides in the 169-byte ASCII A1, the serial strings and the history have their own
+        // frames and checks there, the bootloader listens there
+        A::WriteName | A::WriteSerials | A::ReadHistory | A::Flash => &[Channel::Uart0],
+        A::ReadIdentity | A::MaintStatus | A::MaintStart | A::MaintStop | A::ReadSystem => &[Channel::Uart1],
+        A::DisplayTunnel => &[],
+    }
+}
+
+/// The channel `action` takes on `bus`; refused when the catalog has no way for it there (`access::ROUTES`) or the app
+/// no flow (`flows`).
 pub(crate) fn on_bus(action: Action, bus: Bus) -> Result<Channel, String> {
     let channel = channel_of(bus);
-    if access::routes(action).any(|r| r.channel == channel && r.implemented) {
+    if access::routes(action).any(|r| r.channel == channel && r.implemented) && flows(action).contains(&channel) {
         return Ok(channel);
     }
     Err(if channel == Channel::Uart1 { PACK_BUS_ONLY } else { CAN_SOCKET_ONLY }.into())
@@ -1105,6 +1125,13 @@ mod tests {
         for a in [Action::ForceHeater, Action::ClearHistory, Action::SetRemaining, Action::SetLearnedFull, Action::Calibrate, Action::SetCanProtocol, Action::WriteSerials, Action::WriteName] {
             assert_eq!(on_bus(a, Bus::CanSocketBus).unwrap_err(), PACK_BUS_ONLY, "{a:?}");
             assert_eq!(on_bus(a, Bus::PackBus), Ok(Channel::Uart0), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn every_implemented_route_has_a_flow() {
+        for r in access::ROUTES.iter().filter(|r| r.implemented) {
+            assert!(flows(r.action).contains(&r.channel), "the catalog marks {:?} over {:?} as implemented, the app has no flow for it", r.action, r.channel);
         }
     }
 
