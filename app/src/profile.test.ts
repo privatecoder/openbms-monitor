@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { cutoffBits, cutoffRowLabel, firmwareText, gateBits, gateRowLabel, hardStopLine, invertedBit, keepMask, lockChanged, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
+import { cutoffBits, cutoffRowLabel, firmwareText, gateBits, gateRowLabel, hardStopLine, keepMask, lockChanged, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -102,12 +102,10 @@ describe("the power and clock lock (Group0 bit 3)", () => {
 
 describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
   const live = (pack_cutoff: boolean | null): PackPatch => ({ source: "live", release: "16.06.13 MAINT 1.6", caps: { ...caps, power_rtc: true, pack_cutoff }, at: null });
-  it("reads both bits inverted in a proven column: on = bit 0", () => {
-    expect(invertedBit(0, 4, true) && invertedBit(0, 5, true)).toBe(true);
-    expect(invertedBit(0, 3, true) || invertedBit(1, 4, true) || invertedBit(0, 4, false)).toBe(false);
-    // FF: extended off off, no lock; EF: extended off on; CF: on and locked
-    expect([0xff, 0xef, 0xcf].map((v) => [switchOn(v, 4, true), switchOn(v, 5, true)])).toEqual([[false, false], [true, false], [true, true]]);
-    expect(switchOn(0xff, 4, false)).toBe(true);
+  it("reads every bit as it is: 1 = an", () => {
+    // FF: simple off, no lock (both an); EF: extended off (bit 4 aus); CF: extended off and locked (bits 4 and 5 aus)
+    expect([0xff, 0xef, 0xcf].map((v) => [switchOn(v, 4), switchOn(v, 5)])).toEqual([[true, true], [false, true], [false, false]]);
+    expect(switchOn(0xf7, 3)).toBe(false);
   });
   it("bit 4 edits over RS485-1/2 unless the build has none, over the CAN socket only with the proven cutoff and bit 0 at 1", () => {
     expect(cutoffBits(live(true), false, 0xfe)).toEqual({ cutoff: true, cutoffEditable: true });
@@ -148,7 +146,7 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
     expect(cutoffRowLabel([{ patch: live(true), switches: true }, { patch: live(false), switches: false }])).toBe("named");
   });
   it("has its texts in both languages", () => {
-    for (const lng of ["de", "en"]) for (const k of ["par.gateCutoffUnknown", "par.gateCutoffAbsent", "par.gateCutoffFixed", "par.gateLockFixed", "par.gateInverted", "par.packLock", "par.packLockHint", "pw.lockChanged", "pw.lockedRead"])
+    for (const lng of ["de", "en"]) for (const k of ["par.gateCutoffUnknown", "par.gateCutoffAbsent", "par.gateCutoffFixed", "par.gateLockFixed", "par.packLock", "par.packLockHint", "pw.lockChanged", "pw.lockedRead"])
       expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });
 });

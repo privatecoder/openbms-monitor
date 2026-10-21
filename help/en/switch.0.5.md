@@ -1,6 +1,6 @@
 ---
-title: Individual pack cutoff active
-short: Patched firmware with the pack cutoff (MAINT 1.6), status only: on while a stored lock exists, also with the extended off switched off. Never editable; switching this pack on directly releases it, parameter imports do not.
+title: No individual pack cutoff
+short: Patched firmware with the pack cutoff (MAINT 1.6), status only: 1 (on) while no stored lock exists; 0 (off) while the pack is locked, also with the simple off. Never editable; switching this pack on directly releases the lock, parameter imports do not.
 related: topic.switches
 ---
 
