@@ -1,0 +1,10 @@
+---
+title: Access paths
+short: Which action goes over which of the BMS's three UARTs, under which conditions, for the chosen pack. One central table in the app; the interface shows it, the write paths check against it.
+related: topic.buses, topic.patchGates, topic.control
+---
+- **UART0 · RS485-1/2:** Seplos ASCII at 19200 baud. Every setting of the original firmware goes here: parameters and switches, serial numbers, calibration, CAN protocol, remaining charge, heater, history, clock, on/off, restart and the firmware update. Reliable only while the master does not poll (maintenance) or with a single pack attached.
+- **UART1 · CAN socket:** the RS485 pair of the CAN socket at 9600 baud. Readings, status and device info go to every pack; system values (Modbus) only at the master. With patched firmware from MAINT 1.5 also: read parameters, read serial numbers, write parameters while Group0.bit0 (write release) is set, and maintenance at the master (start only with Group0.bit2 and without automatic addressing, Group7.bit5). In the power/RTC build (own image flag bit 1) clock, on/off and restart, as long as Group0.bit3 does not lock them; from MAINT 1.6 with the pack lock also the stored lock.
+- **UART2 · display/Bluetooth:** the display port, binary. Only the board the display or a Bluetooth module is plugged into, and only with Group7.bit3 (display port on); the address in the frame does not pick another pack. Reading and writing parameters and the CAN protocol work there too. The app does not speak this port; the table names it so it is clear what a display or a vendor app can change there.
+- **States:** “possible”: every condition known and met. “unclear”: a condition is not known (switches not read yet, firmware not proven on this connection; a stored proof knows no image flags). “locked”: a condition is known not to hold. “not in the app”: the firmware has the path, the app does not use it. The tooltip names the command and every condition.
+- **Preview:** the table uses this connection's firmware proof and the switches last read. Before every write the app reads the pack fresh and checks again; the table alone releases nothing.

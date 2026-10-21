@@ -92,8 +92,9 @@ pub fn pack_caps_of(format: u8, patch: [u8; 2]) -> Option<PackCaps> {
 /// The lowest patch version of each capability: (status_split, uart1_params, uart1_identity, write_gate_bit0,
 /// start_gate_bit2). The app supports the patch functions as a whole from `MIN_PATCH` on.
 pub const CAP_MIN: CapMin = CapMin { status_split: [1, 5], uart1_params: [1, 5], uart1_identity: [1, 5], write_gate_bit0: [1, 5], start_gate_bit2: [1, 5] };
-/// Below this a format-2 identity is an unknown patch (no patch functions): 1.4 has format 2 but no release bits.
-pub const MIN_PATCH: [u8; 2] = [1, 5];
+/// Below this a format-2 identity is an unknown patch (no patch functions): 1.4 has format 2 but no release bits
+/// (`openbms_proto::access::MAINT_MIN`).
+pub const MIN_PATCH: [u8; 2] = openbms_proto::access::MAINT_MIN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapMin {
@@ -106,12 +107,10 @@ pub struct CapMin {
 
 /// From this patch version on, image flag bit 2 announces the stored pack cutoff (Group0 bit 4 extended off, bit 5 the
 /// lock state). Below it the bits are not read that way, whatever the flag says.
-pub const PACK_CUTOFF_MIN: [u8; 2] = [1, 6];
+pub const PACK_CUTOFF_MIN: [u8; 2] = openbms_proto::access::CUTOFF_MIN;
 
 /// The stored pack cutoff of an identity with patch `patch` and image flag bit 2 `flag`: both needed.
-pub fn pack_cutoff_of(patch: [u8; 2], flag: bool) -> bool {
-    flag && patch >= PACK_CUTOFF_MIN
-}
+pub use openbms_proto::access::pack_cutoff_of;
 
 /// The `0x64/03` formats the app decodes; both carry the same identity fields (format 3 adds the image flags).
 pub const MNT_FORMATS: [u8; 2] = [2, 3];

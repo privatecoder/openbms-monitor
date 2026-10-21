@@ -183,6 +183,19 @@ export interface LinkTiming {
   classes: { class: "ascii" | "modbus" | "binary"; samples: number; p90_ms: number | null; max_ms: number | null; budget_ms: number }[];
 }
 
+/** The access matrix (`openbms_proto::access`): every way of every action over the three UARTs, evaluated for one pack. */
+export type Channel = "uart0" | "uart1" | "uart2";
+export type AccessReason =
+  | { id: "firmware"; need: "any" | "maint" | "power-flag" | "cutoff"; known: "yes" | "no" | "unknown" }
+  | { id: "bit"; group: number; bit: number; want: boolean; known: boolean | null }
+  | { id: "master-only" } | { id: "quiet-bus" } | { id: "local-board" } | { id: "not-implemented" };
+export interface AccessDecision {
+  route: { action: string; channel: Channel; wire: string; firmware: string; implemented: boolean };
+  state: "ready" | "unknown" | "blocked" | "not-implemented";
+  reasons: AccessReason[];
+}
+export interface AccessView { gen: number; channel: Channel | null; decisions: AccessDecision[] }
+
 export type CaptureStatus = { running: boolean; entries: number; bytes: number; timeouts: number; span_ms: number; full: "entries" | "bytes" | null };
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
@@ -384,6 +397,7 @@ const tauriApi = {
   /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
   packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
   packProbes: () => invoke<PackProbeView[]>("pack_probes"),
+  accessView: (address: number, group0: number | null, group7: number | null) => invoke<AccessView>("access_view", { address, group0, group7 }),
   onPackProbe: (f: (p: PackProbeView) => void) => listen<PackProbeView>("pack-probe", (e) => f(e.payload)),
   onHardStop: (f: (h: HardStopSeen) => void) => listen<HardStopSeen>("hard-stop", (e) => f(e.payload)),
   /** „Beleg zurücknehmen“ */
@@ -603,6 +617,7 @@ function demoApi(): typeof tauriApi {
     hardStops: async () => [],
     packProbe: async () => { throw new Error("desktop app only"); },
     packProbes: async () => [],
+    accessView: async () => ({ gen: 0, channel: null, decisions: [] }),
     onPackProbe: async () => () => {},
     onHardStop: async () => () => {},
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
