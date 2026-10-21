@@ -2,6 +2,7 @@
 //!
 //! Protocol details: <https://github.com/privatecoder/seplos-emu1101-docs>.
 
+pub mod access;
 pub mod calibration;
 pub mod control;
 pub mod device_info;

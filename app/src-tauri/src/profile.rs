@@ -28,18 +28,20 @@ use tauri::Emitter;
 pub const GROUP0: usize = 151;
 /// Offset of Group7: bit 5 is the automatic address/slave detection, which refuses a maintenance start.
 pub const GROUP7: usize = 158;
-const WRITE_BIT: u8 = 0x01;
-const START_BIT: u8 = 0x04;
+use openbms_proto::access::{self, Action, Channel, Tri};
+// the bit numbers live in the access matrix (`openbms_proto::access`)
+const WRITE_BIT: u8 = 1 << access::G0_WRITE;
+const START_BIT: u8 = 1 << access::G0_START;
 /// MAINT 1.5 with image flag bit 1: 1 locks ein/aus, restart and setting the clock over the CAN socket; a binary 0xA1
 /// must not change it (E3)
-const POWER_BIT: u8 = 0x08;
+const POWER_BIT: u8 = 1 << access::G0_POWER_LOCK;
 /// MAINT 1.6 with image flag bit 2: 0 switches the extended off on (an addressed off stores the pack cutoff), 1 keeps the
 /// OEM soft off; a normal setting, also over the CAN socket while writing is released there
-const CUTOFF_BIT: u8 = 0x10;
+const CUTOFF_BIT: u8 = 1 << access::G0_EXTENDED_OFF;
 /// MAINT 1.6: 0 shows the stored individual pack cutoff. Status only: set and cleared by an addressed ein/aus, never by a
 /// write (a binary 0xA1 that changes it is refused with E3)
-pub const LOCK_BIT: u8 = 0x20;
-const AUTO_ADDRESS_BIT: u8 = 0x20;
+pub const LOCK_BIT: u8 = 1 << access::G0_LOCK_STATE;
+const AUTO_ADDRESS_BIT: u8 = 1 << access::G7_AUTO_ADDRESS;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
@@ -327,7 +329,18 @@ pub fn pack_patch(state: &AppState, link: &Link, address: u8, serial: Option<&st
 /// Ein/aus, restart and the clock over the CAN socket for `address`: only where this connection proved image flag bit 1
 /// for exactly this pack (the master's profile, a slave's own 64/03); a stored proof carries no image flags.
 pub fn power_rtc(state: &AppState, link: &Link, address: u8) -> bool {
-    pack_patch(state, link, address, None).is_some_and(|p| p.caps.power_rtc == Some(true))
+    // the clock read over the CAN socket needs exactly the image flag (`access::Action::ReadClock`)
+    access::ready(Action::ReadClock, Channel::Uart1, &access_facts(pack_patch(state, link, address, None).as_ref(), None, None, address))
+}
+
+/// The access matrix's facts of one pack from what proves its patch (`pack_patch`) and its last Group0/Group7: a
+/// stored proof gives the patch, never the image flags; no proof says nothing (unknown, not original).
+pub fn access_facts(patch: Option<&PackPatch>, group0: Option<u8>, group7: Option<u8>, address: u8) -> access::Facts {
+    let (maint, power, cutoff) = match patch {
+        Some(p) => (Tri::Yes, Tri::from(p.caps.power_rtc), Tri::from(p.caps.pack_cutoff)),
+        None => (Tri::Unknown, Tri::Unknown, Tri::Unknown),
+    };
+    access::Facts { maint, power, cutoff, group0, group7, address }
 }
 
 /// The lock state (Group0 bit 5) differs between the read an edit started from and the pack now: a write is not sent
@@ -461,6 +474,26 @@ pub async fn pack_probe(state: tauri::State<'_, AppState>, address: u8, gen: u64
     }
     let _guard = crate::control::reserve_pack_wait(&state, address, "probe")?;
     probe_pack_on(&state, &link, address).map(|f| probe_view(gen, address, &f))
+}
+
+/// The access matrix for one pack, as a preview: every way over the three UARTs with its state on this connection.
+/// `group0`/`group7` are the UI's last read (a hint only: a way that writes reads them fresh before it sends). The
+/// proof is the connection's own (master profile, the pack's 64/03), else the stored one of the board recorded there.
+#[derive(Serialize)]
+pub struct AccessView {
+    pub gen: u64,
+    /// the UART of this connection: "uart0" (RS485-1/2) or "uart1" (CAN socket); None without a connection
+    pub channel: Option<access::Channel>,
+    pub decisions: Vec<access::Decision>,
+}
+
+#[tauri::command]
+pub async fn access_view(state: tauri::State<'_, AppState>, address: u8, group0: Option<u8>, group7: Option<u8>) -> Result<AccessView, String> {
+    let link = link_now(&state);
+    let channel = state.bus.lock().map_err(|e| e.to_string())?.map(|b| if b == Bus::CanSocketBus { access::Channel::Uart1 } else { access::Channel::Uart0 });
+    let serial = link.installation.as_deref().and_then(|inst| crate::maint::with_store(&state, |s| s.current_board(inst, address)).ok().flatten()).map(|b| b.bms_serial);
+    let patch = pack_patch(&state, &link, address, serial.as_deref());
+    Ok(AccessView { gen: link.gen, channel, decisions: access::view(&access_facts(patch.as_ref(), group0, group7, address)) })
 }
 
 /// The live findings of the current connection.

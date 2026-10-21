@@ -1,3 +1,4 @@
+import { AccessMatrix } from "../components/AccessMatrix";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Archive, Download, FileUp, FolderOpen, History, PenLine, RotateCw, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
@@ -597,6 +598,8 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         {chosen !== null && controlHint({ connected, bus, demo: isDemo, installation: !!installation, power: powerOf(chosen) }) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}
+        {connected && <AccessMatrix address={chosen} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
+          group7={chosen !== null ? targetRead(chosen)?.function_switches[7] : undefined} linkKey={link} />}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
           <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}
