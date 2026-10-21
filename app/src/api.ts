@@ -154,9 +154,9 @@ export type ParamWrite =
 export type NameWrite =
   | { kind: "stale"; fresh: Parameters }
   | { kind: "unchanged"; fresh: Parameters }
-  | { kind: "written"; read_back: Parameters | null; read_error: string | null; unanswered: boolean }
+  | { kind: "written"; read_back: Parameters | null; read_error: string | null }
   | { kind: "refused"; refusal: "refused" | "invalid" | "locked"; stored: Parameters }
-  | { kind: "unclear"; error: string };
+  | { kind: "unclear"; error: string; read_back: Parameters | null };
 /** The last write of a pack at this installation and the parameters it replaced. */
 export interface ParamHistory { last_written: number | null; previous: Parameters | null }
 /** A serial number write the BMS accepted; `master_updated`: installations whose stored master serial followed;
@@ -715,7 +715,7 @@ function demoApi(): typeof tauriApi {
       if (fresh.device_name !== expected) return { kind: "stale", fresh };
       if (expected === name) return { kind: "unchanged", fresh };
       demoName.set(address, name);
-      return { kind: "written", read_back: demoParams(address), read_error: null, unanswered: false };
+      return { kind: "written", read_back: demoParams(address), read_error: null };
     },
     setSerial: async (_address, _which, text) => ({ value: { kind: "set", value: text.trim(), truncated: false }, read_error: null, master_updated: [], master_unchecked: false, board_unchecked: false }),
     saveParameters: async (name, content) => {

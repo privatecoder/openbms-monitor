@@ -432,14 +432,14 @@ pub enum NameWrite {
     Stale { fresh: Parameters },
     /// The pack already holds the name: nothing was sent (an A1 may reset the learned full capacity).
     Unchanged { fresh: Parameters },
-    /// Written; the block read back or why that read failed. `unanswered`: the answer to the write was lost, the fresh
-    /// read showed the new name.
-    Written { read_back: Option<Parameters>, read_error: Option<String>, unanswered: bool },
+    /// Acknowledged; the block read back or why that read failed.
+    Written { read_back: Option<Parameters>, read_error: Option<String> },
     /// The BMS refused the block (RTN 06 for a stored value, RTN 04): the new name may be live until a restart, it was
     /// not stored. `stored` is the read right before.
     Refused { refusal: Refusal, stored: Parameters },
-    /// The answer was lost and a fresh read showed neither name (or failed).
-    Unclear { error: String },
+    /// The answer was lost: whether the BMS stored the block is open. `read_back`: the fresh read (None when it failed);
+    /// even one equal to the block sent proves nothing, since the BMS takes the name into RAM before it checks the block.
+    Unclear { error: String, read_back: Option<Parameters> },
 }
 
 /// Write the device name (bytes 159..169 of the 0xA1 block; RS485-1/2 only, the CAN socket's binary write has no
@@ -474,23 +474,18 @@ pub(crate) fn name_checked(io: &mut impl ParamIo, address: u8, expected: &str, n
             Ok(NameWrite::Refused { refusal, stored: fresh })
         }
         Sent::Protocol(e) => Err(e),
-        Sent::Lost(e) => {
-            let read = io.read(false);
-            match read {
-                // the whole block sent: the values and switches are as before, so only the name tells
-                Ok(p) if p.block == block => {
-                    io.snapshot(SnapshotKind::Written, &block);
-                    Ok(NameWrite::Written { read_back: Some(p), read_error: None, unanswered: true })
-                }
-                Ok(p) if p.block == fresh.block => Err(e),
-                _ => Ok(NameWrite::Unclear { error: e }),
-            }
-        }
+        Sent::Lost(e) => match io.read(false) {
+            // the block before: the write did not arrive
+            Ok(p) if p.block == fresh.block => Err(e),
+            // the new name in RAM also follows a refusal (RTN 06 copies it before the check), and the values sent are the
+            // ones before: accepted and refused look the same, so nothing counts as written
+            read => Ok(NameWrite::Unclear { error: e, read_back: read.ok() }),
+        },
         Sent::Ack => {
             io.snapshot(SnapshotKind::Written, &block);
             Ok(match io.read(true) {
-                Ok(p) => NameWrite::Written { read_back: Some(p), read_error: None, unanswered: false },
-                Err(e) => NameWrite::Written { read_back: None, read_error: Some(e), unanswered: false },
+                Ok(p) => NameWrite::Written { read_back: Some(p), read_error: None },
+                Err(e) => NameWrite::Written { read_back: None, read_error: Some(e) },
             })
         }
     }
@@ -876,7 +871,7 @@ mod tests {
         let named = openbms_proto::params::with_name(&b, "PACK-X").unwrap();
         let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(named.clone())], Sent::Ack);
         let r = name_checked(&mut f, 4, "SYN", "PACK-X").unwrap();
-        assert!(matches!(&r, NameWrite::Written { read_back: Some(p), unanswered: false, .. } if p.device_name == "PACK-X"));
+        assert!(matches!(&r, NameWrite::Written { read_back: Some(p), .. } if p.device_name == "PACK-X"));
         assert_eq!(f.blocks, std::slice::from_ref(&named));
         assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Written, SnapshotKind::Read]);
         // another name on the pack than the one shown, the same name, a name the block cannot hold: nothing sent
@@ -896,14 +891,16 @@ mod tests {
         let b = block(4);
         let named = openbms_proto::params::with_name(&b, "PACK-X").unwrap();
         let lost = || Sent::Lost("timeout".into());
+        // the new name read back after a lost answer: a refusal leaves the same RAM, so open and no `written` kept
         let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(named.clone())], lost());
-        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Written { unanswered: true, .. }));
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { read_back: Some(p), .. } if p.device_name == "PACK-X"));
+        assert_eq!(f.kept, [SnapshotKind::Read]);
         let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(b.clone())], lost());
         assert!(name_checked(&mut f, 4, "SYN", "PACK-X").is_err());
         let mut f = Fake::new(false, vec![Ok(b.clone()), Ok(with_p0(&named, 3001))], lost());
-        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { .. }));
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { read_back: Some(_), .. }));
         let mut f = Fake::new(false, vec![Ok(b.clone()), Err("timeout")], lost());
-        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { .. }));
+        assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Unclear { read_back: None, .. }));
         let mut f = Fake::new(false, vec![Ok(b.clone())], Sent::Refused { refusal: Refusal::Refused, switches_live: true });
         assert!(matches!(name_checked(&mut f, 4, "SYN", "PACK-X").unwrap(), NameWrite::Refused { .. }));
         assert_eq!(f.kept, [SnapshotKind::Read, SnapshotKind::Refused]);
