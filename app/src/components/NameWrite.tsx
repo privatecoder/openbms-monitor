@@ -31,6 +31,8 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, pendi
   const current = useCurrent(`${linkKey}|${address}`);
   useEffect(() => onBusy?.(busy), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setInput(""); setNote(null); setAsk(null); }, [address, linkKey]);
+  // a refusal left switches live meanwhile: a confirmation asked before must not send now
+  useEffect(() => { if (pending) setAsk(null); }, [pending]);
   if (!usable || address === null) return null;
 
   const nf = new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -38,7 +40,7 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, pendi
   const ok = nameInputOk(name) && !!read && name !== read.device_name && !pending;
 
   const write = async (confirmed: boolean) => {
-    if (!read) return;
+    if (!read || pending) return;
     const a = address, key = `${linkKey}|${a}`, expected = read.device_name;
     setBusy(true); setNote(null);
     try {
@@ -92,7 +94,7 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, pendi
         <div className="flex flex-wrap items-center gap-2">
           <StatusLine tone="warn">{ask.full === null ? t("nmw.capacityUnknown", { rated: nf.format(ask.rated / 100) })
             : t("nmw.capacityResets", { full: nf.format(ask.full), rated: nf.format(ask.rated / 100) })}</StatusLine>
-          <Button size="sm" disabled={busy || locked} onClick={() => void write(true)}>{t("nmw.writeAnyway")}</Button>
+          <Button size="sm" disabled={busy || locked || pending} onClick={() => void write(true)}>{t("nmw.writeAnyway")}</Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => setAsk(null)}>{t("ctl.cancel")}</Button>
         </div>
       )}
