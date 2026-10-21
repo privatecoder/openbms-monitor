@@ -540,57 +540,32 @@ pub async fn pack_probes(state: tauri::State<'_, AppState>) -> Result<Vec<PackPr
     Ok(bank::lives(&state, link.gen).iter().map(|(a, f)| probe_view(link.gen, *a, f)).collect())
 }
 
-/// What a write may do with the release bits of Group0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Group0 {
-    /// RS485-1/2: the bits go as edited (that is the way to change them)
-    Free,
-    /// CAN socket without proof: the release bits always as the pack has them now
-    Keep,
-    /// CAN socket with proof: no write while writing is locked there; the start release bit never changes; the extended
-    /// off (bit 4) only where this connection proved the pack cutoff (`cutoff`)
-    Gated { write: bool, start: bool, cutoff: bool },
+/// What a parameter write does with Group0 (`access::group0_plan`).
+pub type Group0 = access::Group0Plan;
+
+/// The patch as `access` needs it for a parameter write.
+pub fn proof_of(p: &PackPatch) -> access::Proof {
+    access::Proof { write_gate: p.caps.write_gate, start_gate: p.caps.start_gate, power: p.caps.power_rtc.into(), cutoff: p.caps.pack_cutoff.into() }
 }
 
+/// The Group0 plan of a parameter write the backend sends: over the CAN socket by the pack's proof on this connection;
+/// over RS485-1/2 without one (the bits go as edited there; the UI keeps the bits without function by the proof).
 pub fn group0_rule(uart1: bool, patch: Option<&PackPatch>) -> Group0 {
-    match (uart1, patch) {
-        (false, _) => Group0::Free,
-        (true, Some(p)) => Group0::Gated { write: p.caps.write_gate, start: p.caps.start_gate, cutoff: p.caps.pack_cutoff == Some(true) },
-        (true, None) => Group0::Keep,
+    if uart1 {
+        access::group0_plan(Channel::Uart1, patch.map(proof_of))
+    } else {
+        access::group0_plan(Channel::Uart0, None)
     }
 }
 
 /// Apply `rule` to `block` (built on the fresh read `fresh`) before it is sent; Err: refused here, nothing sent.
 pub fn apply_group0(rule: Group0, fresh: &[u8], block: &mut [u8]) -> Result<(), String> {
-    let keep = |block: &mut [u8], mask: u8| block[GROUP0] = (block[GROUP0] & !mask) | (fresh[GROUP0] & mask);
-    // bit 5 (the lock state) on every way as the pack has it: an old backup or import never clears a stored cutoff, and
-    // in other builds the bit has no function
-    keep(block, LOCK_BIT);
-    match rule {
-        Group0::Free => {}
-        Group0::Keep => keep(block, WRITE_BIT | START_BIT | POWER_BIT | CUTOFF_BIT),
-        Group0::Gated { write, start, cutoff } => {
-            // bit 3 never changes over the CAN socket: with the power and clock service the pack refuses the whole
-            // write (E3), without it the bit has no function
-            keep(block, POWER_BIT);
-            if !cutoff {
-                keep(block, CUTOFF_BIT);
-            }
-            if write && fresh[GROUP0] & WRITE_BIT == 0 {
-                return Err(uart1_refusal("write-locked"));
-            }
-            if start && (block[GROUP0] ^ fresh[GROUP0]) & START_BIT != 0 {
-                return Err(uart1_refusal("start-bit"));
-            }
-            if !write {
-                keep(block, WRITE_BIT);
-            }
-            if !start {
-                keep(block, START_BIT);
-            }
-        }
-    }
-    Ok(())
+    access::apply_group0(rule, fresh[GROUP0], &mut block[GROUP0]).map_err(|r| {
+        uart1_refusal(match r {
+            access::Group0Refusal::WriteLocked => "write-locked",
+            access::Group0Refusal::StartBit => "start-bit",
+        })
+    })
 }
 
 /// Why a maintenance start was refused (RTN 05), from the master's fresh block: the start release off, the automatic
@@ -718,7 +693,7 @@ mod tests {
         apply_group0(group0_rule(true, None), &fresh, &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xFA);
         let mut b = block(0x00, 0);
-        apply_group0(Group0::Keep, &block(0xFF, 0), &mut b).unwrap();
+        apply_group0(group0_rule(true, None), &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0x3D, "other bits as edited, the patch bits (0, 2, 3, 4, 5) as the pack has them");
         // RS485-1/2: as edited
         let mut b = block(0xFA, 0);
@@ -730,7 +705,7 @@ mod tests {
     fn with_proof_a_locked_pack_or_a_changed_start_bit_is_refused_before_sending() {
         let p = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None);
         let rule = group0_rule(true, p.as_ref());
-        assert_eq!(rule, Group0::Gated { write: true, start: true, cutoff: false });
+        assert_eq!(rule, access::group0_plan(Channel::Uart1, Some(access::Proof { write_gate: true, start_gate: true, power: Tri::Unknown, cutoff: Tri::Unknown })));
         let locked = apply_group0(rule, &block(0xFE, 0), &mut block(0xFF, 0)).unwrap_err();
         assert!(locked.contains("write-locked"), "{locked}");
         let start = apply_group0(rule, &block(0xFF, 0), &mut block(0xFB, 0)).unwrap_err();
@@ -752,9 +727,76 @@ mod tests {
         assert_eq!(b[GROUP0], 0xF7);
     }
 
+    /// `apply_group0` from the catalog against the rule as it stood before (`Free`/`Keep`/`Gated`), for every rule, fresh
+    /// and edited Group0: the byte sent and the refusal.
+    #[test]
+    fn the_catalog_plan_applies_like_the_rule_before_it() {
+        #[derive(Clone, Copy, Debug)]
+        enum Old {
+            Free,
+            Keep,
+            Gated { write: bool, start: bool, cutoff: bool },
+        }
+        fn old_apply(rule: Old, fresh: u8, block: &mut u8) -> Result<(), &'static str> {
+            let keep = |b: &mut u8, m: u8| *b = (*b & !m) | (fresh & m);
+            keep(block, LOCK_BIT);
+            match rule {
+                Old::Free => {}
+                Old::Keep => keep(block, WRITE_BIT | START_BIT | POWER_BIT | CUTOFF_BIT),
+                Old::Gated { write, start, cutoff } => {
+                    keep(block, POWER_BIT);
+                    if !cutoff {
+                        keep(block, CUTOFF_BIT);
+                    }
+                    if write && fresh & WRITE_BIT == 0 {
+                        return Err("write-locked");
+                    }
+                    if start && (*block ^ fresh) & START_BIT != 0 {
+                        return Err("start-bit");
+                    }
+                    if !write {
+                        keep(block, WRITE_BIT);
+                    }
+                    if !start {
+                        keep(block, START_BIT);
+                    }
+                }
+            }
+            Ok(())
+        }
+        let mut cases: Vec<(Old, access::Group0Plan)> = vec![(Old::Free, group0_rule(false, None)), (Old::Keep, group0_rule(true, None))];
+        for write in [false, true] {
+            for start in [false, true] {
+                for cutoff in [Tri::Yes, Tri::No, Tri::Unknown] {
+                    for power in [Tri::Yes, Tri::No, Tri::Unknown] {
+                        let plan = access::group0_plan(Channel::Uart1, Some(access::Proof { write_gate: write, start_gate: start, power, cutoff }));
+                        cases.push((Old::Gated { write, start, cutoff: cutoff == Tri::Yes }, plan));
+                    }
+                }
+            }
+        }
+        for (rule, plan) in cases {
+            for fresh in 0..=255u8 {
+                for edited in 0..=255u8 {
+                    let (mut a, mut b) = (edited, edited);
+                    let want = old_apply(rule, fresh, &mut a);
+                    let got = access::apply_group0(plan, fresh, &mut b).map_err(|r| match r {
+                        access::Group0Refusal::WriteLocked => "write-locked",
+                        access::Group0Refusal::StartBit => "start-bit",
+                    });
+                    assert_eq!(got, want, "{rule:?} fresh {fresh:02X} edited {edited:02X}");
+                    if want.is_ok() {
+                        assert_eq!(b, a, "{rule:?} fresh {fresh:02X} edited {edited:02X}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_lock_state_is_never_written_on_any_way() {
-        let rules = [Group0::Free, Group0::Keep, Group0::Gated { write: true, start: true, cutoff: false }, Group0::Gated { write: true, start: true, cutoff: true }];
+        let gated = |cutoff| access::group0_plan(Channel::Uart1, Some(access::Proof { write_gate: true, start_gate: true, power: Tri::Unknown, cutoff }));
+        let rules = [group0_rule(false, None), group0_rule(true, None), gated(Tri::No), gated(Tri::Yes)];
         for rule in rules {
             // an old backup (bit 5 at 1) never clears a stored cutoff, and an edit never sets one
             let mut b = block(0xFF, 0);
@@ -766,7 +808,7 @@ mod tests {
         }
         // RS485-1/2 changes bit 4 as edited
         let mut b = block(0xEF, 0);
-        apply_group0(Group0::Free, &block(0xFF, 0), &mut b).unwrap();
+        apply_group0(group0_rule(false, None), &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xEF);
     }
 
@@ -775,7 +817,7 @@ mod tests {
         let finding = |patch: [u8; 2], flag: bool| PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 3, base: [16, 6, 13], patch, build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: flag }));
         let with = pack_patch_of(3, None, Some(&finding([1, 6], true)), None, None);
         let rule = group0_rule(true, with.as_ref());
-        assert_eq!(rule, Group0::Gated { write: true, start: true, cutoff: true });
+        assert_eq!(rule.keep & CUTOFF_BIT, 0, "bit 4 free with the proven cutoff");
         // on (bit 4 to 0) and back
         let mut b = block(0xE7, 0);
         apply_group0(rule, &block(0xF7, 0), &mut b).unwrap();

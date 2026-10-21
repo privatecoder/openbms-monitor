@@ -10,7 +10,6 @@
 
 use crate::bank::{self, Here, Other, Why};
 use crate::bms_memory::{uart1_error, uart1_pending, uart1_refusal, uart1_sent, write_checked, ParamIo, ParamWrite, Sent};
-use crate::control::reserve_pack_wait;
 use crate::history::{now_ms, SnapshotKind};
 use crate::maint_store::{BoardRef, SerialPlace};
 use crate::{for_link, for_link_checked, link_now, with_conn, with_link, AppState, Link};
@@ -95,10 +94,10 @@ pub struct ParamRead {
 /// 0x47 over the CAN socket under the pack's reservation, then String 2 and 1 in the same port session (not after a
 /// failed 0x47: an older image would only wait twice more). Kept as a snapshot only for a strictly known board, with
 /// exactly that String 2; a board that is not yet one the CAN socket may write to is noted for „Übernehmen“.
-pub(crate) fn read(state: &AppState, bus: Bus, address: u8) -> Result<ParamRead, String> {
-    let _guard = reserve_pack_wait(state, address, "read")?;
-    let link = link_now(state);
-    let (parameters, serials) = with_conn(&state.conn, &state.flashing, |c| {
+/// The caller holds the pack's reservation; `link` and `bus` are the connection taken under it.
+pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Result<ParamRead, String> {
+    let link = link.clone();
+    let (parameters, serials) = with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
         let mut d = Conn { c, bus };
         let p = match d.params(address) {
             Ok(p) => p,
@@ -370,7 +369,7 @@ pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expect
                 Some(e) => s.serial_places(e)?,
                 None => vec![],
             },
-            group0: crate::profile::Group0::Keep,
+            group0: crate::profile::group0_rule(true, None),
         })
     })
     .map_err(|e| format!("{e:?}"))?;
@@ -511,7 +510,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn facts(refs: Vec<BoardRef>) -> Facts {
-        Facts { refs, master: None, places: vec![], group0: crate::profile::Group0::Keep }
+        Facts { refs, master: None, places: vec![], group0: crate::profile::group0_rule(true, None) }
     }
 
     /// Address 1 holds "SYN-1", canonical, current; it answers String 2 and the read, takes the write, reads back.
@@ -583,7 +582,7 @@ pub(crate) mod tests {
 
     #[test]
     fn with_proof_a_locked_pack_is_refused_before_the_write_and_e3_is_a_refusal() {
-        let gated = Facts { group0: crate::profile::Group0::Gated { write: true, start: true, cutoff: false }, ..facts(vec![board(1, "SYN-1", Some(true))]) };
+        let gated = Facts { group0: openbms_proto::access::group0_plan(openbms_proto::access::Channel::Uart1, Some(openbms_proto::access::Proof { write_gate: true, start_gate: true, power: openbms_proto::access::Tri::Unknown, cutoff: openbms_proto::access::Tri::No })), ..facts(vec![board(1, "SYN-1", Some(true))]) };
         let fresh = with_group0(&block(1, 3600), 0xFE);
         let mut dev = good(3650);
         dev.reads = vec![Ok(fresh.clone())];

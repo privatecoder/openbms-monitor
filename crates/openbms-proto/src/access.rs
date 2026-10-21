@@ -263,7 +263,7 @@ impl From<Option<bool>> for Tri {
 
 /// What is known of one pack: its firmware stage, its last Group0/Group7 (a hint for a preview; a way that writes reads
 /// them fresh before it sends) and its address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Facts {
     pub maint: Tri,
     pub power: Tri,
@@ -424,6 +424,90 @@ pub fn ready(action: Action, channel: Channel, facts: &Facts) -> bool {
     route(action, channel).is_some_and(|r| decide(r, facts).state == State::Ready)
 }
 
+/// The patch a connection proved for one pack, as far as a parameter write needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Proof {
+    /// Group0 bit 0 releases the CAN socket's parameter write
+    pub write_gate: bool,
+    /// Group0 bit 2 releases the maintenance start
+    pub start_gate: bool,
+    /// the power and clock build (Group0 bit 3 locks it)
+    pub power: Tri,
+    /// the stored pack cutoff (Group0 bit 4 extended off, bit 5 lock state)
+    pub cutoff: Tri,
+}
+
+/// What a parameter write over a channel does with Group0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Group0Plan {
+    /// sent as the pack has them now (the fresh read), whatever the edit says
+    pub keep: u8,
+    /// a change of these refuses the whole write here: nothing is sent
+    pub refuse_change: u8,
+    /// these must be 1 in the fresh read, else nothing is sent
+    pub need_set: u8,
+}
+
+impl Group0Plan {
+    /// The bits an edit cannot change on this way (the UI shows them fixed).
+    pub fn fixed(&self) -> u8 {
+        self.keep | self.refuse_change
+    }
+}
+
+/// Why a parameter write was refused before sending (`apply_group0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Group0Refusal {
+    /// the CAN socket's write release (bit 0) is off
+    WriteLocked,
+    /// the edit changes the start release (bit 2), which only RS485-1/2 or the display changes
+    StartBit,
+}
+
+/// The Group0 plan of a parameter write over `channel` for a pack with `proof` (None: no proof on this connection).
+///
+/// - Bit 5 (lock state) is status only: always as the pack has it, so an old backup never clears a stored cutoff.
+/// - CAN socket without proof: every patch bit as the pack has it.
+/// - CAN socket with proof: bit 3 never changes (the power build refuses the whole write, E3; without it the bit has no
+///   function); bit 4 only with the proven cutoff; bit 0 only where it gates (and writing needs it set, a pack may lock
+///   itself 1→0); bit 2 refuses the write when changed (start gate) or is kept (no function).
+/// - RS485-1/2: the way to change the bits; with a proof the bits without function in that build stay as they are.
+pub fn group0_plan(channel: Channel, proof: Option<Proof>) -> Group0Plan {
+    const W: u8 = 1 << G0_WRITE;
+    const S: u8 = 1 << G0_START;
+    const P: u8 = 1 << G0_POWER_LOCK;
+    const C: u8 = 1 << G0_EXTENDED_OFF;
+    const L: u8 = 1 << G0_LOCK_STATE;
+    let on = |b: bool, m: u8| if b { m } else { 0 };
+    match (channel, proof) {
+        (Channel::Uart1, None) => Group0Plan { keep: L | W | S | P | C, refuse_change: 0, need_set: 0 },
+        (Channel::Uart1, Some(p)) => Group0Plan {
+            keep: L | P | on(p.cutoff != Tri::Yes, C) | on(!p.write_gate, W) | on(!p.start_gate, S),
+            refuse_change: on(p.start_gate, S),
+            need_set: on(p.write_gate, W),
+        },
+        (_, None) => Group0Plan { keep: L, refuse_change: 0, need_set: 0 },
+        (_, Some(p)) => Group0Plan {
+            keep: L | on(!p.write_gate, W) | on(!p.start_gate, S) | on(p.power == Tri::No, P) | on(p.cutoff == Tri::No, C),
+            refuse_change: 0,
+            need_set: 0,
+        },
+    }
+}
+
+/// Apply `plan` to the Group0 byte `block` of the block to send, built on the fresh read's `fresh`.
+pub fn apply_group0(plan: Group0Plan, fresh: u8, block: &mut u8) -> Result<(), Group0Refusal> {
+    *block = (*block & !plan.keep) | (fresh & plan.keep);
+    if fresh & plan.need_set != plan.need_set {
+        return Err(Group0Refusal::WriteLocked);
+    }
+    if (*block ^ fresh) & plan.refuse_change != 0 {
+        return Err(Group0Refusal::StartBit);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +524,101 @@ mod tests {
         for (i, x) in ROUTES.iter().enumerate() {
             assert!(!ROUTES[i + 1..].iter().any(|y| y.action == x.action && y.channel == x.channel && y.wire == x.wire), "{x:?}");
         }
+    }
+
+    /// The catalog the UI evaluates (`app/src/generated/access.json`: constants, every route) and the test vectors of
+    /// `decide` and `group0_plan` its own evaluation must reproduce (`access.vectors.json`, read by `access.test.ts`). A change of the
+    /// catalog fails here until the file is written again: `UPDATE_ACCESS=1 cargo test -p openbms-proto`.
+    #[test]
+    fn the_ui_catalog_is_current() {
+        let tris = [Tri::Yes, Tri::No, Tri::Unknown];
+        let markers = [None, Some(MarkerWord::Off), Some(MarkerWord::On), Some(MarkerWord::Foreign(0x1234_5678))];
+        let bases = [None, Some([16, 6, 3]), Some([16, 6, 12]), Some([16, 6, 13])];
+        // a fixed walk over the fact space: every value of each field shows up, combined differently
+        let facts: Vec<Facts> = (0..96usize)
+            .map(|i| Facts {
+                maint: tris[i % 3],
+                power: tris[(i / 3) % 3],
+                cutoff: tris[(i / 9) % 3],
+                group0: [None, Some(0x00), Some(0xFF), Some(0xF7), Some(0xEF), Some(0xDA)][(i * 7) % 6],
+                group7: [None, Some(0x00), Some(0x08), Some(0x18), Some(0x38)][(i * 5) % 5],
+                address: [0, 3][(i / 2) % 2],
+                installation: i % 5 != 0,
+                marker: markers[(i * 3) % 4],
+                base: bases[(i / 4) % 4],
+                slaves: [None, Some(0), Some(3)][(i / 6) % 3],
+            })
+            .collect();
+        let decisions: Vec<serde_json::Value> = facts
+            .iter()
+            .map(|f| {
+                let ds: Vec<_> = ROUTES.iter().map(|r| decide(r, f)).map(|d| serde_json::json!({ "state": d.state, "reasons": d.reasons })).collect();
+                serde_json::json!({ "facts": f, "decisions": ds })
+            })
+            .collect();
+        let mut plans = vec![];
+        for channel in [U0, U1, U2] {
+            plans.push(serde_json::json!({ "channel": channel, "proof": null, "plan": group0_plan(channel, None) }));
+            for wg in [false, true] {
+                for sg in [false, true] {
+                    for power in tris {
+                        for cutoff in tris {
+                            let proof = Proof { write_gate: wg, start_gate: sg, power, cutoff };
+                            plans.push(serde_json::json!({ "channel": channel, "proof": proof, "plan": group0_plan(channel, Some(proof)) }));
+                        }
+                    }
+                }
+            }
+        }
+        let catalog = serde_json::json!({
+            "comment": "generated by openbms-proto access::tests::the_ui_catalog_is_current; do not edit",
+            "maint_min": MAINT_MIN,
+            "cutoff_min": CUTOFF_MIN,
+            "bits": {
+                "g0_write": G0_WRITE, "g0_start": G0_START, "g0_power_lock": G0_POWER_LOCK, "g0_extended_off": G0_EXTENDED_OFF,
+                "g0_lock_state": G0_LOCK_STATE, "g7_display": G7_DISPLAY, "g7_extended_display": G7_EXTENDED_DISPLAY, "g7_auto_address": G7_AUTO_ADDRESS,
+            },
+            "needs_installation": Action::ALL.iter().filter(|a| a.needs_installation()).collect::<Vec<_>>(),
+            "routes": ROUTES,
+        });
+        let vectors = serde_json::json!({ "comment": catalog["comment"], "decide": decisions, "group0": plans });
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/src/generated");
+        for (name, value) in [("access.json", &catalog), ("access.vectors.json", &vectors)] {
+            let text = format!("{}\n", serde_json::to_string(value).unwrap());
+            let path = dir.join(name);
+            if std::env::var_os("UPDATE_ACCESS").is_some() {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(&path, &text).unwrap();
+            }
+            let now = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(now == text, "app/src/generated/{name} is stale: UPDATE_ACCESS=1 cargo test -p openbms-proto");
+        }
+    }
+
+    #[test]
+    fn the_group0_plan_per_channel_and_proof() {
+        let proof = |write_gate, start_gate, power, cutoff| Some(Proof { write_gate, start_gate, power, cutoff });
+        // no proof: the CAN socket keeps every patch bit, RS485-1/2 only the lock state
+        assert_eq!(group0_plan(U1, None), Group0Plan { keep: 0x3D, refuse_change: 0, need_set: 0 });
+        assert_eq!(group0_plan(U0, None), Group0Plan { keep: 0x20, refuse_change: 0, need_set: 0 });
+        // CAN socket, 1.5 with both gates: bit 0 free but needed set, bit 2 refused when changed, bits 3/4/5 kept
+        let p = group0_plan(U1, proof(true, true, Tri::Yes, Tri::No));
+        assert_eq!(p, Group0Plan { keep: 0x38, refuse_change: 0x04, need_set: 0x01 });
+        assert_eq!(p.fixed(), 0x3C);
+        // the proven cutoff frees bit 4 there
+        assert_eq!(group0_plan(U1, proof(true, true, Tri::Yes, Tri::Yes)).keep, 0x28);
+        // RS485-1/2 with a proof: only the bits without function in that build stay
+        assert_eq!(group0_plan(U0, proof(true, true, Tri::Unknown, Tri::Unknown)).keep, 0x20);
+        assert_eq!(group0_plan(U0, proof(true, true, Tri::No, Tri::No)).keep, 0x38);
+        // applying: kept bits from the pack, the refusals before anything is sent
+        let p = group0_plan(U1, proof(true, true, Tri::Yes, Tri::No));
+        let mut b = 0x00;
+        assert_eq!(apply_group0(p, 0xFF, &mut b), Err(Group0Refusal::StartBit));
+        let mut b = 0xFF;
+        assert_eq!(apply_group0(p, 0xFE, &mut b), Err(Group0Refusal::WriteLocked));
+        let mut b = 0xCC;
+        assert_eq!(apply_group0(p, 0xFF, &mut b), Ok(()));
+        assert_eq!(b, 0xFC);
     }
 
     #[test]

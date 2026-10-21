@@ -61,11 +61,11 @@ pub(crate) enum Way {
     Ascii,
 }
 
-pub(crate) fn way(bus: Bus) -> Way {
-    match bus {
-        Bus::CanSocketBus => Way::Power,
-        Bus::PackBus => Way::Ascii,
-    }
+pub(crate) fn way(action: openbms_proto::access::Action, bus: Bus) -> Result<Way, String> {
+    Ok(match crate::bms_memory::on_bus(action, bus)? {
+        openbms_proto::access::Channel::Uart1 => Way::Power,
+        _ => Way::Ascii,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,7 +168,7 @@ pub(crate) fn run(state: &AppState, link: &Link, address: u8, act: Act) -> Resul
                 None => vec![],
             },
             // no parameter block goes out here
-            group0: crate::profile::Group0::Keep,
+            group0: crate::profile::group0_rule(true, None),
         };
         Ok((expected, facts))
     })
