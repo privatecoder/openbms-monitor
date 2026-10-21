@@ -126,6 +126,7 @@ pub(crate) fn read(state: &AppState, bus: Bus, address: u8) -> Result<ParamRead,
             }
         }
     }
+    crate::profile::reask_identity(state, &link, address);
     let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
     Ok(ParamRead { parameters, bms_serial, patch })
 }

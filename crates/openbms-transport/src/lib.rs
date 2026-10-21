@@ -7,6 +7,9 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 pub mod capture;
+pub mod timing;
+
+use timing::Class;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,7 +33,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Time to establish a TCP connection. Without it a gateway that is not reachable yet (Wi-Fi still coming
 /// up after sleep) blocks a connection attempt for the operating system's timeout, over a minute on macOS.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub const CONNECT_TIMEOUT: Duration = timing::CONNECT;
 
 /// Connect to the first address of `addr` that answers within CONNECT_TIMEOUT, name resolution included.
 fn connect_tcp(addr: &str) -> Result<TcpStream> {
@@ -133,6 +136,7 @@ impl Port for TcpStream {
 
 pub struct Connection {
     port: Box<dyn Port>,
+    /// The answer time of a normal ASCII request before learning (`timing::ASCII_ANSWER`)
     pub timeout: Duration,
     /// Pause after each exchange; the BMS needs a short gap between requests.
     pub gap: Duration,
@@ -142,6 +146,11 @@ pub struct Connection {
     rx: RxStats,
     /// Where this connection's bytes go while a capture runs (`capture::GLOBAL`).
     tap: capture::Tap,
+    /// How long valid answers took on this connection; learns over TCP only (`timing`).
+    latency: timing::Latency,
+    /// Addresses that gave a valid answer on this connection and did not stay silent through a retry since: only they
+    /// get the one longer retry of a read (a pack that never answered is not asked twice).
+    answered: std::collections::HashSet<u8>,
 }
 
 /// A failed ein/aus (`Connection::on_off_phased`): `sent` whether the request had left completely before `error`.
@@ -190,15 +199,15 @@ pub fn probe_order(first: &[u8]) -> Vec<u8> {
 
 impl Connection {
     pub fn open(endpoint: &Endpoint) -> Result<Self> {
-        let timeout = Duration::from_millis(1500);
+        let timeout = timing::ASCII_ANSWER;
         let tcp = matches!(endpoint, Endpoint::Tcp { .. });
         let port: Box<dyn Port> = match endpoint {
-            Endpoint::Serial { path, baud } => Box::new(serialport::new(path, *baud).timeout(Duration::from_millis(100)).open()?),
+            Endpoint::Serial { path, baud } => Box::new(serialport::new(path, *baud).timeout(timing::READ_CHUNK).open()?),
             Endpoint::Tcp { addr } => {
                 let s = connect_tcp(addr)?;
-                s.set_read_timeout(Some(Duration::from_millis(100)))?;
+                s.set_read_timeout(Some(timing::READ_CHUNK))?;
                 // a dead link (e.g. after the computer slept) must not block a write either
-                s.set_write_timeout(Some(Duration::from_millis(1500)))?;
+                s.set_write_timeout(Some(timing::TCP_WRITE))?;
                 s.set_nodelay(true)?;
                 Box::new(s)
             }
@@ -207,7 +216,29 @@ impl Connection {
             Endpoint::Serial { path, baud } => format!("USB {path} · {baud} Bd"),
             Endpoint::Tcp { addr } => format!("TCP {addr}"),
         };
-        Ok(Self { port, timeout, gap: Duration::from_millis(100), tcp, rx: RxStats::default(), tap: capture::Tap::new(&capture::GLOBAL, label) })
+        Ok(Self { port, timeout, gap: timing::GAP, tcp, rx: RxStats::default(), tap: capture::Tap::new(&capture::GLOBAL, label), latency: timing::Latency::new(tcp), answered: Default::default() })
+    }
+
+    /// The answer times learnt on this connection (empty and inactive on USB).
+    pub fn latency(&self) -> &timing::Latency {
+        &self.latency
+    }
+
+    /// How long to wait for an answer of `class` whose fixed time is `floor`, on this connection (`Latency::budget`).
+    pub fn reply_budget(&self, class: Class, floor: Duration) -> Duration {
+        self.latency.budget(class, floor)
+    }
+
+    /// A valid answer of `address` that took `took`: a sample, and the address may get a retry from now on.
+    fn answered_in(&mut self, class: Class, address: u8, took: Duration) {
+        self.latency.record(class, took);
+        self.answered.insert(address);
+    }
+
+    /// Whether a read of `address` that timed out gets its one longer retry: over TCP, for a pack that answered
+    /// before. A retry that stays silent too takes the pack off until it answers again.
+    fn retries(&self, address: u8) -> bool {
+        self.latency.adaptive() && self.answered.contains(&address)
     }
 
     /// The name this connection has in a capture, e.g. endpoint and bus as the caller knows them.
@@ -249,7 +280,7 @@ impl Connection {
     }
 
     /// Read until `done` or the deadline of the whole exchange; lines that are not ours must not extend it.
-    fn read_until<F: Fn(&[u8]) -> bool>(&mut self, deadline: Instant, done: F) -> Result<Vec<u8>> {
+    fn read_until<F: Fn(&[u8]) -> bool>(&mut self, deadline: Instant, waited: Duration, done: F) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         let mut buf = [0u8; 256];
         while Instant::now() < deadline {
@@ -268,7 +299,7 @@ impl Connection {
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(Error::Timeout(self.timeout))
+        Err(Error::Timeout(waited))
     }
 
     /// Send an ASCII request and return the answer for `address`. Interleaved intra-pack
@@ -281,26 +312,48 @@ impl Connection {
     /// request (0x42 arriving while 0x44 waits) looks like ours. An RTN 00 frame that `fits` refuses is skipped and the
     /// wait goes on within the same deadline; if none fits by then, the last one is returned (its parse error shows).
     fn ascii_as(&mut self, request: &[u8], address: u8, fits: impl Fn(&[u8]) -> bool) -> Result<Frame> {
-        let r = self.ascii_exchange(request, address, &fits);
+        let limit = self.reply_budget(Class::Ascii, self.timeout);
+        self.ascii_within(request, address, &fits, limit)
+    }
+
+    /// `ascii_as` for a read that changes nothing: after a timeout one longer retry (`retries`).
+    fn ascii_read(&mut self, request: &[u8], address: u8, fits: impl Fn(&[u8]) -> bool) -> Result<Frame> {
+        let r = self.ascii_as(request, address, &fits);
+        if !matches!(r, Err(Error::Timeout(_))) || !self.retries(address) {
+            return r;
+        }
+        let limit = self.latency.retry_budget(Class::Ascii, self.timeout);
+        let again = self.ascii_within(request, address, &fits, limit);
+        if matches!(again, Err(Error::Timeout(_))) {
+            self.answered.remove(&address);
+        }
+        again
+    }
+
+    /// One ASCII exchange that waits `limit` for the answer.
+    fn ascii_within(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool, limit: Duration) -> Result<Frame> {
+        let r = self.ascii_exchange(request, address, fits, limit);
         self.note_failure(&r, address);
         r
     }
 
-    fn ascii_exchange(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool) -> Result<Frame> {
+    fn ascii_exchange(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool, limit: Duration) -> Result<Frame> {
         self.drop_input()?;
         self.send(request)?;
-        self.ascii_answer(request, address, fits)
+        self.ascii_answer(request, address, fits, limit)
     }
 
-    /// The answer part of `ascii_exchange`, once the request left completely.
-    fn ascii_answer(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool) -> Result<Frame> {
-        let deadline = Instant::now() + self.timeout;
+    /// The answer part of `ascii_exchange`, once the request left completely. A valid answer of the address (also a
+    /// refusal) is a sample of the answer time; the pause after it is not.
+    fn ascii_answer(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool, limit: Duration) -> Result<Frame> {
+        let started = Instant::now();
+        let deadline = started + limit;
         let mut pending = Vec::new();
         // an answer of ours whose layout did not fit: returned only if no fitting one comes
         let mut misfit: Option<Frame> = None;
         let result = loop {
             if Instant::now() > deadline {
-                break misfit.take().ok_or(Error::Timeout(self.timeout));
+                break misfit.take().ok_or(Error::Timeout(limit));
             }
             if let Some(end) = pending.iter().position(|b| *b == b'\r') {
                 let line: Vec<u8> = pending.drain(..=end).collect();
@@ -332,12 +385,15 @@ impl Connection {
                     _ => continue,
                 }
             }
-            match self.read_until(deadline, |b| b.contains(&b'\r')) {
+            match self.read_until(deadline, limit, |b| b.contains(&b'\r')) {
                 Ok(chunk) => pending.extend(chunk),
                 Err(Error::Timeout(_)) if misfit.is_some() => break Ok(misfit.take().unwrap()),
                 Err(e) => break Err(e),
             }
         };
+        if result.is_ok() {
+            self.answered_in(Class::Ascii, address, started.elapsed());
+        }
         std::thread::sleep(self.gap);
         let f = result?;
         if f.rtn != 0x00 && f.rtn != 0x5A {
@@ -347,22 +403,22 @@ impl Connection {
     }
 
     pub fn telemetry(&mut self, address: u8) -> Result<Telemetry> {
-        let f = self.ascii_as(&Telemetry::request(address)?, address, |i| Telemetry::parse(i).is_ok())?;
+        let f = self.ascii_read(&Telemetry::request(address)?, address, |i| Telemetry::parse(i).is_ok())?;
         Ok(Telemetry::parse(&f.info)?)
     }
 
     pub fn status(&mut self, address: u8) -> Result<Status> {
-        let f = self.ascii_as(&Status::request(address)?, address, |i| Status::parse(i).is_ok())?;
+        let f = self.ascii_read(&Status::request(address)?, address, |i| Status::parse(i).is_ok())?;
         Ok(Status::parse(&f.info)?)
     }
 
     pub fn device_info(&mut self, address: u8) -> Result<DeviceInfo> {
-        let f = self.ascii_as(&DeviceInfo::request(address)?, address, |i| DeviceInfo::parse(i).is_ok())?;
+        let f = self.ascii_read(&DeviceInfo::request(address)?, address, |i| DeviceInfo::parse(i).is_ok())?;
         Ok(DeviceInfo::parse(&f.info)?)
     }
 
     pub fn parameters(&mut self, address: u8) -> Result<Parameters> {
-        let f = self.ascii_as(&Parameters::request(address)?, address, |i| Parameters::parse(i).is_ok())?;
+        let f = self.ascii_read(&Parameters::request(address)?, address, |i| Parameters::parse(i).is_ok())?;
         Ok(Parameters::parse(&f.info)?)
     }
 
@@ -421,11 +477,8 @@ impl Connection {
     /// of the silence `await_comeback` measures.
     pub fn restart(&mut self, address: u8) -> Result<Instant> {
         let request = control::restart_request(address)?;
-        let saved = self.timeout;
-        self.timeout = Duration::from_millis(300);
         let sent = Instant::now();
-        let r = self.ascii(&request, address);
-        self.timeout = saved;
+        let r = self.ascii_within(&request, address, &|_| true, timing::RESTART_ANSWER);
         match r {
             Ok(_) | Err(Error::Timeout(_)) => Ok(sent),
             Err(e) => Err(e),
@@ -447,7 +500,8 @@ impl Connection {
             self.note_failure(&before, address);
             return before.map_err(|error| SwitchFailure { sent: false, error });
         }
-        let r = self.ascii_answer(&request, address, &|_| true).map(|_| ());
+        let limit = self.reply_budget(Class::Ascii, self.timeout);
+        let r = self.ascii_answer(&request, address, &|_| true, limit).map(|_| ());
         self.note_failure(&r, address);
         r.map_err(|error| SwitchFailure { sent: true, error })
     }
@@ -473,17 +527,14 @@ impl Connection {
     /// Whether the pack answers 0x51 within the normal timeout; any frame from it counts, also a refusal. Only a broken
     /// link is an error.
     pub fn answers(&mut self, address: u8) -> Result<bool> {
-        let t = self.timeout;
+        let t = self.reply_budget(Class::Ascii, self.timeout);
         self.answers_within(address, t)
     }
 
     /// `answers` with its own timeout for the whole answer (a gateway may deliver it late).
     pub fn answers_within(&mut self, address: u8, timeout: Duration) -> Result<bool> {
         let request = DeviceInfo::request(address)?;
-        let saved = self.timeout;
-        self.timeout = timeout;
-        let r = self.ascii(&request, address);
-        self.timeout = saved;
+        let r = self.ascii_within(&request, address, &|_| true, timeout);
         match r {
             Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(_))) => Ok(true),
             Err(Error::Timeout(_) | Error::Proto(_)) => Ok(false),
@@ -503,11 +554,19 @@ impl Connection {
         let request = modbus::read_request(function, start, count);
         let raw = self.drop_input().map_err(Error::from).and_then(|_| self.send(&request)).and_then(|_| {
             let want = modbus::response_len(count);
-            self.read_until(Instant::now() + self.timeout, |b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0))
+            let limit = self.reply_budget(Class::Modbus, timing::MODBUS_ANSWER);
+            let started = Instant::now();
+            self.read_until(started + limit, limit, |b| b.len() >= want || (b.len() >= 5 && b[1] & 0x80 != 0)).map(|b| (b, started.elapsed()))
         });
         self.note_failure(&raw, request[0]);
         std::thread::sleep(self.gap);
-        Ok(modbus::parse_read_response(function, &raw?)?)
+        let (raw, took) = raw?;
+        let parsed = modbus::parse_read_response(function, &raw);
+        // a valid answer, also an exception: a sample (a broken one is not)
+        if matches!(parsed, Ok(_) | Err(openbms_proto::Error::ModbusException(_))) {
+            self.answered_in(Class::Modbus, request[0], took);
+        }
+        Ok(parsed?)
     }
 
     pub fn system_values(&mut self) -> Result<SystemValues> {
@@ -585,38 +644,43 @@ impl Connection {
     /// Find packs by asking every address 0..=15 for its device info.
     /// Reachability: 0x51 to each address with a short timeout, stop at the first answer. Read-only.
     pub fn probe(&mut self, addresses: impl IntoIterator<Item = u8>) -> Probe {
-        let saved = self.timeout;
-        self.timeout = Duration::from_millis(300);
+        let limit = self.latency.probe_budget(Class::Ascii, timing::REACH_TRY);
         self.rx = RxStats::default();
         // an answer from that address proves it is reachable, also an answer this version formats differently or a
         // refusal with a BMS RTN code (01–09); an echo of the request is skipped, any other RTN proves nothing
         let answered = addresses.into_iter().find(|a| match DeviceInfo::request(*a) {
-            Ok(r) => matches!(self.ascii(&r, *a), Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(0x01..=0x09)))),
+            Ok(r) => matches!(self.ascii_within(&r, *a, &|_| true, limit), Ok(_) | Err(Error::Proto(openbms_proto::Error::Rtn(0x01..=0x09)))),
             Err(_) => false,
         });
-        self.timeout = saved;
         Probe { answered, noise: answered.is_none() && self.rx.bytes > 0 && self.rx.frames == 0, intra: self.rx.intra > 0 }
     }
 
     /// The pack answers 0x47 (parameters): UART0 (RS485-1/2) knows it, UART1 (CAN socket) does not. Read-only.
     pub fn answers_parameters(&mut self, address: u8) -> bool {
-        let saved = self.timeout;
-        self.timeout = Duration::from_millis(600);
-        let ok = self.parameters(address).is_ok();
-        self.timeout = saved;
-        ok
+        // silence is the finding here: no retry
+        let limit = self.latency.probe_budget(Class::Ascii, timing::CAPABILITY_TRY);
+        let Ok(request) = Parameters::request(address) else { return false };
+        self.ascii_within(&request, address, &|i| Parameters::parse(i).is_ok(), limit).is_ok_and(|f| Parameters::parse(&f.info).is_ok())
     }
 
     /// One exchange with the binary parameter service of a patched pack (`uart1.rs`), only on the CAN socket bus.
     /// One deadline for the whole answer: an echo of the request, frames of other packs and broken bytes are skipped
     /// without sending again and without extending it. A timeout says only that no answer came, not which firmware runs.
     pub fn binary_exchange(&mut self, bus: Bus, request: &[u8], timeout: Duration) -> Result<uart1::Reply> {
+        let limit = self.reply_budget(Class::Binary, timeout);
+        self.binary_exchange_within(bus, request, limit)
+    }
+
+    /// `binary_exchange` that waits exactly `timeout`; a valid answer is a sample of the answer time.
+    fn binary_exchange_within(&mut self, bus: Bus, request: &[u8], timeout: Duration) -> Result<uart1::Reply> {
         if bus != Bus::CanSocketBus {
             return Err(openbms_proto::Error::Layout("binary parameter frames exist only on the CAN socket bus").into());
         }
         let address = request.get(1).copied().unwrap_or(0);
+        let mut started = Instant::now();
         let r = self.drop_input().map_err(Error::from).and_then(|_| self.send(request)).and_then(|_| {
-            let deadline = Instant::now() + timeout;
+            started = Instant::now();
+            let deadline = started + timeout;
             let mut framer = uart1::Framer::new();
             let mut buf = [0u8; 256];
             // once at the end (deadline or the gateway closing): a started frame that never completed must not hide an
@@ -643,6 +707,9 @@ impl Connection {
             }
             end(&mut framer, Error::Timeout(timeout))
         });
+        if r.is_ok() {
+            self.answered_in(Class::Binary, address, started.elapsed());
+        }
         self.note_failure(&r, address);
         std::thread::sleep(self.gap);
         r
@@ -651,7 +718,16 @@ impl Connection {
     /// All parameters of one pack over the binary service (CAN socket bus, patched pack). An error code comes back as
     /// `Proto(Uart1(code))`.
     pub fn uart1_parameters(&mut self, bus: Bus, address: u8) -> Result<Parameters> {
-        match self.binary_exchange(bus, &uart1::read_request(address)?, UART1_TIMEOUT)? {
+        let request = uart1::read_request(address)?;
+        let mut r = self.binary_exchange(bus, &request, UART1_TIMEOUT);
+        // a read changes nothing: one longer retry for a pack that answered before (`retries`)
+        if matches!(r, Err(Error::Timeout(_))) && self.retries(address) {
+            r = self.binary_exchange_within(bus, &request, self.latency.retry_budget(Class::Binary, UART1_TIMEOUT));
+            if matches!(r, Err(Error::Timeout(_))) {
+                self.answered.remove(&address);
+            }
+        }
+        match r? {
             uart1::Reply::Params(data) => Ok(uart1::parameters(address, &data)?),
             uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
             uart1::Reply::Ack | uart1::Reply::Serial(_) => Err(openbms_proto::Error::Layout("UART1: no parameters in the answer to a read").into()),
@@ -679,22 +755,24 @@ impl Connection {
     }
 
     pub fn scan(&mut self, addresses: impl IntoIterator<Item = u8>) -> Vec<(u8, DeviceInfo)> {
-        let saved = self.timeout;
-        self.timeout = Duration::from_millis(600);
-        let found = addresses.into_iter().filter_map(|a| self.device_info(a).ok().map(|d| (a, d))).collect();
-        self.timeout = saved;
-        found
+        let limit = self.latency.probe_budget(Class::Ascii, timing::CAPABILITY_TRY);
+        addresses
+            .into_iter()
+            .filter_map(|a| {
+                let request = DeviceInfo::request(a).ok()?;
+                let f = self.ascii_within(&request, a, &|i| DeviceInfo::parse(i).is_ok(), limit).ok()?;
+                DeviceInfo::parse(&f.info).ok().map(|d| (a, d))
+            })
+            .collect()
     }
 }
 
-/// The whole answer of the binary parameter service (a gateway may deliver it in several parts).
-pub const UART1_TIMEOUT: Duration = Duration::from_secs(3);
-/// A serial number answer (37 bytes): short, so packs without it do not stretch a connect.
-pub const UART1_SERIAL_TIMEOUT: Duration = Duration::from_millis(800);
+/// The whole answer of the binary parameter service (`timing::BINARY_PARAMS`).
+pub const UART1_TIMEOUT: Duration = timing::BINARY_PARAMS;
+/// A serial number answer (`timing::BINARY_SERIAL`).
+pub const UART1_SERIAL_TIMEOUT: Duration = timing::BINARY_SERIAL;
 
-/// Silence that counts as an interruption in the restart watch: so many unanswered tries in a row, or this long.
-pub const SILENT_TRIES: u32 = 2;
-pub const SILENT_FOR: Duration = Duration::from_secs(1);
+pub use timing::{SILENT_FOR, SILENT_TRIES};
 
 /// The restart watch: `answered` is one 0x51 try. An interruption (`SILENT_TRIES` misses in a row or `SILENT_FOR` of
 /// silence) followed by an answer is a comeback, counted from `sent`. A single late answer (a gateway delay) is no
@@ -765,6 +843,9 @@ mod tests {
     struct Scripted {
         script: Vec<(Vec<u8>, Vec<u8>)>,
         out: Vec<u8>,
+        /// writes (counted from 0) that get no answer, like a reply lost at a gateway
+        silent: Vec<usize>,
+        writes: Arc<Mutex<usize>>,
     }
 
     impl Read for Scripted {
@@ -781,7 +862,12 @@ mod tests {
 
     impl Write for Scripted {
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            if let Some((_, a)) = self.script.iter().find(|(r, _)| r.as_slice() == data) {
+            let n = {
+                let mut w = self.writes.lock().unwrap();
+                *w += 1;
+                *w - 1
+            };
+            if let Some((_, a)) = self.script.iter().find(|(r, _)| r.as_slice() == data).filter(|_| !self.silent.contains(&n)) {
                 self.out.extend_from_slice(a);
             }
             Ok(data.len())
@@ -841,7 +927,7 @@ mod tests {
     fn foreign_lines_do_not_extend_the_timeout() {
         let port = Box::new(Polling { start: Instant::now(), period: Duration::from_millis(300), sent: 0 });
         let sink = Box::leak(Box::new(capture::Capture::new()));
-        let mut c = Connection { port, timeout: Duration::from_millis(400), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) };
+        let mut c = Connection { port, timeout: Duration::from_millis(400), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) , latency: timing::Latency::new(false), answered: Default::default() };
         let t = Instant::now();
         let r = c.ascii(&Telemetry::request(0).unwrap(), 0);
         assert!(matches!(r, Err(Error::Timeout(_))));
@@ -855,8 +941,8 @@ mod tests {
     }
 
     fn scripted_into(script: Vec<(Vec<u8>, Vec<u8>)>, sink: &'static capture::Capture) -> Connection {
-        let port = Box::new(Scripted { script, out: Vec::new() });
-        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) }
+        let port = Box::new(Scripted { script, out: Vec::new(), silent: Vec::new(), writes: Default::default() });
+        Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(sink, "test".into()) , latency: timing::Latency::new(false), answered: Default::default() }
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.
@@ -866,6 +952,56 @@ mod tests {
 
     const TELE1: &[u8] = b"~2001460010960001100D050D050D060D050D050D070D060D060D060D060D060D060D060D060D070D07060B270B200B210B270B580B30000014D6569A0A6D6003176D60000703E814D9FFF3FF770359027FDDB1\r";
     const STATUS1: &[u8] = b"~20014600806200011000000000000000000000000000000000060000000000000000140000000000000300000200000000000000000002EB2F\r";
+
+    /// Over a gateway (learning on), with the given writes left unanswered; the second value counts the writes.
+    fn lossy(script: Vec<(Vec<u8>, Vec<u8>)>, silent: Vec<usize>) -> (Connection, Arc<Mutex<usize>>) {
+        let writes = Arc::new(Mutex::new(0));
+        let port = Box::new(Scripted { script, out: Vec::new(), silent, writes: writes.clone() });
+        let c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(true), answered: Default::default() };
+        (c, writes)
+    }
+
+    #[test]
+    fn a_lost_answer_of_a_pack_that_answered_before_gets_one_longer_retry() {
+        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![1]);
+        assert!(c.status(1).is_ok());
+        // the second request is lost, its retry answers
+        assert!(c.status(1).is_ok());
+        assert_eq!(*writes.lock().unwrap(), 3);
+        assert_eq!(c.latency.view(timing::normal_floor)[0].samples, 2);
+    }
+
+    #[test]
+    fn a_pack_that_never_answered_and_a_silent_retry_get_no_retry() {
+        // never answered on this connection: asked once
+        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![0]);
+        assert!(matches!(c.status(1), Err(Error::Timeout(_))));
+        assert_eq!(*writes.lock().unwrap(), 1);
+        // answered, then silent through the retry: taken off, the next silent read is not repeated
+        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![1, 2, 3]);
+        assert!(c.status(1).is_ok());
+        assert!(matches!(c.status(1), Err(Error::Timeout(d)) if d == Duration::from_millis(100)));
+        assert!(matches!(c.status(1), Err(Error::Timeout(_))));
+        assert_eq!(*writes.lock().unwrap(), 4);
+        // it answers again: the retry is back
+        assert!(c.status(1).is_ok());
+        assert!(c.retries(1));
+    }
+
+    #[test]
+    fn a_local_link_and_a_write_never_retry() {
+        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![1]);
+        c.latency = timing::Latency::new(false);
+        assert!(c.status(1).is_ok());
+        assert!(matches!(c.status(1), Err(Error::Timeout(_))));
+        assert_eq!(*writes.lock().unwrap(), 2);
+        // ein/aus over a learning link: one request, whatever happens
+        let on = control::on_off_request(1, true).unwrap();
+        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec()), (on, answer(1, 0, b""))], vec![1]);
+        assert!(c.status(1).is_ok());
+        assert!(c.on_off_phased(1, true).is_err_and(|f| f.unclear()));
+        assert_eq!(*writes.lock().unwrap(), 2);
+    }
 
     #[test]
     fn a_late_0x42_answer_is_skipped_while_0x44_waits_for_its_own() {
@@ -1272,7 +1408,7 @@ mod tests {
     }
 
     fn closing(out: Vec<u8>) -> Connection {
-        Connection { port: Box::new(Closing { out }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) }
+        Connection { port: Box::new(Closing { out }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default() }
     }
 
     /// A port whose write fails: the request never left.
@@ -1312,7 +1448,7 @@ mod tests {
         let f = scripted(vec![(request.clone(), b"~200146080000FDAB\r".to_vec())]).on_off_phased(1, false).unwrap_err();
         assert!(f.sent && matches!(f.error, Error::Proto(openbms_proto::Error::Rtn(0x08))) && !f.unclear());
         // the request could not be written: nothing left, not switched
-        let mut c = Connection { port: Box::new(Unwritable), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) };
+        let mut c = Connection { port: Box::new(Unwritable), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default() };
         let f = c.on_off_phased(1, true).unwrap_err();
         assert!(!f.sent && !f.unclear() && matches!(f.error, Error::Io(_)));
     }
@@ -1363,7 +1499,7 @@ mod tests {
         assert!(matches!(r, Err(Error::Timeout(d)) if d == Duration::from_millis(150)));
         assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
         // foreign lines do not extend it either
-        let mut p = Connection { port: Box::new(Polling { start: Instant::now(), period: Duration::from_millis(50), sent: 0 }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) };
+        let mut p = Connection { port: Box::new(Polling { start: Instant::now(), period: Duration::from_millis(50), sent: 0 }), timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()) , latency: timing::Latency::new(false), answered: Default::default() };
         let t = Instant::now();
         assert!(matches!(p.binary_exchange(Bus::CanSocketBus, &read, Duration::from_millis(200)), Err(Error::Timeout(_))));
         assert!(t.elapsed() < Duration::from_millis(400), "{:?}", t.elapsed());

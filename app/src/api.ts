@@ -174,6 +174,12 @@ export interface HistoryStatus { settings: HistorySettings; active: boolean; pat
   /** why it waits: no read decided yet, only boards this installation does not know yet (until „Übernehmen“), a pack of another installation */
   held_reason?: "pending" | "confirm" | "foreign" | null; error: string | null }
 /** the frame capture under Diagnosis; `full`: it stopped itself at that limit */
+/** Answer times learnt on the monitor connection (over a network gateway; on USB every wait is fixed). */
+export interface LinkTiming {
+  adaptive: boolean;
+  classes: { class: "ascii" | "modbus" | "binary"; samples: number; p90_ms: number | null; max_ms: number | null; budget_ms: number }[];
+}
+
 export type CaptureStatus = { running: boolean; entries: number; bytes: number; timeouts: number; span_ms: number; full: "entries" | "bytes" | null };
 export interface SiteSpan { site: string; from: number | null; to: number | null; packs: number[]; has_system: boolean }
 type Col = (number | null)[];
@@ -547,6 +553,7 @@ const tauriApi = {
   captureStop: () => invoke<CaptureStatus>("capture_stop"),
   captureClear: () => invoke<CaptureStatus>("capture_clear"),
   captureStatus: () => invoke<CaptureStatus>("capture_status"),
+  linkTiming: () => invoke<LinkTiming | null>("link_timing"),
   /** writes the capture as text to a .txt path from the save dialog; returns the number of entries */
   captureExport: (path: string, lang: string) => invoke<number>("capture_export", { path, lang }),
   /** the wording of the notifications in the UI's language (`notifyTexts` in notifications.ts) */
@@ -766,6 +773,7 @@ function demoApi(): typeof tauriApi {
     captureStop: async () => idleCapture,
     captureClear: async () => idleCapture,
     captureStatus: async () => idleCapture,
+    linkTiming: async () => null,
     captureExport: async () => { throw new Error("desktop app only"); },
     notifyTexts: async () => {},
     notifyTest: async () => { throw new Error("desktop app only"); },

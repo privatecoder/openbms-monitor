@@ -2626,6 +2626,7 @@ name = "openbms-transport"
 version = "0.1.0"
 dependencies = [
  "openbms-proto",
+ "serde",
  "serialport",
  "thiserror 2.0.21",
 ]

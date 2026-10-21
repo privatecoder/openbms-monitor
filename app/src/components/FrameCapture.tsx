@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, Pause, Play, Radio, Trash2 } from "lucide-react";
-import { api, isDemo, type CaptureStatus } from "../api";
+import { api, isDemo, type CaptureStatus, type LinkTiming } from "../api";
 import { durationText } from "../bmsMemory";
 import { captureName } from "../capture";
 import { Button } from "./ui/button";
@@ -14,11 +14,16 @@ export function FrameCapture() {
   const [s, setS] = useState<CaptureStatus | null>(null);
   const [note, setNote] = useState<{ text: string; error?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [timing, setTiming] = useState<LinkTiming | null>(null);
 
   // polled only while the view is open
   useEffect(() => {
     let alive = true;
-    const poll = () => api.captureStatus().then((v) => { if (alive) setS(v); }).catch(() => {});
+    const poll = () => {
+      api.captureStatus().then((v) => { if (alive) setS(v); }).catch(() => {});
+      // null while an exchange holds the connection: the last view stays
+      api.linkTiming().then((v) => { if (alive && v) setTiming(v); }).catch(() => {});
+    };
     poll();
     const id = window.setInterval(poll, 1000);
     return () => { alive = false; window.clearInterval(id); };
@@ -69,6 +74,17 @@ export function FrameCapture() {
       {isDemo && <StatusLine>{t("cap.demo")}</StatusLine>}
       <p className="max-w-3xl text-xs text-muted">{t("cap.privacy")}</p>
       {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}
+      {timing && (
+        <div className="space-y-0.5 pt-2" title={t("cap.timing.hint")}>
+          <p className="font-medium">{t("cap.timing.title")}</p>
+          {!timing.adaptive ? <p className="text-muted">{t("cap.timing.local")}</p> : timing.classes.map((c) => {
+            const v = { cls: t(`cap.timing.cls.${c.class}`), budget: msText(c.budget_ms), n: c.samples };
+            return <p key={c.class} className="text-muted tabular-nums">{c.p90_ms === null ? t("cap.timing.few", v) : t("cap.timing.row", { ...v, p90: msText(c.p90_ms), max: msText(c.max_ms ?? 0) })}</p>;
+          })}
+        </div>
+      )}
     </div>
   );
 }
+
+const msText = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1).replace(".", ",")} s`);

@@ -3,6 +3,7 @@
 
 use crate::{boot, ehex::Image, link::Link, Error, Result};
 use openbms_proto::{frame, DeviceInfo};
+use openbms_transport::timing;
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,10 +18,10 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            boot_delay: Duration::from_millis(50),
+            boot_delay: timing::BOOT_DELAY,
             min_frame_gap: Duration::ZERO,
-            ack_timeout: Duration::from_secs(10),
-            post_timeout: Duration::from_secs(20),
+            ack_timeout: timing::BOOT_ACK,
+            post_timeout: timing::BOOT_COMEBACK,
         }
     }
 }
@@ -313,7 +314,7 @@ fn preflight(
         return Err(Error::Address(address));
     }
     quiet(link, log_file)?;
-    let ascii_timeout = options.ack_timeout.min(Duration::from_millis(600));
+    let ascii_timeout = options.ack_timeout.min(timing::FLASH_ASCII);
     let answer =
         ascii_query(link, address, 0x51, log_file, ascii_timeout).map_err(|e| match e {
             Error::Timeout { .. } => Error::NoAnswer(address),
@@ -365,9 +366,9 @@ fn wait_for_app(
 ) -> Result<DeviceInfo> {
     let deadline = Instant::now() + options.post_timeout;
     while Instant::now() < deadline {
-        match ascii_query(link, address, 0x51, log_file, Duration::from_millis(300)) {
+        match ascii_query(link, address, 0x51, log_file, timing::FLASH_REACH_TRY) {
             Ok(reply) => return Ok(DeviceInfo::parse(&reply.info)?),
-            Err(Error::Timeout { .. }) => link.wait(Duration::from_millis(100)),
+            Err(Error::Timeout { .. }) => link.wait(timing::FLASH_REACH_PAUSE),
             Err(other) => return Err(other),
         }
     }
@@ -524,7 +525,7 @@ fn flash_steps<W: Write>(
     let after = wait_for_app(link, address, log_file, options)
         .map_err(|e| uncertain("application restart", e))?;
     progress(Progress::PostCheck);
-    let ascii_timeout = options.ack_timeout.min(Duration::from_millis(600));
+    let ascii_timeout = options.ack_timeout.min(timing::FLASH_ASCII);
     ascii_query(link, address, 0x42, log_file, ascii_timeout)
         .map_err(|e| uncertain("0x42 post-check", e))?;
     ascii_query(link, address, 0x44, log_file, ascii_timeout)

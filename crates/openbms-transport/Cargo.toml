@@ -7,5 +7,6 @@ license.workspace = true
 
 [dependencies]
 openbms-proto = { path = "../openbms-proto" }
+serde.workspace = true
 serialport = "4"
 thiserror.workspace = true
