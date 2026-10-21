@@ -188,7 +188,9 @@ export type Channel = "uart0" | "uart1" | "uart2";
 export type AccessReason =
   | { id: "firmware"; need: "any" | "maint" | "power-flag" | "cutoff"; known: "yes" | "no" | "unknown" }
   | { id: "bit"; group: number; bit: number; want: boolean; known: boolean | null }
-  | { id: "master-only" } | { id: "quiet-bus" } | { id: "local-board" } | { id: "not-implemented" };
+  | { id: "master-only" } | { id: "quiet-bus" } | { id: "local-board" } | { id: "not-implemented" } | { id: "view-only" }
+  | { id: "marker"; on: boolean; known: "off" | "on" | "foreign" | null }
+  | { id: "base"; from: [number, number, number]; known: [number, number, number] | null };
 export interface AccessDecision {
   route: { action: string; channel: Channel; wire: string; firmware: string; implemented: boolean };
   state: "ready" | "unknown" | "blocked" | "not-implemented";
@@ -397,7 +399,8 @@ const tauriApi = {
   /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
   packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
   packProbes: () => invoke<PackProbeView[]>("pack_probes"),
-  accessView: (address: number, group0: number | null, group7: number | null) => invoke<AccessView>("access_view", { address, group0, group7 }),
+  accessView: (address: number, group0: number | null, group7: number | null, storedProof: boolean, version: string | null) =>
+    invoke<AccessView>("access_view", { address, group0, group7, storedProof, version }),
   onPackProbe: (f: (p: PackProbeView) => void) => listen<PackProbeView>("pack-probe", (e) => f(e.payload)),
   onHardStop: (f: (h: HardStopSeen) => void) => listen<HardStopSeen>("hard-stop", (e) => f(e.payload)),
   /** „Beleg zurücknehmen“ */
