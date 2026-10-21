@@ -40,6 +40,9 @@ pub struct SnapshotData {
     pub kind: String,
     /// the 169-byte block as hex
     pub block: String,
+    /// the patch the read was taken under (JSON, `snapshot_patch`); None: none then, or a bundle from before
+    #[serde(default)]
+    pub patch: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -170,9 +173,9 @@ impl Store {
             let current = self.current_board(inst, b.address)?.is_some_and(|c| c.id == id);
             boards.push(BoardData { aliases, current, ..b });
         }
-        let mut stmt = self.db.prepare("SELECT address, bms_serial, at, kind, block FROM param_snapshots WHERE installation = ?1 ORDER BY id").map_err(e)?;
+        let mut stmt = self.db.prepare("SELECT address, bms_serial, at, kind, block, patch FROM param_snapshots WHERE installation = ?1 ORDER BY id").map_err(e)?;
         let snapshots = stmt
-            .query_map([inst], |r| Ok(SnapshotData { address: r.get(0)?, bms_serial: r.get(1)?, at: r.get(2)?, kind: r.get(3)?, block: hex(&r.get::<_, Vec<u8>>(4)?) }))
+            .query_map([inst], |r| Ok(SnapshotData { address: r.get(0)?, bms_serial: r.get(1)?, at: r.get(2)?, kind: r.get(3)?, block: hex(&r.get::<_, Vec<u8>>(4)?), patch: r.get(5)? }))
             .map_err(e)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(e)?;
@@ -400,11 +403,19 @@ impl Store {
                 snapshots_added += s
                     .db
                     .execute(
-                        "INSERT INTO param_snapshots(installation, address, bms_serial, at, kind, block) SELECT ?1, ?2, ?3, ?4, ?5, ?6
+                        "INSERT INTO param_snapshots(installation, address, bms_serial, at, kind, block, patch) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
                          WHERE NOT EXISTS(SELECT 1 FROM param_snapshots WHERE installation = ?1 AND address = ?2 AND bms_serial IS ?3 AND at = ?4 AND kind = ?5 AND block = ?6)",
-                        params![target, x.address, x.bms_serial, x.at, x.kind, block],
+                        params![target, x.address, x.bms_serial, x.at, x.kind, block, x.patch],
                     )
                     .map_err(e)?;
+                // the same read already here without its patch (imported before the patch was kept): it gets it now
+                if x.patch.is_some() {
+                    s.db.execute(
+                        "UPDATE param_snapshots SET patch = ?7 WHERE installation = ?1 AND address = ?2 AND bms_serial IS ?3 AND at = ?4 AND kind = ?5 AND block = ?6 AND patch IS NULL",
+                        params![target, x.address, x.bms_serial, x.at, x.kind, block, x.patch],
+                    )
+                    .map_err(e)?;
+                }
             }
             // log names fixed now, so the index and the copy agree also after a crash in between
             let tag = &crate::bundle::sha256_hex(export_id.as_bytes())[..8];
@@ -475,7 +486,8 @@ mod tests {
         let s = store();
         let i = s.create_installation("Bank A", None, vec![]).unwrap();
         s.board_seen(&i.id, 1, &set("SYN-B1"), &set("BAT-1"), 100).unwrap();
-        s.add_param_snapshot(&i.id, 1, crate::maint_store::SnapshotKind::Read, &block(7), 110).unwrap();
+        let snap = s.add_param_snapshot(&i.id, 1, crate::maint_store::SnapshotKind::Read, &block(7), 110).unwrap();
+        s.set_snapshot_patch(snap, r#"{"release":"16.06.13 MAINT 1.6"}"#).unwrap();
         s.set_cell_type(&i.id, 1, Some("{\"cell\":\"x\"}")).unwrap();
         s.set_groups(&i.id, Some("[1]")).unwrap();
         s.set_notifications(&i.id, Some(r#"{"enabled":true,"spread_mv":40,"lost_minutes":5}"#)).unwrap();
@@ -550,6 +562,26 @@ mod tests {
         let h = BTreeMap::new();
         dst.import_maint(&data, "exp-q", "m", &Into::New { copy: false }, &plan(&h, &|_| None), 200).unwrap();
         assert!(dst.current_board(&i.id, 2).unwrap().is_none(), "neither the gone nor the earlier board is current");
+    }
+
+    #[test]
+    fn a_read_keeps_its_patch_through_a_bundle_also_into_a_copy_without_it() {
+        let (src, id) = source();
+        let data = src.export_data(&id).unwrap();
+        assert_eq!(data.snapshots[0].patch.as_deref(), Some(r#"{"release":"16.06.13 MAINT 1.6"}"#));
+        // the same read already imported from a bundle that did not carry the patch: it gets it now, nothing doubles
+        let mut old = data.clone();
+        old.snapshots[0].patch = None;
+        let dst = store();
+        let h = hashes();
+        dst.import_maint(&old, "exp-o", "m", &Into::New { copy: false }, &plan(&h, &|_| None), 200).unwrap();
+        assert_eq!(dst.export_data(&id).unwrap().snapshots[0].patch, None);
+        let st = dst.import_maint(&data, "exp-n", "m", &Into::Same, &plan(&h, &|n| (n == "a_pack1.log").then(|| "h1".into())), 210).unwrap();
+        assert_eq!(st.report["snapshots_added"], 0);
+        assert_eq!(dst.export_data(&id).unwrap().snapshots, data.snapshots);
+        // a bundle from before reads without it
+        let x: SnapshotData = serde_json::from_str(r#"{"address":1,"bms_serial":null,"at":1,"kind":"read","block":"00"}"#).unwrap();
+        assert_eq!(x.patch, None);
     }
 
     #[test]

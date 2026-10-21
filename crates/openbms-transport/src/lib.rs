@@ -105,8 +105,17 @@ trait Port: Read + Write + Send {
 }
 
 impl Port for Box<dyn serialport::SerialPort> {
-    // the driver drops them unseen
-    fn clear_input(&mut self, _dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+    // what waits in the driver is read first when the caller wants it (the bus quiet counts it as traffic), then dropped
+    fn clear_input(&mut self, dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+        if let Some(d) = dropped {
+            let waiting = self.bytes_to_read().unwrap_or(0) as usize;
+            if waiting > 0 {
+                let mut buf = vec![0u8; waiting];
+                if let Ok(n) = self.read(&mut buf) {
+                    d.extend_from_slice(&buf[..n]);
+                }
+            }
+        }
         self.clear(serialport::ClearBuffer::Input).map_err(std::io::Error::other)
     }
 }
@@ -293,14 +302,27 @@ impl Connection {
     /// `write_all` that shows up in the capture; first the bus's quiet after the last byte heard (`set_bus`), for every
     /// kind of request alike.
     fn send(&mut self, data: &[u8]) -> Result<()> {
-        if let Some(t) = self.heard {
-            let wait = (t + self.quiet).saturating_duration_since(Instant::now());
-            if !wait.is_zero() {
-                std::thread::sleep(wait);
-            }
-        }
+        self.await_quiet()?;
         self.tap.tx(data);
         Ok(self.port.write_all(data)?)
+    }
+
+    /// Wait for a whole quiet period without a byte (`set_bus`): bytes that come in meanwhile (the rest of a late answer)
+    /// are dropped and start it again, so the packs' receivers have closed every frame before ours begins.
+    fn await_quiet(&mut self) -> std::io::Result<()> {
+        if self.quiet.is_zero() {
+            return Ok(());
+        }
+        loop {
+            self.drop_input()?;
+            let Some(t) = self.heard else { return Ok(()) };
+            let left = (t + self.quiet).saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            // in steps, so bytes during the wait are seen and the quiet starts again after them
+            std::thread::sleep(left.min(Duration::from_millis(20)));
+        }
     }
 
     /// Read until `done` or the deadline of the whole exchange; lines that are not ours must not extend it.
@@ -999,6 +1021,63 @@ mod tests {
             assert!(t.elapsed() >= at_least.saturating_sub(Duration::from_millis(5)), "{bus:?} {:?}", t.elapsed());
             assert!(t.elapsed() < below, "{bus:?} {:?}", t.elapsed());
         }
+    }
+
+    /// A port that receives a byte at the given offsets after creation (as a late, fragmented answer), records when
+    /// each write left, answers nothing.
+    struct Trickle {
+        start: Instant,
+        at: Vec<Duration>,
+        writes: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl Trickle {
+        fn due(&mut self) -> usize {
+            let now = self.start.elapsed();
+            let n = self.at.iter().take_while(|t| **t <= now).count();
+            self.at.drain(..n);
+            n
+        }
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(5));
+            Err(std::io::ErrorKind::TimedOut.into())
+        }
+    }
+
+    impl Write for Trickle {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.writes.lock().unwrap().push(self.start.elapsed());
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Port for Trickle {
+        fn clear_input(&mut self, dropped: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            let n = self.due();
+            if let Some(d) = dropped {
+                d.extend(std::iter::repeat_n(b'x', n));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn bytes_during_the_quiet_start_it_again() {
+        // the last answer byte heard at 0, the rest of a late answer at 120 ms: the request leaves only a whole quiet
+        // after that, never 200 ms after the first
+        let writes = Arc::new(Mutex::new(vec![]));
+        let port = Box::new(Trickle { start: Instant::now(), at: vec![Duration::from_millis(120)], writes: writes.clone() });
+        let mut c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: true, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(false), answered: Default::default(), quiet: Duration::ZERO, heard: Some(Instant::now()) };
+        c.set_bus(Bus::CanSocketBus);
+        c.write_raw(b"~x\r").unwrap();
+        let sent = writes.lock().unwrap()[0];
+        assert!(sent >= Duration::from_millis(120) + timing::UART1_QUIET - Duration::from_millis(5), "{sent:?}");
     }
 
     /// An answer frame: the request layout with RTN in place of CID2.

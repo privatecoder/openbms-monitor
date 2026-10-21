@@ -72,6 +72,8 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // the CAN socket needs its quiet between an answer heard and the next request
+    c.set_bus(bus);
     let out = match cli.cmd {
         Cmd::Ports => unreachable!(),
         Cmd::Scan => Ok(serde_json::to_value(c.scan(0..=15).into_iter().map(|(a, d)| serde_json::json!({"address": a, "device": d})).collect::<Vec<_>>()).unwrap()),
