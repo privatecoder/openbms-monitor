@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest";
-import type { MasterView, PackProbeView, ProfileView } from "./api";
+import type { MasterView, PackProbeView, PatchCaps, ProfileView } from "./api";
 import { clockAccess, clockTargets, controlHint, controlMode, masterBroadcast, packCutoff, powerLocked, powerRtc } from "./power";
 
 const caps = (power_rtc: boolean | null) => ({ status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, power_rtc });
-const master = (m: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "0011223344556677",
-  listed: null, caps: caps(true), hard_stop: false, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m });
+/** The version and image flags a 64/03 with these capabilities reports (null flags: not known). */
+const reported = (power: boolean | null | undefined, cutoff: boolean | null | undefined) => ({
+  version: (cutoff ? [1, 6] : [1, 5]) as [number, number],
+  flags: power === null || power === undefined ? null : (power ? 2 : 0) | (cutoff ? 4 : 0),
+});
+const withReport = (c: PatchCaps | null) => (c ? { ...reported(c.power_rtc, c.pack_cutoff), ...c } : c);
+const master = (m: Partial<MasterView>): MasterView => {
+  const v: MasterView = { kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "0011223344556677",
+    listed: null, caps: caps(true), hard_stop: false, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m };
+  return { ...v, caps: withReport(v.caps) };
+};
 const profile = (m: Partial<MasterView> = {}, bus: "can" | "pack" = "can", power: boolean | null = null): ProfileView =>
   ({ gen: 4, bus, endpoint: "tcp:gw:4196", master: master(m), gates: power === null ? null : { write: true, start: true, power }, at: 0 });
-const probe = (p: Partial<PackProbeView>): PackProbeView => ({ gen: 4, address: 3, state: "proven", version: "16.06.13 MAINT 1.5", listed: null, build_id: null, hard_stop: false, power_rtc: true, ...p });
+const probe = (p: Partial<PackProbeView>): PackProbeView => {
+  const v: PackProbeView = { gen: 4, address: 3, state: "proven", version: "16.06.13 MAINT 1.5", listed: null, build_id: null, hard_stop: false, power_rtc: true, ...p };
+  const r = reported(v.power_rtc, v.pack_cutoff);
+  return v.state === "proven" ? { patch_version: r.version, flags: r.flags, ...v } : v;
+};
+/** The firmware behind a proven (or not) power and clock flag. */
+const fw = (power: boolean) => ({ patch: { kind: "version" as const, version: [1, 5] as [number, number] }, flags: power ? 2 : 0 });
 const where = { connected: true, bus: "can" as const, demo: false, installation: true };
 
 describe("power and clock over the CAN socket", () => {
@@ -43,35 +58,35 @@ describe("power and clock over the CAN socket", () => {
   });
 
   it("offers only restart and ein/aus over the CAN socket, everything on RS485-1/2", () => {
-    expect(controlMode({ ...where, bus: "pack", power: false })).toBe("full");
-    expect(controlMode({ ...where, power: true })).toBe("power");
-    expect(controlMode({ ...where, power: false })).toBeNull();
+    expect(controlMode({ ...where, bus: "pack", fw: fw(false) })).toBe("full");
+    expect(controlMode({ ...where, fw: fw(true) })).toBe("power");
+    expect(controlMode({ ...where, fw: fw(false) })).toBeNull();
     // „Nur ansehen“ writes nothing to a pack
-    expect(controlMode({ ...where, installation: false, power: true })).toBeNull();
-    expect(controlMode({ ...where, bus: "pack", installation: false, power: false })).toBeNull();
-    expect(controlMode({ ...where, connected: false, power: true })).toBeNull();
-    expect(controlMode({ ...where, demo: true, installation: false, power: false })).toBe("full");
+    expect(controlMode({ ...where, installation: false, fw: fw(true) })).toBeNull();
+    expect(controlMode({ ...where, bus: "pack", installation: false, fw: fw(false) })).toBeNull();
+    expect(controlMode({ ...where, connected: false, fw: fw(true) })).toBeNull();
+    expect(controlMode({ ...where, demo: true, installation: false, fw: fw(false) })).toBe("full");
   });
 
   it("reads the clock freely with the flag and sets it only while not known to be locked", () => {
-    expect(clockAccess({ ...where, power: true, locked: false })).toEqual({ read: true, write: true, unsupported: false });
-    expect(clockAccess({ ...where, power: true, locked: null })).toEqual({ read: true, write: true, unsupported: false });
-    expect(clockAccess({ ...where, power: true, locked: true })).toEqual({ read: true, write: false, unsupported: false });
+    expect(clockAccess({ ...where, fw: fw(true), locked: false })).toEqual({ read: true, write: true, unsupported: false });
+    expect(clockAccess({ ...where, fw: fw(true), locked: null })).toEqual({ read: true, write: true, unsupported: false });
+    expect(clockAccess({ ...where, fw: fw(true), locked: true })).toEqual({ read: true, write: false, unsupported: false });
     // without the flag: the hint that the CAN socket does not know the command, nothing sent
-    expect(clockAccess({ ...where, power: false, locked: null })).toEqual({ read: false, write: false, unsupported: true });
-    expect(clockAccess({ ...where, installation: false, power: true, locked: false })).toEqual({ read: true, write: false, unsupported: false });
+    expect(clockAccess({ ...where, fw: fw(false), locked: null })).toEqual({ read: false, write: false, unsupported: true });
+    expect(clockAccess({ ...where, installation: false, fw: fw(true), locked: false })).toEqual({ read: true, write: false, unsupported: false });
     // RS485-1/2 as before: the lock bit has no meaning there
-    expect(clockAccess({ ...where, bus: "pack", power: false, locked: true })).toEqual({ read: true, write: true, unsupported: false });
-    expect(clockAccess({ ...where, bus: "pack", installation: false, power: false, locked: null })).toEqual({ read: true, write: false, unsupported: false });
-    expect(clockAccess({ ...where, connected: false, power: true, locked: false }).read).toBe(false);
+    expect(clockAccess({ ...where, bus: "pack", fw: fw(false), locked: true })).toEqual({ read: true, write: true, unsupported: false });
+    expect(clockAccess({ ...where, bus: "pack", installation: false, fw: fw(false), locked: null })).toEqual({ read: true, write: false, unsupported: false });
+    expect(clockAccess({ ...where, connected: false, fw: fw(true), locked: false }).read).toBe(false);
   });
 
   it("names the way over RS485-1/2 instead of hiding „Steuern“ for a pack without the service", () => {
-    expect(controlHint({ ...where, power: false })).toBe(true);
-    expect(controlHint({ ...where, power: true })).toBe(false);
-    expect(controlHint({ ...where, bus: "pack", power: false })).toBe(false);
-    expect(controlHint({ ...where, demo: true, power: false })).toBe(false);
-    expect(controlHint({ ...where, connected: false, power: false })).toBe(false);
+    expect(controlHint({ ...where, fw: fw(false) })).toBe(true);
+    expect(controlHint({ ...where, fw: fw(true) })).toBe(false);
+    expect(controlHint({ ...where, bus: "pack", fw: fw(false) })).toBe(false);
+    expect(controlHint({ ...where, demo: true, fw: fw(false) })).toBe(false);
+    expect(controlHint({ ...where, connected: false, fw: fw(false) })).toBe(false);
   });
 
   it("skips and names the packs without the flag when setting all clocks", () => {
@@ -96,5 +111,26 @@ describe("the stored pack cutoff of a pack (MAINT 1.6)", () => {
     expect(packCutoff(3, profile(), probe({ pack_cutoff: true, state: "undecided" }))).toBe(false);
     expect(packCutoff(3, profile({ caps: { ...caps(true), pack_cutoff: true } }), undefined)).toBe(false);
     expect(packCutoff(null, profile(), undefined)).toBe(false);
+  });
+});
+
+describe("a new patch function needs only its catalog row", () => {
+  it("offers 49/3B over the CAN socket once the catalog has a way there, for exactly the packs with its flag", async () => {
+    const { ROUTES } = await import("./access");
+    const { controlOffers } = await import("./power");
+    const flag3 = (flags: number) => ({ ...where, fw: { patch: { kind: "version" as const, version: [1, 7] as [number, number] }, flags } });
+    expect(controlOffers(flag3(0x08))("set-remaining")).toBe(false);
+    // a later build: 49/3B over the CAN socket with image flag bit 3 (a synthetic row, only for this test)
+    ROUTES.push({ action: "set-remaining", channel: "uart1", wire: "ASCII 49/3B", firmware: [{ kind: "image-flag", bit: 3 }], needs: [], implemented: true });
+    try {
+      expect(controlOffers(flag3(0x08))("set-remaining")).toBe(true);
+      expect(controlMode(flag3(0x08))).toBe("power");
+      // a pack without the flag, or one whose flags this connection did not prove, gets nothing
+      expect(controlOffers(flag3(0x02))("set-remaining")).toBe(false);
+      expect(controlOffers({ ...where, fw: { patch: { kind: "version", version: [1, 7] }, flags: null } })("set-remaining")).toBe(false);
+      expect(controlMode(flag3(0x00))).toBeNull();
+    } finally {
+      ROUTES.pop();
+    }
   });
 });

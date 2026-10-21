@@ -416,6 +416,10 @@ pub struct PackProbeView {
     pub power_rtc: Option<bool>,
     /// image flag bit 2 of a proven pack with patch 1.6 or later: the stored pack cutoff
     pub pack_cutoff: Option<bool>,
+    /// the patch version of its 64/03 (also a negative finding's, e.g. 1.4) and, when proven, its image flag byte: the
+    /// facts the catalog decides on (`access::Facts`)
+    pub patch_version: Option<[u8; 2]>,
+    pub flags: Option<u8>,
 }
 
 pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
@@ -426,7 +430,7 @@ pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
     };
     let proven = info.filter(|_| state == "proven");
     PackProbeView { gen, address, state, version: info.map(|i| i.version()), listed, build_id: info.map(|i| i.build_id_hex()), hard_stop: proven.and_then(|i| i.hard_stop), power_rtc: proven.map(|i| i.power_rtc),
-        pack_cutoff: proven.map(|i| known::pack_cutoff_of(i.patch, i.pack_cutoff)) }
+        pack_cutoff: proven.map(|i| known::pack_cutoff_of(i.patch, i.pack_cutoff)), patch_version: info.map(|i| i.patch), flags: proven.map(|i| i.image_flags()) }
 }
 
 /// Ask the pack at `address` (not the master: its profile holds) for its own 64/03 on connection `link`, under the port

@@ -5,7 +5,7 @@ import { api, isDemo, linkNow, type BmsTime, type Bus } from "../api";
 import { bankRefusal, errorText, writeError } from "../control";
 import { CLOCK_OK_S, clockDiff, durationText, fmtBmsTime, fromBmsTime, toBmsTime, zoneLabel } from "../bmsMemory";
 import { cn } from "../lib/utils";
-import { clockAccess, clockTargets } from "../power";
+import { clockAccess, clockTargets, type Firmware } from "../power";
 import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 import { useNow } from "./live";
@@ -51,12 +51,13 @@ export function usePackChoice(packs: number[]) {
 
 /** The clock line of the parameters view: BMS time, PC time, difference, and setting it to the PC's local time. Over the
  *  CAN socket only for a pack with the power and clock service (`power.ts`). */
-export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy, installation = true, power, powerLock }: {
+export function ClockLine({ connected, bus, packs, address, setAddress, locked, onBusy, installation = true, firmware, powerLock }: {
   connected: boolean; bus: Bus | null; packs: number[]; address: number | null; setAddress: (a: number) => void;
   /** false with „Nur ansehen“: the clock is read, not set */
   installation?: boolean;
   /** CAN socket: the pack's image flag for the clock as this connection proved it, and its lock bit as last seen */
-  power?: (a: number) => boolean; powerLock?: (a: number) => boolean | null;
+  /** each pack's firmware as this connection proved it (`power.ts` `packFirmware`) */
+  firmware?: (a: number) => Firmware; powerLock?: (a: number) => boolean | null;
   /** another write (CAN protocol, calibration) runs: pack picker and clock buttons wait */
   locked?: boolean; onBusy?: (busy: boolean) => void;
 }) {
@@ -64,8 +65,9 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
   const lang = i18n.language;
   const now = useNow();
   const can = bus === "can" && !isDemo;
-  const hasPower = (a: number) => power?.(a) ?? false;
-  const access = clockAccess({ connected, bus, demo: isDemo, installation, power: address !== null && hasPower(address), locked: address !== null ? powerLock?.(address) ?? null : null });
+  const fwOf = (a: number | null): Firmware => (a !== null && firmware?.(a)) || { patch: { kind: "unknown" }, flags: null };
+  const accessOf = (a: number | null, lock: boolean | null) => clockAccess({ connected, bus, demo: isDemo, installation, fw: fwOf(a), locked: lock });
+  const access = accessOf(address, address !== null ? powerLock?.(address) ?? null : null);
   const usable = access.read;
   const { read, setRead, reload } = useBmsClock(address, usable);
   const [busy, setBusy] = useState<string | null>(null);
@@ -94,7 +96,8 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
     const link = linkNow();
     let set = 0;
     // over the CAN socket a pack without the service is skipped and named, nothing is sent to it
-    const { targets, skipped } = clockTargets(packs, (a) => !can || hasPower(a));
+    // the packs the catalog lets set the clock over this channel (each lock is read fresh before its command)
+    const { targets, skipped } = clockTargets(packs, (a) => accessOf(a, null).write);
     for (const [n, a] of targets.entries()) {
       if (linkNow() !== link) break;
       setBusy(t("clock.settingAll", { pack: no(a), n: n + 1, of: targets.length }));

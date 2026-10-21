@@ -29,12 +29,17 @@ type Ask = { kind: "restart" } | { kind: "off"; lock: "cutoff" | "cutoffMaybe" |
 // the expected end. The BMS's own counter (0x200000C8) is not readable over any command.
 const forced = new Map<string, number>();
 const HEATER_MS = 3600 * 1000;
+/** The actions of „Steuern“ the original firmware offers on RS485-1/2 only: over the CAN socket a line says so, unless the
+ *  catalog offers one of them there for this pack. */
+const RS485_ONLY = ["force-heater", "set-remaining", "set-learned-full", "clear-history"];
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack; over the
  *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
-export function PackControlSection({ address, usable, mode = "full", powerLocked = null, cutoff = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey }: {
+export function PackControlSection({ address, usable, mode = "full", offers = () => true, powerLocked = null, cutoff = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
   mode?: "full" | "power";
+  /** whether the catalog offers an action for this pack over this connection (`power.ts` `controlOffers`) */
+  offers?: (action: string) => boolean;
   /** CAN socket: Group0 bit 3 as last seen (true: locked, the buttons wait); null: not known, the backend reads it */
   powerLocked?: boolean | null;
   /** CAN socket: the stored pack cutoff (MAINT 1.6) proven for this pack on this connection */
@@ -105,7 +110,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   // general hint
   const p79 = p79Shown ?? p79Read;
   useEffect(() => {
-    if (!open || !usable || mode !== "full" || address === null || p79 !== null || !ah.trim() || p79Asked.current.has(address)) return;
+    if (!open || !usable || !offers("set-remaining") || address === null || p79 !== null || !ah.trim() || p79Asked.current.has(address)) return;
     p79Asked.current.add(address);
     const a = address, lk = linkNow.current;
     api.parameters(a).then((p) => { if (same(a, lk)) setP79(p.parameters[P79]?.value ?? null); }, () => {});
@@ -365,17 +370,17 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={disabled || powerHeld} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>
-            <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
+            {offers("restart") && <Button size="sm" disabled={disabled || powerHeld} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>}
+            {offers("power-on-off") && <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
               title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
-            </Button>
-            {relock && (
+            </Button>}
+            {relock && offers("power-on-off") && (
               <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>
                 {t("ctl.cutoff.offConfirm")}
               </Button>
             )}
-            {!can && (
+            {offers("force-heater") && (
               <Button size="sm" disabled={disabled} onClick={() => void heater(address, !heaterForced)} title={t(heaterForced ? "ctl.tip.heaterOff" : "ctl.tip.heaterOn")}>
                 {busy === "heater" ? t("ctl.running") : t(heaterForced ? "ctl.heater.off" : "ctl.heater.on")}
               </Button>
@@ -383,8 +388,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
           </div>
           {powerHeld && <StatusLine tone="warn">{t("ctl.powerLocked")}</StatusLine>}
           {noteFor !== "remaining" && noteFor !== "learned" && noteFor !== "clear" && noteLine}
-          <p className="max-w-3xl text-muted">{t(can ? "ctl.canHint" : "ctl.heater.hint")}</p>
-          {!can && <>
+          {offers("force-heater") ? <p className="max-w-3xl text-muted">{t("ctl.heater.hint")}</p>
+            : can && !RS485_ONLY.some(offers) && <p className="max-w-3xl text-muted">{t("ctl.canHint")}</p>}
+          {offers("set-remaining") && (
             <div className="space-y-1">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <label className="flex items-center gap-2">{t("ctl.remaining.field")}
@@ -401,7 +407,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
               {noteFor === "remaining" && noteLine}
               <p className="max-w-3xl text-muted">{t("ctl.remaining.hint")}</p>
             </div>
+          )}
 
+          {offers("set-learned-full") && (
             <div className="space-y-1">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <label className="flex items-center gap-2">{t("ctl.learned.field")}
@@ -419,12 +427,14 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
               {noteFor === "learned" && noteLine}
               <p className="max-w-3xl text-muted">{t("ctl.learned.hint")}</p>
             </div>
+          )}
 
+          {offers("clear-history") && (
             <div className="space-y-1">
               <Button size="sm" className="text-alarm" disabled={disabled} onClick={() => void askClear(address)} title={t("ctl.tip.clear")}>{busy === "clear" ? t("ctl.running") : t("ctl.clear.button")}</Button>
               {noteFor === "clear" && noteLine}
             </div>
-          </>}
+          )}
         </div>
       )}
       {ask && (
