@@ -79,7 +79,8 @@ export default function App() {
           paused={monitor === "paused"}
           maint={maint}
           packs={packList}
-          lastUpdate={Math.max(0, ...Object.values(live.packs).map((p) => p.updated))}
+          // the connection lives while valid answers come: pack readings or status, or the master's system values (CAN socket)
+          lastUpdate={Math.max(0, live.system?.updated ?? 0, ...Object.values(live.packs).map((p) => Math.max(p.updated, p.statusUpdated)))}
           locked={flashing}
           maintenance={maintenance}
           setMaintenance={(v) => { localStorage.setItem("maint.enabled", v ? "1" : "0"); setMaintenance(v); if (!v && MAINT_VIEWS.includes(view)) setView("dashboard"); }}
