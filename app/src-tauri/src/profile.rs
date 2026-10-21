@@ -19,6 +19,7 @@ use openbms_flash::maint::dialog::{self, Budgets};
 use openbms_flash::maint::policy::{Master, PackFinding};
 use openbms_flash::maint::SystemClock;
 use openbms_proto::uart1;
+use openbms_transport::timing::{self, Class};
 use openbms_transport::{Bus, Connection};
 use serde::Serialize;
 use tauri::Emitter;
@@ -67,7 +68,8 @@ impl Profile {
 
 /// Read the profile on an open CAN socket connection. A link error leaves the master unknown.
 pub fn detect(conn: &mut Connection) -> (Master, Option<u8>) {
-    let m = dialog::read(conn, &SystemClock::new(), Budgets::default()).unwrap_or(Master::Unknown);
+    let answer = conn.latency().probe_budget(Class::Ascii, timing::PACK_IDENTITY);
+    let m = dialog::read(conn, &SystemClock::new(), Budgets { answer, ..Budgets::default() }).unwrap_or(Master::Unknown);
     let gates = m.caps().is_some_and(|c| c.uart1_params && (c.write_gate_bit0 || c.start_gate_bit2));
     let group0 = if gates { conn.uart1_parameters(Bus::CanSocketBus, 0).ok().map(|p| p.function_switches[0]) } else { None };
     (m, group0)
@@ -345,8 +347,10 @@ pub fn power_locked(group0: u8) -> bool {
     group0 & POWER_BIT != 0
 }
 
-/// The answer time of a pack's own 64/03: older slaves stay silent, so each costs at most this.
-pub const PACK_PROBE: std::time::Duration = std::time::Duration::from_millis(600);
+/// The answer time of a pack's own 64/03 on `c` (`timing::PACK_IDENTITY`, learning over a gateway up to twice that).
+pub fn identity_budget(c: &Connection) -> std::time::Duration {
+    c.latency().probe_budget(Class::Ascii, timing::PACK_IDENTITY)
+}
 
 /// A pack's live finding as the UI shows it in its pack view (never in the master profile).
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -383,7 +387,7 @@ pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
 /// silence is a finding („undecided“), never a lost pack or original firmware.
 pub fn probe_pack_on(state: &AppState, link: &Link, address: u8) -> Result<PackFinding, String> {
     let answer = with_link(&state.conn, &state.flashing, &state.link, link, |c| {
-        dialog::probe_pack(c, &SystemClock::new(), address, PACK_PROBE).map_err(|e| openbms_transport::Error::Io(std::io::Error::other(e.to_string())))
+        dialog::probe_pack(c, &SystemClock::new(), address, identity_budget(c)).map_err(|e| openbms_transport::Error::Io(std::io::Error::other(e.to_string())))
     })?;
     let f = PackFinding::of(answer);
     // told only when kept for the current connection: a late answer after a reconnect reaches no other bank's view
@@ -393,6 +397,34 @@ pub fn probe_pack_on(state: &AppState, link: &Link, address: u8) -> Result<PackF
         }
     }
     Ok(f)
+}
+
+/// Whether a parameter read asks the firmware identity again: the master when its profile got no valid answer, a slave
+/// not yet asked or silent before (a valid other MNT, RTN 04/05 stay as they are). CAN socket only.
+pub fn ask_again(address: u8, can: bool, master_unknown: bool, live: Option<&PackFinding>) -> bool {
+    can && if address == 0 { master_unknown } else { matches!(live, None | Some(PackFinding::Undecided)) }
+}
+
+/// `ask_again` on `link`, run by a parameter read under the pack's reservation: a silent 64/03 (a network gateway, the
+/// bank's own traffic) does not leave the column unproven for the whole connection. Errors say nothing (still unproven).
+pub fn reask_identity(state: &AppState, link: &Link, address: u8) {
+    let Some(p) = bank::profile(state, link.gen) else { return };
+    let live = bank::live(state, link.gen, address);
+    if !ask_again(address, p.bus == Bus::CanSocketBus, matches!(p.master, Master::Unknown), live.as_ref()) {
+        return;
+    }
+    if address != 0 {
+        let _ = probe_pack_on(state, link, address);
+        return;
+    }
+    let Ok(read) = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(detect(c))) else { return };
+    let fresh = of(&p.endpoint, p.bus, Some(read));
+    if bank::profile(state, link.gen).is_some_and(|now| now.at == p.at) {
+        bank::set_profile(state, link.gen, fresh.clone());
+        if let Some(app) = state.app.get() {
+            let _ = app.emit("firmware-profile", &view(link.gen, &fresh));
+        }
+    }
 }
 
 /// The live finding of a slave on `link`, asking it once per connection (CAN socket only; the master has its profile).
@@ -868,6 +900,18 @@ mod tests {
         bank::uart1_unconfirmed(&state, &link, 4, "SYN-B4", &SerialValue::NoAnswer, bank::Why::Foreign, None);
         observe_hard_stop(&state, &link, 6, &status(0x02, 0x01));
         assert_eq!(seen(&state), 1);
+    }
+
+    #[test]
+    fn a_parameter_read_asks_again_only_after_silence_and_only_on_the_can_socket() {
+        let proven = live([1, 6], 3, Some(false));
+        assert!(ask_again(4, true, false, None));
+        assert!(ask_again(4, true, false, Some(&PackFinding::Undecided)));
+        assert!(!ask_again(4, true, true, Some(&proven)));
+        assert!(!ask_again(4, true, false, Some(&PackFinding::Negative(None))));
+        assert!(!ask_again(4, false, true, None));
+        assert!(ask_again(0, true, true, None));
+        assert!(!ask_again(0, true, false, Some(&PackFinding::Undecided)));
     }
 
     fn live(patch: [u8; 2], format: u8, hard_stop: Option<bool>) -> PackFinding {

@@ -6,9 +6,8 @@ use crate::{link::Link, session, Result};
 use openbms_proto::frame;
 use std::collections::BTreeSet;
 use std::io::Write;
+use openbms_transport::timing;
 use std::time::Duration;
-
-const ASCII_TIMEOUT: Duration = Duration::from_millis(600);
 
 /// What a short listen on the pack bus saw. Sends nothing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -61,15 +60,15 @@ pub fn app_answers(link: &mut impl Link, log: &mut impl Write, address: u8, with
     let start = std::time::Instant::now();
     loop {
         let left = |cap: Duration| within.saturating_sub(start.elapsed()).min(cap);
-        if session::ascii_query(link, address, 0x51, log, left(Duration::from_millis(300))).is_ok()
-            && session::ascii_query(link, address, 0x47, log, left(ASCII_TIMEOUT)).is_ok()
+        if session::ascii_query(link, address, 0x51, log, left(timing::FLASH_REACH_TRY)).is_ok()
+            && session::ascii_query(link, address, 0x47, log, left(timing::FLASH_ASCII)).is_ok()
         {
             return true;
         }
         if start.elapsed() >= within {
             return false;
         }
-        link.wait(Duration::from_millis(200));
+        link.wait(timing::RECOVERY_PAUSE);
     }
 }
 

@@ -353,8 +353,8 @@ pub fn marker_update(m: &Master) -> Option<bool> {
 // --- pack bus ---
 
 const PACK_BUS_BAUD: u32 = 19_200;
-/// A little more than one polling cycle of the master (every slave once a second).
-pub const LISTEN: Duration = Duration::from_millis(1200);
+/// A little more than one polling cycle of the master (`timing::BUS_LISTEN`).
+pub const LISTEN: Duration = openbms_transport::timing::BUS_LISTEN;
 
 /// Before the pack bus is opened: the monitor holds that adapter, or it polls the pack bus.
 pub fn must_stop_monitor(main: Option<&(String, Bus)>, pack_key: &str) -> bool {
@@ -551,7 +551,7 @@ pub fn answered_same(answers: bool, stored: Option<&str>, read: impl FnOnce() ->
 /// Returns whether it stays (a record that cannot be cleared stays too).
 pub fn settle_pending(store: &Arc<Mutex<Option<Store>>>, pending: i64, address: u8, stored: Option<&str>, ok: bool, last: Option<Progress>, link: &mut Connection) -> bool {
     let answers = || {
-        let a = bus::app_answers(link, &mut std::io::sink(), address, Duration::from_secs(6));
+        let a = bus::app_answers(link, &mut std::io::sink(), address, openbms_transport::timing::RECOVERY);
         answered_same(a, stored, || string2(link, address))
     };
     match after_flash(ok, last, answers) {
@@ -803,7 +803,7 @@ fn board_identities(state: &AppState, inst: &Installation, boards: &[(u8, String
             let expected = boards.iter().find(|(b, _)| *b == a).map(|(_, s)| s.as_str()).unwrap_or_default();
             let can = c.uart1_serial(Bus::CanSocketBus, a, openbms_proto::uart1::CMD_STRING2).ok().and_then(|raw| openbms_proto::serial::canonical(&raw));
             let cancelled = cancel.load(std::sync::atomic::Ordering::SeqCst);
-            board_finding(expected, can.as_deref(), cancelled, || dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::PACK_PROBE).map(PackFinding::of))
+            board_finding(expected, can.as_deref(), cancelled, || dialog::probe_pack(c, &SystemClock::new(), a, crate::profile::identity_budget(c)).map(PackFinding::of))
         })?;
         Ok(())
     });

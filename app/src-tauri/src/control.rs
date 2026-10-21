@@ -76,7 +76,7 @@ pub(crate) fn reserve_pack(state: &AppState, address: u8, action: &'static str) 
 
 /// How long a user action or read waits for its pack before it reports „busy“: long enough for the reads every
 /// section starts on opening (serial numbers, parameters) and short writes, shorter than a history read or a restart.
-pub(crate) const PACK_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const PACK_WAIT: Duration = openbms_transport::timing::PACK_WAIT;
 
 /// `reserve_pack`, waiting up to `PACK_WAIT` while another action holds the pack or a bus operation runs; a pending
 /// disconnect refuses at once. The frames on the bus are serial anyway (one connection lock); this only orders the
@@ -189,9 +189,9 @@ pub(crate) fn reserve_installations(ops: &Ops, ids: &[&str], action: &'static st
 }
 
 /// The pre-check before a restart takes the normal timeout; each try of the watch this one.
-const WATCH_TRY: Duration = Duration::from_millis(600);
+use openbms_transport::timing::WATCH_TRY;
 /// Longest wait for the pack to answer again after a restart, counted from sending it.
-const COMEBACK_LIMIT: Duration = Duration::from_secs(15);
+use openbms_transport::timing::COMEBACK_LIMIT;
 
 /// Outcome of a restart. `not_reachable`: the pack did not answer 0x51 before, nothing was sent. `sent_link_lost`:
 /// the restart was sent, then the connection failed or changed, so the comeback is unknown.

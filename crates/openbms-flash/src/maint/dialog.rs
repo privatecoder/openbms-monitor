@@ -5,6 +5,7 @@ use super::policy::Master;
 use super::Clock;
 use crate::{link::Link, Error, Result};
 use openbms_proto::{frame, InfoAnswer, MaintInfo, MaintState, MarkerWord};
+use openbms_transport::timing;
 use std::time::Duration;
 
 /// What the master at address 0 answered to `03`.
@@ -40,7 +41,7 @@ pub struct Budgets {
 
 impl Default for Budgets {
     fn default() -> Self {
-        Self { answer: Duration::from_millis(600), change: Duration::from_secs(3), interval: Duration::from_millis(300) }
+        Self { answer: timing::MAINT_ANSWER, change: timing::MAINT_CHANGE, interval: timing::MAINT_INTERVAL }
     }
 }
 
@@ -59,7 +60,7 @@ pub enum DialogError {
 }
 
 /// Minimum time after `stop` when the slave count does not change (N = 0): one full master cycle.
-pub const ZERO_SLAVES_SETTLE: Duration = Duration::from_millis(1100);
+pub const ZERO_SLAVES_SETTLE: Duration = timing::ZERO_SLAVES_SETTLE;
 
 /// Which answers belong to the request sent: `03` gets 17 or 18 bytes (or the historic 22, to name an unknown patch) or RTN
 /// 04/05; `02`, start and stop get five bytes or a rejection. A late answer to an earlier request (other length), our own

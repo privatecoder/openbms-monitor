@@ -858,6 +858,7 @@ const resources = {
       cap: {
         title: "Mitschnitt", intro: "Zeichnet auf, was die App über jede Verbindung sendet und empfängt (Monitor, Wartung, Firmware), mit Zeit. Für eine Fehlermeldung: starten, den Fehler auslösen, anhalten, exportieren. Nur im Speicher; Beenden der App verwirft ihn.",
         start: "Mitschnitt starten", stop: "Anhalten", export: "Exportieren …", clear: "Verwerfen",
+        timing: { title: "Antwortzeiten dieser Verbindung", local: "USB: feste Wartezeiten.", cls: { ascii: "ASCII", modbus: "Modbus", binary: "Binärdienst" }, row: "{{cls}}: 90 % in {{p90}}, längste {{max}}, wartet {{budget}} ({{n}} Antworten)", few: "{{cls}}: wartet {{budget}} ({{n}} Antworten, Messung ab 8)", hint: "Über ein Netzwerk-Gateway misst die App, wie lange gültige Antworten brauchen, und wartet länger, wo sie langsam sind (90 % plus Puffer, nie kürzer als die feste Frist). Ein Lesebefehl an ein Pack, das schon geantwortet hat, wird nach einem Timeout einmal mit längerer Frist wiederholt; Schreib- und Schaltbefehle nie." },
         entries_one: "1 Eintrag", entries_other: "{{count}} Einträge", timeouts_one: "1 Timeout", timeouts_other: "{{count}} Timeouts",
         summary: "{{entries}} über {{span}}, {{timeouts}}", running: "Läuft: {{summary}}", stopped: "Angehalten: {{summary}}", none: "Kein Mitschnitt.",
         runningEmpty: "Läuft, noch nichts gesendet oder empfangen. Ohne Verbindung beginnt er mit dem nächsten Verbinden.",
@@ -1816,6 +1817,7 @@ const resources = {
       cap: {
         title: "Frame capture", intro: "Records what the app sends and receives on every connection (monitor, maintenance, firmware), with times. For a bug report: start, make the problem happen, stop, export. Kept in memory only; quitting the app discards it.",
         start: "Start capture", stop: "Stop", export: "Export …", clear: "Discard",
+        timing: { title: "Answer times of this connection", local: "USB: fixed waits.", cls: { ascii: "ASCII", modbus: "Modbus", binary: "Binary service" }, row: "{{cls}}: 90 % within {{p90}}, longest {{max}}, waits {{budget}} ({{n}} answers)", few: "{{cls}}: waits {{budget}} ({{n}} answers, measured from 8)", hint: "Over a network gateway the app measures how long valid answers take and waits longer where they are slow (90 % plus a margin, never shorter than the fixed time). A read of a pack that answered before is repeated once with a longer wait after a timeout; writes and switching commands never are." },
         entries_one: "1 entry", entries_other: "{{count}} entries", timeouts_one: "1 timeout", timeouts_other: "{{count}} timeouts",
         summary: "{{entries}} over {{span}}, {{timeouts}}", running: "Running: {{summary}}", stopped: "Stopped: {{summary}}", none: "No capture.",
         runningEmpty: "Running, nothing sent or received yet. Without a connection it begins with the next connect.",

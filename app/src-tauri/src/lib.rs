@@ -241,9 +241,9 @@ fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
         .map(|_| PortSlot(flag.clone()))
 }
 
-/// Longer than one live status (listen plus master read) and one pack scan (15 silent addresses at 600 ms plus the
-/// installation check): a user action pressed during a scan waits for it instead of failing with "busy".
-pub(crate) const PORT_WAIT: Duration = Duration::from_secs(15);
+/// Longer than one live status (listen plus master read) and one pack scan (`timing::PORT_WAIT`): a user action
+/// pressed during a scan waits for it instead of failing with "busy".
+pub(crate) const PORT_WAIT: Duration = openbms_transport::timing::PORT_WAIT;
 
 /// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
 fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
@@ -253,6 +253,21 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
     let mut guard = lock(conn)?;
     let c = guard.as_mut().ok_or("not connected")?;
     f(c).map_err(|e| e.to_string())
+}
+
+/// The answer times learnt on the monitor connection (`timing::Latency`), for the diagnosis: None without a connection,
+/// or while an exchange holds it (the UI keeps the last view).
+#[derive(Serialize)]
+struct LinkTiming {
+    adaptive: bool,
+    classes: Vec<openbms_transport::timing::ClassView>,
+}
+
+#[tauri::command]
+fn link_timing(state: State<'_, AppState>) -> Option<LinkTiming> {
+    let guard = state.conn.try_lock().ok()?;
+    let l = guard.as_ref()?.latency();
+    Some(LinkTiming { adaptive: l.adaptive(), classes: l.view(openbms_transport::timing::normal_floor) })
 }
 
 /// The refusal of a step whose connection changed since its action began, as JSON for the UI (`errorText`).
@@ -1056,7 +1071,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
+        .invoke_handler(tauri::generate_handler![list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, firmware::firmware_check_image, firmware::firmware_inspect, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
