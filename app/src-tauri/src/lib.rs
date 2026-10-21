@@ -641,34 +641,35 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8, binary: Option<
 /// the pack's patch version (the release bits of Group0 are named only then).
 #[tauri::command]
 async fn parameters(state: State<'_, AppState>, address: u8) -> Result<uart1_id::ParamRead, String> {
-    match bms_memory::param_path(&state)? {
-        bms_memory::ParamPath::Ascii => read_parameters_reserved(&state, address),
-        bms_memory::ParamPath::Uart1(bus) => read_parameters_uart1(&state, bus, address),
+    read_parameters(&state, address)
+}
+
+/// The read under the pack's reservation: a write of the same pack keeps it until its own `written` snapshot and
+/// read-back, so a read in between cannot store the new block as `read` before it (the write's previous state would
+/// then be the written block). The connection and its bus are taken under the reservation, and every frame goes to
+/// exactly that link: over the CAN socket the binary service with String 2/1 in the same port session
+/// (`uart1_id::read`; only a valid binary answer shows the pack has the service), else 0x47 over RS485-1/2.
+fn read_parameters(state: &AppState, address: u8) -> Result<uart1_id::ParamRead, String> {
+    let _guard = control::reserve_pack_wait(state, address, "read")?;
+    let link = link_now(state);
+    let bus = bms_memory::bus_of(state, &link)?;
+    match bms_memory::on_bus(openbms_proto::access::Action::ReadParameters, bus)? {
+        openbms_proto::access::Channel::Uart1 => uart1_id::read(state, &link, bus, address),
+        _ => read_parameters_ascii(state, &link, address),
     }
 }
 
-/// 0x47 over the CAN socket under the pack's reservation, with String 2/1 in the same port session (`uart1_id::read`).
-/// Only a valid binary answer shows the pack has the service.
-fn read_parameters_uart1(state: &AppState, bus: Bus, address: u8) -> Result<uart1_id::ParamRead, String> {
-    uart1_id::read(state, bus, address)
-}
-
-/// 0x47 and its snapshot under the pack's reservation: a write of the same pack keeps it until its own `written`
-/// snapshot and read-back, so a read in between cannot store the new block as `read` before it (the write's previous
-/// state would then be the written block).
-fn read_parameters_reserved(state: &AppState, address: u8) -> Result<uart1_id::ParamRead, String> {
-    let _guard = control::reserve_pack_wait(state, address, "read")?;
-    let before = link_now(state);
+fn read_parameters_ascii(state: &AppState, before: &Link, address: u8) -> Result<uart1_id::ParamRead, String> {
     // the board first (one 0xA4): the values always go to the UI, a snapshot only for a known board or one without a
     // serial; „Nur ansehen“ stores nothing anyway
-    let checked = if before.installation.is_some() { bank::check(state, &before, address) } else { Err(String::new()) };
-    let p = with_conn(&state.conn, &state.flashing, |c| c.parameters(address))?;
+    let checked = if before.installation.is_some() { bank::check(state, before, address) } else { Err(String::new()) };
+    let p = with_link(&state.conn, &state.flashing, &state.link, before, |c| c.parameters(address))?;
     if bank::snapshot_allowed(&checked) {
-        bms_memory::snapshot(state, &before, address, history::SnapshotKind::Read, &p.block);
+        bms_memory::snapshot(state, before, address, history::SnapshotKind::Read, &p.block);
     }
     // a version proof counts for the board whose String 2 the check read just now
     let serial = checked.as_ref().ok().and_then(|(_, read)| maint_store::real(read).map(String::from));
-    let patch = profile::pack_patch(state, &before, address, serial.as_deref());
+    let patch = profile::pack_patch(state, before, address, serial.as_deref());
     Ok(uart1_id::ParamRead { parameters: p, bms_serial: None, patch })
 }
 
@@ -1189,22 +1190,15 @@ mod port_reservation_tests {
     fn a_parameter_read_waits_for_a_write_of_the_same_pack() {
         let state = AppState::default();
         let write = control::reserve_pack(&state, 2, "params").unwrap();
-        let e = read_parameters_reserved(&state, 2).unwrap_err();
+        let e = read_parameters(&state, 2).unwrap_err();
         assert!(e.contains("pack-busy") && e.contains("params"), "{e}");
         // another pack is not held up (it fails here only for the missing connection)
-        assert_eq!(read_parameters_reserved(&state, 3).unwrap_err(), "not connected");
+        assert_eq!(read_parameters(&state, 3).unwrap_err(), "not connected");
         drop(write);
-        assert_eq!(read_parameters_reserved(&state, 2).unwrap_err(), "not connected");
-    }
-
-    #[test]
-    fn a_uart1_parameter_read_waits_for_a_write_of_the_same_pack() {
-        let state = AppState::default();
-        let write = control::reserve_pack(&state, 2, "params").unwrap();
-        let e = read_parameters_uart1(&state, Bus::CanSocketBus, 2).unwrap_err();
-        assert!(e.contains("pack-busy"), "{e}");
-        assert_eq!(read_parameters_uart1(&state, Bus::CanSocketBus, 3).unwrap_err(), "not connected");
-        drop(write);
+        assert_eq!(read_parameters(&state, 2).unwrap_err(), "not connected");
+        // the bus is the link's own, never the global one: without a profile for the link nothing is read
+        *state.bus.lock().unwrap() = Some(Bus::CanSocketBus);
+        assert_eq!(read_parameters(&state, 2).unwrap_err(), "not connected");
     }
 
     #[test]

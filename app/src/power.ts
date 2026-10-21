@@ -1,9 +1,10 @@
 /** Ein/aus, restart and the clock over the CAN socket (MAINT 1.5 with image flag bit 1): what the Parameters view offers
  *  for one pack. Pure logic; the backend checks identity, flag and lock again before every command (`power.rs`). */
-import type { Bus, PackProbeView, ProfileView } from "./api";
+import type { Bus, Channel, PackProbeView, ProfileView } from "./api";
+import { factsOf, G0, offerable, tri } from "./access";
 
 /** Group0 bit 3: 1 locks ein/aus, restart and setting the clock over the CAN socket. */
-export const POWER_LOCK_BIT = 0x08;
+export const POWER_LOCK_BIT = G0.powerLock;
 
 /** The image flag of `address` as this connection proved it: the master by the profile, a slave by its own 64/03. A
  *  stored proof never counts, and nothing is ever sent to find out. */
@@ -34,16 +35,24 @@ type Where = { connected: boolean; bus: Bus | null; demo: boolean; installation:
  *  ein/aus of a pack with the flag, with an installation; else nothing. */
 export function controlMode(w: Where & { power: boolean }): "full" | "power" | null {
   if (!w.connected) return null;
-  if (w.demo || (w.bus === "pack" && w.installation)) return "full";
-  return w.bus === "can" && w.installation && w.power ? "power" : null;
+  if (w.demo) return "full";
+  const ch = channelOf(w.bus);
+  if (!ch || !offerable("power-on-off", ch, factsOf({ power: tri(w.power), installation: w.installation, address: 1 }))) return null;
+  return ch === "uart1" ? "power" : "full";
 }
+
+/** The UART a bus reaches the packs on. */
+export const channelOf = (bus: Bus | null): Channel | null => (bus === "pack" ? "uart0" : bus === "can" ? "uart1" : null);
 
 /** The clock line: read on RS485-1/2 (and the demo) and over the CAN socket with the flag; set with an installation too,
  *  over the CAN socket not while the lock is known to be on. `unsupported`: the CAN socket hint for a pack without it. */
 export function clockAccess(w: Where & { power: boolean; locked: boolean | null }): { read: boolean; write: boolean; unsupported: boolean } {
   const can = w.connected && w.bus === "can" && !w.demo;
-  const read = w.connected && (w.bus === "pack" || w.demo || (can && w.power));
-  const write = read && (w.demo || w.installation) && !(can && w.locked === true);
+  const ch = channelOf(w.bus);
+  // the lock as last seen; not read: the backend reads it fresh before setting
+  const facts = factsOf({ power: tri(w.power), installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked ? G0.powerLock : 0 });
+  const read = w.connected && (w.demo || (!!ch && offerable("read-clock", ch, facts)));
+  const write = read && (w.demo || (!!ch && offerable("set-clock", ch, facts)));
   return { read, write, unsupported: can && !w.power };
 }
 

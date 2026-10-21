@@ -91,7 +91,7 @@ pub fn pack_caps_of(format: u8, patch: [u8; 2]) -> Option<PackCaps> {
 
 /// The lowest patch version of each capability: (status_split, uart1_params, uart1_identity, write_gate_bit0,
 /// start_gate_bit2). The app supports the patch functions as a whole from `MIN_PATCH` on.
-pub const CAP_MIN: CapMin = CapMin { status_split: [1, 5], uart1_params: [1, 5], uart1_identity: [1, 5], write_gate_bit0: [1, 5], start_gate_bit2: [1, 5] };
+pub const CAP_MIN: CapMin = CapMin { status_split: MIN_PATCH, uart1_params: MIN_PATCH, uart1_identity: MIN_PATCH, write_gate_bit0: MIN_PATCH, start_gate_bit2: MIN_PATCH };
 /// Below this a format-2 identity is an unknown patch (no patch functions): 1.4 has format 2 but no release bits
 /// (`openbms_proto::access::MAINT_MIN`).
 pub const MIN_PATCH: [u8; 2] = openbms_proto::access::MAINT_MIN;

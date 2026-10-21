@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
+import { G0, group0Plan, tri, type Proof } from "./access";
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -64,15 +65,22 @@ export function firmwareText(reported: string | null | undefined, proven: string
 /** „Erneut prüfen“ is offered for every CAN socket profile: also a recognised patch may have changed its release bits. */
 export const recheckable = (p: ProfileView | null): boolean => p?.bus === "can";
 
+/** The patch as the catalog needs it for a parameter write (`access::Proof`). */
+export const proofOf = (patch: PackPatch): Proof =>
+  ({ write_gate: patch.caps.write_gate, start_gate: patch.caps.start_gate, power: tri(patch.caps.power_rtc), cutoff: tri(patch.caps.pack_cutoff) });
+
+/** The Group0 plan of a column (`access::group0_plan`): over RS485-1/2 with the column's proof the bits without function
+ *  in that build stay; over the CAN socket what the patch lets that way change. */
+const planOf = (patch: PackPatch | null | undefined, uart1: boolean) => group0Plan(uart1 ? "uart1" : "uart0", patch ? proofOf(patch) : null);
+const fixedOf = (patch: PackPatch | null | undefined, uart1: boolean) => { const p = planOf(patch, uart1); return p.keep | p.refuse_change; };
+
 /** How the release bits of Group0 appear in a parameter column: named and editable where the pack's patch is proven and
  *  the bus allows it, else unnamed and fixed. `uart1`: the column was read over the CAN socket. `power`: the pack's
  *  image flag for power and clock over the CAN socket (bit 3), null when not known. */
 export function gateBits(patch: PackPatch | null | undefined, uart1: boolean): { named: boolean; writeEditable: boolean; startEditable: boolean; powerEditable: boolean; power: boolean | null } {
   if (!patch) return { named: false, writeEditable: false, startEditable: false, powerEditable: false, power: null };
-  const power = patch.caps.power_rtc ?? null;
-  // RS485-1/2 is the way to change bits 2 and 3; over the CAN socket they never change (the pack refuses the whole
-  // write). Bit 3 of a build without the service has no function: left as it is
-  return { named: true, writeEditable: patch.caps.write_gate, startEditable: !uart1 && patch.caps.start_gate, powerEditable: !uart1 && power !== false, power };
+  const fixed = fixedOf(patch, uart1);
+  return { named: true, writeEditable: !(fixed & G0.write), startEditable: !(fixed & G0.start), powerEditable: !(fixed & G0.powerLock), power: patch.caps.power_rtc ?? null };
 }
 
 /** How the shared table rows of Group0 bits 0 and 2 are labelled: by their function only when every column with switches
@@ -91,22 +99,25 @@ export function selfLock(patch: PackPatch | null | undefined, before: number | u
 
 /** Over the CAN socket, a proven pack whose write release is off: no write goes out (the backend refuses it too). */
 export function writeLocked(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): boolean {
-  return uart1 && !!patch?.caps.write_gate && group0 !== undefined && (group0 & 1) === 0;
+  const need = planOf(patch, uart1).need_set;
+  return uart1 && need !== 0 && group0 !== undefined && (group0 & need) !== need;
 }
 
 /** MAINT 1.6, Group0 bit 4: 0 switches the extended off with the stored pack cutoff on. */
-export const CUTOFF_BIT = 0x10;
+export const CUTOFF_BIT = G0.extendedOff;
 /** MAINT 1.6, Group0 bit 5: 0 shows a stored individual pack cutoff. Status only, never written. */
-export const LOCK_BIT = 0x20;
+export const LOCK_BIT = G0.lockState;
 
 /** Group0 bits 4 and 5 of a parameter column: `cutoff` the pack's proven pack cutoff (image flag bit 2 with 1.6; null not
  *  known, false none); bit 4 editable over RS485-1/2 unless the build has none, over the CAN socket only with the cutoff
  *  proven on this connection and writing released there (bit 0 of `group0`). Bit 5 is never editable. */
 export function cutoffBits(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): { cutoff: boolean | null; cutoffEditable: boolean } {
   if (!patch) return { cutoff: null, cutoffEditable: false };
-  const cutoff = patch.caps.pack_cutoff ?? null;
-  return { cutoff, cutoffEditable: uart1 ? cutoff === true && group0 !== undefined && (group0 & 1) === 1 : cutoff !== false };
+  return { cutoff: patch.caps.pack_cutoff ?? null, cutoffEditable: !(fixedOf(patch, uart1) & G0.extendedOff) && !(uart1 && !writeReleased(group0)) };
 }
+
+/** Over the CAN socket bit 4 is offered only while the last read shows writing released there (bit 0). */
+const writeReleased = (group0: number | undefined) => group0 !== undefined && (group0 & G0.write) !== 0;
 
 /** Bits 4 and 5 of Group0 read inverted (on = bit 0) in a proven column: „Erweitertes Aus …“ and „Packsperre aktiv“. */
 export const invertedBit = (g: number, b: number, named: boolean) => named && g === 0 && (b === 4 || b === 5);
@@ -117,9 +128,7 @@ export const switchOn = (v: number, b: number, inverted: boolean) => (((v >> b) 
 /** The bits of Group0 an edit takes from the pack as it is now instead of the edited (or restored) block: bit 5 always,
  *  and over the CAN socket or in a proven column every patch bit this path does not change. */
 export function keepMask(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): number {
-  const gate = gateBits(patch, uart1), cut = cutoffBits(patch, uart1, group0);
-  const fixed = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4) | (gate.powerEditable ? 0 : 8) | (cut.cutoffEditable ? 0 : CUTOFF_BIT);
-  return LOCK_BIT | (uart1 || gate.named ? fixed : 0);
+  return fixedOf(patch, uart1) | (uart1 && !writeReleased(group0) ? G0.extendedOff : 0);
 }
 
 /** The label of the shared rows of bits 4 and 5: by their function only when every column with switches has a proof

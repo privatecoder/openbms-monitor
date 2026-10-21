@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { accessRows, bestState, cellTitle, reasonText } from "./access";
+import { accessRows, bestState, cellTitle, decide, group0Plan, reasonText, ROUTES, type Facts, type Group0Plan, type Proof } from "./access";
+import VECTORS from "./generated/access.vectors.json";
 import type { AccessDecision } from "./api";
 
 const d = (action: string, channel: "uart0" | "uart1" | "uart2", state: AccessDecision["state"], reasons: AccessDecision["reasons"] = []): AccessDecision =>
@@ -31,6 +32,21 @@ describe("access matrix texts", () => {
         expect(text, JSON.stringify(r)).not.toMatch(/acc\./);
       }
       expect(cellTitle(t, [d("set-can-protocol", "uart2", "not-implemented", [{ id: "local-board" }])])).toMatch(/^W: .+\n· /);
+    }
+  });
+});
+
+describe("the catalog evaluated as in Rust", () => {
+  it("decides every route like access::decide for every vector", () => {
+    for (const v of VECTORS.decide) {
+      const got = ROUTES.map((r) => decide(r, v.facts as Facts));
+      expect(got).toEqual(v.decisions);
+    }
+    expect(VECTORS.decide.length).toBeGreaterThan(50);
+  });
+  it("plans Group0 like access::group0_plan", () => {
+    for (const v of VECTORS.group0) {
+      expect(group0Plan(v.channel as "uart0" | "uart1" | "uart2", v.proof as Proof | null)).toEqual(v.plan as Group0Plan);
     }
   });
 });

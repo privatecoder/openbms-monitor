@@ -5,6 +5,8 @@ import { api, isDemo, linkNow, type Bus } from "../api";
 import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, noteProgress, sameInstallation, startHistoryRead, summary, type HistoryRun, type LastRead } from "../bmsMemory";
 import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
 import { errorText } from "../control";
+import { factsOf, offerable } from "../access";
+import { channelOf } from "../power";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { SevIcon } from "../components/widgets";
@@ -29,7 +31,9 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const result = tagged && sameInstallation(tagged.link, linkNow()) && tagged.read.address === address ? tagged.read : null;
   const [progress, setProgress] = useState<number | null>(() => currentRun()?.n ?? null);
   const [saved, setSaved] = useState<{ name: string } | { error: string } | null>(null);
-  const usable = connected && (bus === "pack" || isDemo);
+  // the history read exists only where the catalog has the app's way for it (RS485-1/2)
+  const channel = channelOf(bus);
+  const usable = connected && (isDemo || (!!channel && offerable("read-history", channel, factsOf({}))));
   const { read: clock } = useBmsClock(address, usable);
   const diff = readDiff(clock);
 

@@ -26,7 +26,8 @@ import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, invertedBit, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
-import { controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
+import { channelOf, controlHint, controlMode, packCutoff, powerLocked, powerRtc } from "../power";
+import { factsOf, offerable } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -93,12 +94,13 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const file = useRef<HTMLInputElement>(null);
   // one pack for the clock, the CAN protocol, the calibration and the control
   const [chosen, setChosen] = usePackChoice(packs);
-  // „Nur ansehen“ writes nothing to a pack
-  const writable = connected && (isDemo || (bus === "pack" && !!installation));
-  // the CAN socket's parameter service reads from MAINT 1.2 on and writes from 1.3 on (the backend checks the board's
-  // identity before every write and names why it refuses); the other writes stay on RS485-1/2
+  // what the app writes over this connection's channel (`access.json`); „Nur ansehen“ writes nothing to a pack. The CAN
+  // socket's parameter service needs the patch (the backend checks the board's identity before every write and names
+  // why it refuses); the other writes stay on RS485-1/2
+  const channel = channelOf(bus);
+  const offers = (action: string) => connected && (isDemo || (!!channel && offerable(action, channel, factsOf({ installation: !!installation, maint: "yes", address: 1 }))));
   const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
-  const paramWritable = writable || (connected && bus === "can" && !!installation);
+  const paramWritable = offers("write-parameters");
   // ein/aus, restart and the clock over the CAN socket: per pack, as this connection proved the image flag (the master by
   // the profile, a slave by its own 64/03), with the lock bit of the newest state seen
   const profile = useProfile();
@@ -598,11 +600,11 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         {chosen !== null && unchecked.has(chosen) && <p className="flex items-center gap-1.5 text-sm text-discharge">{t("bank.unchecked", { pack: packNo(chosen) })}<InfoIcon id="topic.installations" /></p>}
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")}
           installation={!!installation} power={powerOf} powerLock={lockOf} />
-        <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
-        <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
-        <NameLine address={chosen} usable={writable} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
+        <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={lockedBut("can")} onBusy={busyFor("can")} />
+        <SerialLine address={chosen} usable={offers("write-serials")} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
+        <NameLine address={chosen} usable={offers("write-name")} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
-        <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
+        <CalibrationSection address={chosen} usable={offers("calibrate")} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
