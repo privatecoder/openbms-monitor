@@ -541,7 +541,16 @@ async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>, connecting
     // only the search of a connect stops on its „Abbrechen“ (not e.g. the calibration's device query)
     let cancel = state.connect_cancel.clone();
     let connecting = connecting.unwrap_or(false);
-    with_conn(&state.conn, &state.flashing, |c| Ok(c.scan(addresses.into_iter().take_while(|_| !(connecting && cancel.load(Ordering::SeqCst))))))
+    // one address per hold of the connection: the polling started right after connecting goes on between them instead of
+    // waiting up to some 15 s for the whole query (twelve silent addresses at up to 1.2 s each)
+    let mut found = Vec::new();
+    for a in addresses {
+        if connecting && cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        found.extend(with_conn(&state.conn, &state.flashing, |c| Ok(c.scan([a])))?);
+    }
+    Ok(found)
 }
 
 /// Read the master's system values once and send them like a polling round would (CAN socket bus only).
@@ -774,17 +783,24 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 if is_quiet {
                     quiet_asked += 1;
                 }
-                let asked = std::time::Instant::now();
                 // a restarting pack is watched by its own action; asking it now would only wait for timeouts
                 if control::pack_action(&ops, address) == Some("restart") {
                     continue;
                 }
+                // the time of the exchange itself, measured under the connection lock: waiting for another holder of
+                // the port (a device query, a serial read) is no silence of this pack
+                let mut took = Duration::ZERO;
                 // held by a parameter write meanwhile: the rest of the round is skipped, no pack counts as silent
-                let Some(telemetry) = poll_exchange(&conn, &flashing, &hold, |c| c.telemetry(address)) else { break };
+                let Some(telemetry) = poll_exchange(&conn, &flashing, &hold, |c| {
+                    let asked = std::time::Instant::now();
+                    let r = c.telemetry(address);
+                    took = asked.elapsed();
+                    r
+                }) else { break };
                 // a pack silent to 0x42 (through its longer wait over a gateway) is not asked 0x44 in this round, and
                 // counts as silent for the order of the next round (`poll_order`)
                 let mute = telemetry.as_ref().is_err_and(|e| silent(e));
-                if mute { silent_packs.insert(address); waited_silent += asked.elapsed(); } else { silent_packs.remove(&address); }
+                if mute { silent_packs.insert(address); waited_silent += took; } else { silent_packs.remove(&address); }
                 let status = if mute { Err(telemetry.as_ref().unwrap_err().clone()) }
                     else { let Some(s) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break }; s };
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
