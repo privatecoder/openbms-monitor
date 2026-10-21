@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BM_NAMES, KEYS, UNITS, deviating, exportName, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
+import { BM_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -108,5 +108,16 @@ describe("device name", () => {
   it("takes 1–10 printable ASCII characters without outer spaces", () => {
     for (const ok of ["X", "PACK-01", "0123456789", "A B"]) expect(nameInputOk(ok), ok).toBe(true);
     for (const bad of ["", "01234567890", " X", "X ", "Ä", "A\tB", " "]) expect(nameInputOk(bad), bad).toBe(false);
+  });
+});
+
+describe("a stored read", () => {
+  it("keeps the patch it was taken under, so its release bits read as then", () => {
+    const parameters: Parameters = { address: 0, parameters: [], function_switches: [0xff, 0, 0, 0, 0, 0, 0, 0], device_name: "SYN" };
+    const patch = { source: "master" as const, release: "16.06.13 MAINT 1.6", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, at: 1 };
+    const row = { address: 0, at: 1, kind: "read" as const, board: "current" as const, bms_serial: "SYN-0", parameters };
+    expect(fromStored({ ...row, patch }).read?.patch).toEqual(patch);
+    expect(fromStored(row).read?.patch).toBeUndefined();
+    expect(fromStored({ ...row, parameters: null }).read).toBeUndefined();
   });
 });

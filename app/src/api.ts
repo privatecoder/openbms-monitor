@@ -309,7 +309,9 @@ export interface InstallationOverview {
 /** The newest stored parameter block of a place, parsed (null: not readable). */
 export interface SnapshotParams { address: number; at: number; kind: StoredSnapshot["kind"]; board: StoredSnapshot["board"]; bms_serial: string | null; parameters: Parameters | null;
   /** a read after a refused write whose switches differ from the stored ones then: maybe live in RAM only */
-  switches_unconfirmed?: boolean }
+  switches_unconfirmed?: boolean;
+  /** the patch the read was taken under (the proof of that connection); null: none proven then */
+  patch?: PackPatch | null }
 /** The old settings of one site key, raw text as found in the browser storage. */
 export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: string; diag?: string }
 /** What a patched firmware offers (by its patch version; never compared against a version number in the UI). */

@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -168,6 +168,17 @@ fn hard_stop_seen(db: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS hard_stop_seen(installation TEXT NOT NULL, address INTEGER NOT NULL, board INTEGER, bms_serial TEXT,
              observed INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation, address)) WITHOUT ROWID;",
     )
+}
+
+/// 11: the patch a read was taken under (`profile::PackPatch` as JSON: the proof this connection had for the board then),
+/// so a stored read shows its release bits like the column did; NULL: no proof then, or a read from before.
+fn snapshot_patch(db: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = db.prepare("SELECT name FROM pragma_table_info('param_snapshots')")?;
+    let have = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    if !have.iter().any(|c| c == "patch") {
+        db.execute_batch("ALTER TABLE param_snapshots ADD COLUMN patch TEXT;")?;
+    }
+    Ok(())
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -900,6 +911,9 @@ pub struct StoredSnapshot {
     /// A read after a refused write whose switches differ from the stored ones at the refusal: they may be live in
     /// RAM only (a restart brings back the stored ones). Set by `latest_snapshots` only.
     pub switches_unconfirmed: bool,
+    /// the patch the read was taken under (JSON of `profile::PackPatch`), None: none proven then
+    #[serde(skip)]
+    pub patch: Option<String>,
 }
 
 /// The function switches of a parameter block (bytes 151..159), None for a block too short.
@@ -1241,6 +1255,12 @@ impl Store {
         Ok(self.db.last_insert_rowid())
     }
 
+    /// The patch a kept read was taken under (`snapshot_patch`).
+    pub fn set_snapshot_patch(&self, id: i64, patch: &str) -> Result<(), String> {
+        self.db.execute("UPDATE param_snapshots SET patch = ?2 WHERE id = ?1", params![id, patch]).map_err(e)?;
+        Ok(())
+    }
+
     /// Keep a parameter block of a place with the String 2 of its newest board (None: no board identified yet).
     pub fn add_param_snapshot(&self, inst: &str, address: u8, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
         let serial = self.current_board(inst, address)?.map(|b| b.bms_serial);
@@ -1513,12 +1533,12 @@ impl Store {
     /// The blocks of a place, newest first, each with its board.
     fn snapshots_at(&self, inst: &str, address: u8, filter: &str) -> Result<Vec<StoredSnapshot>, String> {
         let board = self.current_board(inst, address)?;
-        let sql = format!("SELECT id, bms_serial, at, kind, block FROM param_snapshots WHERE installation = ?1 AND address = ?2 {filter} ORDER BY at DESC, id DESC");
+        let sql = format!("SELECT id, bms_serial, at, kind, block, patch FROM param_snapshots WHERE installation = ?1 AND address = ?2 {filter} ORDER BY at DESC, id DESC");
         let mut stmt = self.db.prepare(&sql).map_err(e)?;
         let rows = stmt
             .query_map(params![inst, address], |r| {
                 let serial: Option<String> = r.get(1)?;
-                Ok(StoredSnapshot { id: r.get(0)?, address, board: board_of(serial.as_deref(), board.as_ref()), bms_serial: serial, at: r.get(2)?, kind: r.get(3)?, block: r.get(4)?, switches_unconfirmed: false })
+                Ok(StoredSnapshot { id: r.get(0)?, address, board: board_of(serial.as_deref(), board.as_ref()), bms_serial: serial, at: r.get(2)?, kind: r.get(3)?, block: r.get(4)?, switches_unconfirmed: false, patch: r.get(5)? })
             })
             .map_err(e)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
@@ -2325,5 +2345,17 @@ mod tests {
         // the old tables stay, unread
         let n: i64 = s.db.query_row("SELECT COUNT(*) FROM flash_blocks", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn a_kept_read_keeps_the_patch_it_was_taken_under() {
+        let s = Store::open(&temp("snapshot-patch")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let id = s.add_param_snapshot(&a.id, 1, SnapshotKind::Read, &[1, 2], 5).unwrap();
+        s.set_snapshot_patch(id, r#"{"release":"16.06.13 MAINT 1.6"}"#).unwrap();
+        s.add_param_snapshot(&a.id, 2, SnapshotKind::Read, &[3], 6).unwrap();
+        let rows = s.latest_snapshots(&a.id).unwrap();
+        assert_eq!(rows[0].patch.as_deref(), Some(r#"{"release":"16.06.13 MAINT 1.6"}"#));
+        assert_eq!(rows[1].patch, None, "no proof then: nothing kept");
     }
 }
