@@ -83,10 +83,12 @@ describe("withPlaceholders", () => {
   const col = (id: string, extra: Partial<Source> = {}): Source => ({ id, kind: "pack", label: id, ...extra });
   it("adds an empty column per pack on the bus, in pack order before the rest", () => {
     const file: Source = { id: "f", kind: "file", label: "x.xml" };
-    const read = col("pack-1", { values: [1] });
+    const read = col("pack-1", { address: 1, values: [1] });
     const s = withPlaceholders([file, read], [0, 1, 2], true);
     expect(s.map((x) => x.id)).toEqual(["pack-0", "pack-1", "pack-2", "f"]);
     expect(s[0].notRead).toBe(true);
+    // with its address: the column can be read alone before the first read
+    expect(s.map((x) => x.address)).toEqual([0, 1, 2, undefined]);
     expect(s[1]).toBe(read);
   });
   it("keeps the array when nothing changes and drops the empty columns without a bus", () => {

@@ -208,7 +208,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       return next;
     } catch (e) {
       if (linkNow() !== l) return null;
-      return { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) };
+      return { id: `pack-${address}`, kind: "pack", address, label: packNo(address), error: String(e) };
     }
   };
 
@@ -216,7 +216,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     setSaved(null); setRunState(null);
     const ids = new Set(packs.map((a) => `pack-${a}`));
     // columns appear at once, in pack order before the opened files, and fill as the answers come in
-    setSources((s) => [...packs.map((a) => ({ id: `pack-${a}`, kind: "pack" as const, label: packNo(a) })), ...s.filter((x) => !ids.has(x.id))]);
+    setSources((s) => [...packs.map((a) => ({ id: `pack-${a}`, kind: "pack" as const, address: a, label: packNo(a) })), ...s.filter((x) => !ids.has(x.id))]);
     // the read belongs to the link it began on: an answer after a change is dropped, the rest not read
     const l = linkNow();
     for (const [n, address] of packs.entries()) {
@@ -232,7 +232,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const readOne = async (address: number) => {
     setSaved(null);
     const id = `pack-${address}`, l = linkNow();
-    setSources((s) => s.map((x) => (x.id === id ? { id, kind: "pack" as const, label: packNo(address) } : x)));
+    setSources((s) => s.map((x) => (x.id === id ? { id, kind: "pack" as const, address, label: packNo(address) } : x)));
     setReading({ address, n: 1, of: 1 });
     const next = await readPack(address, l);
     if (next) setSources((s) => s.map((x) => (x.id === id ? next : x)));

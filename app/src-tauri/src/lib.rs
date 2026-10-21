@@ -255,6 +255,15 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
     f(c).map_err(|e| e.to_string())
 }
 
+/// The order of one poll round: the packs that answered last time first (asked every round), then the silent ones
+/// starting at `turn` (asked only within `timing::ROUND_SILENT_BUDGET`, so a long round goes on with them next time).
+fn poll_order(addresses: &[u8], silent: &std::collections::BTreeSet<u8>, turn: usize) -> (Vec<u8>, Vec<u8>) {
+    let (quiet, live): (Vec<u8>, Vec<u8>) = addresses.iter().partition(|a| silent.contains(a));
+    let n = quiet.len().max(1);
+    let quiet = (0..quiet.len()).map(|i| quiet[(turn + i) % n]).collect();
+    (live, quiet)
+}
+
 /// The text of `openbms_transport::Error::Timeout`: the pack stayed silent (not a broken link, not a refusal).
 fn silent(e: &str) -> bool {
     e.starts_with("no answer within")
@@ -705,6 +714,8 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
         // CAN socket: the master's battery serial until it answers (the UI reads it once after connecting), every
         // 1, 2, 4 … 32 rounds
         let (mut round, mut master_at, mut master_every) = (0u32, 0u32, 1u32);
+        // packs whose last 0x42 stayed silent, and where the next round goes on with them
+        let (mut silent_packs, mut turn) = (std::collections::BTreeSet::<u8>::new(), 0usize);
         while running.load(Ordering::SeqCst) {
             // a BMS history read or a parameter write over the CAN socket has the bus to itself
             if paused.load(Ordering::SeqCst) || hold.load(Ordering::SeqCst) > 0 {
@@ -740,9 +751,18 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     }
                 }
             }
-            for &address in &addresses {
+            let (live_first, quiet) = poll_order(&addresses, &silent_packs, turn);
+            let mut quiet_asked = 0usize;
+            for (i, &address) in live_first.iter().chain(quiet.iter()).enumerate() {
                 if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) || hold.load(Ordering::SeqCst) > 0 {
                     break;
+                }
+                // silent packs only within the round's budget: the rest waits for the next round, counted as nothing
+                if i >= live_first.len() {
+                    if started.elapsed() >= openbms_transport::timing::ROUND_SILENT_BUDGET {
+                        break;
+                    }
+                    quiet_asked += 1;
                 }
                 // a restarting pack is watched by its own action; asking it now would only wait for timeouts
                 if control::pack_action(&ops, address) == Some("restart") {
@@ -750,9 +770,11 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 }
                 // held by a parameter write meanwhile: the rest of the round is skipped, no pack counts as silent
                 let Some(telemetry) = poll_exchange(&conn, &flashing, &hold, |c| c.telemetry(address)) else { break };
-                // a pack silent to 0x42 (through its longer wait over a gateway) is not asked 0x44 in this round: the
-                // round stays as long as before the longer waits, so the master's next answer is not pushed out
-                let status = if telemetry.as_ref().is_err_and(|e| silent(e)) { Err(telemetry.as_ref().unwrap_err().clone()) }
+                // a pack silent to 0x42 (through its longer wait over a gateway) is not asked 0x44 in this round, and
+                // counts as silent for the order of the next round (`poll_order`)
+                let mute = telemetry.as_ref().is_err_and(|e| silent(e));
+                if mute { silent_packs.insert(address); } else { silent_packs.remove(&address); }
+                let status = if mute { Err(telemetry.as_ref().unwrap_err().clone()) }
                     else { let Some(s) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break }; s };
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
                 // A dead link (gateway closed the socket, broken pipe) does not heal by retrying: drop it and
@@ -784,6 +806,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 }
                 let _ = app.emit("pack", update);
             }
+            turn = turn.wrapping_add(quiet_asked);
             if running.load(Ordering::SeqCst) && current() {
                 notifications::round_end(&app, &state);
             }
@@ -1105,6 +1128,14 @@ pub fn run() {
 #[cfg(test)]
 mod port_reservation_tests {
     use super::*;
+
+    #[test]
+    fn a_poll_round_asks_the_answering_packs_first_and_the_silent_ones_in_turns() {
+        let silent: std::collections::BTreeSet<u8> = [2, 3, 5].into();
+        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 0), (vec![0, 1, 4], vec![2, 3, 5]));
+        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 2), (vec![0, 1, 4], vec![5, 2, 3]));
+        assert_eq!(poll_order(&[0, 1], &Default::default(), 7), (vec![0, 1], vec![]));
+    }
 
     #[test]
     fn only_a_timeout_counts_as_a_silent_pack() {
