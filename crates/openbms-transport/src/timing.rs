@@ -77,9 +77,10 @@ pub const FLASH_REACH_PAUSE: Duration = ms(100);
 /// After a failed flash: how long the pack may take to answer as an application again, and the pause between tries.
 pub const RECOVERY: Duration = ms(6000);
 pub const RECOVERY_PAUSE: Duration = ms(200);
-/// Polling: packs that stayed silent last time are asked only while a round is younger than this (in turns, the
-/// rest in the next round); the packs that answered come first and are asked every round, so the master's next
-/// answer comes well within the UI's 60 s for a lost connection, however long the learnt waits are.
+/// Polling: how long one round may wait for packs that stay silent. Once its silent waits add up to this, the round
+/// ends (one pack silent last time is still asked, in turns, so a pack that comes back is seen). Answers cost only
+/// their own time, so between two answers of the bank lie at most this plus one longer wait: well within the UI's
+/// 60 s for a lost connection, however long the learnt waits are.
 pub const ROUND_SILENT_BUDGET: Duration = ms(30_000);
 /// How long a user action waits for its pack, and for the port, before it reports „busy“ (app). The port wait covers
 /// one pack scan of silent addresses at their longest (`CAPABILITY_TRY` × `PROBE_STRETCH` × 15) plus the bank check.

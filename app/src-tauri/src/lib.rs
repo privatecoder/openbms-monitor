@@ -255,13 +255,20 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
     f(c).map_err(|e| e.to_string())
 }
 
-/// The order of one poll round: the packs that answered last time first (asked every round), then the silent ones
-/// starting at `turn` (asked only within `timing::ROUND_SILENT_BUDGET`, so a long round goes on with them next time).
+/// The order of one poll round: the packs that answered last time first, in address order, then the silent ones
+/// starting at `turn` (`may_ask` ends a round once its silent waits used up their budget).
 fn poll_order(addresses: &[u8], silent: &std::collections::BTreeSet<u8>, turn: usize) -> (Vec<u8>, Vec<u8>) {
     let (quiet, live): (Vec<u8>, Vec<u8>) = addresses.iter().partition(|a| silent.contains(a));
     let n = quiet.len().max(1);
     let quiet = (0..quiet.len()).map(|i| quiet[(turn + i) % n]).collect();
     (live, quiet)
+}
+
+/// Whether a poll round asks its next pack: until the round's silent waits reach `timing::ROUND_SILENT_BUDGET`; one
+/// pack that was silent before (`quiet`) is always asked, so a pack that comes back is seen however long the answers
+/// of the others take.
+fn may_ask(waited_silent: Duration, quiet: bool, quiet_asked: usize) -> bool {
+    waited_silent < openbms_transport::timing::ROUND_SILENT_BUDGET || (quiet && quiet_asked == 0)
 }
 
 /// The text of `openbms_transport::Error::Timeout`: the pack stayed silent (not a broken link, not a refusal).
@@ -752,18 +759,21 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 }
             }
             let (live_first, quiet) = poll_order(&addresses, &silent_packs, turn);
-            let mut quiet_asked = 0usize;
+            let (mut quiet_asked, mut waited_silent) = (0usize, Duration::ZERO);
             for (i, &address) in live_first.iter().chain(quiet.iter()).enumerate() {
                 if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) || hold.load(Ordering::SeqCst) > 0 {
                     break;
                 }
-                // silent packs only within the round's budget: the rest waits for the next round, counted as nothing
-                if i >= live_first.len() {
-                    if started.elapsed() >= openbms_transport::timing::ROUND_SILENT_BUDGET {
-                        break;
-                    }
+                // the round's silent waits are used up: the rest waits for the next round, counted as nothing (packs
+                // that answered last time come first then, the silent ones go on in turns)
+                let is_quiet = i >= live_first.len();
+                if !may_ask(waited_silent, is_quiet, quiet_asked) {
+                    break;
+                }
+                if is_quiet {
                     quiet_asked += 1;
                 }
+                let asked = std::time::Instant::now();
                 // a restarting pack is watched by its own action; asking it now would only wait for timeouts
                 if control::pack_action(&ops, address) == Some("restart") {
                     continue;
@@ -773,7 +783,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 // a pack silent to 0x42 (through its longer wait over a gateway) is not asked 0x44 in this round, and
                 // counts as silent for the order of the next round (`poll_order`)
                 let mute = telemetry.as_ref().is_err_and(|e| silent(e));
-                if mute { silent_packs.insert(address); } else { silent_packs.remove(&address); }
+                if mute { silent_packs.insert(address); waited_silent += asked.elapsed(); } else { silent_packs.remove(&address); }
                 let status = if mute { Err(telemetry.as_ref().unwrap_err().clone()) }
                     else { let Some(s) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break }; s };
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
@@ -1135,6 +1145,18 @@ mod port_reservation_tests {
         assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 0), (vec![0, 1, 4], vec![2, 3, 5]));
         assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 2), (vec![0, 1, 4], vec![5, 2, 3]));
         assert_eq!(poll_order(&[0, 1], &Default::default(), 7), (vec![0, 1], vec![]));
+    }
+
+    #[test]
+    fn a_round_ends_after_its_silent_waits_but_always_tries_one_silent_pack() {
+        let budget = openbms_transport::timing::ROUND_SILENT_BUDGET;
+        // packs that fall silent during the round: their waits end it
+        assert!(may_ask(budget - Duration::from_millis(1), false, 0));
+        assert!(!may_ask(budget, false, 0));
+        // long answers of the others cost no budget, and one silent pack is tried anyway
+        assert!(may_ask(budget, true, 0));
+        assert!(!may_ask(budget, true, 1));
+        assert!(may_ask(Duration::ZERO, true, 5));
     }
 
     #[test]
