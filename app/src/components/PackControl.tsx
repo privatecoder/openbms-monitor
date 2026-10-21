@@ -3,9 +3,10 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
+import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, learnedFullAllowed, learnedFullRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
+import { capacityResets } from "../paramWrite";
 import { CUTOFF_BIT, getProfile } from "../profile";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
@@ -18,7 +19,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** P79: SOC protection in %. */
 const P79 = 79;
 
-type Action = "restart" | "on" | "off" | "heater" | "remaining" | "clear";
+type Action = "restart" | "on" | "off" | "heater" | "remaining" | "learned" | "clear";
 type Tone = "ok" | "warn" | "error";
 type Note = { text: string; tone: Tone } | null;
 /** „Aus“ carries what its confirmation was shown with: the kind and the extended off the backend checks again */
@@ -31,7 +32,7 @@ const HEATER_MS = 3600 * 1000;
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack; over the
  *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
-export function PackControlSection({ address, usable, mode = "full", powerLocked = null, cutoff = false, group0, locked, onBusy, onChanged, p79: p79Shown, linkKey }: {
+export function PackControlSection({ address, usable, mode = "full", powerLocked = null, cutoff = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
   mode?: "full" | "power";
   /** CAN socket: Group0 bit 3 as last seen (true: locked, the buttons wait); null: not known, the backend reads it */
@@ -44,6 +45,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   onChanged?: (address: number) => void;
   /** P79 (SOC protection, %) from the pack's read or stored column; null: read once when the field is used */
   p79?: number | null;
+  /** P58 (rated capacity, Ah) from the pack's read or stored column: a later parameter write puts the learned full
+   *  capacity back to it when the two differ by 10 Ah or more */
+  rated?: number | null;
   /** installation and connection: results of an action begun on another one are dropped */
   linkKey: string;
 }) {
@@ -58,6 +62,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   const [noteFor, setNoteFor] = useState<Action | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [ah, setAh] = useState("");
+  const [fullText, setFullText] = useState("");
   // Group0 and the patch of this section's own fresh 0x47 (before „Aus“, after ein/aus): newer than the column; `g0`
   // undefined: the read after an action failed, so neither it nor the column's older value says anything now
   const [fresh47, setFresh47] = useState<{ g0: number | undefined; patch: PackPatch | null } | null>(null);
@@ -79,7 +84,9 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
       if (gen.current !== mine || !same(a, lk)) return null;
       setReadAt(new Date());
       // the field starts at the pack's current value, so a correction only changes what is wrong
-      setAh((v) => (v === "" ? new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(l.telemetry.remaining_capacity_ah) : v));
+      const two = new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
+      setAh((v) => (v === "" ? two.format(l.telemetry.remaining_capacity_ah) : v));
+      setFullText((v) => (v === "" ? two.format(l.telemetry.full_capacity_ah) : v));
       // the forced counter is not readable: an output seen off ends the „forced“ state shown
       if (!heaterOn(l.status)) forced.delete(`${lk}|${a}`);
       setLive(l);
@@ -88,7 +95,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     finally { if (gen.current === mine) setReading(false); }
   };
   useEffect(() => {
-    setLive(null); setNote(null); setAh(""); setP79(null); setAsk(null); setFresh47(null); p79Asked.current.clear();
+    setLive(null); setNote(null); setAh(""); setFullText(""); setP79(null); setAsk(null); setFresh47(null); p79Asked.current.clear();
     if (!open || !usable || address === null) return;
     void reload(address);
   }, [open, usable, address, linkKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,7 +130,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     const lk = linkNow.current;
     setBusy(k); setNote(null); setNoteFor(k);
     try { const n = await f(lk); if (same(a, lk)) setNote(n); }
-    catch (e) { if (same(a, lk)) setNote(failed(e, k === "remaining" ? t("ctl.remaining.refused") : undefined)); }
+    catch (e) { if (same(a, lk)) setNote(failed(e, k === "remaining" ? t("ctl.remaining.refused") : k === "learned" ? t("ctl.learned.refused") : undefined)); }
     finally { setBusy(null); }
   };
 
@@ -277,6 +284,21 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
     return { text: t("ctl.remaining.done", shown), tone: "ok" };
   });
 
+  const setLearned = (a: number, raw: number) => run("learned", a, async (lk) => {
+    await api.packSetLearnedFull(a, raw);
+    if (!same(a, lk)) return null;
+    setNote({ text: t("ctl.remaining.taken"), tone: "ok" });
+    await wait(1500);
+    if (same(a, lk)) setFullText("");
+    const l = await reload(a);
+    if (!l) return { text: t("ctl.sentUnread"), tone: "warn" };
+    const shown = { soc: nf(1).format(l.telemetry.soc), full: nf(2).format(l.telemetry.full_capacity_ah) };
+    // 0x42 shows the learned value itself; another one means the BMS changed it again (learning, an A1)
+    return Math.abs(Math.round(l.telemetry.full_capacity_ah * 100) - raw) <= 1
+      ? { text: t("ctl.learned.done", shown), tone: "ok" }
+      : { text: t("ctl.learned.other", shown), tone: "warn" };
+  });
+
   const clear = (a: number) => run("clear", a, async () => {
     await api.packClearHistory(a);
     const l = await reload(a);
@@ -307,6 +329,12 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
   const full = tel?.full_capacity_ah;
   const soc = raw !== null && full ? socOf(raw, full) : null;
   const under = soc !== null ? belowSocProtection(soc, p79) : null;
+  const learnedRaw = learnedFullRaw(fullText);
+  const rem = tel?.remaining_capacity_ah;
+  const learnedSoc = learnedRaw !== null && rem !== undefined ? socOf(Math.round(rem * 100), learnedRaw / 100) : null;
+  const learnedUnder = learnedSoc !== null ? belowSocProtection(learnedSoc, p79) : null;
+  // the next parameter write (also a name) puts it back to P58
+  const backToRated = learnedRaw !== null && rated !== null && rated !== undefined && capacityResets(learnedRaw / 100, Math.round(rated * 100));
   const disabled = busy !== null || locked;
   // over the CAN socket a lock seen in the last state holds restart and on/off back (Group0 bit 3)
   const powerHeld = can && powerLocked === true;
@@ -354,7 +382,7 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
             )}
           </div>
           {powerHeld && <StatusLine tone="warn">{t("ctl.powerLocked")}</StatusLine>}
-          {noteFor !== "remaining" && noteFor !== "clear" && noteLine}
+          {noteFor !== "remaining" && noteFor !== "learned" && noteFor !== "clear" && noteLine}
           <p className="max-w-3xl text-muted">{t(can ? "ctl.canHint" : "ctl.heater.hint")}</p>
           {!can && <>
             <div className="space-y-1">
@@ -372,6 +400,24 @@ export function PackControlSection({ address, usable, mode = "full", powerLocked
               {under === null && soc !== null && <StatusLine>{t("ctl.remaining.underUnknown")}</StatusLine>}
               {noteFor === "remaining" && noteLine}
               <p className="max-w-3xl text-muted">{t("ctl.remaining.hint")}</p>
+            </div>
+
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <label className="flex items-center gap-2">{t("ctl.learned.field")}
+                  <input className={input} inputMode="decimal" value={fullText} onChange={(e) => setFullText(e.target.value)} placeholder="0,00" disabled={disabled} />
+                </label>
+                {learnedSoc !== null && <span className="tabular-nums">{t("ctl.learned.soc", { soc: nf(1).format(learnedSoc) })}</span>}
+                <Button size="sm" disabled={disabled || !learnedFullAllowed(learnedRaw, rem)} onClick={() => learnedRaw !== null && void setLearned(address, learnedRaw)} title={t("ctl.tip.learned")}>
+                  {busy === "learned" ? t("ctl.running") : t("ctl.learned.button")}
+                </Button>
+                {fullText.trim() !== "" && learnedRaw === null && <span className="text-discharge">{t("ctl.learned.invalid")}</span>}
+                {learnedRaw !== null && rem !== undefined && !learnedFullAllowed(learnedRaw, rem) && <span className="text-discharge">{t("ctl.learned.tooSmall")}</span>}
+              </div>
+              {learnedUnder === true && <StatusLine tone="warn">{t("ctl.remaining.under", { p: nf(0).format(p79!) })}</StatusLine>}
+              {backToRated && <StatusLine tone="warn">{t("ctl.learned.backToRated", { rated: nf(2).format(rated!) })}</StatusLine>}
+              {noteFor === "learned" && noteLine}
+              <p className="max-w-3xl text-muted">{t("ctl.learned.hint")}</p>
             </div>
 
             <div className="space-y-1">

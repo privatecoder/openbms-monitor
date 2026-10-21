@@ -381,6 +381,13 @@ pub async fn pack_set_remaining(state: State<'_, AppState>, address: u8, install
     control_frame(&state, installation.as_deref(), address, "remaining", |c| c.set_remaining(address, raw))
 }
 
+/// Set the learned full capacity, `raw` in 10 mAh (0x49 index 58); RTN 06 when the remaining capacity exceeds it. P58
+/// stays; a later parameter write puts the learned value back to P58 when the two differ by 10 Ah or more.
+#[tauri::command]
+pub async fn pack_set_learned_full(state: State<'_, AppState>, address: u8, installation: Option<String>, raw: u16) -> Result<Written<()>, String> {
+    control_frame(&state, installation.as_deref(), address, "learned_full", |c| c.set_learned_full(address, raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

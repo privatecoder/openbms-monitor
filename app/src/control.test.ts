@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { PackPatch, Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, remainingAllowed, remainingRaw, relockAsk, relockable, shownOff, socOf, switchUnclear } from "./control";
+import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, learnedFullAllowed, learnedFullRaw, remainingAllowed, remainingRaw, relockAsk, relockable, shownOff, socOf, switchUnclear } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -261,5 +261,24 @@ describe("off and lock at a pack already off", () => {
     expect(relockAsk("cutoffMaybe", 0xcf)).toBe("lockedMaybe");
     expect(relockAsk("soft", 0xff)).toBe("soft");
     expect(relockAsk("unread", undefined)).toBe("unread");
+  });
+});
+
+describe("learned full capacity", () => {
+  it("takes Ah above 0 up to 655.35 and never 0", () => {
+    expect(learnedFullRaw("280,00")).toBe(28000);
+    expect(learnedFullRaw("655.35")).toBe(65535);
+    expect(learnedFullRaw("655.36")).toBeNull();
+    expect(learnedFullRaw("0")).toBeNull();
+    expect(learnedFullRaw("0,004")).toBeNull();
+    expect(learnedFullRaw("-1")).toBeNull();
+    expect(learnedFullRaw("")).toBeNull();
+  });
+  it("is allowed from the remaining capacity up, equal included", () => {
+    expect(learnedFullAllowed(10000, 100)).toBe(true);
+    expect(learnedFullAllowed(9999, 100)).toBe(false);
+    expect(learnedFullAllowed(28000, 100)).toBe(true);
+    expect(learnedFullAllowed(28000, undefined)).toBe(false);
+    expect(learnedFullAllowed(null, 100)).toBe(false);
   });
 });

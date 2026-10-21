@@ -114,6 +114,19 @@ export function remainingRaw(text: string): number | null {
 export const remainingAllowed = (raw: number | null, fullAh: number | null | undefined) =>
   raw !== null && fullAh !== null && fullAh !== undefined && raw <= Math.round(fullAh * 100);
 
+/** Learned full capacity typed in Ah → 10 mAh for 0x49/3A; null when empty, not above 0 or too large. 0 is never
+ *  offered: the firmware would take it (with no charge left) and show 0 Ah full at 100 %. */
+export function learnedFullRaw(text: string): number | null {
+  const ah = parseNumber(text);
+  if (ah === null || ah <= 0) return null;
+  const raw = Math.round(ah * 100);
+  return raw > 0 && raw <= 0xffff ? raw : null;
+}
+
+/** The firmware takes a learned full capacity from the remaining capacity up (equal included); below it RTN 06. */
+export const learnedFullAllowed = (raw: number | null, remainingAh: number | null | undefined) =>
+  raw !== null && remainingAh !== null && remainingAh !== undefined && raw >= Math.round(remainingAh * 100);
+
 /** SOC in % the value gives, as the firmware computes it (remaining ÷ full). */
 export const socOf = (raw: number, fullAh: number) => (fullAh > 0 ? (raw / (fullAh * 100)) * 100 : 0);
 

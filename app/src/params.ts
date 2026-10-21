@@ -223,3 +223,6 @@ export function withPlaceholders(s: Source[], packs: number[], readsBus: boolean
   ];
   return next.length === s.length && next.every((x, i) => x === s[i]) ? s : next;
 }
+
+/** A device name the block can hold: 1–10 printable ASCII characters without leading or trailing space. */
+export const nameInputOk = (s: string) => /^[\x21-\x7e]([\x20-\x7e]{0,8}[\x21-\x7e])?$/.test(s);
