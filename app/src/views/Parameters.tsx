@@ -254,10 +254,12 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
       });
   };
   /** A read after a name write: the pack's column (a read of this link), an open edit moves onto it. */
-  const nameRead = (address: number, p: Parameters) => {
+  const nameRead = (address: number, p: Parameters | null, written: boolean) => {
     const l = linkNow();
     if (!sources.some((x) => x.id === `pack-${address}` && x.link === l)) return;
-    replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p);
+    if (p) { replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p); }
+    // the name's A1 is the pack's newest write: „Vorheriger Stand“ and „zuletzt geschrieben“ follow it
+    if (written) void loadHistory(address);
   };
   // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
   const valueOf = (a: number | null, i: number) => {
@@ -599,7 +601,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
         <CanProtocolLine address={chosen} usable={writable} locked={lockedBut("can")} onBusy={busyFor("can")} />
         <SerialLine address={chosen} usable={writable} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={writable} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
-          read={chosen !== null ? targetRead(chosen) : undefined} onRead={nameRead} />
+          read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
         <CalibrationSection address={chosen} usable={writable} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} powerLocked={chosen !== null ? lockOf(chosen) : null}
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}

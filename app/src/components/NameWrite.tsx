@@ -14,9 +14,13 @@ type Note = { text: string; tone: "ok" | "warn" | "error" } | null;
 
 /** The device name of the chosen pack (bytes 159–168 of the parameter block): written with the block read fresh, only
  *  over RS485-1/2. `read`: the parameter column of this connection, its name is what the pack must still hold. */
-export function NameLine({ address, usable, locked, onBusy, linkKey, read, onRead }: {
+export function NameLine({ address, usable, locked, onBusy, linkKey, read, pending, onRead }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void; linkKey: string;
-  read: Parameters | undefined; onRead: (address: number, p: Parameters) => void;
+  read: Parameters | undefined;
+  /** a refused parameter write left its switches live on this pack: any A1 now would store them, so none goes out */
+  pending: boolean;
+  /** `written`: the BMS acknowledged a write (the write history of the pack changed) */
+  onRead: (address: number, p: Parameters | null, written: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
   const [input, setInput] = useState("");
@@ -31,7 +35,7 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, onRea
 
   const nf = new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const name = input.trim();
-  const ok = nameInputOk(name) && !!read && name !== read.device_name;
+  const ok = nameInputOk(name) && !!read && name !== read.device_name && !pending;
 
   const write = async (confirmed: boolean) => {
     if (!read) return;
@@ -49,22 +53,23 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, onRea
       const r = await api.writeName(a, expected, name);
       if (current.current !== key) return;
       if (r.kind === "written") {
-        if (r.read_back) onRead(a, r.read_back);
+        onRead(a, r.read_back, true);
         const back = r.read_back?.device_name;
         setNote(back === undefined ? { text: t("nmw.unread", { err: r.read_error ?? "" }), tone: "warn" }
-          : back === name ? { text: t(r.unanswered ? "nmw.doneUnanswered" : "nmw.done"), tone: "ok" }
+          : back === name ? { text: t("nmw.done"), tone: "ok" }
           : { text: t("nmw.mismatch", { name: back }), tone: "error" });
         if (back === name) setInput("");
       } else if (r.kind === "stale") {
-        onRead(a, r.fresh);
+        onRead(a, r.fresh, false);
         setNote({ text: t("nmw.stale", { name: r.fresh.device_name }), tone: "warn" });
       } else if (r.kind === "unchanged") {
-        onRead(a, r.fresh);
+        onRead(a, r.fresh, false);
         setNote({ text: t("nmw.unchanged"), tone: "ok" });
       } else if (r.kind === "refused") {
         setNote({ text: t("nmw.refused"), tone: "error" });
       } else {
-        setNote({ text: t("nmw.unclear", { err: r.error }), tone: "error" });
+        if (r.read_back) onRead(a, r.read_back, false);
+        setNote({ text: t(r.read_back?.device_name === name ? "nmw.unclearLive" : "nmw.unclear", { err: r.error }), tone: "error" });
       }
     } catch (e) {
       if (current.current === key) setNote({ text: refusal(e) ? t("nmw.refused") : writeError(e, t, (err) => t("nmw.error", { err })), tone: "error" });
@@ -91,6 +96,7 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, onRea
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => setAsk(null)}>{t("ctl.cancel")}</Button>
         </div>
       )}
+      {pending && <StatusLine tone="warn">{t("nmw.pending")}</StatusLine>}
       {note && <StatusLine tone={note.tone}>{note.text}</StatusLine>}
       <p className="max-w-3xl text-muted">{t("nmw.hint")}</p>
     </div>
