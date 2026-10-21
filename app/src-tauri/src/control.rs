@@ -14,8 +14,7 @@
 //! further frame is sent.
 
 use crate::bank::{check_target, Written};
-use crate::bms_memory::{bound_bus, bound_for, refusable, refusal_error};
-use openbms_proto::access::Action;
+use crate::bms_memory::{bound_bus, refusable, refusal_error};
 use crate::power::{way, Act, Done, Way};
 use crate::maint::{refused, MaintError};
 use crate::{current_action, reserve_port, with_link, AppState, Link, PortSlot};
@@ -292,12 +291,21 @@ pub(crate) fn ascii_switch(dev: &mut impl SwitchDev, address: u8, on: bool, expe
     switch_command(dev.on_off(address, on), on)
 }
 
-/// One control frame of RS485-1/2: the pack reserved first, then the connection and its bus taken together
-/// (`bound_for`), the right-bank check, the frame on exactly that link.
-fn control_frame(state: &AppState, installation: Option<&str>, address: u8, (action, kind): (&'static str, Action), f: impl FnOnce(&mut openbms_transport::Connection) -> openbms_transport::Result<()>) -> Result<Written<()>, String> {
-    let _guard = reserve_pack_wait(state, address, action)?;
-    let link = bound_for(state, installation, kind)?;
-    ascii_frame(state, &link, address, |c| command(f(c)))
+/// One plain command (`Act::frame`) to one pack, the same flow on both channels: the pack reserved first, then the
+/// connection and its bus taken together; the catalog picks the channel's access (`power::way`). RS485-1/2: the
+/// right-bank check and the frame (`ascii_frame`); CAN socket: the identity, the fresh switches against the catalog and
+/// the frame (`power::run`). `then` runs on the same link while the pack is still reserved (e.g. a read-back).
+pub(crate) fn act_frame<T>(state: &AppState, installation: Option<&str>, address: u8, name: &'static str, act: Act, then: impl FnOnce(&Link) -> T) -> Result<Written<T>, String> {
+    let _guard = reserve_pack_wait(state, address, name)?;
+    let (link, bus) = bound_bus(state, installation)?;
+    let unchecked = match way(act.action(), bus)? {
+        Way::Power => {
+            crate::power::run(state, &link, address, act)?;
+            false
+        }
+        Way::Ascii => ascii_frame(state, &link, address, |c| command(act.frame(c, address)))?.unchecked,
+    };
+    Ok(Written { value: then(&link), unchecked })
 }
 
 /// The right-bank check and one control frame on `link` (`f` with its answer mapped, `command`); the caller holds the
@@ -317,7 +325,7 @@ pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation:
     let guard = reserve_pack_wait(&state, address, "restart")?;
     let (link, bus) = bound_bus(&state, installation.as_deref())?;
     let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
-    if way(Action::Restart, bus)? == Way::Power {
+    if way(Act::Restart.action(), bus)? == Way::Power {
         let Done::Restarted(sent) = crate::power::run(&state, &link, address, Act::Restart)? else { return Err("no result".into()) };
         let value = tauri::async_runtime::spawn_blocking(move || {
             let _guard = guard;
@@ -355,7 +363,7 @@ fn watch(sent: Instant, answered: impl FnMut() -> Result<bool, String>) -> Resta
 pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool, expect: Option<bool>) -> Result<Written<()>, String> {
     let _guard = reserve_pack_wait(&state, address, "on_off")?;
     let (link, bus) = bound_bus(&state, installation.as_deref())?;
-    match way(Action::PowerOnOff, bus)? {
+    match way(Act::Switch { on, expect }.action(), bus)? {
         Way::Power => {
             crate::power::run(&state, &link, address, Act::Switch { on, expect })?;
             Ok(Written { value: (), unchecked: false })
@@ -367,26 +375,26 @@ pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: 
 /// Force the heater for one hour, or stop it (0x45 type 3).
 #[tauri::command]
 pub async fn pack_heater(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<Written<()>, String> {
-    control_frame(&state, installation.as_deref(), address, ("heater", Action::ForceHeater), |c| c.heater(address, on))
+    act_frame(&state, installation.as_deref(), address, "heater", Act::Heater(on), |_| ())
 }
 
 /// Clear the pack's history, energy counters and cycle count (0x45 type 5).
 #[tauri::command]
 pub async fn pack_clear_history(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<()>, String> {
-    control_frame(&state, installation.as_deref(), address, ("clear", Action::ClearHistory), |c| c.clear(address))
+    act_frame(&state, installation.as_deref(), address, "clear", Act::Clear, |_| ())
 }
 
 /// Set the remaining capacity, `raw` in 10 mAh (0x49 index 59); RTN 06 when it exceeds the full capacity.
 #[tauri::command]
 pub async fn pack_set_remaining(state: State<'_, AppState>, address: u8, installation: Option<String>, raw: u16) -> Result<Written<()>, String> {
-    control_frame(&state, installation.as_deref(), address, ("remaining", Action::SetRemaining), |c| c.set_remaining(address, raw))
+    act_frame(&state, installation.as_deref(), address, "remaining", Act::Remaining(raw), |_| ())
 }
 
 /// Set the learned full capacity, `raw` in 10 mAh (0x49 index 58); RTN 06 when the remaining capacity exceeds it. P58
 /// stays; a later parameter write puts the learned value back to P58 when the two differ by 10 Ah or more.
 #[tauri::command]
 pub async fn pack_set_learned_full(state: State<'_, AppState>, address: u8, installation: Option<String>, raw: u16) -> Result<Written<()>, String> {
-    control_frame(&state, installation.as_deref(), address, ("learned_full", Action::SetLearnedFull), |c| c.set_learned_full(address, raw))
+    act_frame(&state, installation.as_deref(), address, "learned_full", Act::LearnedFull(raw), |_| ())
 }
 
 #[cfg(test)]

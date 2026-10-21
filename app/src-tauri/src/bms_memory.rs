@@ -27,7 +27,7 @@ pub const MAX_RECORDS: usize = 520;
 /// The refusal of a String 2 write whose read before failed (the UI names it).
 pub const PRE_READ: &str = "pre-read: String 2 could not be read before the write; nothing was written";
 
-const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
+pub(crate) const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 const CAN_SOCKET_ONLY: &str = "this command exists only on the CAN socket";
 
 /// The UART a bus reaches the packs on.
@@ -218,11 +218,7 @@ fn full_capacity(state: &AppState, address: u8) -> Result<f64, String> {
 /// One calibration step (0xA0). The UI reads the live values again afterwards.
 #[tauri::command]
 pub async fn bms_calibrate(state: State<'_, AppState>, address: u8, installation: Option<String>, calibration: Calibration) -> Result<Written<()>, String> {
-    let _guard = reserve_pack_wait(&state, address, "calibration")?;
-    let link = bound_for(&state, installation.as_deref(), Action::Calibrate)?;
-    let checked = check_target(&state, &link, address)?;
-    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.calibrate(address, calibration)))?.map_err(refusal_error)?;
-    Ok(Written { value: (), unchecked: checked.unchecked })
+    crate::control::act_frame(&state, installation.as_deref(), address, "calibration", crate::power::Act::Calibrate(calibration), |_| ())
 }
 
 /// Result of a protocol set the BMS accepted: the device info read back, or why that read failed.
@@ -245,12 +241,9 @@ impl CanProtocolSet {
 /// has accepted, a failed read-back is still a success (the protocol is set), with `read_error`.
 #[tauri::command]
 pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installation: Option<String>, protocol: u8) -> Result<Written<CanProtocolSet>, String> {
-    let _guard = reserve_pack_wait(&state, address, "can")?;
-    let link = bound_for(&state, installation.as_deref(), Action::SetCanProtocol)?;
-    let checked = check_target(&state, &link, address)?;
-    with_link(&state.conn, &state.flashing, &state.link, &link, |c| refusable(c.set_can_protocol(address, protocol)))?.map_err(refusal_error)?;
-    let value = CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.device_info(address)));
-    Ok(Written { value, unchecked: checked.unchecked })
+    crate::control::act_frame(&state, installation.as_deref(), address, "can", crate::power::Act::CanProtocol(protocol), |link| {
+        CanProtocolSet::from_read(with_link(&state.conn, &state.flashing, &state.link, link, |c| c.device_info(address)))
+    })
 }
 
 /// Keep a parameter block for the place in the connection's installation (`before`: the link when the exchange

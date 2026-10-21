@@ -15,17 +15,20 @@
 use crate::bms_memory::{refusal_error, uart1_error, uart1_pending, uart1_refusal};
 use crate::uart1_id::{identity, keep, Conn, Dev, Expected, Facts, Session};
 use crate::{with_link, AppState, Link};
+use openbms_proto::access::{self, Action, Channel, Reason, State};
 use openbms_proto::{BmsTime, Refusal};
 use openbms_transport::Bus;
 use std::time::Instant;
 
-/// The ASCII exchanges of the power and clock service besides the binary ones; the connection, or a script in tests.
+/// The ASCII exchanges of the service besides the binary ones; the connection, or a script in tests.
 pub(crate) trait PowerDev: Dev {
     fn on_off(&mut self, address: u8, on: bool) -> Result<(), openbms_transport::SwitchFailure>;
     /// returns when the restart was sent (no answer expected)
     fn restart(&mut self, address: u8) -> openbms_transport::Result<Instant>;
     fn clock(&mut self, address: u8) -> openbms_transport::Result<BmsTime>;
     fn set_clock(&mut self, address: u8, time: BmsTime) -> openbms_transport::Result<()>;
+    /// one command answered with an empty RTN 00 (`Act::frame`)
+    fn frame(&mut self, address: u8, act: Act) -> openbms_transport::Result<()>;
 }
 
 impl PowerDev for Conn<'_> {
@@ -41,9 +44,13 @@ impl PowerDev for Conn<'_> {
     fn set_clock(&mut self, address: u8, time: BmsTime) -> openbms_transport::Result<()> {
         self.c.set_clock(address, time)
     }
+    fn frame(&mut self, address: u8, act: Act) -> openbms_transport::Result<()> {
+        act.frame(self.c, address)
+    }
 }
 
-/// A command that changes the pack. No heater, clearing or remaining capacity: the patch offers none of them here.
+/// A command that changes the pack, the same frame on both channels. Which channel a command may take, with which
+/// firmware and switches, says the catalog (`access`, by `action`); this only says what goes out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Act {
     /// `expect`: for off, the extended off (Group0 bit 4 at 0) the confirmation showed; a fresh read that differs sends
@@ -51,6 +58,44 @@ pub(crate) enum Act {
     Switch { on: bool, expect: Option<bool> },
     Restart,
     SetClock(BmsTime),
+    Heater(bool),
+    Clear,
+    /// 0x49/3B in 10 mAh
+    Remaining(u16),
+    /// 0x49/3A in 10 mAh
+    LearnedFull(u16),
+    Calibrate(openbms_proto::Calibration),
+    CanProtocol(u8),
+}
+
+impl Act {
+    /// The catalog's action of this command.
+    pub(crate) fn action(&self) -> Action {
+        match self {
+            Act::Switch { .. } => Action::PowerOnOff,
+            Act::Restart => Action::Restart,
+            Act::SetClock(_) => Action::SetClock,
+            Act::Heater(_) => Action::ForceHeater,
+            Act::Clear => Action::ClearHistory,
+            Act::Remaining(_) => Action::SetRemaining,
+            Act::LearnedFull(_) => Action::SetLearnedFull,
+            Act::Calibrate(_) => Action::Calibrate,
+            Act::CanProtocol(_) => Action::SetCanProtocol,
+        }
+    }
+
+    /// The frame of a command answered with an empty RTN 00, on either channel; the others have their own exchange.
+    pub(crate) fn frame(&self, c: &mut openbms_transport::Connection, address: u8) -> openbms_transport::Result<()> {
+        match *self {
+            Act::Heater(on) => c.heater(address, on),
+            Act::Clear => c.clear(address),
+            Act::Remaining(raw) => c.set_remaining(address, raw),
+            Act::LearnedFull(raw) => c.set_learned_full(address, raw),
+            Act::Calibrate(cal) => c.calibrate(address, cal),
+            Act::CanProtocol(p) => c.set_can_protocol(address, p),
+            Act::Switch { .. } | Act::Restart | Act::SetClock(_) => Err(openbms_transport::Error::Io(std::io::Error::other("not a plain command frame"))),
+        }
+    }
 }
 
 /// The way an ein/aus, restart or clock command takes on the bus of its link (`bms_memory::bound_bus`): this service on
@@ -75,6 +120,8 @@ pub(crate) enum Done {
     Restarted(Instant),
     /// the clock read back after setting it
     Clock(BmsTime),
+    /// a plain command frame acknowledged
+    Taken,
 }
 
 /// The errors of the service as JSON for the UI (`uart1Error` in control.ts): RTN 05 (locked meanwhile, or data the
@@ -102,9 +149,39 @@ pub(crate) fn switch_error(f: openbms_transport::SwitchFailure, on: bool) -> Str
     }
 }
 
-/// The port session of one command: the strict identity, a fresh binary 0x47 with Group0 bit 3 clear, the command (for
-/// the clock its read-back). Every refusal before the command sends nothing to the pack.
-pub(crate) fn session(dev: &mut impl PowerDev, inst: &str, address: u8, expected: &str, facts: &Facts, act: Act) -> Session<Done> {
+/// Why the catalog does not let `act` go over the CAN socket for `fw` (the pack's firmware facts, its switches as
+/// known): the firmware (not proven: `unsupported`, for ein/aus, restart and the clock `power-unsupported`), a switch
+/// (`power-locked` for Group0 bit 3, else `bit-blocked` with the bit), or another condition (`not-ready`).
+pub(crate) fn not_ready(act: Act, fw: &access::Facts) -> Option<String> {
+    let Some(route) = access::routes(act.action()).find(|r| r.channel == Channel::Uart1 && r.implemented) else {
+        return Some(crate::bms_memory::PACK_BUS_ONLY.into());
+    };
+    let d = access::decide(route, fw);
+    if d.state == State::Ready {
+        return None;
+    }
+    let power = matches!(act.action(), Action::PowerOnOff | Action::Restart | Action::SetClock);
+    // a capability not proven, then a switch known to block, then a switch not read yet (the session reads it fresh)
+    if d.reasons.iter().any(|r| matches!(r, Reason::Firmware { .. })) {
+        return Some(uart1_refusal(if power { "power-unsupported" } else { "unsupported" }));
+    }
+    for r in &d.reasons {
+        match *r {
+            Reason::Bit { group: 0, bit: access::G0_POWER_LOCK, known: Some(_), .. } => return Some(uart1_refusal("power-locked")),
+            Reason::Bit { group, bit, known: Some(_), .. } => return Some(serde_json::json!({ "kind": "uart1", "error": "bit-blocked", "group": group, "bit": bit }).to_string()),
+            _ => {}
+        }
+    }
+    if d.state == State::Unknown && d.reasons.iter().all(|r| matches!(r, Reason::Bit { known: None, .. })) {
+        return None;
+    }
+    Some(uart1_refusal("not-ready"))
+}
+
+/// The port session of one command: the strict identity, a fresh binary 0x47 whose switches the catalog's conditions
+/// accept (`fw`: the pack's firmware facts), the command (for the clock its read-back). Every refusal before the command
+/// sends nothing to the pack.
+pub(crate) fn session(dev: &mut impl PowerDev, inst: &str, address: u8, expected: &str, facts: &Facts, fw: &access::Facts, act: Act) -> Session<Done> {
     let id = identity(dev, inst, address, Expected::Board(expected), facts);
     let mut out = Session { gone: id.gone, unconfirmed: id.unconfirmed, ..Default::default() };
     let serial = match id.serial {
@@ -115,18 +192,20 @@ pub(crate) fn session(dev: &mut impl PowerDev, inst: &str, address: u8, expected
         }
     };
     out.serial = Some(serial);
-    out.result = Some(command(dev, address, act));
+    out.result = Some(command(dev, address, fw, act));
     out
 }
 
-fn command(dev: &mut impl PowerDev, address: u8, act: Act) -> Result<Done, String> {
+fn command(dev: &mut impl PowerDev, address: u8, fw: &access::Facts, act: Act) -> Result<Done, String> {
     let fresh = dev.params(address).map_err(uart1_error)?;
     // byte 0 is the pack's own address: the lock of another pack says nothing here
     if fresh.address != address {
         return Err(format!("the pack at address {address} answered with address {}", fresh.address));
     }
-    if crate::profile::power_locked(fresh.function_switches[0]) {
-        return Err(uart1_refusal("power-locked"));
+    // the catalog's conditions against the switches as the pack has them now (an unread one no longer passes)
+    let now = access::Facts { group0: Some(fresh.function_switches[0]), group7: Some(fresh.function_switches[7]), ..*fw };
+    if let Some(e) = not_ready(act, &now) {
+        return Err(e);
     }
     match act {
         // a soft off confirmed must not become a stored cutoff, nor the reverse
@@ -138,6 +217,7 @@ fn command(dev: &mut impl PowerDev, address: u8, act: Act) -> Result<Done, Strin
             dev.set_clock(address, time).map_err(power_error)?;
             dev.clock(address).map(Done::Clock).map_err(power_error)
         }
+        act => dev.frame(address, act).map(|_| Done::Taken).map_err(power_error),
     }
 }
 
@@ -154,8 +234,10 @@ pub(crate) fn clock(state: &AppState, link: &Link, address: u8) -> Result<BmsTim
 /// there; the store's facts first, then the port session with polling held, then what the store keeps.
 pub(crate) fn run(state: &AppState, link: &Link, address: u8, act: Act) -> Result<Done, String> {
     let inst = link.installation.clone().ok_or("view only: writing to a pack needs a connection with an installation")?;
-    if !crate::profile::power_rtc(state, link, address) {
-        return Err(uart1_refusal("power-unsupported"));
+    // the firmware this connection proved for exactly this pack (never a stored proof: it carries no image flags)
+    let fw = crate::profile::access_facts(crate::profile::pack_patch(state, link, address, None).as_ref(), None, None, address);
+    if let Some(e) = not_ready(act, &fw) {
+        return Err(e);
     }
     uart1_pending(state, link, address)?;
     let (expected, facts) = crate::maint::with_store(state, |s| {
@@ -176,7 +258,7 @@ pub(crate) fn run(state: &AppState, link: &Link, address: u8, act: Act) -> Resul
     let expected = expected.ok_or_else(|| uart1_refusal("no-board"))?;
     let session = {
         let _pause = crate::PollPause::hold(&state.params_pause);
-        with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(session(&mut Conn { c, bus: Bus::CanSocketBus }, &inst, address, &expected, &facts, act)))?
+        with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(session(&mut Conn { c, bus: Bus::CanSocketBus }, &inst, address, &expected, &facts, &fw, act)))?
     };
     keep(state, link, address, &session);
     session.result.unwrap_or_else(|| Err("no result".into()))
@@ -229,6 +311,25 @@ mod tests {
             self.sent.push("set_clock");
             self.answer.take().expect("one command")
         }
+        fn frame(&mut self, _address: u8, _act: Act) -> openbms_transport::Result<()> {
+            self.sent.push("frame");
+            self.answer.take().expect("one command")
+        }
+    }
+
+    /// A pack at address 1 with the power and clock build (MAINT 1.5, image flag bit 1), as this connection proved it.
+    fn fw() -> access::Facts {
+        access::Facts {
+            patch: access::Patch::Version([1, 5]),
+            flags: Some(1 << access::FLAG_POWER),
+            group0: None,
+            group7: None,
+            address: 1,
+            installation: true,
+            marker: None,
+            base: None,
+            slaves: None,
+        }
     }
 
     const TIME: BmsTime = BmsTime { year: 2026, month: 3, day: 14, hour: 9, minute: 26, second: 53 };
@@ -242,11 +343,34 @@ mod tests {
     }
 
     fn run(d: &mut Script, act: Act) -> Session<Done> {
-        session(d, "A", 1, "SYN-1", &facts(vec![board(1, "SYN-1", Some(true))]), act)
+        session(d, "A", 1, "SYN-1", &facts(vec![board(1, "SYN-1", Some(true))]), &fw(), act)
     }
 
     fn err(s: &Session<Done>) -> serde_json::Value {
         serde_json::from_str(s.result.as_ref().unwrap().as_ref().unwrap_err()).unwrap()
+    }
+
+    #[test]
+    fn the_catalog_decides_which_commands_go_over_the_can_socket() {
+        // the plain commands have no CAN socket way in the catalog today: refused before anything is sent
+        for act in [Act::Heater(true), Act::Clear, Act::Remaining(100), Act::LearnedFull(28000), Act::CanProtocol(1)] {
+            assert_eq!(not_ready(act, &fw()).as_deref(), Some(crate::bms_memory::PACK_BUS_ONLY), "{act:?}");
+            let mut d = script(0xF7, Ok(()));
+            let s = run(&mut d, act);
+            assert_eq!(s.result.unwrap().unwrap_err(), crate::bms_memory::PACK_BUS_ONLY, "{act:?}");
+            assert!(d.sent.is_empty(), "{act:?}");
+        }
+        // ein/aus: without the build's flag not offered; with it, the lock bit known set blocks, not read yet passes
+        // (the session reads it fresh)
+        let off = Act::Switch { on: false, expect: None };
+        let no_flag = access::Facts { flags: Some(0), ..fw() };
+        assert_eq!(not_ready(off, &no_flag), Some(uart1_refusal("power-unsupported")));
+        assert_eq!(not_ready(off, &fw()), None);
+        assert_eq!(not_ready(off, &access::Facts { group0: Some(0xFF), ..fw() }), Some(uart1_refusal("power-locked")));
+        assert_eq!(not_ready(off, &access::Facts { group0: Some(0xF7), ..fw() }), None);
+        // the mapping of each command to its catalog action
+        assert_eq!(Act::LearnedFull(1).action(), Action::SetLearnedFull);
+        assert_eq!(Act::Calibrate(openbms_proto::Calibration::ZeroPoint).action(), Action::Calibrate);
     }
 
     #[test]
@@ -308,17 +432,17 @@ mod tests {
         let mut d = script(0xF7, Ok(()));
         d.bank.master = Some(SerialValue::Set { value: "SYN-BAT-B".into(), truncated: false });
         let f = Facts { master: Some("SYN-BAT-A".into()), ..facts(vec![board(1, "SYN-1", Some(true))]) };
-        let s = session(&mut d, "A", 1, "SYN-1", &f, Act::Switch { on: false, expect: None });
+        let s = session(&mut d, "A", 1, "SYN-1", &f, &fw(), Act::Switch { on: false, expect: None });
         check(&mut d, s, "other-master");
         // recorded before provenance: one confirmation first, noted for „Übernehmen“
         let mut d = script(0xF7, Ok(()));
-        let s = session(&mut d, "A", 1, "SYN-1", &facts(vec![board(1, "SYN-1", None)]), Act::Restart);
+        let s = session(&mut d, "A", 1, "SYN-1", &facts(vec![board(1, "SYN-1", None)]), &fw(), Act::Restart);
         assert_eq!((err(&s)["kind"].as_str(), err(&s)["why"].as_str()), (Some("bank"), Some("legacy")));
         assert!(s.unconfirmed.is_some() && d.sent.is_empty());
         // the same board answers at another address too
         let mut d = script(0xF7, Ok(()));
         d.bank.strings2.insert(4, Some(raw("SYN-1")));
-        let s = session(&mut d, "A", 1, "SYN-1", &facts(vec![board(1, "SYN-1", Some(true)), board(4, "SYN-1", Some(true))]), Act::Restart);
+        let s = session(&mut d, "A", 1, "SYN-1", &facts(vec![board(1, "SYN-1", Some(true)), board(4, "SYN-1", Some(true))]), &fw(), Act::Restart);
         check(&mut d, s, "duplicate");
     }
 

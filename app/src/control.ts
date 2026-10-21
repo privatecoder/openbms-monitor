@@ -202,8 +202,9 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
-  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed";
-  code?: number; address?: number; board?: number; at?: number | null; gen?: number };
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed"
+  | "unsupported" | "bit-blocked" | "not-ready";
+  code?: number; address?: number; board?: number; at?: number | null; gen?: number; group?: number; bit?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
   let v: unknown = e;
   if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
@@ -236,7 +237,7 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   if (bank) return bankText(bank, t);
   const u = uart1Error(e);
   // RTN 05 from the pack itself (locked meanwhile, or data it does not take) reads apart from the app's own refusal
-  if (u) return t(`uart1.${u.error === "power-locked" && u.code !== undefined ? "power-refused" : u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0") });
+  if (u) return t(`uart1.${u.error === "power-locked" && u.code !== undefined ? "power-refused" : u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0"), group: u.group, bit: u.bit });
   // the same texts on both ports
   const sw = switchError(e);
   if (sw) return t(`uart1.${sw.error}`);
