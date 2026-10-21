@@ -119,6 +119,8 @@ export interface Source {
   previous?: Parameters | null;
   /** after a write: values and switch bytes the read-back does not show as sent */
   notTaken?: { params: Set<number>; switches: Set<number> };
+  /** pack columns: shown for a pack on the bus before anything was read from it (empty, „nicht gelesen“) */
+  notRead?: boolean;
   /** pack columns: an ein/aus changed the pack and its re-read failed; bit 5 (the lock state) is shown unclear until a read */
   lockUnclear?: boolean;
   /** stored columns: when and how the block was kept, and whether it is of the place's current board */
@@ -207,4 +209,17 @@ export const SWITCH_BITS: Record<number, number[]> = {
  *  again on the new link meanwhile, changes nothing. */
 export function withHistory(sources: Source[], address: number, link: string, h: { last_written: number | null; previous: Parameters | null }): Source[] {
   return sources.map((x) => (x.id === `pack-${address}` && x.link === link ? { ...x, lastWritten: h.last_written, previous: h.previous } : x));
+}
+
+/** The empty columns („nicht gelesen“) of the packs on the bus: one per pack without a column, in pack order before the
+ *  other columns; without a readable bus none. Returns `s` itself when nothing changes. */
+export function withPlaceholders(s: Source[], packs: number[], readsBus: boolean): Source[] {
+  const rest = s.filter((x) => !x.notRead);
+  if (!readsBus) return rest.length === s.length ? s : rest;
+  const id = (a: number) => `pack-${a}`;
+  const next = [
+    ...packs.map((a) => rest.find((x) => x.id === id(a)) ?? s.find((x) => x.id === id(a)) ?? { id: id(a), kind: "pack" as const, label: String(a).padStart(2, "0"), notRead: true }),
+    ...rest.filter((x) => !packs.some((a) => x.id === id(a))),
+  ];
+  return next.length === s.length && next.every((x, i) => x === s[i]) ? s : next;
 }

@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Archive, Download, FileUp, FolderOpen, History, PenLine, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
+import { Archive, Download, FileUp, FolderOpen, History, PenLine, RotateCw, SlidersHorizontal, TriangleAlert, X } from "lucide-react";
 import { api, isDemo, linkNow, type Bus, type Installation, type ParamWrite } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
-import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, type Parameters, type Source } from "../params";
+import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
 import { afterUart1Write, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
@@ -191,6 +191,27 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     );
   };
 
+  // the packs on the bus show as empty columns („nicht gelesen“) before a read, so one can be read alone; they go with
+  // the connection
+  const readsBus = connected && (bus === "pack" || bus === "can" || isDemo);
+  useEffect(() => {
+    setSources((s) => withPlaceholders(s, packs, readsBus));
+  }, [link, readsBus, packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** One pack's read on link `l`: its column, or one with the error; null once the link changed (the answer is dropped). */
+  const readPack = async (address: number, l: string): Promise<Source | null> => {
+    try {
+      const p = await api.parameters(address);
+      if (linkNow() !== l) return null;
+      // over the CAN socket only a block of an identified board is stored (MAINT 1.3), so only then is there a last write
+      const next = packCol(p, address, l, path); seen(address, p); if (!path || p.bms_serial) void loadHistory(address);
+      return next;
+    } catch (e) {
+      if (linkNow() !== l) return null;
+      return { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) };
+    }
+  };
+
   const read = async () => {
     setSaved(null); setRunState(null);
     const ids = new Set(packs.map((a) => `pack-${a}`));
@@ -200,19 +221,21 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
     const l = linkNow();
     for (const [n, address] of packs.entries()) {
       setReading({ address, n: n + 1, of: packs.length });
-      let next: Source;
-      try {
-        const p = await api.parameters(address);
-        if (linkNow() !== l) break;
-        // over the CAN socket nothing is stored, so there is no stored last write either
-        // over the CAN socket only a block of an identified board is stored (MAINT 1.3), so only then is there a last write
-        next = packCol(p, address, l, path); seen(address, p); if (!path || p.bms_serial) void loadHistory(address);
-      } catch (e) {
-        if (linkNow() !== l) break;
-        next = { id: `pack-${address}`, kind: "pack", label: packNo(address), error: String(e) };
-      }
+      const next = await readPack(address, l);
+      if (!next) break;
       setSources((s) => s.map((x) => (x.id === next.id ? next : x)));
     }
+    setReading(null);
+  };
+
+  /** „Neu lesen“ of one column: that pack alone, its column replaced in place (also one of an earlier read or error). */
+  const readOne = async (address: number) => {
+    setSaved(null);
+    const id = `pack-${address}`, l = linkNow();
+    setSources((s) => s.map((x) => (x.id === id ? { id, kind: "pack" as const, label: packNo(address) } : x)));
+    setReading({ address, n: 1, of: 1 });
+    const next = await readPack(address, l);
+    if (next) setSources((s) => s.map((x) => (x.id === id ? next : x)));
     setReading(null);
   };
 
@@ -547,7 +570,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
           <Button disabled={!installation || isDemo} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".xml,application/xml,text/xml" multiple className="hidden" onChange={(e) => open(e.target.files)} />
-          {cols.length > 0 && <Button variant="ghost" disabled={!!reading || !!edit || paramsBusy} onClick={() => { setSources(() => []); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
+          {cols.some((c) => !c.notRead) && <Button variant="ghost" disabled={!!reading || !!edit || paramsBusy} onClick={() => { setSources(() => withPlaceholders([], packs, readsBus)); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm" title={diffUsable ? t("par.onlyDiffHint") : t("par.onlyDiffNeeds")}>
             <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={filtered} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={!diffUsable} />
             <span className={cn(!diffUsable && "text-muted")}>{t("par.onlyDiff")}</span>
@@ -708,7 +731,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
                     </th>
                   )}
                   {cols.map((c) => (
-                    <ColumnHead key={c.id} c={c} twin={c.kind === "pack" && !!c.read && !c.lockUnclear && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                    <ColumnHead key={c.id} c={c} onRead={c.kind === "pack" && c.address !== undefined && canRead && packs.includes(c.address) ? () => void readOne(c.address!) : undefined} twin={c.kind === "pack" && !!c.read && !c.lockUnclear && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
                       onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
                       onRevokePatch={c.kind === "pack" && installation && (c.read?.patch?.source === "flash" || c.read?.patch?.source === "user") ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
@@ -820,8 +843,10 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   );
 }
 
-function ColumnHead({ c, twin, busy, onSave, onRemove, onEdit, onPrevious, onConfirmPatch, onRevokePatch }: {
+function ColumnHead({ c, twin, busy, onSave, onRemove, onRead, onEdit, onPrevious, onConfirmPatch, onRevokePatch }: {
   c: Source; busy: boolean; onSave: () => void; onRemove: () => void;
+  /** set when this pack can be read alone now (connected, on the bus, nothing else running) */
+  onRead?: () => void;
   /** a live pack column next to the stored state of the same pack: labelled „aktuell“ */
   twin?: boolean;
   /** set when this pack column can be edited now; „Vorherigen Stand“ only after a write of this pack */
@@ -830,7 +855,7 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onEdit, onPrevious, onCon
   onConfirmPatch?: () => void; onRevokePatch?: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const pending = c.kind === "pack" && !c.values && !c.error;
+  const pending = c.kind === "pack" && !c.values && !c.error && !c.notRead;
   return (
     <th className="min-w-24 border-b border-l border-line bg-surface px-3 py-2 text-right align-bottom font-normal">
       <div className="flex items-center justify-end gap-1">
@@ -839,6 +864,11 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onEdit, onPrevious, onCon
           {c.kind === "pack" ? t(twin ? "par.packNow" : "par.pack", { n: c.label }) : c.kind === "stored" ? t("par.storedCol", { n: c.label }) : c.label}
         </span>
         {c.path === "uart1" && <span className="rounded bg-sunken px-1 text-xs text-muted" title={t("par.uart1ColHint")}>{t("par.uart1Col")}</span>}
+        {onRead && (
+          <button onClick={onRead} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink" title={t("par.readOne")} aria-label={t("par.readOne")}>
+            <RotateCw className="h-3.5 w-3.5" />
+          </button>
+        )}
         {onEdit && (
           <button onClick={onEdit} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink" title={t("pw.edit")} aria-label={t("pw.edit")}>
             <PenLine className="h-3.5 w-3.5" />
@@ -861,7 +891,7 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onEdit, onPrevious, onCon
         )}
       </div>
       <div className={cn("text-xs", c.error ? "text-alarm" : "text-muted")} title={c.error && errorText(c.error, t)}>
-        {c.error ? (c.kind === "pack" ? (packBusy(c.error) ? t("par.busyShort") : t("par.noAnswer")) : t("par.unreadable")) : pending ? t("par.pending") : c.kind === "file" ? (c.device || t("par.file")) : c.device}
+        {c.error ? (c.kind === "pack" ? (packBusy(c.error) ? t("par.busyShort") : t("par.noAnswer")) : t("par.unreadable")) : pending ? t("par.pending") : c.notRead ? t("par.notRead") : c.kind === "file" ? (c.device || t("par.file")) : c.device}
       </div>
       {c.stored && (
         <div className={cn("text-xs whitespace-nowrap", c.stored.board === "current" ? "text-muted" : "text-discharge")}
