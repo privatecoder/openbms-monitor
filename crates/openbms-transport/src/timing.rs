@@ -182,7 +182,7 @@ impl Latency {
         self.budget(class, floor).min(floor * PROBE_STRETCH)
     }
 
-    /// The one longer try a read gets after a timeout (TCP, a pack that answered before): twice the budget, capped.
+    /// The longer wait of a read of a pack that answered before (TCP): twice the budget, capped.
     pub fn retry_budget(&self, class: Class, floor: Duration) -> Duration {
         (self.budget(class, floor) * 2).min(class.cap().max(floor))
     }
