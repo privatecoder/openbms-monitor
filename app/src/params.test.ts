@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BM_NAMES, KEYS, UNITS, deviating, exportName, parseExport, toExport, withHistory, type Parameters, type Source } from "./params";
+import { BM_NAMES, KEYS, UNITS, deviating, exportName, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -76,5 +76,28 @@ describe("a late parameter history", () => {
     const same = withHistory(cols, 1, "inst-b|2", { last_written: 5, previous: prev });
     expect(same[0].previous).toBe(prev);
     expect(same[1].previous).toBeUndefined();
+  });
+});
+
+describe("withPlaceholders", () => {
+  const col = (id: string, extra: Partial<Source> = {}): Source => ({ id, kind: "pack", label: id, ...extra });
+  it("adds an empty column per pack on the bus, in pack order before the rest", () => {
+    const file: Source = { id: "f", kind: "file", label: "x.xml" };
+    const read = col("pack-1", { values: [1] });
+    const s = withPlaceholders([file, read], [0, 1, 2], true);
+    expect(s.map((x) => x.id)).toEqual(["pack-0", "pack-1", "pack-2", "f"]);
+    expect(s[0].notRead).toBe(true);
+    expect(s[1]).toBe(read);
+  });
+  it("keeps the array when nothing changes and drops the empty columns without a bus", () => {
+    const s = withPlaceholders([], [0, 1], true);
+    expect(withPlaceholders(s, [0, 1], true)).toBe(s);
+    expect(withPlaceholders(s, [0, 1], false)).toEqual([]);
+    const read = [col("pack-0", { values: [1] })];
+    expect(withPlaceholders(read, [0], false)).toBe(read);
+  });
+  it("a pack no longer on the bus keeps a read column, loses its empty one", () => {
+    const s = withPlaceholders([col("pack-5", { values: [1] })], [0, 1], true);
+    expect(withPlaceholders(s, [0], true).map((x) => x.id)).toEqual(["pack-0", "pack-5"]);
   });
 });
