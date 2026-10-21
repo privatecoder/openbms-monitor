@@ -218,7 +218,7 @@ export function withPlaceholders(s: Source[], packs: number[], readsBus: boolean
   if (!readsBus) return rest.length === s.length ? s : rest;
   const id = (a: number) => `pack-${a}`;
   const next = [
-    ...packs.map((a) => rest.find((x) => x.id === id(a)) ?? s.find((x) => x.id === id(a)) ?? { id: id(a), kind: "pack" as const, label: String(a).padStart(2, "0"), notRead: true }),
+    ...packs.map((a) => rest.find((x) => x.id === id(a)) ?? s.find((x) => x.id === id(a)) ?? { id: id(a), kind: "pack" as const, address: a, label: String(a).padStart(2, "0"), notRead: true }),
     ...rest.filter((x) => !packs.some((a) => x.id === id(a))),
   ];
   return next.length === s.length && next.every((x, i) => x === s[i]) ? s : next;
