@@ -21,8 +21,8 @@ export function FrameCapture() {
     let alive = true;
     const poll = () => {
       api.captureStatus().then((v) => { if (alive) setS(v); }).catch(() => {});
-      // null while an exchange holds the connection: the last view stays
-      api.linkTiming().then((v) => { if (alive && v) setTiming(v); }).catch(() => {});
+      // without a connection nothing; while an exchange holds it, the last view of the same connection stays
+      api.linkTiming().then((v) => { if (alive) setTiming((old) => (!v ? null : !v.busy ? v : old?.gen === v.gen ? old : null)); }).catch(() => {});
     };
     poll();
     const id = window.setInterval(poll, 1000);

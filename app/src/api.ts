@@ -176,6 +176,9 @@ export interface HistoryStatus { settings: HistorySettings; active: boolean; pat
 /** the frame capture under Diagnosis; `full`: it stopped itself at that limit */
 /** Answer times learnt on the monitor connection (over a network gateway; on USB every wait is fixed). */
 export interface LinkTiming {
+  /** the connection these times belong to; `busy`: an exchange holds it now, no times in this answer */
+  gen: number;
+  busy: boolean;
   adaptive: boolean;
   classes: { class: "ascii" | "modbus" | "binary"; samples: number; p90_ms: number | null; max_ms: number | null; budget_ms: number }[];
 }

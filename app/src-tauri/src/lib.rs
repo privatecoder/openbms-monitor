@@ -255,19 +255,32 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
     f(c).map_err(|e| e.to_string())
 }
 
+/// The text of `openbms_transport::Error::Timeout`: the pack stayed silent (not a broken link, not a refusal).
+fn silent(e: &str) -> bool {
+    e.starts_with("no answer within")
+}
+
 /// The answer times learnt on the monitor connection (`timing::Latency`), for the diagnosis: None without a connection,
 /// or while an exchange holds it (the UI keeps the last view).
+/// `busy`: an exchange holds the connection now (the UI keeps its last view of the same `gen`); None: not connected.
 #[derive(Serialize)]
 struct LinkTiming {
+    gen: u64,
+    busy: bool,
     adaptive: bool,
     classes: Vec<openbms_transport::timing::ClassView>,
 }
 
 #[tauri::command]
 fn link_timing(state: State<'_, AppState>) -> Option<LinkTiming> {
-    let guard = state.conn.try_lock().ok()?;
+    let gen = link_now(&state).gen;
+    let guard = match state.conn.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::WouldBlock) => return Some(LinkTiming { gen, busy: true, adaptive: false, classes: Vec::new() }),
+        Err(_) => return None,
+    };
     let l = guard.as_ref()?.latency();
-    Some(LinkTiming { adaptive: l.adaptive(), classes: l.view(openbms_transport::timing::normal_floor) })
+    Some(LinkTiming { gen, busy: false, adaptive: l.adaptive(), classes: l.view(openbms_transport::timing::normal_floor) })
 }
 
 /// The refusal of a step whose connection changed since its action began, as JSON for the UI (`errorText`).
@@ -737,7 +750,10 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 }
                 // held by a parameter write meanwhile: the rest of the round is skipped, no pack counts as silent
                 let Some(telemetry) = poll_exchange(&conn, &flashing, &hold, |c| c.telemetry(address)) else { break };
-                let Some(status) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break };
+                // a pack silent to 0x42 (through its longer wait over a gateway) is not asked 0x44 in this round: the
+                // round stays as long as before the longer waits, so the master's next answer is not pushed out
+                let status = if telemetry.as_ref().is_err_and(|e| silent(e)) { Err(telemetry.as_ref().unwrap_err().clone()) }
+                    else { let Some(s) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break }; s };
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();
                 // A dead link (gateway closed the socket, broken pipe) does not heal by retrying: drop it and
                 // stop polling. The UI reconnects on the "link-lost" event (or after its data timeout).
@@ -1089,6 +1105,13 @@ pub fn run() {
 #[cfg(test)]
 mod port_reservation_tests {
     use super::*;
+
+    #[test]
+    fn only_a_timeout_counts_as_a_silent_pack() {
+        assert!(silent(&openbms_transport::Error::Timeout(Duration::from_millis(1500)).to_string()));
+        assert!(!silent(&openbms_transport::Error::Closed.to_string()));
+        assert!(!silent(&openbms_transport::Error::Proto(openbms_proto::Error::Rtn(2)).to_string()));
+    }
 
     #[test]
     fn system_ports_are_not_offered() {

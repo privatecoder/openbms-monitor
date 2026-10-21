@@ -316,18 +316,25 @@ impl Connection {
         self.ascii_within(request, address, &fits, limit)
     }
 
-    /// `ascii_as` for a read that changes nothing: after a timeout one longer retry (`retries`).
+    /// `ascii_as` for a read: a pack that answered before is listened to longer for the same request (`extended`), never
+    /// asked twice (a second, indistinguishable request would leave its answer on the line for the next command).
     fn ascii_read(&mut self, request: &[u8], address: u8, fits: impl Fn(&[u8]) -> bool) -> Result<Frame> {
-        let r = self.ascii_as(request, address, &fits);
-        if !matches!(r, Err(Error::Timeout(_))) || !self.retries(address) {
-            return r;
-        }
-        let limit = self.latency.retry_budget(Class::Ascii, self.timeout);
-        let again = self.ascii_within(request, address, &fits, limit);
-        if matches!(again, Err(Error::Timeout(_))) {
+        let limit = self.read_budget(Class::Ascii, self.timeout, address);
+        let r = self.ascii_within(request, address, &fits, limit);
+        self.silent_through(&r, address);
+        r
+    }
+
+    /// The wait of a read of `address`: the longer one (`retry_budget`) for a pack that answered before over TCP.
+    fn read_budget(&self, class: Class, floor: Duration, address: u8) -> Duration {
+        if self.retries(address) { self.latency.retry_budget(class, floor) } else { self.reply_budget(class, floor) }
+    }
+
+    /// A read that stayed silent through its whole wait takes the pack off the longer wait until it answers again.
+    fn silent_through<T>(&mut self, r: &Result<T>, address: u8) {
+        if matches!(r, Err(Error::Timeout(_))) {
             self.answered.remove(&address);
         }
-        again
     }
 
     /// One ASCII exchange that waits `limit` for the answer.
@@ -351,6 +358,7 @@ impl Connection {
         let mut pending = Vec::new();
         // an answer of ours whose layout did not fit: returned only if no fitting one comes
         let mut misfit: Option<Frame> = None;
+        let mut fitted = false;
         let result = loop {
             if Instant::now() > deadline {
                 break misfit.take().ok_or(Error::Timeout(limit));
@@ -380,6 +388,7 @@ impl Connection {
                             misfit = Some(f);
                             continue;
                         }
+                        fitted = true;
                         break Ok(f);
                     }
                     _ => continue,
@@ -391,7 +400,8 @@ impl Connection {
                 Err(e) => break Err(e),
             }
         };
-        if result.is_ok() {
+        // only an answer that fits is a sample: a misfit returned at the deadline came earlier and answered another request
+        if result.is_ok() && fitted {
             self.answered_in(Class::Ascii, address, started.elapsed());
         }
         std::thread::sleep(self.gap);
@@ -719,14 +729,10 @@ impl Connection {
     /// `Proto(Uart1(code))`.
     pub fn uart1_parameters(&mut self, bus: Bus, address: u8) -> Result<Parameters> {
         let request = uart1::read_request(address)?;
-        let mut r = self.binary_exchange(bus, &request, UART1_TIMEOUT);
-        // a read changes nothing: one longer retry for a pack that answered before (`retries`)
-        if matches!(r, Err(Error::Timeout(_))) && self.retries(address) {
-            r = self.binary_exchange_within(bus, &request, self.latency.retry_budget(Class::Binary, UART1_TIMEOUT));
-            if matches!(r, Err(Error::Timeout(_))) {
-                self.answered.remove(&address);
-            }
-        }
+        // a pack that answered before is listened to longer, never asked twice (`ascii_read`)
+        let limit = self.read_budget(Class::Binary, UART1_TIMEOUT, address);
+        let r = self.binary_exchange_within(bus, &request, limit);
+        self.silent_through(&r, address);
         match r? {
             uart1::Reply::Params(data) => Ok(uart1::parameters(address, &data)?),
             uart1::Reply::Error(code) => Err(openbms_proto::Error::Uart1(code.byte()).into()),
@@ -953,54 +959,120 @@ mod tests {
     const TELE1: &[u8] = b"~2001460010960001100D050D050D060D050D050D070D060D060D060D060D060D060D060D060D070D07060B270B200B210B270B580B30000014D6569A0A6D6003176D60000703E814D9FFF3FF770359027FDDB1\r";
     const STATUS1: &[u8] = b"~20014600806200011000000000000000000000000000000000060000000000000000140000000000000300000200000000000000000002EB2F\r";
 
-    /// Over a gateway (learning on), with the given writes left unanswered; the second value counts the writes.
-    fn lossy(script: Vec<(Vec<u8>, Vec<u8>)>, silent: Vec<usize>) -> (Connection, Arc<Mutex<usize>>) {
+    /// A gateway whose answers come late: write n gets its scripted answer after `delays[n]` ms (missing: at once,
+    /// `u64::MAX`: never). Counts the writes.
+    struct Late {
+        script: Vec<(Vec<u8>, Vec<u8>)>,
+        delays: Vec<u64>,
+        queue: Vec<(Instant, Vec<u8>)>,
+        writes: Arc<Mutex<usize>>,
+    }
+
+    impl Read for Late {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.queue.iter().position(|(at, _)| *at <= Instant::now()) {
+                Some(i) => {
+                    let (_, a) = self.queue.remove(i);
+                    buf[..a.len()].copy_from_slice(&a);
+                    Ok(a.len())
+                }
+                None => {
+                    std::thread::sleep(Duration::from_millis(2));
+                    Err(std::io::ErrorKind::TimedOut.into())
+                }
+            }
+        }
+    }
+
+    impl Write for Late {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let n = {
+                let mut w = self.writes.lock().unwrap();
+                *w += 1;
+                *w - 1
+            };
+            let delay = self.delays.get(n).copied().unwrap_or(0);
+            if let Some((_, a)) = self.script.iter().find(|(r, _)| r.as_slice() == data).filter(|_| delay != u64::MAX) {
+                self.queue.push((Instant::now() + Duration::from_millis(delay), a.clone()));
+            }
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // like a gateway: only what already arrived is dropped
+    impl Port for Late {
+        fn clear_input(&mut self, _: Option<&mut Vec<u8>>) -> std::io::Result<()> {
+            let now = Instant::now();
+            self.queue.retain(|(at, _)| *at > now);
+            Ok(())
+        }
+    }
+
+    /// Over a gateway (learning on), floor 50 ms; the second value counts the writes.
+    fn late(script: Vec<(Vec<u8>, Vec<u8>)>, delays: Vec<u64>, adaptive: bool) -> (Connection, Arc<Mutex<usize>>) {
         let writes = Arc::new(Mutex::new(0));
-        let port = Box::new(Scripted { script, out: Vec::new(), silent, writes: writes.clone() });
-        let c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(true), answered: Default::default() };
+        let port = Box::new(Late { script, delays, queue: Vec::new(), writes: writes.clone() });
+        let c = Connection { port, timeout: Duration::from_millis(50), gap: Duration::ZERO, tcp: false, rx: RxStats::default(), tap: capture::Tap::new(Box::leak(Box::new(capture::Capture::new())), "test".into()), latency: timing::Latency::new(adaptive), answered: Default::default() };
         (c, writes)
     }
 
+    const NEVER: u64 = u64::MAX;
+
     #[test]
-    fn a_lost_answer_of_a_pack_that_answered_before_gets_one_longer_retry() {
-        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![1]);
+    fn a_pack_that_answered_before_is_listened_to_longer_for_the_same_request() {
+        let (mut c, writes) = late(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![0, 80], true);
         assert!(c.status(1).is_ok());
-        // the second request is lost, its retry answers
+        // 80 ms is past the 50 ms floor but within the longer wait (100 ms): one request, its own answer
         assert!(c.status(1).is_ok());
-        assert_eq!(*writes.lock().unwrap(), 3);
-        assert_eq!(c.latency.view(timing::normal_floor)[0].samples, 2);
+        assert_eq!(*writes.lock().unwrap(), 2);
+        let ascii = c.latency.view(timing::normal_floor)[0];
+        assert_eq!(ascii.samples, 2);
+        // measured from its own request
+        assert!(ascii.max_ms.unwrap() >= 80, "{ascii:?}");
     }
 
     #[test]
-    fn a_pack_that_never_answered_and_a_silent_retry_get_no_retry() {
-        // never answered on this connection: asked once
-        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![0]);
-        assert!(matches!(c.status(1), Err(Error::Timeout(_))));
-        assert_eq!(*writes.lock().unwrap(), 1);
-        // answered, then silent through the retry: taken off, the next silent read is not repeated
-        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![1, 2, 3]);
+    fn a_pack_that_never_answered_and_one_silent_through_the_longer_wait_get_the_floor() {
+        // never answered on this connection: the floor
+        let (mut c, _) = late(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![80], true);
+        assert!(matches!(c.status(1), Err(Error::Timeout(d)) if d == Duration::from_millis(50)));
+        // answered, then silent through the longer wait: taken off, the next read waits the floor
+        let (mut c, writes) = late(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![0, NEVER, NEVER], true);
         assert!(c.status(1).is_ok());
         assert!(matches!(c.status(1), Err(Error::Timeout(d)) if d == Duration::from_millis(100)));
-        assert!(matches!(c.status(1), Err(Error::Timeout(_))));
-        assert_eq!(*writes.lock().unwrap(), 4);
-        // it answers again: the retry is back
+        assert!(matches!(c.status(1), Err(Error::Timeout(d)) if d == Duration::from_millis(50)));
+        assert_eq!(*writes.lock().unwrap(), 3);
+        // it answers again: the longer wait is back
         assert!(c.status(1).is_ok());
         assert!(c.retries(1));
     }
 
     #[test]
-    fn a_local_link_and_a_write_never_retry() {
-        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![1]);
-        c.latency = timing::Latency::new(false);
+    fn a_local_link_keeps_the_floor_and_a_late_read_answer_is_no_switch_acknowledgement() {
+        let (mut c, _) = late(vec![(Status::request(1).unwrap(), STATUS1.to_vec())], vec![0, 80], false);
         assert!(c.status(1).is_ok());
-        assert!(matches!(c.status(1), Err(Error::Timeout(_))));
+        assert!(matches!(c.status(1), Err(Error::Timeout(d)) if d == Duration::from_millis(50)));
+        // ein/aus right after a read over a learning link: no second read request exists whose answer could stand in
+        // for the missing acknowledgement
+        let off = control::on_off_request(1, false).unwrap();
+        let (mut c, writes) = late(vec![(Parameters::request(1).unwrap(), b"~20014600".to_vec()), (off, Vec::new())], vec![0, NEVER], true);
+        let _ = c.parameters(1);
+        assert!(c.on_off_phased(1, false).is_err_and(|f| f.unclear()));
         assert_eq!(*writes.lock().unwrap(), 2);
-        // ein/aus over a learning link: one request, whatever happens
-        let on = control::on_off_request(1, true).unwrap();
-        let (mut c, writes) = lossy(vec![(Status::request(1).unwrap(), STATUS1.to_vec()), (on, answer(1, 0, b""))], vec![1]);
-        assert!(c.status(1).is_ok());
-        assert!(c.on_off_phased(1, true).is_err_and(|f| f.unclear()));
-        assert_eq!(*writes.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_misfit_answer_is_no_sample_and_earns_no_longer_wait() {
+        // the 0x42 answer while 0x44 waits: returned at the deadline for its layout error, never measured
+        let (mut c, _) = late(vec![(Status::request(1).unwrap(), TELE1.to_vec())], vec![], true);
+        for _ in 0..8 {
+            assert!(matches!(c.status(1), Err(Error::Proto(openbms_proto::Error::Layout(_)))));
+        }
+        assert_eq!(c.latency.view(timing::normal_floor)[0].samples, 0);
+        assert!(!c.retries(1));
     }
 
     #[test]
