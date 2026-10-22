@@ -23,5 +23,9 @@ describe("maintenance marker", () => {
     expect(markerError("marker-set-can-only", t)).toBe("Setzen geht nur über die CAN-Buchse.");
     expect(markerError("start-refused:auto-address", t)).toContain("automatische Adress");
     expect(markerError("timeout after 1500 ms", t)).toMatch(/^Nicht geändert oder nicht bestätigt: /);
+    // another bank's master over the CAN socket
+    expect(markerError(JSON.stringify({ kind: "refused", reason: "other-master" }), t)).toBe(t("maint.err.refused.other-master"));
+    // a bank refusal on RS485-1/2 keeps the texts of every write
+    expect(markerError(JSON.stringify({ kind: "bank", state: "failed", address: 3 }), t)).not.toContain("maint.err");
   });
 });

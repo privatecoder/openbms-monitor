@@ -1,5 +1,6 @@
 import type { MarkerView } from "./api";
 import { errorText } from "./control";
+import { errorKey } from "./maint";
 
 type T = (k: string, o?: Record<string, unknown>) => string;
 
@@ -26,5 +27,9 @@ export function markerError(e: unknown, t: T): string {
   const s = typeof e === "string" ? e : e instanceof Error ? e.message : "";
   if (s.startsWith("start-refused:")) return t(`maint.err.start.${s.slice("start-refused:".length)}`);
   if (KEYS.includes(s)) return t(`mk.err.${s}`);
+  // a refusal of the maintenance store or the master comparison (another master, its serial unreadable)
+  // (bank refusals of RS485-1/2 keep the shared texts below)
+  const k = errorKey(s);
+  if (s.startsWith("{") && k.key !== "maint.err.text") return t(k.key, k.params);
   return t("mk.failed", { err: errorText(e, t) });
 }
