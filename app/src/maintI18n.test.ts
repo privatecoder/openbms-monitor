@@ -65,7 +65,7 @@ describe("maintenance texts", () => {
     expect(masterLine({ ...m, kind: "unknown-patch", caps: null, version: "16.06.13 MAINT 1.4" }, tr("de")).text).toBe("Unbekannte Patch-Firmware 16.06.13 MAINT 1.4: keine Patch-Funktionen");
     expect(masterLine({ ...m, kind: "no-0x64", marker: null, slaves: null }, tr("de")).text).toBe("0x64 nicht unterstützt, Firmwarestand nicht belegt");
     expect(busLine({ bus: "polling", polled: [1, 2], bus_error: null, master: null, master_error: null }, false, tr("en")).text).toBe("Master polls 2 slaves");
-    expect(busLine(null, false, tr("de")).text).toBe("Prüfe den Pack-Bus …");
+    expect(busLine(null, false, tr("de")).text).toBe("Prüfe den RS485-1/2-Bus …");
   });
   it("German quotes are „…“", () => {
     const values = (o: unknown): string[] => Object.values(o as Record<string, unknown>).flatMap((v) => (typeof v === "object" && v ? values(v) : [String(v)]));

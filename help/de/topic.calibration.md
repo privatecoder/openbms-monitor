@@ -1,6 +1,6 @@
 ---
 title: Kalibrieren und CAN-Protokoll
-short: Strom-Nullpunkt, Strom und Spannung eines Packs abgleichen und das CAN-Protokoll zum Wechselrichter setzen, wie mit BatteryMonitor. Nur über RS485-1/2, unter Parameter (Wartungsfunktionen), für das Pack aus der Auswahl der BMS-Uhr.
+short: Strom-Nullpunkt, Strom und Spannung eines Packs abgleichen und das CAN-Protokoll zum Wechselrichter setzen, wie mit BatteryMonitor. Nur über den RS485-1/2-Bus, unter Parameter (Wartungsfunktionen), für das Pack aus der Auswahl der BMS-Uhr.
 related: topic.params, alarm.ev8.b2, alarm.ev8.b3, alarm.ev8.b4
 ---
 - **Was ein Abgleich bewirkt:** Das BMS rechnet aus seinem bisherigen Faktor und dem Verhältnis Referenz/Messwert einen neuen Faktor und speichert ihn sofort. Alle späteren Werte dieses Packs verschieben sich damit: Strom, Spannung, SOC-Zählung und die Schutzschwellen. Eine falsche Referenz verfälscht das Pack, bis es mit einer guten Messung neu kalibriert wird; ein neuer Abgleich korrigiert einen alten Fehler, soweit die Annahmegrenze des BMS reicht. Die Faktoren selbst lassen sich aus dem BMS nicht auslesen.
