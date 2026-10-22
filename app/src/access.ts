@@ -72,10 +72,15 @@ export const FLAG_POWER = CATALOG.flags.power;
 /** Image flag bit 3: Group0 bits 3/4 positive (MAINT 1.6.1 and the positive 1.6 build): bit 3 at 1 allows power and
  *  clock over the CAN socket, bit 4 at 1 switches the extended off on. */
 export const FLAG_POSITIVE = CATALOG.flags.positive;
-/** `access::polar`: the Group0 bits that read inverted in a positive build. */
-export const polar = (group: number, bit: number) => group === 0 && (bit === B.g0_power_lock || bit === B.g0_extended_off);
 /** Whether the image flag byte announces the positive bits 3/4 (null: not known). */
 export const positiveOf = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << FLAG_POSITIVE)) !== 0;
+/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3, or any build from 1.6 (the first 1.6
+ *  build with bit 3 at 0 is not followed); 1.5 and 1.5.1 keep bit 3 at 0. */
+export const positiveBuild = (patch: Patch, flags: number | null | undefined): boolean =>
+  positiveOf(flags) || (patch.kind === "version" && (patch.version[0] - CUTOFF_MIN[0] || patch.version[1] - CUTOFF_MIN[1]) >= 0);
+/** `access::inverted`: Group0 bit 4 always, bit 3 in a positive build act at 1 where the routes are written for 0. */
+export const inverted = (group: number, bit: number, patch: Patch, flags: number | null | undefined): boolean =>
+  group === 0 && (bit === B.g0_extended_off || (bit === B.g0_power_lock && positiveBuild(patch, flags)));
 export const FLAG_CUTOFF = CATALOG.flags.cutoff;
 /** Group0 bits of the patched firmware as masks. */
 export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state };
@@ -104,7 +109,7 @@ export function decide(route: Route, f: Facts): { state: State; reasons: AccessR
     switch (n.kind) {
       case "bit-set": case "bit-clear": {
         // the positive build reads bits 3/4 the other way round
-        const want = (n.kind === "bit-set") !== (polar(n.group, n.bit) && positiveOf(f.flags));
+        const want = (n.kind === "bit-set") !== inverted(n.group, n.bit, f.patch, f.flags);
         const g = n.group === 0 ? f.group0 : n.group === 7 ? f.group7 : null;
         const known = g === null ? null : (g & (1 << n.bit)) !== 0;
         if (known !== want) { worse(known === null ? "unknown" : "blocked"); reasons.push({ id: "bit", group: n.group, bit: n.bit, want, known }); }

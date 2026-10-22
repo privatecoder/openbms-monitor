@@ -217,6 +217,48 @@ PatchBuild {
     build_id: "18daf61d8a93671d",
     code_sha256: "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
     ehex_sha256: "32f27f3f128a591759bd2e205579b2dfdccf50c3717e50c7092c1e30f44d146f",
+},
+// MAINT 1.6 with the positive Group0 bits 3/4, MNT format 3 with image flags 0E; hard stop off (56624 app bytes, 223
+// update blocks)
+PatchBuild {
+    name: "16.06.13 MAINT 1.6 positive",
+    base: [16, 6, 13],
+    patch: [1, 6],
+    mnt_format: 3,
+    hard_stop: Some(false),
+    power_rtc: true,
+    pack_cutoff: true,
+    build_id: "39e0c5d9ccf13396",
+    code_sha256: "010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8",
+    ehex_sha256: "2bb9ca9798fcd6885d8320d67af4f646afc97e25b643fac33759e491478d3b7c",
+},
+// MAINT 1.5.1, MNT format 4 with image flags 12: power and clock as 1.5 (bit 3 at 0 allows), marker and identity also
+// over RS485-1/2; hard stop off (55544 app bytes, 218 update blocks)
+PatchBuild {
+    name: "16.06.13 MAINT 1.5.1",
+    base: [16, 6, 13],
+    patch: [1, 5],
+    mnt_format: 4,
+    hard_stop: Some(false),
+    power_rtc: true,
+    pack_cutoff: false,
+    build_id: "96cb4859ef3c3f3b",
+    code_sha256: "619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437",
+    ehex_sha256: "80ad12a8ff6b3dfbedced952946e53866017e076a039a036204c153497da2dab",
+},
+// MAINT 1.6.1, MNT format 4 with image flags 1E: the positive 1.6 plus marker and identity over RS485-1/2; hard stop off
+// (57036 app bytes, 224 update blocks)
+PatchBuild {
+    name: "16.06.13 MAINT 1.6.1",
+    base: [16, 6, 13],
+    patch: [1, 6],
+    mnt_format: 4,
+    hard_stop: Some(false),
+    power_rtc: true,
+    pack_cutoff: true,
+    build_id: "cecca6889e95d5c8",
+    code_sha256: "fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f",
+    ehex_sha256: "a2d3474e8ad8d3830cabd4c714f118d7521ab0c2e12235caebb03e0215aa09d2",
 }];
 
 /// The entry `0x64/03` describes in `table`: format, base, patch and build ID all match.
@@ -284,6 +326,11 @@ mod tests {
     fn kind_of_hash_tells_originals_patched_builds_and_custom_apart() {
         assert_eq!(kind_of_hash(RELEASES[0].code_sha256), (ImageKind::Original, Some(RELEASES[0].name)));
         assert_eq!(kind_of_hash("5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5")));
+        // the format-4 builds and the positive 1.6
+        assert_eq!(kind_of_hash("619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5.1")));
+        assert_eq!(kind_of_hash("fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6.1")));
+        assert_eq!(kind_of_hash("010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6 positive")));
+        assert_eq!(patch_build(4, [16, 6, 13], [1, 6], "cecca6889e95d5c8").map(|b| b.name), Some("16.06.13 MAINT 1.6.1"));
         assert_eq!(kind_of_hash(&"0".repeat(64)), (ImageKind::Custom, None));
         // earlier unpublished patch builds are custom images now
         for old in ["734a4a4c73abbf991b2616b50958aff6c05cdcca93ebf3781867a179194e38f1", "4d76a96fa7f7ad0e1aa3de1ac4fbe51f0fc4ae03a19aea2d4e696c2812d8f55d",

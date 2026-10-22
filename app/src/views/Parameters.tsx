@@ -28,7 +28,7 @@ import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, inverseG0, keepMask, positivePatch, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { channelOf, controlHint, controlMode, controlOffers, packCutoff, packFirmware, powerLocked } from "../power";
-import { factsOf, MAINT_MIN, offerable, positiveOf } from "../access";
+import { factsOf, MAINT_MIN, offerable, positiveBuild } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -106,8 +106,8 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const profile = useProfile();
   const [probes] = usePackProbes();
   const fwOf = (a: number) => packFirmware(a, profile, probes[a]);
-  // the positive Group0 bits 3/4 of the pack's proven build (this connection's identity, else its column's proof)
-  const posOf = (a: number) => positiveOf(fwOf(a).flags) || positivePatch(targetRead(a)?.patch);
+  // Group0 bit 3 at 1 allows power in the pack's proven build (this connection's identity, else its column's proof)
+  const posOf = (a: number) => positiveBuild(fwOf(a).patch, fwOf(a).flags) || positivePatch(targetRead(a)?.patch);
   const lockOf = (a: number) => powerLocked(a, inverseG0(targetRead(a)?.function_switches[0], posOf(a)), profile);
   const where = { connected, bus, demo: isDemo, installation: !!installation, fw: chosen !== null ? fwOf(chosen) : packFirmware(null, profile, undefined) };
   const offers = controlOffers(where);
@@ -539,8 +539,9 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const gateLabel = gateRowLabel(labelCols);
   // bits 4 and 5 are named only where every column may have the pack cutoff (a proven 1.5 pack makes them neutral)
   const cutoffLabel = cutoffRowLabel(labelCols);
-  // bits 3/4 read the other way round in a positive build: their own names where every proven column agrees, else neutral
-  const polar = (b: number) => b === 3 || b === 4;
+  // bit 3 reads the other way round in a positive build (from 1.6): its own name where every proven column agrees, else
+  // neutral
+  const polar = (b: number) => b === 3;
   const proven = cols.filter((c) => c.switches && c.read?.patch);
   const polarity = proven.length && proven.every((c) => positivePatch(c.read?.patch)) ? "p" : proven.some((c) => positivePatch(c.read?.patch)) ? "mixed" : "";
   const rowLabel = (b: number) => (polar(b) && polarity === "mixed" ? "neutral" : b >= 4 ? cutoffLabel : gateLabel);
