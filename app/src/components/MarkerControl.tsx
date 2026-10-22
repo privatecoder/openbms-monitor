@@ -9,8 +9,10 @@ import { Button } from "./ui/button";
 
 /** „Wartungs-Marker“ next to „Steuern“: read, set and clear the marker of the chosen pack over this connection, also
  *  without an installation (a board on the bench). CAN socket: the master; RS485-1/2: MAINT 1.5.1/1.6.1, clear only. */
-export function MarkerSection({ address, bus, locked, onBusy, linkKey }: {
+export function MarkerSection({ address, bus, locked, onBusy, onChanged, linkKey }: {
   address: number | null; bus: "can" | "pack" | null; locked?: boolean; onBusy?: (busy: boolean) => void;
+  /** a read or change at the master: the maintenance banner reloads */
+  onChanged?: () => void;
   /** installation and connection: results of an action begun on another one are dropped */
   linkKey: string;
 }) {
@@ -33,9 +35,11 @@ export function MarkerSection({ address, bus, locked, onBusy, linkKey }: {
       const v = k === "read" ? await api.markerRead(a) : await api.markerSet(a, k === "set");
       if (gen.current !== mine || !same(a, lk)) return;
       setView(v);
-      if (k !== "read") setNote({ text: t(k === "set" ? "mk.doneSet" : v.slaves ? "mk.doneClearPolls" : "mk.doneClear", { n: v.slaves ?? 0 }), tone: "ok" });
+      if (k !== "read") setNote({ text: t(k === "set" ? "mk.doneSet" : v.slaves === null ? "mk.doneClearUnread" : v.slaves ? "mk.doneClearPolls" : "mk.doneClear", { n: v.slaves ?? 0 }), tone: "ok" });
+      if (a === 0) onChanged?.();
     } catch (e) {
       if (gen.current === mine && same(a, lk)) setNote({ text: markerError(e, t), tone: "error" });
+      if (k !== "read" && a === 0) onChanged?.();
     } finally {
       if (gen.current === mine) setBusy(null);
     }

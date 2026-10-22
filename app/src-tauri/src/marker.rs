@@ -5,9 +5,9 @@
 
 use crate::bms_memory::bus_of;
 use crate::control::reserve_pack_wait;
-use crate::maint::{event, marker_name};
+use crate::maint::{event, keep_master_read, marker_name, master_board, with_store, MaintError};
 use crate::{link_now, with_link, AppState, Link};
-use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError, PackAnswer};
+use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError, PackAnswer, Probe};
 use openbms_flash::maint::policy::{Master, Patch};
 use openbms_flash::maint::SystemClock;
 use openbms_proto::{MaintInfo, MaintState, MarkerWord};
@@ -29,7 +29,8 @@ pub struct MarkerView {
     pub version: Option<String>,
     /// "off" | "on" | "foreign"
     pub marker: Option<&'static str>,
-    /// the slave count the board works with (0 while the marker is set)
+    /// the slave count the board works with (0 while the marker is set); after a clear None: not read back (a master
+    /// polling again does not answer on RS485-1/2)
     pub slaves: Option<u8>,
     pub may_set: bool,
     pub may_clear: bool,
@@ -44,6 +45,8 @@ pub(crate) struct Found {
     /// set and clear are known to be offered by this build on this bus (`status_split` on the CAN socket, flag bit 4 on
     /// RS485-1/2)
     pub trusted: bool,
+    /// the read as the maintenance view keeps it (the banner of an installation's master)
+    pub master: Master,
 }
 
 impl Found {
@@ -72,7 +75,7 @@ pub(crate) fn of_master(m: &Master) -> Found {
         Master::No0x64 => "no-0x64",
         Master::Unknown => "unknown",
     };
-    Found { kind, info, state: m.state(), trusted: m.trusted() }
+    Found { kind, info, state: m.state(), trusted: m.trusted(), master: *m }
 }
 
 /// The RS485-1/2 identity: whether this build shows its marker there (supported patch with flag bit 4).
@@ -121,13 +124,19 @@ fn read(state: &AppState, link: &Link, address: u8, can: bool) -> Result<Found, 
         if can {
             return dialog::read(c, &clock, Budgets::default()).map(|m| of_master(&m)).map_err(io);
         }
-        let (kind, info) = rs485_kind(dialog::probe_pack(c, &clock, address, crate::profile::identity_budget(c)).map_err(io)?);
-        if kind != "patched" {
-            return Ok(Found { kind, info, state: None, trusted: false });
-        }
-        let state = dialog::dialog_at(c, &clock, address, Action::Status, Budgets::default()).ok();
-        Ok(Found { kind, info, state, trusted: true })
+        Ok(rs485_found(c, &clock, address))
     })
+}
+
+/// The identity and marker of the pack at `address` over RS485-1/2: a build with image flag bit 4 shows its state,
+/// anything else none (`trusted` false). Also „Platine flashen“.
+pub(crate) fn rs485_found(c: &mut openbms_transport::Connection, clock: &SystemClock, address: u8) -> Found {
+    let budget = crate::profile::identity_budget(c);
+    let (kind, info) = rs485_kind(dialog::probe_pack(c, clock, address, budget).unwrap_or(PackAnswer::Undecided));
+    let state = if kind == "patched" { dialog::dialog_at(c, clock, address, Action::Status, Budgets::default()).ok() } else { None };
+    // as the maintenance view keeps a master read: the identity, and the state where this bus shows it
+    let master = Master::of(info.map(Probe::Info)).with_state(state);
+    Found { kind, info, state, trusted: kind == "patched", master }
 }
 
 /// Read the board's identity and marker (changes nothing).
@@ -136,46 +145,79 @@ pub async fn marker_read(state: State<'_, AppState>, address: u8, installation: 
     let _guard = reserve_pack_wait(&state, address, "marker")?;
     let (link, can) = bound(&state, installation.as_deref(), address)?;
     let f = read(&state, &link, address, can)?;
+    // the installation's master: the banner follows what this read showed
+    if let Some(i) = link.installation.as_deref().filter(|_| address == 0) {
+        keep_master_read(&state, i, &f.master).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+    }
     Ok(view(link.gen, address, can, &f))
 }
 
 /// Set (`on`, the CAN socket only) or clear the marker, after a fresh read that offers it; the view after the change.
-/// Clearing waits for the marker off and one more DIP cycle: `slaves` then shows whether the master polls again.
+/// With an installation the target must be its board (the right-bank check of every write), and at the master the
+/// maintenance view's records follow: the slave count kept before a set, dropped with a clear, and the marker for the
+/// banner. Clearing waits for the marker off and reads the slave count one DIP cycle later (None: not read back).
 #[tauri::command]
 pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool) -> Result<MarkerView, String> {
     let _guard = reserve_pack_wait(&state, address, "marker")?;
     let (link, can) = bound(&state, installation.as_deref(), address)?;
+    let inst = link.installation.clone();
+    if inst.is_some() {
+        crate::bank::check_target(&state, &link, address)?;
+    }
     let before = read(&state, &link, address, can)?;
     let offered = if on { before.may_set(can) } else { before.may_clear() };
     if !offered {
         return Err(if on && !can { "marker-set-can-only" } else if on { "halt-not-offered" } else { "release-not-offered" }.into());
     }
-    let inst = link.installation.as_deref();
+    // the installation's master: the maintenance view's records
+    let master_of = inst.as_deref().filter(|_| address == 0);
+    let text = |e: MaintError| serde_json::to_string(&e).unwrap_or_default();
     let name = if on { "marker set" } else { "marker clear" };
-    event(&state, inst, &format!("{name} pressed address={address} bus={}", if can { "can" } else { "pack" }));
+    event(&state, inst.as_deref(), &format!("{name} pressed address={address} bus={}", if can { "can" } else { "pack" }));
+    if let (Some(i), true, Some(n)) = (master_of, on, before.state.map(|s| s.effective_slaves)) {
+        // the slave count it polls now is the one a release must see again
+        let board = master_board(&state, i).map_err(text)?;
+        with_store(&state, |s| s.set_expected_slaves(i, board, n, crate::history::now_ms())).map_err(text)?;
+    }
     let clock = SystemClock::new();
-    let action = if on { Action::Start } else { Action::Clear };
-    let r = with_link(&state.conn, &state.flashing, &state.link, &link, |c| Ok(dialog::dialog_at(c, &clock, address, action, Budgets::default())))?;
-    if let Err(DialogError::Rejected(5)) = &r {
-        if on {
-            // RTN 05 alone names no cause: the master's fresh block explains it
-            let block = with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.uart1_parameters(Bus::CanSocketBus, 0)).ok().map(|p| p.block);
-            let caps = before.info.and_then(Patch::recognise).map(|p| p.caps);
-            let reason = crate::profile::start_refusal(caps, block.as_deref());
-            event(&state, inst, &format!("{name} refused {reason}"));
-            return Err(format!("start-refused:{reason}"));
+    let r: Result<Option<u8>, DialogError> = with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
+        Ok(if on { dialog::dialog_at(c, &clock, address, Action::Start, Budgets::default()).map(|s| Some(s.effective_slaves)) } else { dialog::clear_at(c, &clock, address, Budgets::default()) })
+    })?;
+    if let (true, Err(DialogError::Rejected(5))) = (on, &r) {
+        // RTN 05 alone names no cause: the master's fresh block explains it
+        let block = with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.uart1_parameters(Bus::CanSocketBus, 0)).ok().map(|p| p.block);
+        let caps = before.info.and_then(Patch::recognise).map(|p| p.caps);
+        let reason = crate::profile::start_refusal(caps, block.as_deref());
+        event(&state, inst.as_deref(), &format!("{name} refused {reason}"));
+        return Err(format!("start-refused:{reason}"));
+    }
+    match &r {
+        Ok(n) => event(&state, inst.as_deref(), &format!("{name} done slaves={}", n.map_or("unread".into(), |n| n.to_string()))),
+        Err(e) => event(&state, inst.as_deref(), &format!("{name} failed {e}")),
+    }
+    // the state now: a fresh read (also after a failed change); a cleared marker confirmed but the board silent then
+    // (a master polling again on RS485-1/2) keeps the confirmation
+    let after = read(&state, &link, address, can).ok().filter(|f| f.state.is_some());
+    let f = match (&r, after) {
+        (_, Some(f)) => f,
+        (Ok(n), None) => {
+            let state = Some(MaintState { marker_word: if on { 0 } else { u32::MAX }, effective_slaves: n.unwrap_or(0) });
+            Found { state, master: before.master.with_state(state), ..before }
+        }
+        (Err(_), None) => before,
+    };
+    if let Some(i) = master_of {
+        keep_master_read(&state, i, &f.master).map_err(text)?;
+        if f.marker() == Some(MarkerWord::Off) {
+            with_store(&state, |s| s.clear_expected_slaves(i)).map_err(text)?;
         }
     }
-    let after = read(&state, &link, address, can);
-    match &r {
-        Ok(s) => event(&state, inst, &format!("{name} done marker={} slaves={}", marker_name(s.marker()), s.effective_slaves)),
-        Err(e) => event(&state, inst, &format!("{name} failed {e}")),
+    let n = r.map_err(|e| e.to_string())?;
+    let mut v = view(link.gen, address, can, &f);
+    if !on {
+        v.slaves = n;
     }
-    let s = r.map_err(|e| e.to_string())?;
-    // the dialog's state is the one after the change (for a clear one DIP cycle later); a lost read after it (a master
-    // polling again on RS485-1/2) keeps the identity read before
-    let f = Found { state: Some(s), ..after.unwrap_or(before) };
-    Ok(view(link.gen, address, can, &f))
+    Ok(v)
 }
 
 #[cfg(test)]
@@ -200,7 +242,7 @@ mod tests {
     #[test]
     fn set_only_over_the_can_socket_clear_on_both_never_a_foreign_word() {
         let st = |w: u32| Some(MaintState { marker_word: w, effective_slaves: 0 });
-        let off = Found { kind: "patched", info: Some(info(4, [1, 6], true)), state: st(u32::MAX), trusted: true };
+        let off = Found { kind: "patched", info: Some(info(4, [1, 6], true)), state: st(u32::MAX), trusted: true, master: Master::Unknown };
         assert!(off.may_set(true) && !off.may_set(false) && !off.may_clear());
         let on = Found { state: st(0), ..off };
         assert!(on.may_clear() && !on.may_set(true));
