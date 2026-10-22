@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MasterView, PackProbeView, PatchCaps, ProfileView } from "./api";
 import { clockAccess, clockTargets, controlHint, controlMode, masterBroadcast, packCutoff, powerLocked, powerRtc } from "./power";
+import { inverseG0 } from "./profile";
 
 const caps = (power_rtc: boolean | null) => ({ status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, power_rtc });
 /** The version and image flags a 64/03 with these capabilities reports (null flags: not known). */
@@ -79,6 +80,19 @@ describe("power and clock over the CAN socket", () => {
     expect(clockAccess({ ...where, bus: "pack", fw: fw(false), locked: true })).toEqual({ read: true, write: true, unsupported: false });
     expect(clockAccess({ ...where, bus: "pack", installation: false, fw: fw(false), locked: null })).toEqual({ read: true, write: false, unsupported: false });
     expect(clockAccess({ ...where, connected: false, fw: fw(true), locked: false }).read).toBe(false);
+  });
+
+  it("reads the lock of a positive build (image flag bit 3) the other way round", () => {
+    // 1.6.1, flags 1E: the lock as the inverse builds read it decides; the raw bit 3 at 1 allows
+    const positive = { patch: { kind: "version" as const, version: [1, 6] as [number, number] }, flags: 0x1e };
+    expect(clockAccess({ ...where, fw: positive, locked: false })).toEqual({ read: true, write: true, unsupported: false });
+    expect(clockAccess({ ...where, fw: positive, locked: true })).toEqual({ read: true, write: false, unsupported: false });
+    // Group0 FF: allowed in the positive build, locked in the inverse one
+    expect(powerLocked(3, inverseG0(0xff, true), profile())).toBe(false);
+    expect(powerLocked(3, inverseG0(0xff, false), profile())).toBe(true);
+    // bit 5 (the lock state) never flips
+    expect(inverseG0(0xdf, true)).toBe(0xc7);
+    expect(inverseG0(undefined, true)).toBeUndefined();
   });
 
   it("names the way over RS485-1/2 instead of hiding „Steuern“ for a pack without the service", () => {

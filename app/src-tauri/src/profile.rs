@@ -66,6 +66,11 @@ impl Profile {
     pub fn power_rtc(&self) -> bool {
         self.caps().is_some() && matches!(&self.master, Master::Patched { patch, .. } if patch.info.power_rtc)
     }
+
+    /// The master's build has the positive Group0 bits 3/4 (image flag bit 3).
+    pub fn positive(&self) -> bool {
+        matches!(&self.master, Master::Patched { patch, .. } if access::positive_of(Some(patch.info.image_flags())))
+    }
 }
 
 /// Read the profile on an open CAN socket connection. A link error leaves the master unknown.
@@ -82,8 +87,8 @@ pub fn of(endpoint: &str, bus: Bus, read: Option<(Master, Option<u8>)>) -> Profi
     Profile { endpoint: endpoint.into(), bus, master, group0, gates_stale: false, at: crate::history::now_ms() }
 }
 
-/// The release bits of a Group0 value, each only where the capability has it (`power`: bit 3 inverted, power and clock
-/// over the CAN socket allowed; only with the image flag).
+/// The release bits of a Group0 value, each only where the capability has it (`power`: power and clock over the CAN
+/// socket allowed, only with the image flag: bit 3 at 0, or at 1 in the positive build).
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Gates {
     pub write: Option<bool>,
@@ -91,11 +96,11 @@ pub struct Gates {
     pub power: Option<bool>,
 }
 
-pub fn gates_of(caps: Caps, power_rtc: bool, group0: u8) -> Gates {
+pub fn gates_of(caps: Caps, power_rtc: bool, positive: bool, group0: u8) -> Gates {
     Gates {
         write: caps.write_gate_bit0.then_some(group0 & WRITE_BIT != 0),
         start: caps.start_gate_bit2.then_some(group0 & START_BIT != 0),
-        power: power_rtc.then_some(group0 & POWER_BIT == 0),
+        power: power_rtc.then_some((group0 & POWER_BIT == 0) != positive),
     }
 }
 
@@ -159,7 +164,7 @@ pub fn view(gen: u64, p: &Profile) -> ProfileView {
         bus: if p.bus == Bus::CanSocketBus { "can" } else { "pack" },
         endpoint: p.endpoint.clone(),
         master: master_view(&p.master),
-        gates: p.caps().zip(p.group0).map(|(c, g)| gates_of(c, p.power_rtc(), g)),
+        gates: p.caps().zip(p.group0).map(|(c, g)| gates_of(c, p.power_rtc(), p.positive(), g)),
         gates_stale: p.gates_stale,
         at: p.at,
     }
@@ -388,8 +393,8 @@ pub fn lock_changed(base: u8, fresh: u8) -> bool {
     (base ^ fresh) & LOCK_BIT != 0
 }
 
-/// The extended off (Group0 bit 4 at 0) of the pack now differs from the one an off was confirmed with (`expect`; None:
-/// nothing confirmed about it, never a difference).
+/// Group0 bit 4 of the pack now differs from the one an off was confirmed with (`expect`: bit 4 was at 0; None: nothing
+/// confirmed about it, never a difference). The raw bit, whatever it means in the build (`access::polar`).
 pub fn extended_changed(expect: Option<bool>, group0: u8) -> bool {
     expect.is_some_and(|e| e != (group0 & CUTOFF_BIT == 0))
 }
@@ -863,9 +868,12 @@ mod tests {
     #[test]
     fn the_power_and_clock_release_needs_the_image_flag() {
         let caps = known::caps_of(3, [1, 5]).unwrap();
-        assert_eq!(gates_of(caps, false, 0xFF).power, None);
-        assert_eq!(gates_of(caps, true, 0xFF).power, Some(false), "bit 3 set: locked");
-        assert_eq!(gates_of(caps, true, 0xF7).power, Some(true));
+        assert_eq!(gates_of(caps, false, false, 0xFF).power, None);
+        assert_eq!(gates_of(caps, true, false, 0xFF).power, Some(false), "bit 3 set: locked");
+        assert_eq!(gates_of(caps, true, false, 0xF7).power, Some(true));
+        // the positive build: bit 3 at 1 allows
+        assert_eq!(gates_of(caps, true, true, 0xFF).power, Some(true));
+        assert_eq!(gates_of(caps, true, true, 0xF7).power, Some(false));
         // the pack's own 64/03 says it; a stored proof does not know
         let flagged = PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false }));
         assert_eq!(pack_patch_of(3, None, Some(&flagged), None, None).unwrap().caps.power_rtc, Some(true));

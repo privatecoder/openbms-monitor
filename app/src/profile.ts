@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
-import { G0, group0Plan, tri, type Proof } from "./access";
+import { G0, group0Plan, positiveOf, tri, type Proof } from "./access";
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -105,6 +105,13 @@ export function writeLocked(patch: PackPatch | null | undefined, uart1: boolean,
 
 /** MAINT 1.6, Group0 bit 4: 0 switches the extended off with the stored pack cutoff on. */
 export const CUTOFF_BIT = G0.extendedOff;
+/** Image flag bit 3 of a proven identity: Group0 bits 3/4 positive (MAINT 1.6.1, the positive 1.6 build). Not known
+ *  (a stored proof, RS485-1/2 without its 64/03): read as the inverse builds. */
+export const positivePatch = (patch: PackPatch | null | undefined): boolean => positiveOf(patch?.caps.flags);
+/** Group0 as the inverse builds read it: bits 3/4 flipped for a positive build, so one reading of the lock bits serves
+ *  both. Never sent: the backend compares raw values. */
+export const inverseG0 = (g0: number | undefined, positive: boolean): number | undefined =>
+  g0 === undefined || !positive ? g0 : g0 ^ (G0.powerLock | G0.extendedOff);
 /** MAINT 1.6, Group0 bit 5: 0 shows a stored individual pack cutoff. Status only, never written. */
 export const LOCK_BIT = G0.lockState;
 
