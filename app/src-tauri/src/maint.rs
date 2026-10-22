@@ -916,8 +916,9 @@ fn marker_action(state: &AppState, installation: &str, action: Action, confirmed
 fn same_master(state: &AppState, inst: &Installation) -> Result<(), MaintError> {
     let stored = with_store(state, |s| Ok(s.current_board(&inst.id, 0)?.and_then(|b| b.battery_serial)))?;
     let Some(stored) = stored else { return Ok(()) };
-    let read = with_control(state, inst, |c| c.master_battery_serial())?;
-    master_check(&stored, read.ok().as_ref())
+    // Modbus, else the patch's binary 0xA2 (bases before 16.06.11 have no Modbus serial block)
+    let read = with_control(state, inst, |c| Ok::<_, String>(crate::marker::master_serial(c)))?;
+    master_check(&stored, read.ok().flatten().as_ref())
 }
 
 /// `same_master` on a stored battery serial and the UART1 read (None: the read failed).
