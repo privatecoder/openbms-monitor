@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
-import { G0, group0Plan, positiveOf, tri, type Proof } from "./access";
+import { G0, group0Plan, positiveBuild, tri, type Proof } from "./access";
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -105,13 +105,14 @@ export function writeLocked(patch: PackPatch | null | undefined, uart1: boolean,
 
 /** MAINT 1.6, Group0 bit 4: 0 switches the extended off with the stored pack cutoff on. */
 export const CUTOFF_BIT = G0.extendedOff;
-/** Image flag bit 3 of a proven identity: Group0 bits 3/4 positive (MAINT 1.6.1, the positive 1.6 build). Not known
- *  (a stored proof, RS485-1/2 without its 64/03): read as the inverse builds. */
-export const positivePatch = (patch: PackPatch | null | undefined): boolean => positiveOf(patch?.caps.flags);
-/** Group0 as the inverse builds read it: bits 3/4 flipped for a positive build, so one reading of the lock bits serves
- *  both. Never sent: the backend compares raw values. */
+/** Group0 bit 3 at 1 allows power and clock in this proven build (`access::positive_build`: image flag bit 3 or a
+ *  build from 1.6); not proven: as 1.5 (bit 3 at 0 allows). */
+export const positivePatch = (patch: PackPatch | null | undefined): boolean =>
+  !!patch && positiveBuild(patch.caps.version ? { kind: "version", version: patch.caps.version } : { kind: "unknown" }, patch.caps.flags);
+/** Group0 as the helpers here read it (written for bits 3/4 acting at 0): bit 4 flipped always (the extended off acts at
+ *  1, as in MAINT 1.6.1), bit 3 flipped in a positive build (`positive`). Never sent: the backend compares raw values. */
 export const inverseG0 = (g0: number | undefined, positive: boolean): number | undefined =>
-  g0 === undefined || !positive ? g0 : g0 ^ (G0.powerLock | G0.extendedOff);
+  g0 === undefined ? g0 : g0 ^ G0.extendedOff ^ (positive ? G0.powerLock : 0);
 /** MAINT 1.6, Group0 bit 5: 0 shows a stored individual pack cutoff. Status only, never written. */
 export const LOCK_BIT = G0.lockState;
 

@@ -120,7 +120,7 @@ pub const FLAG_CUTOFF: u8 = 2;
 /// MNT format 4 (MAINT 1.5.1/1.6.1): status, clear and identity of 0x64 also over RS485-1/2
 pub const FLAG_UART0: u8 = 4;
 /// The positive Group0 bits 3/4 (MAINT 1.6.1 and the positive 1.6 build): bit 3 at 1 allows power and clock over the
-/// CAN socket, bit 4 at 1 switches the extended off on. Without it both act at 0.
+/// CAN socket, bit 4 at 1 switches the extended off on.
 pub const FLAG_POSITIVE: u8 = 3;
 
 /// Whether an image flag byte announces the positive Group0 bits 3/4 (None: not known, read as not).
@@ -128,17 +128,23 @@ pub fn positive_of(flags: Option<u8>) -> bool {
     flags.is_some_and(|f| f & (1 << FLAG_POSITIVE) != 0)
 }
 
-/// Whether Group0 bit `bit` reads inverted in a build with image flag bit 3 (`FLAG_POSITIVE`): the power lock (3) and the
-/// extended off (4).
-pub fn polar(group: u8, bit: u8) -> bool {
-    group == 0 && (bit == G0_POWER_LOCK || bit == G0_EXTENDED_OFF)
+/// Bit 3 at 1 allows power and clock: a build with image flag bit 3, and every build from 1.6 (the app reads 1.6 as 1.6.1
+/// does, the first 1.6 build with bit 3 at 0 is not followed). 1.5 and 1.5.1 keep bit 3 at 0.
+pub fn positive_build(patch: Patch, flags: Option<u8>) -> bool {
+    positive_of(flags) || matches!(patch, Patch::Version(v) if v >= CUTOFF_MIN)
+}
+
+/// Whether Group0 bit `bit` acts at 1 where the routes are written for 0: bit 4 (the extended off) always, bit 3 (power
+/// and clock) in a positive build (`positive_build`).
+pub fn inverted(group: u8, bit: u8, patch: Patch, flags: Option<u8>) -> bool {
+    group == 0 && (bit == G0_EXTENDED_OFF || (bit == G0_POWER_LOCK && positive_build(patch, flags)))
 }
 
 /// A further condition of a way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Need {
-    /// GroupN bit B must be 1 (Group0 bits 3/4 as written for the inverse builds: inverted with image flag bit 3, `polar`)
+    /// GroupN bit B must be 1 (Group0 bits 3/4 as written for the inverse builds: inverted per `inverted`)
     BitSet { group: u8, bit: u8 },
     /// GroupN bit B must be 0 (the same inversion)
     BitClear { group: u8, bit: u8 },
@@ -402,7 +408,7 @@ pub fn decide(route: &Route, facts: &Facts) -> Decision {
         match *need {
             Need::BitSet { group, bit } | Need::BitClear { group, bit } => {
                 // the positive build reads bits 3/4 the other way round
-                let want = matches!(need, Need::BitSet { .. }) != (polar(group, bit) && positive_of(facts.flags));
+                let want = matches!(need, Need::BitSet { .. }) != inverted(group, bit, facts.patch, facts.flags);
                 let known = facts.group(group).map(|v| v & (1 << bit) != 0);
                 if known != Some(want) {
                     worse(if known.is_none() { State::Unknown } else { State::Blocked });
@@ -705,6 +711,12 @@ mod tests {
     fn the_positive_build_reads_bits_3_and_4_the_other_way_round() {
         // 1.6.1: flags 1E (power, cutoff, positive, UART0 marker)
         let f = |g0: u8| Facts { patch: Patch::Version([1, 6]), flags: Some(0x1E), group0: Some(g0), group7: None, address: 2, installation: true, marker: None, base: None, slaves: None };
+        // the first 1.6 build (flags 06) is read the same way
+        let first = |g0: u8| Facts { flags: Some(0x06), ..f(g0) };
+        assert!(ready(A::PowerOnOff, U1, &first(0xFF)) && !ready(A::PowerOnOff, U1, &first(0xF7)));
+        // 1.5 and 1.5.1 keep bit 3 at 0
+        let p15 = |g0: u8| Facts { patch: Patch::Version([1, 5]), flags: Some(0x12), ..f(g0) };
+        assert!(ready(A::PowerOnOff, U1, &p15(0xF7)) && !ready(A::PowerOnOff, U1, &p15(0xFF)));
         // power over the CAN socket: bit 3 at 1 allows it
         assert!(ready(A::PowerOnOff, U1, &f(0xFF)));
         assert!(!ready(A::PowerOnOff, U1, &f(0xF7)));
@@ -713,10 +725,10 @@ mod tests {
         assert!(!ready(A::PackLockSet, U0, &f(0xEF)));
         let blocked = decide(route(A::PackLockSet, U0).unwrap(), &f(0xEF));
         assert_eq!(blocked.reasons[0], Reason::Bit { group: 0, bit: G0_EXTENDED_OFF, want: true, known: Some(false) });
-        // the inverse 1.6 (flags 06) as before; other bits never inverted
-        let inverse = Facts { flags: Some(0x06), ..f(0xF7) };
-        assert!(ready(A::PowerOnOff, U1, &inverse));
-        assert!(!polar(0, G0_WRITE) && !polar(7, 3) && polar(0, 3) && polar(0, 4));
+        // other bits never inverted
+        let v16 = Patch::Version([1, 6]);
+        assert!(!inverted(0, G0_WRITE, v16, None) && !inverted(7, 4, v16, None) && inverted(0, 3, v16, None) && inverted(0, 4, Patch::Unknown, None));
+        assert!(!inverted(0, 3, Patch::Version([1, 5]), Some(0x12)) && !inverted(0, 3, Patch::Unknown, None));
     }
 
     #[test]
@@ -782,15 +794,19 @@ mod tests {
 
     #[test]
     fn a_new_pack_lock_needs_the_extended_off_releasing_it_does_not() {
+        // 1.6 read positive: bit 3 at 1 allows power, bit 4 at 1 switches the extended off on
         let f = |g0| facts(Tri::Yes, Tri::Yes, Tri::Yes, Some(g0), 4);
-        // F7: power free, extended off disabled (bit 4 = 1), no lock: an off does not lock
-        assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &f(0xF7)).state, State::Blocked);
+        // EF: power free, extended off off (bit 4 = 0), no lock: an off does not lock
+        assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &f(0xEF)).state, State::Blocked);
+        assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &f(0xEF)).state, State::Blocked);
+        assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &f(0xFF)).state, State::Ready);
+        // F7: power locked over the CAN socket (bit 3 = 0); RS485-1/2 does not ask
         assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &f(0xF7)).state, State::Blocked);
-        assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &f(0xE7)).state, State::Ready);
-        assert_eq!(decide(route(A::PackLockRelease, U0).unwrap(), &f(0xD7)).state, State::Ready);
-        assert_eq!(decide(route(A::PackLockRelease, U1).unwrap(), &f(0xD7)).state, State::Ready);
+        assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &f(0xF7)).state, State::Ready);
+        assert_eq!(decide(route(A::PackLockRelease, U0).unwrap(), &f(0xDF)).state, State::Ready);
+        assert_eq!(decide(route(A::PackLockRelease, U1).unwrap(), &f(0xDF)).state, State::Ready);
         // over the CAN socket also the power and clock build
-        let no_power = Facts { flags: Some(1 << FLAG_CUTOFF), ..f(0xE7) };
+        let no_power = Facts { flags: Some(1 << FLAG_CUTOFF), ..f(0xFF) };
         assert_eq!(decide(route(A::PackLockSet, U1).unwrap(), &no_power).state, State::Blocked);
         assert_eq!(decide(route(A::PackLockSet, U0).unwrap(), &no_power).state, State::Ready);
     }

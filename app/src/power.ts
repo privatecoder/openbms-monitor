@@ -1,7 +1,7 @@
 /** Ein/aus, restart and the clock over the CAN socket (MAINT 1.5 with image flag bit 1): what the Parameters view offers
  *  for one pack. Pure logic; the backend checks identity, flag and lock again before every command (`power.rs`). */
 import type { Bus, Channel, PackProbeView, ProfileView } from "./api";
-import { CUTOFF_MIN, factsOf, firmwareKnown, FLAG_CUTOFF, FLAG_POWER, G0, offerable, positiveOf, type Facts } from "./access";
+import { CUTOFF_MIN, factsOf, firmwareKnown, FLAG_CUTOFF, FLAG_POWER, G0, offerable, positiveBuild, type Facts } from "./access";
 
 /** Group0 bit 3: 1 locks ein/aus, restart and setting the clock over the CAN socket (the positive build: 1 allows; read
  *  through `inverseG0`). */
@@ -77,7 +77,7 @@ export function clockAccess(w: Where & { fw: Firmware; locked: boolean | null })
   const can = w.connected && w.bus === "can" && !w.demo;
   const ch = channelOf(w.bus);
   // the lock as last seen, as the raw bit of this build (positive: 1 allows); not read: the backend reads it fresh first
-  const facts = factsOf({ ...w.fw, installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked !== positiveOf(w.fw.flags) ? G0.powerLock : 0 });
+  const facts = factsOf({ ...w.fw, installation: w.installation, address: 1, group0: w.locked === null ? null : w.locked !== positiveBuild(w.fw.patch, w.fw.flags) ? G0.powerLock : 0 });
   const read = w.connected && (w.demo || (!!ch && offerable("read-clock", ch, facts)));
   const write = read && (w.demo || (!!ch && offerable("set-clock", ch, facts)));
   return { read, write, unsupported: can && !read };

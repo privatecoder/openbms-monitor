@@ -60,13 +60,15 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
 
 /** What the release bits of Group0 (`g0`) mean after a flash with the patch functions, which takes them over unchanged:
  *  writing over the CAN socket (bit 0) and the maintenance start (bit 2) locked, or both allowed; with an image with
- *  power and clock over the CAN socket (`powerRtc`) also its lock (bit 3: 1 locks); with the stored pack cutoff
- *  (`packCutoff`) the extended off (bit 4: 0 on, FF leaves it off) and a bit 5 at 0, which the image takes for a lock. */
+ *  power and clock over the CAN socket (`powerRtc`) also that release (bit 3: at 0 in 1.5/1.5.1, at 1 in an image with
+ *  the pack cutoff, read as 1.6.1); with the stored pack cutoff (`packCutoff`) the extended off (bit 4: 1 on, so FF
+ *  switches it on) and a bit 5 at 0, which the image takes for a lock. */
 export function flashGateKeys(g0: number, powerRtc = false, packCutoff = false): string[] {
   const write = (g0 & 1) === 1, start = (g0 & 4) === 4;
   const keys = write && start ? ["fw.patch.ok"] : !write && !start ? ["fw.patch.bothLocked"] : [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
-  const power = powerRtc ? [(g0 & 8) === 8 ? "fw.patch.powerLocked" : "fw.patch.powerOpen"] : [];
-  const cutoff = packCutoff ? [(g0 & 0x10) === 0 ? "fw.patch.cutoffOn" : "fw.patch.cutoffOff", ...((g0 & 0x20) === 0 ? ["fw.patch.lockKept"] : [])] : [];
+  const powerFree = ((g0 & 8) === 8) === packCutoff;
+  const power = powerRtc ? [powerFree ? "fw.patch.powerOpen" : "fw.patch.powerLocked"] : [];
+  const cutoff = packCutoff ? [(g0 & 0x10) !== 0 ? "fw.patch.cutoffOn" : "fw.patch.cutoffOff", ...((g0 & 0x20) === 0 ? ["fw.patch.lockKept"] : [])] : [];
   return [...keys, ...power, ...cutoff];
 }
 

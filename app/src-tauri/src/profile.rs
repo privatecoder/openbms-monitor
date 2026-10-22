@@ -67,9 +67,9 @@ impl Profile {
         self.caps().is_some() && matches!(&self.master, Master::Patched { patch, .. } if patch.info.power_rtc)
     }
 
-    /// The master's build has the positive Group0 bits 3/4 (image flag bit 3).
+    /// Group0 bit 3 at 1 allows power and clock in the master's build (`access::positive_build`).
     pub fn positive(&self) -> bool {
-        matches!(&self.master, Master::Patched { patch, .. } if access::positive_of(Some(patch.info.image_flags())))
+        matches!(&self.master, Master::Patched { patch, .. } if access::positive_build(access::Patch::Version(patch.info.patch), Some(patch.info.image_flags())))
     }
 }
 
