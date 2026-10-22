@@ -52,7 +52,9 @@ pub(crate) fn flows(action: Action) -> &'static [Channel] {
         // RS485-1/2 only: the name rides in the 169-byte ASCII A1, the serial strings and the history have their own
         // frames and checks there, the bootloader listens there
         A::WriteName | A::WriteSerials | A::ReadHistory | A::Flash => &[Channel::Uart0],
-        A::ReadIdentity | A::MaintStatus | A::MaintStart | A::MaintStop | A::ReadSystem => &[Channel::Uart1],
+        // RS485-1/2 with MAINT 1.5.1/1.6.1: „Wartungs-Marker“ (`marker.rs`) and „Platine flashen“ (`bench.rs`)
+        A::ReadIdentity | A::MaintStatus | A::MaintStop => BOTH,
+        A::MaintStart | A::ReadSystem => &[Channel::Uart1],
         A::DisplayTunnel => &[],
     }
 }

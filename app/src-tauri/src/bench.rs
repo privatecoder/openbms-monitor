@@ -1,16 +1,17 @@
 //! Flashing one board outside an installation („Platine flashen“): a search on any RS485-1/2 port, each pack with its
-//! String 2, and optionally the board's own CAN socket for the master marker. What the app knows about a board in an
-//! installation (patch proof, hard-stop sighting) is found by its String 2, not by a place.
+//! String 2 and, where the build shows it there (MAINT 1.5.1/1.6.1), its maintenance marker. What the app knows about a
+//! board in an installation (patch proof, hard-stop sighting) is found by its String 2, not by a place. An older MAINT
+//! build shows its marker over the CAN socket only: „Steuern“ clears it there.
 
-use crate::maint::{self, MaintError, MasterView};
+use crate::maint::{self, MaintError};
 use crate::maint_store::Store;
+use crate::marker::{rs485_kind, Found};
 use crate::AppState;
 use openbms_flash::known::ImageKind;
 use openbms_flash::maint::dialog::{self, Action, Budgets};
-use openbms_flash::maint::policy::Master;
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_proto::{DeviceInfo, MarkerWord};
-use openbms_transport::{Bus, Connection, Endpoint};
+use openbms_transport::Connection;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, State};
@@ -21,6 +22,10 @@ pub struct BenchPack {
     info: DeviceInfo,
     /// String 2 as read now (None: not readable or not set)
     serial: Option<String>,
+    /// the patched build's identity over RS485-1/2 (None: no 64/03 answer there, older builds and the original)
+    version: Option<String>,
+    /// "on" | "off" | "foreign" where the build shows its marker over RS485-1/2; None: not shown there
+    marker: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -30,24 +35,6 @@ pub struct BenchScan {
     packs: Vec<BenchPack>,
     /// stopped by „Abbrechen“: `packs` holds what answered until then
     cancelled: bool,
-    /// the master on the given CAN socket, when address 0 answered and the CAN socket shows the same board
-    master: Option<MasterView>,
-    /// a CAN socket was given and address 0 answered: whether its String 2 there is the one read on RS485-1/2
-    same_board: Option<bool>,
-}
-
-/// The board's CAN socket as an endpoint key (`serial:…` at 9600 baud, or `tcp:…`).
-pub fn open_control(key: &str) -> Result<Connection, MaintError> {
-    let key = maint::pack_key(key)?;
-    let ep = match key.split_once(':') {
-        Some(("tcp", addr)) => Endpoint::Tcp { addr: addr.into() },
-        Some((_, path)) => Endpoint::Serial { path: path.into(), baud: Bus::CanSocketBus.baud() },
-        None => return Err(maint::refused("no-port")),
-    };
-    let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    c.set_label(crate::capture::label(&ep, Bus::CanSocketBus));
-    c.set_bus(Bus::CanSocketBus);
-    Ok(c)
 }
 
 /// The board the user chose is the one flashed: with a String 2 shown at the search (`expected`), the fresh read must be
@@ -59,32 +46,25 @@ pub fn chosen_board(expected: Option<&str>, read: Option<&str>) -> Result<(), Ma
     }
 }
 
-/// The two ports must differ: the pack bus and the CAN socket are two buses.
-pub fn distinct(pack: &str, control: Option<&str>) -> Result<(), MaintError> {
-    match control {
-        Some(c) if maint::pack_key(c)? == maint::pack_key(pack)? => Err(maint::refused("bench-same-port")),
-        _ => Ok(()),
+/// The identity and marker of the pack at `address` over RS485-1/2: a build with image flag bit 4 shows its state,
+/// anything else none (`trusted` false).
+pub fn rs485_marker(link: &mut Connection, address: u8) -> Found {
+    let clock = SystemClock::new();
+    let budget = crate::profile::identity_budget(link);
+    let (kind, info) = rs485_kind(dialog::probe_pack(link, &clock, address, budget).unwrap_or(dialog::PackAnswer::Undecided));
+    if kind != "patched" {
+        return Found { kind, info, state: None, trusted: false };
     }
-}
-
-/// String 2 of address 0 over its CAN socket, canonical.
-fn can_string2(control: &mut Connection) -> Option<String> {
-    control.uart1_serial(Bus::CanSocketBus, 0, openbms_proto::uart1::CMD_STRING2).ok().and_then(|raw| openbms_proto::serial::canonical(&raw))
-}
-
-/// Whether the CAN socket belongs to the board found at address 0 on the pack bus: both canonical String 2 read and
-/// equal. Anything else ties nothing.
-pub fn same_board(pack: Option<&str>, can: Option<&str>) -> bool {
-    matches!((pack, can), (Some(p), Some(c)) if p == c)
+    let state = dialog::dialog_at(link, &clock, address, Action::Status, Budgets::default()).ok();
+    Found { kind, info, state, trusted: true }
 }
 
 /// One search on a board's RS485-1/2 port, without an installation: listen first (a polling master or other traffic:
-/// nothing is searched), then 0x51 on 0–15 with String 2 each. A pending pack that answers as the board flashed is
-/// cleared. With `control` and address 0 found, its master state over the CAN socket, read only.
+/// nothing is searched), then 0x51 on 0–15 with String 2 and the RS485-1/2 marker each. A pending pack that answers as
+/// the board flashed is cleared.
 #[tauri::command]
-pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String, control: Option<String>) -> Result<BenchScan, MaintError> {
+pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String) -> Result<BenchScan, MaintError> {
     let key = maint::pack_key(&port)?;
-    distinct(&key, control.as_deref())?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
@@ -95,61 +75,46 @@ pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String
     let mut link = maint::open_pack_for(&state, &app, &key)?;
     let heard = bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| MaintError::Connection { message: e.to_string() })?;
     if !heard.quiet() {
-        return Ok(BenchScan { traffic: heard.bytes, packs: vec![], cancelled: false, master: None, same_board: None });
+        return Ok(BenchScan { traffic: heard.bytes, packs: vec![], cancelled: false });
     }
     let found = link.scan(maint::scan_addresses(&state.scan_cancel)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    // „Abbrechen“ counts between every exchange: no String 2, pending or CAN read after it
+    // „Abbrechen“ counts between every exchange: no String 2, marker or pending read after it
     let stop = || state.scan_cancel.load(Ordering::SeqCst);
     let mut packs = vec![];
     for (address, info) in found {
         let serial = if stop() { None } else { maint::string2(&mut link, address) };
-        packs.push(BenchPack { address, info, serial });
+        let f = if stop() { None } else { Some(rs485_marker(&mut link, address)) };
+        let version = f.and_then(|f| f.info).map(|i| i.version());
+        let marker = f.and_then(|f| f.state).map(|s| crate::maint::marker_name(s.marker()));
+        packs.push(BenchPack { address, info, serial, version, marker });
     }
-    let addresses: Vec<u8> = packs.iter().map(|p| p.address).collect();
     if !stop() {
+        let addresses: Vec<u8> = packs.iter().map(|p| p.address).collect();
         let pending = maint::with_store(&state, |s| s.pending_on(&key))?;
         let answered = maint::answered_with_serial(&pending, &addresses, &mut link);
         maint::with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()))?;
     }
-    let pack0 = if addresses.contains(&0) && !stop() { maint::canonical_string2(&mut link, 0) } else { None };
-    drop(link);
-    let (mut master, mut same) = (None, None);
-    if let (Some(c), true) = (control.as_deref(), addresses.contains(&0) && !stop()) {
-        let mut can = open_control(c)?;
-        let tied = same_board(pack0.as_deref(), can_string2(&mut can).as_deref());
-        same = Some(tied);
-        if tied && !stop() {
-            master = dialog::read(&mut can, &SystemClock::new(), Budgets::default()).ok().map(|m| maint::master_view(&m));
-        }
-    }
     let cancelled = state.scan_cancel.swap(false, Ordering::SeqCst);
-    Ok(BenchScan { traffic: 0, packs, cancelled, master, same_board: same })
+    Ok(BenchScan { traffic: 0, packs, cancelled })
 }
 
-/// What a flash of address 0 outside an installation does with the master marker, over the board's own CAN socket:
-/// "unchecked" (no CAN socket given, another board there, no readable state), "checked" (off, or on for an image
-/// with the maintenance functions, which starts halted then), "released" (on, cleared before an image without them:
-/// an original image ignores the marker and would keep it hidden for a later patched one).
-pub fn bench_marker(control: Option<&mut Connection>, pack0: Option<&str>, image: ImageKind) -> Result<&'static str, MaintError> {
-    let Some(can) = control else { return Ok("unchecked") };
-    if !same_board(pack0, can_string2(can).as_deref()) {
-        return Ok("unchecked");
-    }
+/// What a flash outside an installation does with the board's marker, over RS485-1/2: "unchecked" (the build does not
+/// show it there: an older MAINT build or the original), "checked" (off, or on for an image with the maintenance
+/// functions, which starts halted then), "released" (on, cleared before an image without them: an original image
+/// ignores the marker and would keep it hidden for a later patched one).
+pub fn bench_marker(link: &mut Connection, address: u8, image: ImageKind) -> Result<&'static str, MaintError> {
+    let f = rs485_marker(link, address);
     let clock = SystemClock::new();
-    let m = match dialog::read(can, &clock, Budgets::default()) {
-        Ok(m) => m,
-        Err(_) => return Ok("unchecked"),
-    };
-    marker_step(&m, image, || dialog::dialog(can, &clock, Action::Clear, Budgets::default()).map(|s| s.effective_slaves).map_err(|e| e.to_string()))
+    marker_step(&f, image, || dialog::dialog_at(link, &clock, address, Action::Clear, Budgets::default()).map(|s| s.effective_slaves).map_err(|e| e.to_string()))
 }
 
-/// `bench_marker` once the board is tied and read: `clear` runs only for a trusted marker on before an image without
-/// the maintenance functions and returns the slave count the master polls one DIP cycle later. A failed clear refuses
-/// the flash; so does a master that polls slaves then (DIP 5–8 not OFF): the marker is gone, the bus would not be quiet.
-pub fn marker_step(m: &Master, image: ImageKind, clear: impl FnOnce() -> Result<u8, String>) -> Result<&'static str, MaintError> {
-    match m.marker() {
+/// `bench_marker` once the board is read: `clear` runs only for a trusted marker on before an image without the
+/// maintenance functions and returns the slave count the board polls one DIP cycle later. A failed clear refuses the
+/// flash; so does a master that polls slaves then (DIP 5–8 not OFF): the marker is gone, the bus would not be quiet.
+pub fn marker_step(f: &Found, image: ImageKind, clear: impl FnOnce() -> Result<u8, String>) -> Result<&'static str, MaintError> {
+    match f.state.map(|s| s.marker()) {
         Some(MarkerWord::On) if image != ImageKind::Maintenance => {
-            if !m.may_release() {
+            if !f.may_clear() {
                 return Err(maint::refused("release-master-first-unread"));
             }
             match clear().map_err(|message| MaintError::Connection { message })? {
@@ -157,7 +122,7 @@ pub fn marker_step(m: &Master, image: ImageKind, clear: impl FnOnce() -> Result<
                 _ => Err(maint::refused("bench-dip-on")),
             }
         }
-        Some(MarkerWord::On | MarkerWord::Off) => Ok("checked"),
+        Some(MarkerWord::On | MarkerWord::Off) if f.trusted => Ok("checked"),
         _ => Ok("unchecked"),
     }
 }
@@ -180,26 +145,16 @@ pub fn places_of(store: &Store, serial: &str) -> Result<Vec<(String, u8)>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openbms_flash::maint::policy::Patch;
     use openbms_proto::{MaintInfo, MaintState};
 
-    fn master(word: u32) -> Master {
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false, pack_cutoff: false, reserved_flags: 0 };
-        Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) }
-    }
-
-    #[test]
-    fn the_can_socket_counts_only_for_the_same_board() {
-        assert!(same_board(Some("SYN-0"), Some("SYN-0")));
-        assert!(!same_board(Some("SYN-0"), Some("SYN-1")));
-        assert!(!same_board(None, Some("SYN-0")));
-        assert!(!same_board(Some("SYN-0"), None));
-        assert!(!same_board(None, None));
+    fn found(word: Option<u32>, trusted: bool) -> Found {
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 6], patch_rev: 1, build_id: [1; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0: true, reserved_flags: 0 };
+        Found { kind: if trusted { "patched" } else { "no-uart0" }, info: Some(info), state: word.map(|w| MaintState { marker_word: w, effective_slaves: 0 }), trusted }
     }
 
     #[test]
     fn a_marker_on_is_cleared_before_an_image_without_maintenance_only() {
-        let (on, off) = (master(0), master(u32::MAX));
+        let (on, off) = (found(Some(0), true), found(Some(u32::MAX), true));
         let mut cleared = 0;
         assert_eq!(marker_step(&on, ImageKind::Original, || { cleared += 1; Ok(0) }).unwrap(), "released");
         assert_eq!(marker_step(&on, ImageKind::Custom, || { cleared += 1; Ok(0) }).unwrap(), "released");
@@ -210,9 +165,10 @@ mod tests {
         assert_eq!(marker_step(&off, ImageKind::Original, || panic!("off")).unwrap(), "checked");
         // a failed clear refuses the flash
         assert!(marker_step(&on, ImageKind::Original, || Err("timeout".into())).is_err());
-        // no valid state (a foreign word) or no 0x64: nothing to say
-        assert_eq!(marker_step(&master(0x1234_5678), ImageKind::Original, || panic!("foreign")).unwrap(), "unchecked");
-        assert_eq!(marker_step(&Master::No0x64, ImageKind::Original, || panic!("none")).unwrap(), "unchecked");
+        // a foreign word, no state, or a build that does not show it on RS485-1/2: nothing to say
+        assert_eq!(marker_step(&found(Some(0x1234_5678), true), ImageKind::Original, || panic!("foreign")).unwrap(), "unchecked");
+        assert_eq!(marker_step(&found(None, true), ImageKind::Original, || panic!("unread")).unwrap(), "unchecked");
+        assert_eq!(marker_step(&found(None, false), ImageKind::Original, || panic!("older")).unwrap(), "unchecked");
     }
 
     #[test]
@@ -240,12 +196,5 @@ mod tests {
         assert!(chosen_board(Some("SYN-A"), None).is_err());
         assert!(chosen_board(None, Some("SYN-B")).is_ok());
         assert!(chosen_board(None, None).is_ok());
-    }
-
-    #[test]
-    fn the_two_ports_must_differ() {
-        assert!(distinct("serial:/dev/a", Some("serial:/dev/a")).is_err());
-        assert!(distinct("serial:/dev/a", Some("serial:/dev/b")).is_ok());
-        assert!(distinct("tcp:192.0.2.1:4196", None).is_ok());
     }
 }

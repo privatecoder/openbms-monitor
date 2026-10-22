@@ -1,12 +1,14 @@
-//! CID2 0x64: identity and maintenance mode of a patched master firmware (16.06.13 `_MAINT`), CAN socket bus only.
+//! CID2 0x64: identity and maintenance mode of a patched master firmware (16.06.13 `_MAINT`), over the CAN socket bus;
+//! builds with image flag bit 4 (MNT format 4, MAINT 1.5.1/1.6.1) also answer status, clear and identity over RS485-1/2
+//! at their own address.
 //!
 //! The patch keeps a persistent marker in flash. While it is set, the master treats its slave count as 0: it stops
 //! polling the pack bus (RS485-1/2) and answers there itself, so its parameters can be read and it can be updated.
 //! Original firmware answers 0x64 with RTN 04 (unknown command); slaves never answer 0x64.
 //!
 //! `INFO=03` reads the identity ([`MaintInfo`], no runtime state; newer builds answer it at every pack's own address, the
-//! address only in the frame): format 2 with 17 bytes, or format 3 with 18 bytes and
-//! an image flag byte (bit 0: the hard-stop patch is compiled in). `INFO=02` reads the state
+//! address only in the frame): format 2 with 17 bytes, format 3 with 18 bytes and
+//! an image flag byte (bit 0: the hard-stop patch is compiled in), or format 4 with 19 bytes (a third patch byte). `INFO=02` reads the state
 //! ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout holds only once a format-2
 //! identity of a supported build was read on the same connection.
 
@@ -51,15 +53,28 @@ pub struct MaintState {
 impl MaintState {
     pub const LEN: usize = 5;
 
-    /// Read the state (changes nothing). Only the master at address 0 answers.
+    /// Read the state (changes nothing). Over the CAN socket only the master at address 0 answers.
     pub fn request() -> Result<Vec<u8>> {
-        encode_request(0, 0x64, &[0x02])
+        Self::request_at(0)
+    }
+
+    /// Read the state of the pack at `address` (0–21): over RS485-1/2 a build with image flag bit 4 answers at its own
+    /// address, also a slave.
+    pub fn request_at(address: u8) -> Result<Vec<u8>> {
+        check_address(address)?;
+        encode_request(address, 0x64, &[0x02])
     }
 
     /// Set (`true`) or clear (`false`) the marker. The reply may still show the slave count of the previous cycle; read
     /// the state again afterwards.
     pub fn set_request(on: bool) -> Result<Vec<u8>> {
-        encode_request(0, 0x64, &[u8::from(on), TOKEN[0], TOKEN[1]])
+        Self::set_request_at(0, on)
+    }
+
+    /// `set_request` at `address` (0–21); over RS485-1/2 the build with image flag bit 4 only clears.
+    pub fn set_request_at(address: u8, on: bool) -> Result<Vec<u8>> {
+        check_address(address)?;
+        encode_request(address, 0x64, &[u8::from(on), TOKEN[0], TOKEN[1]])
     }
 
     pub fn parse(info: &[u8]) -> Result<Self> {
@@ -74,7 +89,14 @@ impl MaintState {
     }
 }
 
-/// Format-2 or format-3 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
+fn check_address(address: u8) -> Result<()> {
+    if address > 21 {
+        return Err(Error::Layout("0x64 address must be 0..=21"));
+    }
+    Ok(())
+}
+
+/// Format-2, -3 or -4 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintInfo {
     pub format: u8,
@@ -82,6 +104,8 @@ pub struct MaintInfo {
     pub base: [u8; 3],
     /// patch version major, minor
     pub patch: [u8; 2],
+    /// format 4: the third patch byte (MAINT 1.6.1 → 1); 0 with formats 2 and 3
+    pub patch_rev: u8,
     /// identifies the build (not an authentication of the device)
     pub build_id: [u8; 8],
     /// format 3, image flag bit 0: the hard-stop patch is compiled in; None with format 2 (not reported)
@@ -92,17 +116,20 @@ pub struct MaintInfo {
     /// format 3, image flag bit 2: the stored pack cutoff of MAINT 1.6 (Group0 bit 4 extended off, bit 5 the lock state)
     /// is compiled in; a capability, never the lock itself; false with format 2
     pub pack_cutoff: bool,
-    /// format 3, image flag bits 3–7 as reported (reserved today; a later build may announce a function there); 0 with
-    /// format 2
+    /// image flag bit 4 (format 4): status `02`, clear `00` and identity `03` also over RS485-1/2 (UART0) at the pack's
+    /// own address; the start stays on the CAN socket
+    pub uart0: bool,
+    /// image flag bits 3 and 5–7 as reported (bit 3: the positive Group0 bit 3/4 semantics, not evaluated yet; the
+    /// others reserved); 0 with format 2
     pub reserved_flags: u8,
 }
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoAnswer {
-    /// the 17-byte format-2 or the 18-byte format-3 identity
+    /// the 17-byte format-2, the 18-byte format-3 or the 19-byte format-4 identity
     Known(MaintInfo),
-    /// `MNT` with another format or length (e.g. the historic 22-byte format 1, or format 4): a patch the app does not
+    /// `MNT` with another format or length (e.g. the historic 22-byte format 1): a patch the app does not
     /// know, never decoded
     OtherFormat,
     /// no `MNT` signature: not an identity
@@ -110,9 +137,11 @@ pub enum InfoAnswer {
 }
 
 impl MaintInfo {
-    /// format 2: 17 bytes; format 3: 18 bytes (the image flags after the build ID)
+    /// format 2: 17 bytes; format 3: 18 bytes (the image flags after the build ID); format 4: 19 bytes (a third patch
+    /// byte before the build ID)
     pub const LEN: usize = 17;
     pub const LEN3: usize = 18;
+    pub const LEN4: usize = 19;
     /// the revision byte of an unknown OEM revision
     pub const REVISION_UNKNOWN: u8 = 0xFF;
 
@@ -124,17 +153,15 @@ impl MaintInfo {
     /// Read the identity of the pack at `address` (0–21): a build with addressed 64/03 answers at its own address; older
     /// slaves stay silent or answer an error.
     pub fn request_at(address: u8) -> Result<Vec<u8>> {
-        if address > 21 {
-            return Err(Error::Layout("0x64/03 address must be 0..=21"));
-        }
+        check_address(address)?;
         encode_request(address, 0x64, &[0x03])
     }
 
-    /// Exactly the 17-byte format 2 or the 18-byte format 3.
+    /// Exactly the 17-byte format 2, the 18-byte format 3 or the 19-byte format 4.
     pub fn parse(info: &[u8]) -> Result<Self> {
         match Self::classify(info) {
             InfoAnswer::Known(i) => Ok(i),
-            _ => Err(Error::Layout("0x64/03 answer is neither the 17-byte MNT format 2 nor the 18-byte format 3")),
+            _ => Err(Error::Layout("0x64/03 answer is none of the MNT formats 2 (17 bytes), 3 (18) or 4 (19)")),
         }
     }
 
@@ -142,20 +169,29 @@ impl MaintInfo {
         if info.len() < 4 || &info[0..3] != SIGNATURE {
             return InfoAnswer::Broken;
         }
-        let (hard_stop, power_rtc, pack_cutoff, reserved_flags) = match (info[3], info.len()) {
-            (2, Self::LEN) => (None, false, false, 0),
-            // bits 3–7 are reserved
-            (3, Self::LEN3) => (Some(info[17] & 0x01 != 0), info[17] & 0x02 != 0, info[17] & 0x04 != 0, info[17] & 0xF8),
+        // format 4 has a third patch byte, so its build ID and flags sit one byte later
+        let (rev, id) = match (info[3], info.len()) {
+            (2, Self::LEN) | (3, Self::LEN3) => (0, 9),
+            (4, Self::LEN4) => (info[9], 10),
             _ => return InfoAnswer::OtherFormat,
         };
+        let flags = if info[3] == 2 { None } else { Some(info[id + 8]) };
+        let bit = |b: u8| flags.is_some_and(|f| f & (1 << b) != 0);
+        // bit 4 only in format 4; bit 3 and 5–7 kept as reported
+        let uart0 = info[3] == 4 && bit(4);
+        let reserved_flags = flags.map_or(0, |f| f & if info[3] == 4 { 0xE8 } else { 0xF8 });
         let mut build_id = [0u8; 8];
-        build_id.copy_from_slice(&info[9..17]);
-        InfoAnswer::Known(Self { format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], build_id, hard_stop, power_rtc, pack_cutoff, reserved_flags })
+        build_id.copy_from_slice(&info[id..id + 8]);
+        InfoAnswer::Known(Self {
+            format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], patch_rev: rev, build_id,
+            hard_stop: flags.map(|f| f & 0x01 != 0), power_rtc: bit(1), pack_cutoff: bit(2), uart0, reserved_flags,
+        })
     }
 
-    /// The image flag byte as reported (format 3); a format-2 identity reports none: 0.
+    /// The image flag byte as reported (formats 3 and 4); a format-2 identity reports none: 0.
     pub fn image_flags(&self) -> u8 {
-        u8::from(self.hard_stop == Some(true)) | (u8::from(self.power_rtc) << 1) | (u8::from(self.pack_cutoff) << 2) | self.reserved_flags
+        u8::from(self.hard_stop == Some(true)) | (u8::from(self.power_rtc) << 1) | (u8::from(self.pack_cutoff) << 2) | (u8::from(self.uart0) << 4)
+            | self.reserved_flags
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -169,9 +205,14 @@ impl MaintInfo {
         if c == Self::REVISION_UNKNOWN { format!("{a}.{b:02}.?") } else { format!("{a}.{b:02}.{c:02}") }
     }
 
-    /// "16.06.13 MAINT 1.5"
+    /// "1.5", or with format 4 "1.6.1"
+    pub fn patch_text(&self) -> String {
+        if self.format >= 4 { format!("{}.{}.{}", self.patch[0], self.patch[1], self.patch_rev) } else { format!("{}.{}", self.patch[0], self.patch[1]) }
+    }
+
+    /// "16.06.13 MAINT 1.5", "16.06.13 MAINT 1.6.1"
     pub fn version(&self) -> String {
-        format!("{} MAINT {}.{}", self.base_text(), self.patch[0], self.patch[1])
+        format!("{} MAINT {}", self.base_text(), self.patch_text())
     }
 }
 
@@ -278,13 +319,51 @@ mod tests {
 
     #[test]
     fn wrong_lengths_and_other_formats_are_rejected() {
-        // format 3 with 17 bytes, format 2 with 18 bytes, format 4
+        // format 3 with 17 bytes, format 2 with 18 bytes, format 4 with 18 bytes, format 5
         assert_eq!(MaintInfo::classify(&info3(0x0D, 1)[..17]), InfoAnswer::OtherFormat);
         assert_eq!(MaintInfo::classify(&[info15(), vec![1]].concat()), InfoAnswer::OtherFormat);
         let mut f4 = info3(0x0D, 1);
         f4[3] = 4;
         assert_eq!(MaintInfo::classify(&f4), InfoAnswer::OtherFormat);
         assert!(MaintInfo::parse(&f4).is_err());
+        let mut f5 = info4(1, 0x16);
+        f5[3] = 5;
+        assert_eq!(MaintInfo::classify(&f5), InfoAnswer::OtherFormat);
+    }
+
+    /// The 19 INFO bytes of a format-4 identity: 16.06.13, patch 1.6.`rev`, image flags `flags`.
+    fn info4(rev: u8, flags: u8) -> Vec<u8> {
+        let mut v = b"MNT".to_vec();
+        v.extend_from_slice(&[0x04, 0x10, 0x06, 0x0D, 0x01, 0x06, rev, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, flags]);
+        v
+    }
+
+    #[test]
+    fn format_4_has_19_bytes_a_third_patch_byte_and_the_uart0_flag() {
+        // 1.6.1 with positive bits and the cutoff, power and UART0 marker: flags 0x1E
+        let i = MaintInfo::parse(&info4(1, 0x1E)).unwrap();
+        assert_eq!((i.format, i.base, i.patch, i.patch_rev), (4, [16, 6, 13], [1, 6], 1));
+        assert_eq!((i.hard_stop, i.power_rtc, i.pack_cutoff, i.uart0, i.reserved_flags), (Some(false), true, true, true, 0x08));
+        assert_eq!((i.build_id_hex(), i.version()), ("0123456789abcdef".to_string(), "16.06.13 MAINT 1.6.1".to_string()));
+        assert_eq!(i.image_flags(), 0x1E);
+        assert!(!MaintInfo::parse(&info4(1, 0xEF)).unwrap().uart0);
+        // bit 4 means nothing in format 3
+        let f3 = MaintInfo::parse(&info3(0x0D, 0x10)).unwrap();
+        assert_eq!((f3.uart0, f3.reserved_flags, f3.image_flags()), (false, 0x10, 0x10));
+        // through a frame: LENGTH 8026 carries the 38 hex digits
+        let frame = crate::frame::encode_request(0, 0, &info4(1, 0x1E)).unwrap();
+        assert_eq!(&frame[9..13], b"8026");
+        assert_eq!(MaintInfo::classify(&crate::frame::parse(&frame).unwrap().info), InfoAnswer::Known(i));
+    }
+
+    #[test]
+    fn status_and_clear_are_addressed_for_rs485() {
+        let f = crate::frame::parse(&MaintState::request_at(7).unwrap()).unwrap();
+        assert_eq!((f.address, f.rtn, f.info.as_slice()), (7, 0x64, &[0x02][..]));
+        let f = crate::frame::parse(&MaintState::set_request_at(7, false).unwrap()).unwrap();
+        assert_eq!((f.address, f.info.as_slice()), (7, &[0x00, 0xC3, 0x5A][..]));
+        assert_eq!(MaintState::set_request(true).unwrap(), MaintState::set_request_at(0, true).unwrap());
+        assert!(MaintState::request_at(22).is_err() && MaintState::set_request_at(22, false).is_err());
     }
 
     #[test]

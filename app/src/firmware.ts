@@ -28,12 +28,13 @@ export function benchPick(packs: BenchPack[]): number | null {
   return packs.length === 1 ? packs[0].address : null;
 }
 
-/** „Platine flashen“, address 0: what the app can say about the master marker before the flash (null: nothing to say). */
-export function benchMarkerKey(scan: BenchScan, address: number | null, control: boolean, image: FirmwareImage | null): string | null {
-  if (address !== 0 || !scan.packs.some((p) => p.address === 0)) return null;
-  if (!control) return "fw.bench.markerNoCan";
-  if (scan.same_board === false) return "fw.bench.markerOther";
-  if (scan.master?.marker === "on" && image && image.kind !== "maintenance") return "fw.bench.markerOn";
+/** „Platine flashen“: what the app can say about the chosen board's marker before the flash (null: nothing to say). Set
+ *  and shown over RS485-1/2: cleared before an image without the maintenance functions. Not shown there (an older MAINT
+ *  build or the original), at a master: the way over the CAN socket. */
+export function benchMarkerKey(pack: BenchPack | null, image: FirmwareImage | null): string | null {
+  if (!pack || image?.kind === "maintenance") return null;
+  if (pack.marker === "on") return image ? "fw.bench.markerOn" : null;
+  if (pack.marker === null && pack.address === 0) return "fw.bench.markerOlder";
   return null;
 }
 

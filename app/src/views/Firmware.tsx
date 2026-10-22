@@ -27,9 +27,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const [ports, setPorts] = useState<string[]>([]);
-  // „Platine flashen“: its RS485-1/2 port and the board's CAN socket (optional), independent of any installation
+  // „Platine flashen“: its RS485-1/2 port, independent of any installation
   const [benchPort, setBenchPort] = useState<{ kind: PortKind; target: string }>({ kind: "serial", target: "" });
-  const [benchCan, setBenchCan] = useState<{ kind: PortKind; target: string }>({ kind: "serial", target: "" });
   const [scan, setScan] = useState<BenchScan | null>(null);
   const [scanning, setScanning] = useState(false);
   // every search starts a new generation: what was read for the earlier one (Group0) no longer counts
@@ -69,9 +68,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // the RS485-1/2 port of the installation as its endpoint key (the pack bus panel)
   const port = inst ? packPortOf(inst) ?? "" : "";
   const bPort = benchPort.target.trim() ? portKey(benchPort.kind, benchPort.target.trim()) : "";
-  const bCan = benchCan.target.trim() ? portKey(benchCan.kind, benchCan.target.trim()) : null;
-  // a search belongs to the ports it ran on
-  useEffect(() => { setScan(null); setError(null); }, [bPort, bCan]);
+  // a search belongs to the port it ran on
+  useEffect(() => { setScan(null); setError(null); }, [bPort]);
   const busy = scanning;
   const inputsLocked = firmwareInputsLocked(running, busy);
   const phrase = confirmationPhrase(address, image?.custom);
@@ -102,8 +100,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   /** Start a flash (panel or board): refusals are thrown back as the backend sent them. `installation`: the panel's,
-   *  null for „Platine flashen“ (`control`: the board's CAN socket). */
-  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, control: string | null, expected: string | null) => {
+   *  null for „Platine flashen“ (`expected`: the String 2 the search showed). */
+  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, expected: string | null) => {
     if (!path || !image) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
@@ -111,7 +109,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, control, expected);
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, expected);
       setFlashed({ address: a, image, checked: from, bank: r.bank, marker: r.marker, bench: installation === null });
       // the pending record is written now
       void maint.loadLists();
@@ -126,7 +124,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
     try {
-      const r = await api.benchScan(bPort, bCan);
+      const r = await api.benchScan(bPort);
       setScan(r);
       const one = benchPick(r.packs);
       if (one !== null) setAddress(one);
@@ -138,10 +136,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const chosen = scan?.packs.find((p) => p.address === address) ?? null;
   const benchFlash = async () => {
     if (!chosen) return;
-    try { await startFlash(bPort, chosen.address, chosen.info.firmware_version, null, bCan, chosen.serial); }
+    try { await startFlash(bPort, chosen.address, chosen.info.firmware_version, null, chosen.serial); }
     catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
   };
-  const markerKey = scan ? benchMarkerKey(scan, chosen?.address ?? null, bCan !== null, image) : null;
+  const markerKey = benchMarkerKey(chosen, image);
 
   const reset = () => { setDone(null); setProgress(null); setError(null); setFlashed(null); };
   const versions = done && flashed ? resultVersions(done, flashed.checked, flashed.image, t) : null;
@@ -190,20 +188,16 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onEditPorts={onEditPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => inst ? startFlash(port, a, from, inst.id, null, null) : Promise.resolve()} onMaster={() => {}} />}
+        onFlash={(a, from) => inst ? startFlash(port, a, from, inst.id, null) : Promise.resolve()} onMaster={() => {}} />}
 
-      {/* one board without an installation: any RS485-1/2 port, a search with String 2, optionally the board's CAN
-          socket for the master marker; the same flash checks in the backend */}
+      {/* one board without an installation: any RS485-1/2 port, a search with String 2 and, where the build shows it
+          there, the marker; the same flash checks in the backend */}
       {tab === "bench" && <section className="space-y-3 rounded-md border border-line p-4">
         <p className="text-sm text-muted">{t("fw.bench.hint")}</p>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
           <span className="flex flex-wrap items-center gap-2 text-muted">{t("fw.bench.port")}
             <KindSelect value={benchPort.kind} disabled={inputsLocked} onChange={(k) => setBenchPort({ kind: k, target: "" })} label={t("maint.setup.rs485Kind")} />
             <PortInput kind={benchPort.kind} value={benchPort.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setBenchPort({ kind: benchPort.kind, target: v })} label={t("fw.bench.port")} disabled={inputsLocked} />
-          </span>
-          <span className="flex flex-wrap items-center gap-2 text-muted">{t("fw.bench.can")}
-            <KindSelect value={benchCan.kind} disabled={inputsLocked} onChange={(k) => setBenchCan({ kind: k, target: "" })} label={t("fw.bench.can")} />
-            <PortInput kind={benchCan.kind} value={benchCan.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setBenchCan({ kind: benchCan.kind, target: v })} label={t("fw.bench.can")} disabled={inputsLocked} />
           </span>
         </div>
         {owner && <p className="text-sm text-discharge">{t("fw.bench.useBus", { name: owner.name })}</p>}
@@ -222,12 +216,13 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
               <label key={p.address} className="flex items-center gap-2">
                 <input type="radio" name="bench-pack" checked={address === p.address} disabled={inputsLocked} onChange={() => setAddress(p.address)} />
                 <span className="font-medium">{t("maint.packs.pack", { address: p.address })}</span>
-                <span className="text-muted">{p.info.device_name} · {p.info.firmware_version} · {p.serial ? t("fw.bench.serial", { serial: p.serial }) : t("fw.bench.noSerial")}</span>
+                <span className="text-muted">{p.info.device_name} · {p.info.firmware_version} · {p.serial ? t("fw.bench.serial", { serial: p.serial }) : t("fw.bench.noSerial")}
+                  {p.version && ` · ${p.version}`}{p.marker && ` · ${t(`fw.bench.marker.${p.marker}`)}`}</span>
               </label>
             ))}
           </div>
         )}
-        {markerKey && <p className={cn("text-sm", markerKey === "fw.bench.markerOn" ? "text-ink" : "text-discharge")}>{t(markerKey)}</p>}
+        {markerKey && <p className={cn("text-sm", markerKey === "fw.bench.markerOn" ? "text-ink" : "text-muted")}>{t(markerKey)}</p>}
         {chosen && image && <p className="font-medium">{t("fw.summary", { address: chosen.address, from: chosen.info.firmware_version, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         {benchPort.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
@@ -240,7 +235,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <section className="space-y-3 border-t border-line pt-5">
           <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
           {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
-          {flashed?.marker === "unchecked" && <p className="text-sm text-discharge">{t(flashed.bench ? "fw.bench.markerUnchecked" : "fw.markerUnchecked")}</p>}
+          {flashed?.marker === "unchecked" && (!flashed.bench || flashed.address === 0) && <p className="text-sm text-discharge">{t(flashed.bench ? "fw.bench.markerUnchecked" : "fw.markerUnchecked")}</p>}
           {flashed?.marker === "released" && <p className="text-sm text-muted">{t("fw.bench.markerReleased")}</p>}
           {flashed?.marker === "latent" && <p className="text-sm text-alarm">{t("fw.markerLatent")}</p>}
           {running && (

@@ -1,5 +1,6 @@
 //! CID2 0x64 with the patched master on the CAN socket bus (UART1, 9600 baud): read its identity and state, set or
-//! clear the marker, and wait until the master's next cycles show the change.
+//! clear the marker, and wait until the master's next cycles show the change. A build with image flag bit 4 answers
+//! status and clear also over RS485-1/2 at its own address (`dialog_at`).
 
 use super::policy::Master;
 use super::Clock;
@@ -65,21 +66,24 @@ pub enum DialogError {
 /// Minimum time after `stop` when the slave count does not change (N = 0): one full master cycle.
 pub const ZERO_SLAVES_SETTLE: Duration = timing::ZERO_SLAVES_SETTLE;
 
-/// Which answers belong to the request sent: `03` gets 17 or 18 bytes (or the historic 22, to name an unknown patch) or RTN
+/// Which answers belong to the request sent: `03` gets 17, 18 or 19 bytes (or the historic 22, to name an unknown patch) or RTN
 /// 04/05; `02`, start and stop get five bytes or a rejection. A late answer to an earlier request (other length), our own
 /// echo (CID2 0x64 in the RTN field) and foreign traffic do not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bound {
     Info,
-    Status,
+    /// the state at this address
+    Status(u8),
 }
 
 impl Bound {
     fn accepts(self, f: &frame::Frame) -> bool {
-        f.address == 0
+        let address = if let Bound::Status(a) = self { a } else { 0 };
+        f.address == address
+            && f.rtn != 0x64
             && match self {
-                Bound::Info => (f.rtn == 0x00 && [MaintInfo::LEN, MaintInfo::LEN3, 22].contains(&f.info.len())) || f.rtn == 0x04 || f.rtn == 0x05,
-                Bound::Status => (f.rtn == 0x00 && f.info.len() == MaintState::LEN) || (0x01..=0x0F).contains(&f.rtn),
+                Bound::Info => (f.rtn == 0x00 && [MaintInfo::LEN, MaintInfo::LEN3, MaintInfo::LEN4, 22].contains(&f.info.len())) || f.rtn == 0x04 || f.rtn == 0x05,
+                Bound::Status(_) => (f.rtn == 0x00 && f.info.len() == MaintState::LEN) || (0x01..=0x0F).contains(&f.rtn),
             }
     }
 }
@@ -127,8 +131,12 @@ fn reply_of(answer: Option<frame::Frame>) -> Result<Reply> {
 }
 
 fn status_read(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Reply> {
-    let request = MaintState::request()?;
-    reply_of(exchange(link, clock, &request, Bound::Status, b.answer)?)
+    status_read_at(link, clock, 0, b)
+}
+
+fn status_read_at(link: &mut impl Link, clock: &impl Clock, address: u8, b: Budgets) -> Result<Reply> {
+    let request = MaintState::request_at(address)?;
+    reply_of(exchange(link, clock, &request, Bound::Status(address), b.answer)?)
 }
 
 /// Read the identity (`03` only). `Err` only for a link failure; a missing or malformed answer is `Failed`.
@@ -239,12 +247,18 @@ pub fn reached(action: Action, s: MaintState) -> bool {
 /// Read the state (`Status`), or set (`Start`) / clear (`Stop`) the marker and wait until fresh `02` reads show it (the
 /// immediate reply can still carry the old slave count). A stop to 0 slaves waits one full DIP cycle more.
 pub fn dialog(link: &mut impl Link, clock: &impl Clock, action: Action, b: Budgets) -> std::result::Result<MaintState, DialogError> {
+    dialog_at(link, clock, 0, action, b)
+}
+
+/// `dialog` with the pack at `address`: over RS485-1/2 (image flag bit 4) status and `Clear` at any pack's own address;
+/// the CAN socket knows only the master (0).
+pub fn dialog_at(link: &mut impl Link, clock: &impl Clock, address: u8, action: Action, b: Budgets) -> std::result::Result<MaintState, DialogError> {
     let request = match action {
-        Action::Status => return status_of(status_read(link, clock, b)?),
-        Action::Start => MaintState::set_request(true).map_err(Error::from)?,
-        Action::Stop { .. } | Action::Clear => MaintState::set_request(false).map_err(Error::from)?,
+        Action::Status => return status_of(status_read_at(link, clock, address, b)?),
+        Action::Start => MaintState::set_request_at(address, true).map_err(Error::from)?,
+        Action::Stop { .. } | Action::Clear => MaintState::set_request_at(address, false).map_err(Error::from)?,
     };
-    let mut last = status_of(reply_of(exchange(link, clock, &request, Bound::Status, b.answer)?)?)?;
+    let mut last = status_of(reply_of(exchange(link, clock, &request, Bound::Status(address), b.answer)?)?)?;
     let since = clock.now();
     let left = || b.change.saturating_sub(clock.now().saturating_sub(since));
     loop {
@@ -256,7 +270,7 @@ pub fn dialog(link: &mut impl Link, clock: &impl Clock, action: Action, b: Budge
             return Err(DialogError::Timeout { after: b.change, last });
         }
         let pb = Budgets { answer: b.answer.min(left()), ..b };
-        match status_of(status_read(link, clock, pb)?) {
+        match status_of(status_read_at(link, clock, address, pb)?) {
             Ok(s) => {
                 last = s;
                 if reached(action, s) {
@@ -267,7 +281,7 @@ pub fn dialog(link: &mut impl Link, clock: &impl Clock, action: Action, b: Budge
                         // the DIP count shows only with the next cycle; a lost read keeps the state seen (the flash's
                         // own quiet check still hears a polling master)
                         link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
-                        return Ok(status_read(link, clock, b).ok().and_then(|r| status_of(r).ok()).unwrap_or(s));
+                        return Ok(status_read_at(link, clock, address, b).ok().and_then(|r| status_of(r).ok()).unwrap_or(s));
                     }
                     return Ok(s);
                 }
@@ -302,11 +316,12 @@ mod tests {
     }
 
     /// A patched master on UART1. A start or stop takes effect in the status `delay` later; `refuse_start`: RTN 05.
-    struct Master15 { dip: u8, marker: bool, active: bool, switch_at: Option<Duration>, delay: Duration, refuse_start: bool }
+    /// `addr`: the address it answers at (0 on the CAN socket; any pack's own over RS485-1/2 with image flag bit 4).
+    struct Master15 { dip: u8, marker: bool, active: bool, switch_at: Option<Duration>, delay: Duration, refuse_start: bool, addr: u8 }
 
     impl Master15 {
         fn new(dip: u8, marker: bool, delay: Duration) -> Self {
-            Self { dip, marker, active: marker, switch_at: None, delay, refuse_start: false }
+            Self { dip, marker, active: marker, switch_at: None, delay, refuse_start: false, addr: 0 }
         }
         fn reply(&mut self, req: &[u8], now: Duration) -> Vec<(Duration, Vec<u8>)> {
             if self.switch_at.is_some_and(|t| now >= t) {
@@ -314,21 +329,22 @@ mod tests {
                 self.switch_at = None;
             }
             let Ok(f) = frame::parse(req) else { return vec![] };
-            if f.rtn != 0x64 {
+            if f.rtn != 0x64 || f.address != self.addr {
                 return vec![];
             }
+            let a = self.addr;
             match f.info.as_slice() {
-                [0x03] => return vec![(now + ms(40), answer(0, 0x00, &mnt([1, 5], ID15)))],
+                [0x03] => return vec![(now + ms(40), answer(a, 0x00, &mnt([1, 5], ID15)))],
                 [0x02] => {}
-                [1, 0xC3, 0x5A] if self.refuse_start => return vec![(now + ms(40), answer(0, 0x05, &[]))],
+                [1, 0xC3, 0x5A] if self.refuse_start => return vec![(now + ms(40), answer(a, 0x05, &[]))],
                 [on @ (0 | 1), 0xC3, 0x5A] => {
                     self.marker = *on == 1;
                     self.switch_at = Some(now + self.delay);
                 }
-                _ => return vec![(now + ms(40), answer(0, 0x05, &[]))],
+                _ => return vec![(now + ms(40), answer(a, 0x05, &[]))],
             }
             let slaves = if self.active { 0 } else { self.dip };
-            vec![(now + ms(40), answer(0, 0x00, &state(self.marker, slaves)))]
+            vec![(now + ms(40), answer(a, 0x00, &state(self.marker, slaves)))]
         }
     }
 
@@ -365,6 +381,21 @@ mod tests {
         assert!(t.now() >= ms(1100));
         let (mut link, t) = link_with(Master15::new(0, true, ms(500)));
         assert_eq!(dialog(&mut link, &t, Action::Clear, Budgets::default()).unwrap(), st(false, 0));
+    }
+
+    #[test]
+    fn status_and_clear_at_a_pack_address_over_rs485() {
+        let mut m = Master15::new(0, true, ms(300));
+        m.addr = 7;
+        let (mut link, t) = link_with(m);
+        assert_eq!(dialog_at(&mut link, &t, 7, Action::Status, Budgets::default()).unwrap(), st(true, 0));
+        assert_eq!(dialog_at(&mut link, &t, 7, Action::Clear, Budgets::default()).unwrap(), st(false, 0));
+        assert!(link.sent.iter().all(|r| frame::parse(r).unwrap().address == 7));
+        // another address does not answer: no state, never another pack's
+        let mut m = Master15::new(0, true, ms(0));
+        m.addr = 7;
+        let (mut link, t) = link_with(m);
+        assert!(matches!(dialog_at(&mut link, &t, 3, Action::Status, Budgets::default()), Err(DialogError::NoAnswer)));
     }
 
     #[test]

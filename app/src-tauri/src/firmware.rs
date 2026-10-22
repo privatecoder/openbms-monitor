@@ -270,14 +270,14 @@ const FLASHING_TEXT: &str = "a firmware update is running";
 /// its own RS485-1/2 port) a patched master with its marker on is released before a non-maintenance image (C'), the
 /// master's serial number matches (right bank) and the target's String 2 is the board stored for its address (when both
 /// are known). Without one („Platine flashen“) the board is known by its String 2 alone: the proof and hard-stop sighting
-/// of every place where it is the current board end, and for address 0 the master marker is checked over the board's own
-/// CAN socket (`control`) and cleared before an image without the maintenance functions; the board must be the one the
-/// search showed (`expected`, its String 2). Quiet bus and the target's
+/// of every place where it is the current board end, and the board's marker is checked over RS485-1/2 where its build
+/// shows it there (MAINT 1.5.1/1.6.1) and cleared before an image without the maintenance functions; the board must be
+/// the one the search showed (`expected`, its String 2). Quiet bus and the target's
 /// 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals reach the UI as a JSON
 /// string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, control: Option<String>, expected: Option<String>) -> Result<FlashStarted, String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, expected: Option<String>) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -289,8 +289,6 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         return Err(openbms_flash::Error::Cancelled.text(l));
     }
     let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
-    let control = if installation.is_some() { None } else { control.filter(|c| !c.trim().is_empty()) };
-    crate::bench::distinct(&port, control.as_deref()).map_err(to_text)?;
     let port_slot = crate::control::reserve_bus_wait(&state)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     let _action = maint::begin_action(&state, "flash");
@@ -335,17 +333,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             // the board shown at the search, before anything changes on it
             let target = maint::string2(&mut link, address);
             crate::bench::chosen_board(expected.as_deref(), target.as_deref()).map_err(to_text)?;
-            let marker = if address == 0 {
-                let pack0 = maint::canonical_string2(&mut link, 0);
-                let mut can = control.as_deref().map(crate::bench::open_control).transpose().map_err(to_text)?;
-                let m = crate::bench::bench_marker(can.as_mut(), pack0.as_deref(), kind).map_err(to_text)?;
-                if m == "released" {
-                    maint::event(&state, None, "bench flash: master marker cleared over the board's CAN socket");
-                }
-                Some(m)
-            } else {
-                None
-            };
+            let m = crate::bench::bench_marker(&mut link, address, kind).map_err(to_text)?;
+            if m == "released" {
+                maint::event(&state, None, &format!("bench flash: marker of pack {address} cleared over RS485-1/2"));
+            }
+            let marker = Some(m);
             ("none", target, marker)
         }
     };
@@ -483,7 +475,7 @@ mod tests {
     fn the_master_marker_is_checked_for_the_installation_whatever_endpoint() {
         use openbms_flash::maint::policy::Patch;
         use openbms_proto::{MaintInfo, MaintState};
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0};
+        let info = MaintInfo { format: 2, base: [16, 6, 13], patch: [1, 5], build_id: [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false };
         let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
         let (on, off) = (with(0), with(u32::MAX));
         let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);
