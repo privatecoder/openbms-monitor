@@ -27,6 +27,9 @@ pub enum Action {
     Start,
     /// clear the marker; done once the master reports it off with `expected` effective slaves again (its DIP count)
     Stop { expected: u8 },
+    /// clear the marker on a board alone (flashing one board): done once the master reports it off, whatever slave count
+    /// its DIP switches give
+    Clear,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -229,6 +232,7 @@ pub fn reached(action: Action, s: MaintState) -> bool {
         Action::Status => true,
         Action::Start => s.marker() == MarkerWord::On && s.effective_slaves == 0,
         Action::Stop { expected } => s.marker() == MarkerWord::Off && s.effective_slaves == expected,
+        Action::Clear => s.marker() == MarkerWord::Off,
     }
 }
 
@@ -238,7 +242,7 @@ pub fn dialog(link: &mut impl Link, clock: &impl Clock, action: Action, b: Budge
     let request = match action {
         Action::Status => return status_of(status_read(link, clock, b)?),
         Action::Start => MaintState::set_request(true).map_err(Error::from)?,
-        Action::Stop { .. } => MaintState::set_request(false).map_err(Error::from)?,
+        Action::Stop { .. } | Action::Clear => MaintState::set_request(false).map_err(Error::from)?,
     };
     let mut last = status_of(reply_of(exchange(link, clock, &request, Bound::Status, b.answer)?)?)?;
     let since = clock.now();
@@ -345,6 +349,13 @@ mod tests {
         // another N never counts as reached: the master keeps reporting 11
         let (mut link, t) = link_with(Master15::new(11, true, ms(100)));
         assert!(matches!(dialog(&mut link, &t, Action::Stop { expected: 3 }, Budgets::default()), Err(DialogError::Timeout { last, .. }) if last == st(false, 11)));
+    }
+
+    #[test]
+    fn clear_needs_only_the_marker_off_whatever_slave_count() {
+        let (mut link, t) = link_with(Master15::new(3, true, ms(500)));
+        // the marker word is off at once; the DIP count follows with the next cycle, not waited for
+        assert_eq!(dialog(&mut link, &t, Action::Clear, Budgets::default()).unwrap(), st(false, 0));
     }
 
     #[test]

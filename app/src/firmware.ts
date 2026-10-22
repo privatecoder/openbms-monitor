@@ -1,4 +1,4 @@
-import type { DeviceInfo, FirmwareDone, FirmwareImage, FirmwareProgress } from "./api";
+import type { BenchPack, BenchScan, FirmwareDone, FirmwareImage, FirmwareProgress } from "./api";
 
 /** Custom images get their own phrase, so consent to one kind never covers the other. */
 export const confirmationPhrase = (address: number, custom = false) => custom ? `FLASH CUSTOM ${address}` : `FLASH ${address}`;
@@ -23,31 +23,18 @@ export function imageWarningIsAlarm(image: FirmwareImage): boolean {
   return image.kind !== "maintenance" && image.custom;
 }
 
-export interface FwSetup {
-  running: boolean;
-  /** a result is shown; continuing needs "New update" */
-  done: boolean;
-  port: string;
-  address: number;
-  image: FirmwareImage | null;
-  /** result of "check pack" and the port/address (and installation) it was read for */
-  target: DeviceInfo | null;
-  checkedFor: { port: string; address: number; inst?: string | null } | null;
-  /** the installation chosen now: a check made for another one does not count */
-  inst?: string | null;
-  typed: string;
-  /** another action runs (pack check, a panel action): inputs and actions wait */
-  busy: boolean;
+/** „Platine flashen“: the pack preselected after a search, only when exactly one answered. */
+export function benchPick(packs: BenchPack[]): number | null {
+  return packs.length === 1 ? packs[0].address : null;
 }
 
-/** Which steps are usable. A checked pack counts only for the port, address and installation it was read for. */
-export function steps(s: FwSetup) {
-  // the confirmation is used up by a run: nothing is usable until the result is dismissed
-  if (s.running || s.done || s.busy) return { image: false, inspect: false, confirm: false, start: false };
-  const inspect = s.port !== "" && s.image !== null;
-  const confirm = inspect && s.target !== null && s.checkedFor?.port === s.port && s.checkedFor.address === s.address
-    && (s.checkedFor.inst ?? null) === (s.inst ?? null);
-  return { image: true, inspect, confirm, start: confirm && s.typed.trim() === confirmationPhrase(s.address, s.image?.custom) };
+/** „Platine flashen“, address 0: what the app can say about the master marker before the flash (null: nothing to say). */
+export function benchMarkerKey(scan: BenchScan, address: number | null, control: boolean, image: FirmwareImage | null): string | null {
+  if (address !== 0 || !scan.packs.some((p) => p.address === 0)) return null;
+  if (!control) return "fw.bench.markerNoCan";
+  if (scan.same_board === false) return "fw.bench.markerOther";
+  if (scan.master?.marker === "on" && image && image.kind !== "maintenance") return "fw.bench.markerOn";
+  return null;
 }
 
 /** 0..1 over the data blocks; erasing counts as start, everything after the last block as done. */

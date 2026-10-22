@@ -1,19 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, Cpu, FolderOpen, TriangleAlert } from "lucide-react";
-import { api, isDemo, type DeviceInfo, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type MasterView } from "../api";
+import { api, isDemo, type BenchScan, type FirmwareDone, type FirmwareImage, type FirmwareProgress } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { confirmationPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps } from "../firmware";
-import { errorKey, keyParts, otherBank, packPortOf, packVersion, portKey, releaseFirst, type PortKind } from "../maint";
+import { benchMarkerKey, benchPick, confirmationPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
+import { errorKey, packPortOf, portKey, type PortKind } from "../maint";
 import type { Maint } from "../maintStore";
 import { KindSelect, PortInput } from "./MaintSetup";
 import { PackBusPanel } from "./PackBusPanel";
-
-const input = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 
 export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack, onUserAction, onEditPorts }: {
   connected: boolean;
@@ -29,8 +27,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const [ports, setPorts] = useState<string[]>([]);
-  // the single pack tab's own port, independent of the installation (starts with the panel's)
-  const [manualPort, setManualPort] = useState<{ kind: PortKind; target: string } | null>(null);
+  // „Platine flashen“: its RS485-1/2 port and the board's CAN socket (optional), independent of any installation
+  const [benchPort, setBenchPort] = useState<{ kind: PortKind; target: string }>({ kind: "serial", target: "" });
+  const [benchCan, setBenchCan] = useState<{ kind: PortKind; target: string }>({ kind: "serial", target: "" });
+  const [scan, setScan] = useState<BenchScan | null>(null);
+  const [scanning, setScanning] = useState(false);
   const [address, setAddress] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
@@ -39,21 +40,14 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // a valid image that needs "allow custom firmware": kept so switching it on takes the same file
   const [pending, setPending] = useState<{ path: string; info: FirmwareImage } | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
-  const [target, setTarget] = useState<DeviceInfo | null>(null);
-  const [master, setMaster] = useState<MasterView | null>(null);
-  const [checkedFor, setCheckedFor] = useState<{ port: string; address: number; inst: string | null } | null>(null);
-  const [typed, setTyped] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ text: string; serial: string | null } | null>(null);
-  // the answer of „Pack prüfen“ goes next to that button, the flash's refusals next to its own
-  const [inspectError, setInspectError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<FirmwareProgress | null>(null);
   const [done, setDone] = useState<FirmwareDone | null>(null);
   // what the last run flashed: the pack, the image and the version known before (for the result's version line)
-  const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string; marker?: string } | null>(null);
+  const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string; marker?: string; bench: boolean } | null>(null);
   const [flashTick, setFlashTick] = useState(0);
-  const [tab, setTab] = useState<"bus" | "manual">("bus");
+  const [tab, setTab] = useState<"bus" | "bench">(maint.current ? "bus" : "bench");
   const [closeRefused, setCloseRefused] = useState(false);
   const startedAt = useRef(0);
   const now = useNow(500);
@@ -63,35 +57,30 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   useEffect(() => {
     const subs = [
       api.onFirmwareProgress(setProgress),
-      api.onFirmwareDone((d) => { setDone(d); setRunning(false); onRunning(false); setFlashTick((n) => n + 1); setMaster(null); void maint.loadLists(); }),
+      api.onFirmwareDone((d) => { setDone(d); setRunning(false); onRunning(false); setFlashTick((n) => n + 1); setScan(null); void maint.loadLists(); }),
       api.onFirmwareBusy(() => setCloseRefused(true)),
     ];
     return () => { subs.forEach((s) => s.then((f) => f())); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inst = maint.current;
-  // the RS485-1/2 port of the installation as its endpoint key; flashing needs an installation (its log and checks)
+  // the RS485-1/2 port of the installation as its endpoint key (the pack bus panel)
   const port = inst ? packPortOf(inst) ?? "" : "";
-  const manual = manualPort ?? keyParts(port) ?? { kind: "serial" as PortKind, target: "" };
-  const mPort = manualPort ? portKey(manualPort.kind, manualPort.target) : port;
-  // a check (and its error) belongs to that port, pack and image
-  useEffect(() => { setTarget(null); setCheckedFor(null); setTyped(""); setInspectError(null); }, [mPort, address, image?.sha256]);
-  // another installation: the single pack tab's port, check and confirmation belonged to the earlier one; the port
-  // falls back to the new installation's own (shown in the field)
-  useEffect(() => { setManualPort(null); setTarget(null); setCheckedFor(null); setTyped(""); setError(null); setInspectError(null); }, [inst?.id]);
-  // the master read belongs to the port it came from
-  useEffect(() => { setMaster(null); }, [port]);
-  const s = steps({ running, done: done !== null, port: mPort, address, image, target, checkedFor, typed, busy, inst: inst?.id ?? null });
+  const bPort = benchPort.target.trim() ? portKey(benchPort.kind, benchPort.target.trim()) : "";
+  const bCan = benchCan.target.trim() ? portKey(benchCan.kind, benchCan.target.trim()) : null;
+  // a search belongs to the ports it ran on
+  useEffect(() => { setScan(null); setError(null); }, [bPort, bCan]);
+  const busy = scanning;
   const inputsLocked = firmwareInputsLocked(running, busy);
   const phrase = confirmationPhrase(address, image?.custom);
+  const owner = inst && bPort && bPort === port ? inst : null;
 
   const chooseImage = async () => {
-    setError(null); setInspectError(null); setImageError(null); setPending(null);
+    setError(null); setImageError(null); setPending(null);
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ multiple: false, filters: [{ name: "EMU1101 firmware", extensions: ["ehex"] }] });
     if (typeof picked !== "string") return;
-    // a phrase typed for the previous image may not fit the new one
-    setImage(null); setPath(null); setTyped("");
+    setImage(null); setPath(null);
     try { setImage(await api.firmwareCheckImage(picked, allowCustom, lang)); setPath(picked); }
     catch (e) {
       // refused only because it is not an allowlisted original? then say so here and keep the file
@@ -104,23 +93,24 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   const toggleCustom = (v: boolean) => {
     setAllowCustom(v);
-    if (v && pending) { setImage(pending.info); setPath(pending.path); setTyped(""); setPending(null); }
+    if (v && pending) { setImage(pending.info); setPath(pending.path); setPending(null); }
     if (!v) setPending(null);
     // switching off must not leave a custom image selected
-    if (!v && image?.custom) { setImage(null); setPath(null); setTyped(""); }
+    if (!v && image?.custom) { setImage(null); setPath(null); }
   };
 
-  /** Start a flash (panel or manual): refusals are thrown back as the backend sent them. */
-  const startFlash = async (p: string, a: number, confirmation: string, from: string | null, checks: boolean) => {
-    if (!path || !image || !inst) return;
+  /** Start a flash (panel or board): refusals are thrown back as the backend sent them. `installation`: the panel's,
+   *  null for „Platine flashen“ (`control`: the board's CAN socket). */
+  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, control: string | null) => {
+    if (!path || !image) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
     onUserAction();
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmation, lang, inst.id, checks);
-      setFlashed({ address: a, image, checked: from, bank: r.bank, marker: r.marker });
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, control);
+      setFlashed({ address: a, image, checked: from, bank: r.bank, marker: r.marker, bench: installation === null });
       // the pending record is written now
       void maint.loadLists();
     } catch (e) {
@@ -129,32 +119,29 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     }
   };
 
-  const inspect = async () => {
-    onUserAction(); setBusy(true); setError(null); setInspectError(null); setTarget(null); setCheckedFor(null);
+  const search = async () => {
+    onUserAction(); setScanning(true); setError(null); setScan(null);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
-    try { setTarget(await api.firmwareInspect(mPort, address, lang, mPort === port ? inst?.id ?? null : null)); setCheckedFor({ port: mPort, address, inst: inst?.id ?? null }); void maint.loadLists(); }
-    catch (e) { setInspectError(String(e)); }
-    finally { setBusy(false); }
+    try {
+      const r = await api.benchScan(bPort, bCan);
+      setScan(r);
+      const one = benchPick(r.packs);
+      if (one !== null) setAddress(one);
+      void maint.loadLists();
+    } catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
+    finally { setScanning(false); }
   };
 
-  // the master read and the installation's checks count only on the installation's own port
-  const samePort = mPort === port;
-  // C': a master with its marker on needs „Master freigeben“ before an image without maintenance functions; the master
-  // belongs to the installation, whatever pack bus endpoint is chosen (the backend checks again)
-  const release = releaseFirst(master, address, image?.kind ?? null);
-  const targetVersion = target ? packVersion(address, target.firmware_version, samePort ? master : null) : null;
-  const manualStart = async () => {
-    const confirmation = typed;
-    // a check and confirmation made for another installation never start a flash for this one
-    if (!s.start) return;
-    // one confirmation, one run: the pack has to be checked and confirmed again for the next one
-    setTyped(""); setTarget(null); setCheckedFor(null);
-    try { await startFlash(mPort, address, confirmation, targetVersion, samePort); }
-    catch (e) { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: otherBank(e) }); }
+  const chosen = scan?.packs.find((p) => p.address === address) ?? null;
+  const benchFlash = async () => {
+    if (!chosen) return;
+    try { await startFlash(bPort, chosen.address, chosen.info.firmware_version, null, bCan); }
+    catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
   };
+  const markerKey = scan ? benchMarkerKey(scan, chosen?.address ?? null, bCan !== null, image) : null;
 
-  const reset = () => { setDone(null); setProgress(null); setTyped(""); setTarget(null); setCheckedFor(null); setError(null); setInspectError(null); setFlashed(null); };
+  const reset = () => { setDone(null); setProgress(null); setError(null); setFlashed(null); };
   const versions = done && flashed ? resultVersions(done, flashed.checked, flashed.image, t) : null;
 
   if (isDemo) return <div className="view-in mx-auto max-w-7xl space-y-3"><h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight"><Cpu className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("fw.title")}</h1><p className="text-muted">{t("fw.demo")}</p></div>;
@@ -175,8 +162,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
-      {image?.kind === "maintenance" && <PatchImageNotes inst={inst?.id ?? null} port={mPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
-        latent={!!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
+      {image?.kind === "maintenance" && <PatchImageNotes inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
+        latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
     </div>
   );
 
@@ -192,7 +179,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {/* two ways to flash, one image: the pack bus panel (live status, packs) or one pack by hand */}
       <div className="flex rounded-md bg-sunken p-0.5 text-sm" role="group">
-        {(["bus", "manual"] as const).map((k) => (
+        {(["bus", "bench"] as const).map((k) => (
           <button key={k} aria-pressed={tab === k} disabled={running} onClick={() => setTab(k)}
             className={cn("flex-1 rounded px-2 py-1 disabled:opacity-50", tab === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>{t(`fw.tab.${k}`)}</button>
         ))}
@@ -200,49 +187,49 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onEditPorts={onEditPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => startFlash(port, a, confirmationPhrase(a, image?.custom), from, true)} onMaster={setMaster} />}
+        onFlash={(a, from) => inst ? startFlash(port, a, from, inst.id, null) : Promise.resolve()} onMaster={() => {}} />}
 
-      {/* one pack by hand: address, check, typed confirmation; the same checks in the backend. No live status here:
-          the master's full version is the panel's last read */}
-      {tab === "manual" && <section className="space-y-3 rounded-md border border-line p-4">
-        <p className="text-sm text-muted">{t("fw.manualHint")}</p>
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          {/* the RS485-1/2 port of this tab: always free to choose; the installation's checks apply on its own port */}
+      {/* one board without an installation: any RS485-1/2 port, a search with String 2, optionally the board's CAN
+          socket for the master marker; the same flash checks in the backend */}
+      {tab === "bench" && <section className="space-y-3 rounded-md border border-line p-4">
+        <p className="text-sm text-muted">{t("fw.bench.hint")}</p>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
           <span className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
-            <KindSelect value={manual.kind} disabled={inputsLocked} onChange={(k) => setManualPort({ kind: k, target: "" })} label={t("maint.setup.rs485Kind")} />
-            <PortInput kind={manual.kind} value={manual.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setManualPort({ kind: manual.kind, target: v })} label={t("maint.setup.rs485")} disabled={inputsLocked} />
+            <KindSelect value={benchPort.kind} disabled={inputsLocked} onChange={(k) => setBenchPort({ kind: k, target: "" })} label={t("maint.setup.rs485Kind")} />
+            <PortInput kind={benchPort.kind} value={benchPort.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setBenchPort({ kind: benchPort.kind, target: v })} label={t("maint.setup.rs485")} disabled={inputsLocked} />
           </span>
-          <label className="flex items-center gap-2 text-muted">{t("fw.address")}
-            <select className={input} value={address} disabled={inputsLocked} onChange={(e) => setAddress(Number(e.target.value))}>
-              {Array.from({ length: 16 }, (_, a) => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </label>
+          <span className="flex flex-wrap items-center gap-2 text-muted">{t("fw.bench.can")}
+            <KindSelect value={benchCan.kind} disabled={inputsLocked} onChange={(k) => setBenchCan({ kind: k, target: "" })} label={t("fw.bench.can")} />
+            <PortInput kind={benchCan.kind} value={benchCan.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setBenchCan({ kind: benchCan.kind, target: v })} label={t("fw.bench.can")} disabled={inputsLocked} />
+          </span>
         </div>
+        {owner && <p className="text-sm text-discharge">{t("fw.bench.useBus", { name: owner.name })}</p>}
         {imagePicker}
-        <Button variant="secondary" disabled={!s.inspect || busy} onClick={inspect}>{busy ? t("fw.inspecting") : t("fw.inspect")}</Button>
-        {/* a polling master is the usual cause: busy bus or no answer */}
-        {inspectError && (
-          <div className="space-y-1 text-sm">
-            <p className="flex gap-2 text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{inspectError}</p>
-            <p>{t("fw.manualQuiet")}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" disabled={!bPort || inputsLocked} onClick={() => void search()}>{scanning ? t("fw.bench.searching") : t("fw.bench.search")}</Button>
+          {scanning && <Button variant="ghost" size="sm" onClick={() => void api.maintScanCancel()}>{t("maint.packs.cancel")}</Button>}
+        </div>
+        {scan && scan.traffic > 0 && <p className="text-sm text-discharge">{t("fw.bench.traffic", { bytes: scan.traffic })}</p>}
+        {scan && scan.traffic === 0 && scan.packs.length === 0 && <p className="text-sm text-muted">{t("fw.bench.none")}</p>}
+        {scan?.cancelled && <p className="text-sm text-muted">{t("maint.packs.cancelled")}</p>}
+        {scan && scan.packs.length > 1 && <p className="flex gap-2 text-sm text-discharge"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.bench.several")}</p>}
+        {scan && scan.packs.length > 0 && (
+          <div className="space-y-1 text-sm" role="radiogroup">
+            {scan.packs.map((p) => (
+              <label key={p.address} className="flex items-center gap-2">
+                <input type="radio" name="bench-pack" checked={address === p.address} disabled={inputsLocked} onChange={() => setAddress(p.address)} />
+                <span className="font-medium">{t("maint.packs.pack", { address: p.address })}</span>
+                <span className="text-muted">{p.info.device_name} · {p.info.firmware_version} · {p.serial ? t("fw.bench.serial", { serial: p.serial }) : t("fw.bench.noSerial")}</span>
+              </label>
+            ))}
           </div>
         )}
-        {target && s.confirm && <p className="text-sm">{t("fw.target", { name: target.device_name, version: targetVersion })}</p>}
-        {s.confirm && image && target && <p className="font-medium">{t("fw.summary", { address, from: targetVersion, to: imageLabel(image, t) })}</p>}
+        {markerKey && <p className={cn("text-sm", markerKey === "fw.bench.markerOn" ? "text-ink" : "text-discharge")}>{t(markerKey)}</p>}
+        {chosen && image && <p className="font-medium">{t("fw.summary", { address: chosen.address, from: chosen.info.firmware_version, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
-        {keyParts(mPort)?.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
-        <label className="block space-y-1 text-sm text-muted">{t("fw.typeToConfirm", { phrase })}
-          <input className={cn(input, "block w-48 font-mono")} value={typed} disabled={!s.confirm} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
-        </label>
-        {release && <p className="text-sm text-discharge">{t("maint.packs.cPrime")}</p>}
-        {!inst && <p className="text-sm text-discharge">{t("maint.panel.noInstallation")}</p>}
-        <Button variant="primary" disabled={!s.start || !inst} onClick={manualStart}>{t("fw.start")}</Button>
-        {error && (
-          <div className="space-y-1 text-sm text-alarm">
-            <p>{error.text}</p>
-            {error.serial && inst && <Button variant="secondary" size="sm" onClick={() => api.maintAdoptMasterSerial(inst.id, error.serial!).then(() => { setError(null); void maint.loadLists(); }).catch((e) => { const k = errorKey(e); setError({ text: t(k.key, k.params), serial: null }); })}>{t("maint.bank.adopt")}</Button>}
-          </div>
-        )}
+        {benchPort.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
+        <Button variant="primary" disabled={!chosen || !image || inputsLocked} title={phrase} onClick={() => void benchFlash()}>{t("fw.bench.flash", { address: chosen?.address ?? address })}</Button>
+        {error && <p className="text-sm text-alarm">{error}</p>}
       </section>}
 
       {/* progress and result below the tab that started the flash */}
@@ -250,7 +237,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         <section className="space-y-3 border-t border-line pt-5">
           <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
           {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
-          {flashed?.marker === "unchecked" && <p className="text-sm text-discharge">{t("fw.markerUnchecked")}</p>}
+          {flashed?.marker === "unchecked" && <p className="text-sm text-discharge">{t(flashed.bench ? "fw.bench.markerUnchecked" : "fw.markerUnchecked")}</p>}
+          {flashed?.marker === "released" && <p className="text-sm text-muted">{t("fw.bench.markerReleased")}</p>}
           {flashed?.marker === "latent" && <p className="text-sm text-alarm">{t("fw.markerLatent")}</p>}
           {running && (
             <>
