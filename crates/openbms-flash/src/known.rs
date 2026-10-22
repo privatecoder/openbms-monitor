@@ -112,8 +112,9 @@ pub const PACK_CUTOFF_MIN: [u8; 2] = openbms_proto::access::CUTOFF_MIN;
 /// The stored pack cutoff of an identity with patch `patch` and image flag bit 2 `flag`: both needed.
 pub use openbms_proto::access::pack_cutoff_of;
 
-/// The `0x64/03` formats the app decodes; both carry the same identity fields (format 3 adds the image flags).
-pub const MNT_FORMATS: [u8; 2] = [2, 3];
+/// The `0x64/03` formats the app decodes; all carry the same identity fields (format 3 adds the image flags, format 4 a
+/// third patch byte).
+pub const MNT_FORMATS: [u8; 3] = [2, 3, 4];
 
 /// The capabilities of a `0x64/03` identity (`format`, `patch`): None for another format or a patch below `MIN_PATCH`.
 pub fn caps_of(format: u8, patch: [u8; 2]) -> Option<Caps> {
@@ -310,7 +311,8 @@ mod tests {
         assert_eq!(caps_of(2, [1, 6]), Some(full));
         assert_eq!(caps_of(2, [2, 0]), Some(full));
         assert_eq!(caps_of(3, [1, 5]), Some(Caps { mnt_format: 3, ..full }), "format 3: the same patch functions");
-        assert_eq!(caps_of(4, [1, 5]), None, "format 4");
+        assert_eq!(caps_of(4, [1, 5]), Some(Caps { mnt_format: 4, ..full }), "format 4 (1.5.1): the same patch functions");
+        assert_eq!(caps_of(5, [1, 5]), None, "format 5");
         assert_eq!(caps_of(2, [1, 4]), None, "1.4: format 2 without release bits");
         assert_eq!(caps_of(1, [1, 5]), None, "format 1");
         assert_eq!(PATCH_BUILDS[0].caps(), Some(full));

@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
-        MaintInfo { format: 2, base, patch, build_id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0}
+        MaintInfo { format: 2, base, patch, build_id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })

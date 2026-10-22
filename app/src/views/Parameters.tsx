@@ -22,6 +22,7 @@ import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { PackControlSection } from "../components/PackControl";
+import { MarkerSection } from "../components/MarkerControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
@@ -115,7 +116,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
   const [gone, setGone] = useState<{ address: number; board: number; at: number | null; gen: number; armed: boolean } | null>(null);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
-  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, multi: false });
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, marker: false, multi: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
   const lockedBut = (...ks: (keyof typeof writing)[]) => Object.entries(writing).some(([o, b]) => !ks.includes(o as keyof typeof writing) && b);
   const paramsBusy = writing.params || writing.multi;
@@ -610,6 +611,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link} />
+        <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={lockedBut("marker")} onBusy={busyFor("marker")} linkKey={link} />
         {chosen !== null && controlHint(where) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}

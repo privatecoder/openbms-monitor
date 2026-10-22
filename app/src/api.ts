@@ -256,10 +256,10 @@ export interface FirmwareDone { ok: boolean; error: string | null; stage: Firmwa
  *  without one (the marker last seen was not on). */
 export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" | "latent" | "released" }
 /** One pack found by „Platine flashen“; `serial`: String 2 as read (null: not readable or not set). */
-export interface BenchPack { address: number; info: DeviceInfo; serial: string | null }
-/** `traffic` > 0: the port was not quiet, nothing searched; `same_board`: with a CAN socket and address 0 found, whether
- *  it shows the same String 2; `master`: its state then. */
-export interface BenchScan { traffic: number; packs: BenchPack[]; cancelled: boolean; master: MasterView | null; same_board: boolean | null }
+/** `version`/`marker`: the build's 64/03 and marker over RS485-1/2 (MAINT 1.5.1/1.6.1); null: not shown there. */
+export interface BenchPack { address: number; info: DeviceInfo; serial: string | null; version: string | null; marker: "on" | "off" | "foreign" | null }
+/** `traffic` > 0: the port was not quiet, nothing searched. */
+export interface BenchScan { traffic: number; packs: BenchPack[]; cancelled: boolean }
 
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
 /** An installation: endpoints may belong to several installations; `master_serial`, `archived`, `legacy` (the endpoint
@@ -354,6 +354,15 @@ export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?
 export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
   /** the patch version of its 64/03 (also a negative finding's) and, when proven, its image flag byte */
   patch_version?: [number, number] | null; flags?: number | null }
+/** `marker_read`/`marker_set`: the board's identity and marker on this connection. `kind` "no-uart0": RS485-1/2 with a
+ *  build that shows its marker on the CAN socket only; "unknown" on RS485-1/2 also an older build or the original. */
+export interface MarkerView {
+  gen: number; address: number; bus: "can" | "pack";
+  kind: "patched" | "no-uart0" | "unknown-patch" | "no-0x64" | "unknown";
+  version: string | null; marker: "off" | "on" | "foreign" | null; slaves: number | null;
+  may_set: boolean; may_clear: boolean;
+}
+
 export type MaintError =
   | { kind: "connection"; message: string } | { kind: "unsupported" } | { kind: "no-answer" } | { kind: "rejected"; rtn: number }
   | { kind: "start-refused"; reason: string }
@@ -513,6 +522,10 @@ const tauriApi = {
   /** `expect`: for off, the extended off (Group0 bit 4 at 0) the confirmation showed; the backend compares it with a fresh
    *  0x47 right before sending (`cutoff-changed`); RS485-1/2 sends no off without it */
   packOnOff: (address: number, on: boolean, expect?: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen, expect: expect ?? null })),
+  /** The maintenance marker over this connection, also without an installation: the CAN socket at the master (every
+   *  supported MAINT build; set and clear), RS485-1/2 at the pack's own address (MAINT 1.5.1/1.6.1; read and clear). */
+  markerRead: (address: number) => invoke<MarkerView>("marker_read", { address, installation: chosen }),
+  markerSet: (address: number, on: boolean) => invoke<MarkerView>("marker_set", { address, on, installation: chosen }),
   packHeater: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_heater", { address, on, installation: chosen })),
   /** history, energy counters and cycle count to 0; not reversible */
   packClearHistory: (address: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_clear_history", { address, installation: chosen })),
@@ -529,12 +542,13 @@ const tauriApi = {
   firmwareCheckImage: (path: string, allowCustom: boolean, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, allowCustom, lang }),
   /** „Platine flashen“: stops the monitor, listens, then searches 0–15 on `port` with String 2 each; `control`: the board's
    *  CAN socket (endpoint key), read only, for the master marker of address 0. */
-  benchScan: (port: string, control: string | null) => invoke<BenchScan>("bench_scan", { port, control }),
+  benchScan: (port: string) => invoke<BenchScan>("bench_scan", { port }),
   /** Returns at once; progress and result arrive as events. With an installation (the pack bus panel, on its own
-   *  RS485-1/2 port) its bank, board and master checks apply; without one („Platine flashen“) `control` is the board's
-   *  CAN socket for the master marker and `expected` the String 2 the search showed (the board flashed must be that one). */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, control: string | null, expected: string | null) =>
-    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, control, expected }),
+   *  RS485-1/2 port) its bank, board and master checks apply; without one („Platine flashen“) the board's marker is
+   *  checked over RS485-1/2 where its build shows it there, and `expected` is the String 2 the search showed (the board
+   *  flashed must be that one). */
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, expected: string | null) =>
+    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, expected }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
   /** lookup only: every installation that lists the endpoint or has it as CAN socket */
   maintInstallationsOf: (endpoint: Endpoint, activeOnly = false) => invoke<Installation[]>("maint_installations_of", { endpoint, activeOnly }),
@@ -840,6 +854,8 @@ function demoApi(): typeof tauriApi {
     notifyStatus: async () => ({ installation: null, can_unchecked: false, can_no_serial: false, none_confirmed: false }),
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     benchScan: async () => { throw new Error("desktop app only"); },
+    markerRead: async () => { throw new Error("desktop app only"); },
+    markerSet: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
     maintInstallations: async () => [],
     maintInstallationsOf: async () => [],

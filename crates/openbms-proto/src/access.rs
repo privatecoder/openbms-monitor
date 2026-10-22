@@ -1,5 +1,6 @@
 //! Which action goes over which of the three UARTs, and under which conditions, in one place: the firmware stage
-//! (original, patched from MAINT 1.5, the 1.5 build with power and clock, 1.6 with the stored pack cutoff), the release
+//! (original, patched from MAINT 1.5, the 1.5 build with power and clock, 1.6 with the stored pack cutoff, 1.5.1/1.6.1
+//! with the marker and identity also over RS485-1/2), the release
 //! and lock bits of Group0/Group7, the address, and whether the app implements the way at all.
 //!
 //! - UART0: RS485-1/2, Seplos ASCII, 19200 Bd; the host needs a quiet bus (the master's polling stopped).
@@ -116,6 +117,8 @@ pub enum Firmware {
 /// Image flag bits a way depends on today.
 pub const FLAG_POWER: u8 = 1;
 pub const FLAG_CUTOFF: u8 = 2;
+/// MNT format 4 (MAINT 1.5.1/1.6.1): status, clear and identity of 0x64 also over RS485-1/2
+pub const FLAG_UART0: u8 = 4;
 
 /// A further condition of a way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -165,6 +168,8 @@ const MAINT: &[Firmware] = &[Firmware::PatchFrom { version: MAINT_MIN }];
 const POWER: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_POWER }];
 /// the stored pack cutoff: patch ≥ `CUTOFF_MIN` with image flag bit 2
 const CUTOFF: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }];
+/// 0x64 over RS485-1/2 (image flag bit 4)
+const UART0_MAINT: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_UART0 }];
 const CUTOFF_POWER: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }, Firmware::ImageFlag { bit: FLAG_POWER }];
 
 const QUIET: &[Need] = &[Need::QuietBus];
@@ -174,6 +179,8 @@ const WRITE_RELEASE: &[Need] = &[Need::BitSet { group: 0, bit: G0_WRITE }];
 const POWER_FREE: &[Need] = &[Need::BitClear { group: 0, bit: G0_POWER_LOCK }];
 const START: &[Need] = &[Need::MasterOnly, Need::Marker { on: false }, Need::BitSet { group: 0, bit: G0_START }, Need::BitClear { group: 7, bit: G7_AUTO_ADDRESS }];
 const STOP: &[Need] = &[Need::MasterOnly, Need::Marker { on: true }];
+/// RS485-1/2: every pack at its own address (a slave may carry a marker from its time as master)
+const STOP_U0: &[Need] = &[Need::Marker { on: true }, Need::QuietBus];
 /// a new stored lock: the extended off switched on (Group0 bit 4 = 0); releasing needs it not
 const LOCK_SET_U0: &[Need] = &[Need::BitClear { group: 0, bit: G0_EXTENDED_OFF }, Need::QuietBus];
 const LOCK_SET_U1: &[Need] = &[Need::BitClear { group: 0, bit: G0_EXTENDED_OFF }, Need::BitClear { group: 0, bit: G0_POWER_LOCK }];
@@ -224,9 +231,12 @@ pub const ROUTES: &[Route] = &[
     r(A::SetCanProtocol, U0, "ASCII A6", ANY, QUIET, true),
     r(A::SetCanProtocol, U2, "binär 63", ANY, LOCAL, false),
     r(A::ReadHistory, U0, "ASCII 4B", ANY, QUIET, true),
+    r(A::ReadIdentity, U0, "ASCII 64/03 (Erkennung)", UART0_MAINT, QUIET, true),
     r(A::ReadIdentity, U1, "ASCII 64/03 (Erkennung)", ANY, &[], true),
+    r(A::MaintStatus, U0, "ASCII 64/02", UART0_MAINT, QUIET, true),
     r(A::MaintStatus, U1, "ASCII 64/02", MAINT, MASTER, true),
     r(A::MaintStart, U1, "ASCII 64/01", MAINT, START, true),
+    r(A::MaintStop, U0, "ASCII 64/00", UART0_MAINT, STOP_U0, true),
     r(A::MaintStop, U1, "ASCII 64/00", MAINT, STOP, true),
     r(A::ReadSystem, U1, "Modbus FC03 1000×21", ANY, MODBUS_SYSTEM, true),
     r(A::ReadSystem, U2, "binär 46 erweitert (Systemblock)", ANY, SYSTEM_LOCAL, false),
@@ -604,7 +614,7 @@ mod tests {
                 "g0_write": G0_WRITE, "g0_start": G0_START, "g0_power_lock": G0_POWER_LOCK, "g0_extended_off": G0_EXTENDED_OFF,
                 "g0_lock_state": G0_LOCK_STATE, "g7_display": G7_DISPLAY, "g7_extended_display": G7_EXTENDED_DISPLAY, "g7_auto_address": G7_AUTO_ADDRESS,
             },
-            "flags": { "power": FLAG_POWER, "cutoff": FLAG_CUTOFF },
+            "flags": { "power": FLAG_POWER, "cutoff": FLAG_CUTOFF, "uart0": FLAG_UART0 },
             "needs_installation": Action::ALL.iter().filter(|a| a.needs_installation()).collect::<Vec<_>>(),
             "routes": ROUTES,
         });
@@ -655,10 +665,16 @@ mod tests {
             assert_eq!(routes(a).map(|r| r.channel).collect::<Vec<_>>(), vec![U0], "{a:?}");
         }
         assert_eq!(routes(A::SetCanProtocol).map(|r| r.channel).collect::<Vec<_>>(), vec![U0, U2]);
-        // maintenance only over the CAN socket, at the master
+        // maintenance over the CAN socket at the master; start only there
         for a in [A::MaintStatus, A::MaintStart, A::MaintStop] {
-            let r = route(a, U1).unwrap();
-            assert!(r.needs.contains(&Need::MasterOnly) && routes(a).count() == 1, "{a:?}");
+            assert!(route(a, U1).unwrap().needs.contains(&Need::MasterOnly), "{a:?}");
+        }
+        assert_eq!(routes(A::MaintStart).count(), 1);
+        // status, clear and identity also over RS485-1/2 with image flag bit 4 (MAINT 1.5.1/1.6.1), at every address
+        for a in [A::MaintStatus, A::MaintStop, A::ReadIdentity] {
+            let r = route(a, U0).unwrap();
+            assert_eq!(r.firmware, UART0_MAINT, "{a:?}");
+            assert!(!r.needs.contains(&Need::MasterOnly) && r.needs.contains(&Need::QuietBus), "{a:?}");
         }
         // UART2 is never implemented and always local
         assert!(ROUTES.iter().filter(|r| r.channel == U2).all(|r| !r.implemented && r.needs.contains(&Need::LocalBoard)));
@@ -668,6 +684,19 @@ mod tests {
             assert_eq!((r.firmware, r.needs), (POWER, POWER_FREE), "{a:?}");
         }
         assert_eq!(route(A::ReadClock, U1).unwrap().needs, &[] as &[Need]);
+    }
+
+    #[test]
+    fn the_rs485_clear_needs_the_uart0_flag_and_the_marker_on_at_any_address() {
+        let r = route(A::MaintStop, U0).unwrap();
+        let on = Facts { patch: Patch::Version([1, 6]), flags: Some(1 << FLAG_UART0), group0: None, group7: None, address: 5, installation: false, marker: Some(MarkerWord::On), base: None, slaves: None };
+        assert_eq!(decide(r, &on).state, State::Ready);
+        // 1.6 without the flag: blocked; behind a stored proof (flags unknown): unknown
+        assert_eq!(decide(r, &Facts { flags: Some(0x06), ..on }).state, State::Blocked);
+        assert_eq!(decide(r, &Facts { flags: None, ..on }).state, State::Unknown);
+        assert_eq!(decide(r, &Facts { marker: Some(MarkerWord::Off), ..on }).state, State::Blocked);
+        // no installation needed: a board on the bench
+        assert!(!A::MaintStop.needs_installation());
     }
 
     #[test]

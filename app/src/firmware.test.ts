@@ -1,27 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { benchMarkerKey, benchPick, confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
-import type { BenchScan, FirmwareImage, MasterView } from "./api";
+import type { BenchPack, FirmwareImage } from "./api";
 import i18n from "./i18n";
 
 const image: FirmwareImage = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
 
 describe("flashing a board", () => {
-  const pack = (address: number) => ({ address, info: target, serial: `SYN-${address}` });
-  const scan = (over: Partial<BenchScan> = {}): BenchScan => ({ traffic: 0, packs: [pack(0)], cancelled: false, master: null, same_board: true, ...over });
+  const pack = (address: number, marker: BenchPack["marker"] = null): BenchPack => ({ address, info: target, serial: `SYN-${address}`, version: marker ? "16.06.13 MAINT 1.6.1" : null, marker });
   it("preselects only a single pack", () => {
     expect(benchPick([pack(3)])).toBe(3);
     expect(benchPick([pack(0), pack(1)])).toBeNull();
     expect(benchPick([])).toBeNull();
   });
-  it("says what it knows about the master marker before flashing address 0", () => {
-    const on = { marker: "on" } as MasterView;
-    expect(benchMarkerKey(scan(), 0, false, image)).toBe("fw.bench.markerNoCan");
-    expect(benchMarkerKey(scan({ same_board: false }), 0, true, image)).toBe("fw.bench.markerOther");
-    expect(benchMarkerKey(scan({ master: on }), 0, true, image)).toBe("fw.bench.markerOn");
-    expect(benchMarkerKey(scan({ master: on }), 0, true, { ...image, kind: "maintenance" })).toBeNull();
-    expect(benchMarkerKey(scan(), 0, true, image)).toBeNull();
-    expect(benchMarkerKey(scan({ packs: [pack(3)] }), 3, false, image)).toBeNull();
+  it("says what it knows about the marker before flashing", () => {
+    // shown over RS485-1/2 (1.5.1/1.6.1): set, cleared before an image without the maintenance functions, at any address
+    expect(benchMarkerKey(pack(0, "on"), image)).toBe("fw.bench.markerOn");
+    expect(benchMarkerKey(pack(3, "on"), image)).toBe("fw.bench.markerOn");
+    expect(benchMarkerKey(pack(0, "on"), { ...image, kind: "maintenance" })).toBeNull();
+    expect(benchMarkerKey(pack(0, "off"), image)).toBeNull();
+    // not shown there: at a master the way over the CAN socket
+    expect(benchMarkerKey(pack(0), image)).toBe("fw.bench.markerOlder");
+    expect(benchMarkerKey(pack(0), null)).toBe("fw.bench.markerOlder");
+    expect(benchMarkerKey(pack(3), image)).toBeNull();
+    expect(benchMarkerKey(null, image)).toBeNull();
   });
   it("the phrase of a custom image differs", () => {
     expect(confirmationPhrase(3)).toBe("FLASH 3");
