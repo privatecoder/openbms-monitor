@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyParts, portKey, refusalParams, saveOffer, storedPort, withPort, packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
+import { keyParts, portKey, refusalParams, saveOffer, storedPort, withPort, packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, notOnBus, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
 import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
@@ -153,6 +153,14 @@ describe("live status", () => {
     expect(busLine(live("error"), false, tr).text).toBe("maint.live.noPort");
     // a flash runs: the status line gives way to its progress
     expect(busLine(live("polling", [1]), true, tr).text).toBe("maint.live.running");
+  });
+  it("a quiet port while the master polls its slaves is not on the pack bus", () => {
+    expect(notOnBus("quiet", master({}))).toBe(true);
+    expect(notOnBus("polling", master({}))).toBe(false);
+    expect(notOnBus("quiet", master({ marker: "on" }))).toBe(false);
+    expect(notOnBus("quiet", master({ slaves: 0 }))).toBe(false);
+    expect(notOnBus("quiet", master({ slaves: null }))).toBe(false);
+    expect(notOnBus("quiet", null)).toBe(false);
   });
   it("shows the master's version, marker and slaves; a foreign marker word and an unknown build are alarms", () => {
     expect(masterLine(master({}), tr).tone).toBe("muted");
