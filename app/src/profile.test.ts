@@ -103,7 +103,7 @@ describe("the power and clock lock (Group0 bit 3)", () => {
 describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
   const live = (pack_cutoff: boolean | null): PackPatch => ({ source: "live", release: "16.06.13 MAINT 1.6", caps: { ...caps, power_rtc: true, pack_cutoff }, at: null });
   it("reads every bit as it is: 1 = an", () => {
-    // FF: simple off, no lock (both an); EF: extended off (bit 4 aus); CF: extended off and locked (bits 4 and 5 aus)
+    // FF: extended off locked, no lock (both an); EF: extended off (bit 4 aus); CF: extended off and locked (bits 4 and 5 aus)
     expect([0xff, 0xef, 0xcf].map((v) => [switchOn(v, 4), switchOn(v, 5)])).toEqual([[true, true], [false, true], [false, false]]);
     expect(switchOn(0xf7, 3)).toBe(false);
   });
