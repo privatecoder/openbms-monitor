@@ -425,7 +425,8 @@ pub fn bank_check(stored: Option<&str>, read: &SerialValue) -> Bank {
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct BankView {
-    /// "match" | "stored" | "mismatch" | "unchecked" | "none" (no installation selected)
+    /// "match" | "stored" | "mismatch" | "unchecked" | "absent" (address 0 did not answer the search) | "none" (no
+    /// installation selected)
     pub state: &'static str,
     pub serial: Option<String>,
 }
@@ -746,7 +747,8 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     let cleared = with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()))?;
     let bank = match &inst {
         Some(i) if found.contains(&0) => bank_view(&check_bank(&state.maint, i, &mut link)?),
-        Some(_) => bank_view(&Bank::Unchecked),
+        // address 0 did not answer the search: nothing was asked, which is not a master without a serial number
+        Some(_) => BankView { state: "absent", serial: None },
         None => BankView { state: "none", serial: None },
     };
     // a CAN version belongs to a pack only by its board: String 2 read fresh on the pack bus (canonical, unique among the

@@ -223,6 +223,7 @@ const resources = {
         bank: {
           match: "Anlage geprüft: BMS-Seriennummer des Masters passt.", stored: "BMS-Seriennummer des Masters gespeichert: {{serial}}",
           unchecked: "Anlage nicht geprüft (der Master liefert keine BMS-Seriennummer).",
+          absent: "Anlage nicht geprüft: Adresse 0 (Master) hat auf die Suche am Pack-Bus nicht geantwortet.",
           adopt: "Diese Anlage hat einen neuen Master: Seriennummer übernehmen",
           flash: { match: "Anlage geprüft.", stored: "BMS-Seriennummer des Masters gespeichert.", unchecked: "Anlage nicht geprüft." },
         },
@@ -1232,6 +1233,7 @@ const resources = {
         bank: {
           match: "Installation checked: the master's BMS serial number matches.", stored: "BMS serial number of the master stored: {{serial}}",
           unchecked: "Installation not checked (the master reports no BMS serial number).",
+          absent: "Installation not checked: address 0 (master) did not answer the search on the pack bus.",
           adopt: "This installation has a new master: take over the serial number",
           flash: { match: "Installation checked.", stored: "BMS serial number of the master stored.", unchecked: "Installation not checked." },
         },

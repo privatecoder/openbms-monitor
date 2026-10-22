@@ -356,7 +356,7 @@ export type MaintError =
   | { kind: "store"; message: string } | { kind: "other-bank"; serial: string } | { kind: "bootloader-pending"; pack: number; endpoint: string };
 /** The panel's live status: a short listen on the pack bus, and with a CAN socket the master read. */
 export interface LiveStatus { bus: "quiet" | "polling" | "traffic" | "no-port" | "error"; polled: number[]; bus_error: string | null; master: MasterView | null; master_error: MaintError | null }
-export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked" | "none"; serial: string | null }
+export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked" | "absent" | "none"; serial: string | null }
 /** `cancelled`: stopped by „Abbrechen“, `packs` holds what answered until then */
 /** `identities`: each pack's own 64/03 as far as known (the pack bus cannot give it); missing: not checked */
 export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean; identities?: PackProbeView[] }
