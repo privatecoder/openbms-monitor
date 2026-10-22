@@ -156,7 +156,7 @@ pub async fn marker_read(state: State<'_, AppState>, address: u8, installation: 
 }
 
 /// The target belongs to installation `inst`: over the CAN socket (the master) its stored battery serial must be the one
-/// the master reports there (Modbus, as the maintenance view's halt and release; none stored: not checked); over
+/// the master reports there (`master_serial`; none stored: not checked); over
 /// RS485-1/2 the right-bank check of every write (ASCII 0xA4).
 fn right_bank(state: &AppState, link: &Link, inst: &str, address: u8, can: bool) -> Result<(), String> {
     if !can {
@@ -165,8 +165,20 @@ fn right_bank(state: &AppState, link: &Link, inst: &str, address: u8, can: bool)
     let text = |e: MaintError| serde_json::to_string(&e).unwrap_or_default();
     let stored = with_store(state, |s| Ok(s.current_board(inst, 0)?.and_then(|b| b.battery_serial))).map_err(text)?;
     let Some(stored) = stored else { return Ok(()) };
-    let read = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(c.master_battery_serial()))?;
-    crate::maint::master_check(&stored, read.ok().as_ref()).map_err(text)
+    let read = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(master_serial(c)))?;
+    crate::maint::master_check(&stored, read.as_ref()).map_err(text)
+}
+
+/// The master's battery serial (String 1) over the CAN socket: Modbus, else the patch's binary 0xA2 (bases before
+/// 16.06.11 have no Modbus serial block). None: neither readable.
+pub(crate) fn master_serial(c: &mut openbms_transport::Connection) -> Option<openbms_proto::SerialValue> {
+    use openbms_proto::{serial, uart1, SerialValue};
+    let modbus = c.master_battery_serial().ok();
+    if matches!(modbus, Some(SerialValue::Set { .. })) {
+        return modbus;
+    }
+    let binary = c.uart1_serial(Bus::CanSocketBus, 0, uart1::CMD_STRING1).ok().and_then(|raw| serial::parse_ascii_serial(&raw).ok());
+    binary.or(modbus)
 }
 
 /// Set (`on`, the CAN socket only) or clear the marker, after a fresh read that offers it; the view after the change.
