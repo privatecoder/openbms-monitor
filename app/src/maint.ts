@@ -223,6 +223,12 @@ export function busLine(live: LiveStatus | null, running: boolean, t: T): { tone
 }
 
 /** The master's part of the status line (with a CAN socket): version, marker and the slaves it polls. */
+/** A quiet port while the master, read over the CAN socket, says it polls its slaves: the port hears nothing, it is not
+ *  on the pack bus (polling would be heard at least once a second). */
+export function notOnBus(bus: string | undefined, m: MasterView | null): boolean {
+  return bus === "quiet" && m?.kind === "patched" && m.marker === "off" && (m.slaves ?? 0) > 0;
+}
+
 export function masterLine(m: MasterView, t: T): { tone: Tone; text: string } {
   const slaves = m.slaves !== null ? t("maint.live.slaves", { count: m.slaves }) : null;
   const marker = m.marker === "on" ? t("maint.live.markerOn") : m.marker === "off" ? t("maint.live.markerOff") : m.marker === "foreign" ? t("maint.live.markerForeign", { word: m.marker_word }) : null;

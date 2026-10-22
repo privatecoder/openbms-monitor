@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, otherBank, packVersion, packVersionText, releaseFirst, showDone, storedPort, type Tone } from "../maint";
+import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -188,6 +188,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
       {port && <div role="status" className="space-y-1 rounded-md bg-sunken p-3">
         <p className={cn("font-medium", toneClass[line.tone])}>{line.text}</p>
         {mLine && <p className={toneClass[mLine.tone]} title={master?.build_id ? t("maint.live.buildId", { id: master.build_id }) : undefined}>{t("maint.live.master", { text: mLine.text })}</p>}
+        {notOnBus(live?.bus, master) && !running && <p className="text-discharge">{t("maint.live.notOnBus")}</p>}
         {back && <p className="text-ok">{t("maint.done.back")}</p>}
         {live?.master_error && <p className="text-muted">{t(errorKey(live.master_error).key, errorKey(live.master_error).params)}</p>}
         {inst && !inst.control && <p className="text-muted">{t("maint.live.noControl")}</p>}
