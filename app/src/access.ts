@@ -69,6 +69,13 @@ export const CUTOFF_MIN = CATALOG.cutoff_min as [number, number];
 const B = CATALOG.bits;
 /** Image flag bits ways depend on today (`access::FLAG_*`). */
 export const FLAG_POWER = CATALOG.flags.power;
+/** Image flag bit 3: Group0 bits 3/4 positive (MAINT 1.6.1 and the positive 1.6 build): bit 3 at 1 allows power and
+ *  clock over the CAN socket, bit 4 at 1 switches the extended off on. */
+export const FLAG_POSITIVE = CATALOG.flags.positive;
+/** `access::polar`: the Group0 bits that read inverted in a positive build. */
+export const polar = (group: number, bit: number) => group === 0 && (bit === B.g0_power_lock || bit === B.g0_extended_off);
+/** Whether the image flag byte announces the positive bits 3/4 (null: not known). */
+export const positiveOf = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << FLAG_POSITIVE)) !== 0;
 export const FLAG_CUTOFF = CATALOG.flags.cutoff;
 /** Group0 bits of the patched firmware as masks. */
 export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state };
@@ -96,7 +103,8 @@ export function decide(route: Route, f: Facts): { state: State; reasons: AccessR
   for (const n of route.needs) {
     switch (n.kind) {
       case "bit-set": case "bit-clear": {
-        const want = n.kind === "bit-set";
+        // the positive build reads bits 3/4 the other way round
+        const want = (n.kind === "bit-set") !== (polar(n.group, n.bit) && positiveOf(f.flags));
         const g = n.group === 0 ? f.group0 : n.group === 7 ? f.group7 : null;
         const known = g === null ? null : (g & (1 << n.bit)) !== 0;
         if (known !== want) { worse(known === null ? "unknown" : "blocked"); reasons.push({ id: "bit", group: n.group, bit: n.bit, want, known }); }

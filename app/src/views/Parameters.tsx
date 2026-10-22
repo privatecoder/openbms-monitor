@@ -25,10 +25,10 @@ import { PackControlSection } from "../components/PackControl";
 import { MarkerSection } from "../components/MarkerControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
 import { latestOnly } from "../maint";
-import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, keepMask, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
+import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, inverseG0, keepMask, positivePatch, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { channelOf, controlHint, controlMode, controlOffers, packCutoff, packFirmware, powerLocked } from "../power";
-import { factsOf, MAINT_MIN, offerable } from "../access";
+import { factsOf, MAINT_MIN, offerable, positiveOf } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -106,7 +106,9 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const profile = useProfile();
   const [probes] = usePackProbes();
   const fwOf = (a: number) => packFirmware(a, profile, probes[a]);
-  const lockOf = (a: number) => powerLocked(a, targetRead(a)?.function_switches[0], profile);
+  // the positive Group0 bits 3/4 of the pack's proven build (this connection's identity, else its column's proof)
+  const posOf = (a: number) => positiveOf(fwOf(a).flags) || positivePatch(targetRead(a)?.patch);
+  const lockOf = (a: number) => powerLocked(a, inverseG0(targetRead(a)?.function_switches[0], posOf(a)), profile);
   const where = { connected, bus, demo: isDemo, installation: !!installation, fw: chosen !== null ? fwOf(chosen) : packFirmware(null, profile, undefined) };
   const offers = controlOffers(where);
   const ctlMode = controlMode(where);
@@ -537,7 +539,12 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const gateLabel = gateRowLabel(labelCols);
   // bits 4 and 5 are named only where every column may have the pack cutoff (a proven 1.5 pack makes them neutral)
   const cutoffLabel = cutoffRowLabel(labelCols);
-  const rowLabel = (b: number) => (b >= 4 ? cutoffLabel : gateLabel);
+  // bits 3/4 read the other way round in a positive build: their own names where every proven column agrees, else neutral
+  const polar = (b: number) => b === 3 || b === 4;
+  const proven = cols.filter((c) => c.switches && c.read?.patch);
+  const polarity = proven.length && proven.every((c) => positivePatch(c.read?.patch)) ? "p" : proven.some((c) => positivePatch(c.read?.patch)) ? "mixed" : "";
+  const rowLabel = (b: number) => (polar(b) && polarity === "mixed" ? "neutral" : b >= 4 ? cutoffLabel : gateLabel);
+  const rowId = (b: number) => `switch.0.${b}${polar(b) ? polarity : ""}`;
   const gateRows = cols.some((c) => !!c.read?.patch || c.path === "uart1");
   const powerRow = cols.some((c) => c.read?.patch && c.read.patch.caps.power_rtc !== false);
   const cutoffRow = cols.some((c) => c.read?.patch && c.read.patch.caps.pack_cutoff !== false);
@@ -608,7 +615,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
         <CalibrationSection address={chosen} usable={offers("calibrate")} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} offers={offers} powerLocked={chosen !== null ? lockOf(chosen) : null}
-          cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
+          cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} positive={chosen !== null && posOf(chosen)} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link} />
         <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={lockedBut("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
@@ -809,7 +816,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
                           return (
                             <tr key={b}>
                               {gateBit(g, b) && rowLabel(b) !== "named" ? <NameCell id="topic.patchGates" label={t(rowLabel(b) === "neutral" ? "par.gateNeutral" : "par.gateUnnamed", { b })} sub={t("par.bit", { b })} />
-                                : <NameCell id={`switch.${g}.${b}`} sub={t("par.bit", { b })} />}
+                                : <NameCell id={g === 0 ? rowId(b) : `switch.${g}.${b}`} sub={t("par.bit", { b })} />}
                               {refCell && <td className="border-b border-l border-line bg-sunken/40" />}
                               {cols.map((c, ci) => {
                                 const gate = gateBit(g, b) ? gateBits(c.read?.patch, c.path === "uart1") : null;
@@ -817,7 +824,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
                                 // bit 5 is status only, never editable
                                 const fixed = gate && !(b === 0 ? gate.writeEditable : b === 2 ? gate.startEditable : b === 3 ? gate.powerEditable : b === 4 ? cut!.cutoffEditable : false);
                                 // the meaning only in proven columns; the shared row stays neutral in a mixed table
-                                const meaning = gate?.named && (b !== 3 || gate.power !== false) && (b < 4 || cut!.cutoff !== false) ? helpTitle(`switch.0.${b}`, lang) : undefined;
+                                const meaning = gate?.named && (b !== 3 || gate.power !== false) && (b < 4 || cut!.cutoff !== false) ? helpTitle(`switch.0.${b}${polar(b) && positivePatch(c.read?.patch) ? "p" : ""}`, lang) : undefined;
                                 // bit 3 acts only in a build with the power and clock service, bits 4 and 5 with the pack cutoff
                                 const power = b !== 3 || !gate?.named ? null : gate.power === false ? t("par.gatePowerAbsent") : gate.power === null ? t("par.gatePowerUnknown") : null;
                                 const cutoff = !cut || !gate?.named ? null : cut.cutoff === false ? t("par.gateCutoffAbsent") : cut.cutoff === null ? t("par.gateCutoffUnknown") : null;

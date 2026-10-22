@@ -7,7 +7,7 @@ import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOf
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
 import { capacityResets } from "../paramWrite";
-import { CUTOFF_BIT, getProfile } from "../profile";
+import { CUTOFF_BIT, getProfile, inverseG0, positivePatch } from "../profile";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
 import { SectionHead, StatusLine } from "./Section";
@@ -35,7 +35,7 @@ const RS485_ONLY = ["force-heater", "set-remaining", "set-learned-full", "clear-
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack; over the
  *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
-export function PackControlSection({ address, usable, mode = "full", offers = () => true, powerLocked = null, cutoff = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey }: {
+export function PackControlSection({ address, usable, mode = "full", offers = () => true, powerLocked = null, cutoff = false, positive = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
   mode?: "full" | "power";
   /** whether the catalog offers an action for this pack over this connection (`power.ts` `controlOffers`) */
@@ -44,6 +44,8 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   powerLocked?: boolean | null;
   /** CAN socket: the stored pack cutoff (MAINT 1.6) proven for this pack on this connection */
   cutoff?: boolean;
+  /** the pack's proven build has the positive Group0 bits 3/4 (image flag bit 3): read here as the inverse builds' */
+  positive?: boolean;
   /** Group0 of the pack's parameters column read on this connection (bits 4/5: extended off, lock state) */
   group0?: number;
   /** after a restart, and after ein/aus where the pack may store a cutoff: the pack's parameters column (if shown) is read again */
@@ -189,15 +191,17 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     if (!same(a, lk)) return;
     const ask = offAsk(f);
     if (relock && ask) {
-      const r = relockAsk(offKind(mode, cutoff, f?.patch, f?.g0), f?.g0);
+      const r = relockAsk(offKind(mode, cutoff, f?.patch, norm(f)), norm(f));
       if (r === "locked") { setNote({ text: t("ctl.cutoff.relockLocked", { pack: no(a) }), tone: "ok" }); return; }
       if (r === "lockedMaybe") { setNote({ text: t("ctl.cutoff.relockMaybe"), tone: "warn" }); return; }
       if (r === "soft") { setNote({ text: t("ctl.cutoff.relockSoft"), tone: "warn" }); return; }
     }
     if (ask) setAsk(ask); else setNote({ text: t("ctl.cutoff.readFirst"), tone: "error" });
   };
+  // Group0 as the inverse builds read it (`inverseG0`); the backend gets the raw value (`offExpect`)
+  const norm = (f: { g0: number | undefined; patch: PackPatch | null } | undefined) => inverseG0(f?.g0, positive || positivePatch(f?.patch));
   const offAsk = (f: { g0: number | undefined; patch: PackPatch | null } | undefined): Ask | null => {
-    const lock = offKind(mode, cutoff, f?.patch, f?.g0);
+    const lock = offKind(mode, cutoff, f?.patch, norm(f));
     return lock === "unread" ? null : { kind: "off", lock, ...offExpect(f?.g0) };
   };
 
@@ -228,14 +232,15 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     const f = aware ? await read47(a, lk) : undefined;
     // the parameters column follows the pack: bit 5 shows the lock state now
     if (aware && same(a, lk)) onChanged?.(a);
-    const cut = aware ? cutoffOutcome(on, f?.g0, l?.status ?? null) : null;
+    const cut = aware ? cutoffOutcome(on, norm(f), l?.status ?? null) : null;
     // the master's acknowledgement over the CAN socket covers only itself, not its broadcast to the slaves; with the pack
     // cutoff its lock stays its own and the master's charge limit follows only after the next polling
     const slaves = (n: NonNullable<Note>): Note => (masterBroadcast(mode, a)
       ? { text: `${n.text} ${t("ctl.onOff.slaves")}${cutoff ? ` ${t("ctl.cutoff.master")} ${t("ctl.cutoff.ccl")}` : ""}`, tone: n.tone } : n);
     // RS485-1/2: bit 5 only means a lock if the pack has MAINT 1.6; named where bit 4 or 5 is 0
-    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && f?.g0 !== undefined && (f.g0 & 0x30) !== 0x30
-      ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (f.g0 >> 5) & 1, state: t((f.g0 & 0x20) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
+    const g = norm(f);
+    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && g !== undefined && (g & 0x30) !== 0x30
+      ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (g >> 5) & 1, state: t((g & 0x20) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
     if (can && cut === "stillLocked") return slaves({ text: t("ctl.cutoff.stillLocked"), tone: "error" });
     // off: a stored lock (bit 5 at 0) or an unreadable Group0 never reads „Laden möglich“, on either way
     const offText = !on ? offCutoffText(cut, !can) : null;
@@ -320,7 +325,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   };
 
   // the newest Group0 seen: this section's own read, else the parameters column
-  const g0 = fresh47 ? fresh47.g0 : group0;
+  const g0 = inverseG0(fresh47 ? fresh47.g0 : group0, positive || positivePatch(fresh47?.patch));
   const lock = lockState(can && cutoff, !can, g0);
   // a stored lock is released by „Ein“, whatever the off bit shows
   // „maybeActive“ (RS485-1/2, bit 5 only means a lock with 1.6) is an uncertainty line, never the command state
