@@ -1,6 +1,6 @@
 ---
 title: Calibration and CAN protocol
-short: Adjust a pack's current zero point, current and voltage and set the CAN protocol to the inverter, as with BatteryMonitor. Only via RS485-1/2, under Parameters (maintenance functions), for the pack chosen at the BMS clock.
+short: Adjust a pack's current zero point, current and voltage and set the CAN protocol to the inverter, as with BatteryMonitor. Only via the RS485-1/2 bus, under Parameters (maintenance functions), for the pack chosen at the BMS clock.
 related: topic.params, alarm.ev8.b2, alarm.ev8.b3, alarm.ev8.b4
 ---
 - **What a calibration does:** the BMS computes a new factor from its previous factor and the ratio reference/measured and stores it at once. All later readings of this pack shift with it: current, voltage, SOC counting and the protection thresholds. A wrong reference falsifies the pack until it is calibrated again with a good measurement; a new calibration corrects an old error as far as the BMS's acceptance limit reaches. The BMS does not let the factors be read.

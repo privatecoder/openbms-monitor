@@ -19,8 +19,8 @@ describe("serial number display", () => {
     expect(serialText(undefined, "battery", "pack", false, t).text).toBe("unbekannt");
     expect(serialText({ kind: "no_answer" }, "bms", "pack", false, t).text).toBe("keine Antwort");
     // CAN socket bus: slaves show neither, the master only its battery serial number
-    expect(serialText({ kind: "unavailable" }, "battery", "can", false, t).text).toBe("nur über RS485-1/2 lesbar");
-    expect(serialText({ kind: "unavailable" }, "bms", "can", true, t).text).toBe("nur über RS485-1/2 lesbar");
+    expect(serialText({ kind: "unavailable" }, "battery", "can", false, t).text).toBe("nur über den RS485-1/2-Bus lesbar");
+    expect(serialText({ kind: "unavailable" }, "bms", "can", true, t).text).toBe("nur über den RS485-1/2-Bus lesbar");
     expect(serialText({ kind: "unavailable" }, "battery", "can", true, t).text).toBe(i18n.t("sn.unsupported", { lng: "de" }));
     expect(serialText({ kind: "unavailable" }, "bms", "pack", false, t).text).toBe(i18n.t("sn.unsupported", { lng: "de" }));
   });

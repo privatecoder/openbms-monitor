@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 /// The capture label of a connection: endpoint and bus as the UI names them.
 pub(crate) fn label(endpoint: &Endpoint, bus: Bus) -> String {
     let bus = match bus {
-        Bus::PackBus => "RS485-1/2",
-        Bus::CanSocketBus => "CAN-Buchse",
+        Bus::PackBus => "RS485-1/2-Bus",
+        Bus::CanSocketBus => "CAN-Buchse (RS485)",
     };
     match endpoint {
         Endpoint::Serial { path, .. } => format!("USB {path} · {bus}"),
@@ -482,7 +482,7 @@ mod tests {
     const T0: i64 = 1_767_348_000_000;
 
     fn entry(conn: u64, kind: Kind, bytes: &[u8], ms: u64) -> Arc<Entry> {
-        let label = if conn == 1 { "USB /dev/cu.test · RS485-1/2" } else { "TCP 192.0.2.10:4196 · CAN-Buchse" };
+        let label = if conn == 1 { "USB /dev/cu.test · RS485-1/2-Bus" } else { "TCP 192.0.2.10:4196 · CAN-Buchse (RS485)" };
         Arc::new(Entry { wall_ms: T0 + ms as i64, offset_ms: ms, conn, label: label.into(), kind, bytes: bytes.to_vec(), truncated: 0 })
     }
 
@@ -503,9 +503,9 @@ mod tests {
     #[test]
     fn labels_name_endpoint_and_bus() {
         let ep = Endpoint::Tcp { addr: "192.0.2.10:4196".into() };
-        assert_eq!(label(&ep, Bus::CanSocketBus), "TCP 192.0.2.10:4196 · CAN-Buchse");
+        assert_eq!(label(&ep, Bus::CanSocketBus), "TCP 192.0.2.10:4196 · CAN-Buchse (RS485)");
         let ep = Endpoint::Serial { path: "/dev/cu.test".into(), baud: 19200 };
-        assert_eq!(label(&ep, Bus::PackBus), "USB /dev/cu.test · RS485-1/2");
+        assert_eq!(label(&ep, Bus::PackBus), "USB /dev/cu.test · RS485-1/2-Bus");
     }
 
     #[test]
@@ -524,10 +524,10 @@ mod tests {
         ], 1, Lang::De);
         assert_eq!(lines[0], "# OpenBMS Monitor 0.1.0 – Mitschnitt");
         assert_eq!(lines[1], "# Start 2026-01-02 12:00:00.012 (Ortszeit, UTC+2), Ende 2026-01-02 12:00:02.600, 8 Einträge, 1 Timeout");
-        assert_eq!(lines[2], "# Verbindungen: USB /dev/cu.test · RS485-1/2");
+        assert_eq!(lines[2], "# Verbindungen: USB /dev/cu.test · RS485-1/2-Bus");
         assert_eq!(cols(&lines[3])[0], "Zeit");
         let tx = cols(&lines[4]);
-        assert_eq!(tx, vec!["12:00:00.012", "12", "USB /dev/cu.test · RS485-1/2", "TX", "03", "42", "~20034642E00203FD31\\r", "Telemetrie lesen (0x42)"]);
+        assert_eq!(tx, vec!["12:00:00.012", "12", "USB /dev/cu.test · RS485-1/2-Bus", "TX", "03", "42", "~20034642E00203FD31\\r", "Telemetrie lesen (0x42)"]);
         let other = cols(&lines[5]);
         assert_eq!((other[3], other[4], other[5], other[7]), ("RX", "05", "RTN 00", "nicht für uns (Adresse 05)"));
         assert_eq!(cols(&lines[6])[7], "Antwort auf Telemetrie lesen (0x42), 2 Byte INFO");
@@ -562,7 +562,7 @@ mod tests {
             entry(1, Kind::Error("I/O: broken pipe".into()), &[], 99),
         ], 0, Lang::En);
         assert_eq!(lines[1], "# Start 2026-01-02 12:00:00.000 (local time, UTC+2), end 2026-01-02 12:00:00.099, 11 entries, 0 timeouts");
-        assert_eq!(lines[2], "# Connections: TCP 192.0.2.10:4196 · CAN-Buchse; USB /dev/cu.test · RS485-1/2");
+        assert_eq!(lines[2], "# Connections: TCP 192.0.2.10:4196 · CAN-Buchse (RS485); USB /dev/cu.test · RS485-1/2-Bus");
         let tx = cols(&lines[4]);
         assert_eq!((tx[4], tx[5], tx[6], tx[7]), ("01", "03", "01 03 10 00 00 15 80 C5", "Modbus 03 read: start 0x1000, 21 registers"));
         let rx = cols(&lines[5]);

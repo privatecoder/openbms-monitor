@@ -20,8 +20,8 @@ describe("connection check", () => {
   it("offers the CAN socket when a pack answers there", () => {
     const r = explain("pack", { noise: false, intra: false }, { ...none, answered: 0 }, t);
     expect(r.offer).toBe("can");
-    expect(r.text).toContain("RS485-1/2 (19200 Baud)");
-    expect(r.text).toContain("CAN-Buchse (9600 Baud) antwortet Pack 00");
+    expect(r.text).toContain("Über den RS485-1/2-Bus (19200 Baud)");
+    expect(r.text).toContain("CAN-Buchse (RS485, 9600 Baud) antwortet Pack 00");
   });
 
   it("offers RS485-1/2 when a pack answers at 19200 baud", () => {

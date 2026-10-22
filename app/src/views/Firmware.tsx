@@ -197,9 +197,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       {tab === "bench" && <section className="space-y-3 rounded-md border border-line p-4">
         <p className="text-sm text-muted">{t("fw.bench.hint")}</p>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-          <span className="flex flex-wrap items-center gap-2 text-muted">{t("maint.setup.rs485")}
+          <span className="flex flex-wrap items-center gap-2 text-muted">{t("fw.bench.port")}
             <KindSelect value={benchPort.kind} disabled={inputsLocked} onChange={(k) => setBenchPort({ kind: k, target: "" })} label={t("maint.setup.rs485Kind")} />
-            <PortInput kind={benchPort.kind} value={benchPort.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setBenchPort({ kind: benchPort.kind, target: v })} label={t("maint.setup.rs485")} disabled={inputsLocked} />
+            <PortInput kind={benchPort.kind} value={benchPort.target} ports={ports} onRefresh={loadPorts} onChange={(v) => setBenchPort({ kind: benchPort.kind, target: v })} label={t("fw.bench.port")} disabled={inputsLocked} />
           </span>
           <span className="flex flex-wrap items-center gap-2 text-muted">{t("fw.bench.can")}
             <KindSelect value={benchCan.kind} disabled={inputsLocked} onChange={(k) => setBenchCan({ kind: k, target: "" })} label={t("fw.bench.can")} />
