@@ -271,12 +271,13 @@ const FLASHING_TEXT: &str = "a firmware update is running";
 /// master's serial number matches (right bank) and the target's String 2 is the board stored for its address (when both
 /// are known). Without one („Platine flashen“) the board is known by its String 2 alone: the proof and hard-stop sighting
 /// of every place where it is the current board end, and for address 0 the master marker is checked over the board's own
-/// CAN socket (`control`) and cleared before an image without the maintenance functions. Quiet bus and the target's
+/// CAN socket (`control`) and cleared before an image without the maintenance functions; the board must be the one the
+/// search showed (`expected`, its String 2). Quiet bus and the target's
 /// 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals reach the UI as a JSON
 /// string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, control: Option<String>) -> Result<FlashStarted, String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, control: Option<String>, expected: Option<String>) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -331,7 +332,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             (bank, maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?, marker)
         }
         None => {
+            // the board shown at the search, before anything changes on it
             let target = maint::string2(&mut link, address);
+            crate::bench::chosen_board(expected.as_deref(), target.as_deref()).map_err(to_text)?;
             let marker = if address == 0 {
                 let pack0 = maint::canonical_string2(&mut link, 0);
                 let mut can = control.as_deref().map(crate::bench::open_control).transpose().map_err(to_text)?;

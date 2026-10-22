@@ -101,7 +101,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   /** Start a flash (panel or board): refusals are thrown back as the backend sent them. `installation`: the panel's,
    *  null for „Platine flashen“ (`control`: the board's CAN socket). */
-  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, control: string | null) => {
+  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, control: string | null, expected: string | null) => {
     if (!path || !image) return;
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
@@ -109,7 +109,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, control);
+      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, control, expected);
       setFlashed({ address: a, image, checked: from, bank: r.bank, marker: r.marker, bench: installation === null });
       // the pending record is written now
       void maint.loadLists();
@@ -136,7 +136,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const chosen = scan?.packs.find((p) => p.address === address) ?? null;
   const benchFlash = async () => {
     if (!chosen) return;
-    try { await startFlash(bPort, chosen.address, chosen.info.firmware_version, null, bCan); }
+    try { await startFlash(bPort, chosen.address, chosen.info.firmware_version, null, bCan, chosen.serial); }
     catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
   };
   const markerKey = scan ? benchMarkerKey(scan, chosen?.address ?? null, bCan !== null, image) : null;
@@ -162,7 +162,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         ? <p className="flex gap-2 rounded-md border border-alarm p-3 text-sm text-alarm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
-      {image?.kind === "maintenance" && <PatchImageNotes inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
+      {/* bound to the port and board it reads: another one starts without a fresh value */}
+      {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
         latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
     </div>
   );
@@ -187,7 +188,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onEditPorts={onEditPorts} imagePicker={imagePicker} image={image}
         running={running} flashTick={flashTick} onUserAction={onUserAction}
-        onFlash={(a, from) => inst ? startFlash(port, a, from, inst.id, null) : Promise.resolve()} onMaster={() => {}} />}
+        onFlash={(a, from) => inst ? startFlash(port, a, from, inst.id, null, null) : Promise.resolve()} onMaster={() => {}} />}
 
       {/* one board without an installation: any RS485-1/2 port, a search with String 2, optionally the board's CAN
           socket for the master marker; the same flash checks in the backend */}
