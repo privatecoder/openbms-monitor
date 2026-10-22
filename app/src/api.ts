@@ -254,7 +254,12 @@ export interface FirmwareDone { ok: boolean; error: string | null; stage: Firmwa
 /** The right-bank check of a flash: "none" without an installation. */
 /** `marker` (master only): "checked" when a fresh read of the installation's control channel decided C', "unchecked"
  *  without one (the marker last seen was not on). */
-export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" | "latent" }
+export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" | "latent" | "released" }
+/** One pack found by „Platine flashen“; `serial`: String 2 as read (null: not readable or not set). */
+export interface BenchPack { address: number; info: DeviceInfo; serial: string | null }
+/** `traffic` > 0: the port was not quiet, nothing searched; `same_board`: with a CAN socket and address 0 found, whether
+ *  it shows the same String 2; `master`: its state then. */
+export interface BenchScan { traffic: number; packs: BenchPack[]; cancelled: boolean; master: MasterView | null; same_board: boolean | null }
 
 export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; addr: string };
 /** An installation: endpoints may belong to several installations; `master_serial`, `archived`, `legacy` (the endpoint
@@ -522,12 +527,14 @@ const tauriApi = {
   /** writes the CSV to a path from the save dialog */
   saveBmsHistory: (path: string, content: string) => invoke<void>("save_bms_history", { path, content }),
   firmwareCheckImage: (path: string, allowCustom: boolean, lang: string) => invoke<FirmwareImage>("firmware_check_image", { path, allowCustom, lang }),
-  /** Disconnects the monitor, then reads the pack on the pack bus without resetting it. */
-  firmwareInspect: (port: string, address: number, lang: string, installation: string | null) => invoke<DeviceInfo>("firmware_inspect", { port, address, lang, installation }),
-  /** Returns at once; progress and result arrive as events. A flash belongs to an installation; `checks`: its master
-   *  and bank checks apply (its own RS485-1/2 port). */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string, checks: boolean) =>
-    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, checks }),
+  /** „Platine flashen“: stops the monitor, listens, then searches 0–15 on `port` with String 2 each; `control`: the board's
+   *  CAN socket (endpoint key), read only, for the master marker of address 0. */
+  benchScan: (port: string, control: string | null) => invoke<BenchScan>("bench_scan", { port, control }),
+  /** Returns at once; progress and result arrive as events. With an installation (the pack bus panel, on its own
+   *  RS485-1/2 port) its bank, board and master checks apply; without one („Platine flashen“) `control` is the board's
+   *  CAN socket for the master marker. */
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, control: string | null) =>
+    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, control }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
   /** lookup only: every installation that lists the endpoint or has it as CAN socket */
   maintInstallationsOf: (endpoint: Endpoint, activeOnly = false) => invoke<Installation[]>("maint_installations_of", { endpoint, activeOnly }),
@@ -832,7 +839,7 @@ function demoApi(): typeof tauriApi {
     notifyTest: async () => { throw new Error("desktop app only"); },
     notifyStatus: async () => ({ installation: null, can_unchecked: false, can_no_serial: false, none_confirmed: false }),
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
-    firmwareInspect: async () => { throw new Error("desktop app only"); },
+    benchScan: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
     maintInstallations: async () => [],
     maintInstallationsOf: async () => [],

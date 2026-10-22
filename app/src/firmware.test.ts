@@ -1,59 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, steps, type FwSetup } from "./firmware";
+import { benchMarkerKey, benchPick, confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
+import type { BenchScan, FirmwareImage, MasterView } from "./api";
 import i18n from "./i18n";
 
-const image: FwSetup["image"] = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
+const image: FirmwareImage = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
-const base: FwSetup = { running: false, done: false, port: "/dev/x", address: 0, image, target, checkedFor: { port: "/dev/x", address: 0 }, typed: "", busy: false };
 
-describe("firmware steps", () => {
-  it("check pack needs port and image", () => {
-    expect(steps({ ...base, port: "" }).inspect).toBe(false);
-    expect(steps({ ...base, image: null }).inspect).toBe(false);
-    expect(steps(base).inspect).toBe(true);
+describe("flashing a board", () => {
+  const pack = (address: number) => ({ address, info: target, serial: `SYN-${address}` });
+  const scan = (over: Partial<BenchScan> = {}): BenchScan => ({ traffic: 0, packs: [pack(0)], cancelled: false, master: null, same_board: true, ...over });
+  it("preselects only a single pack", () => {
+    expect(benchPick([pack(3)])).toBe(3);
+    expect(benchPick([pack(0), pack(1)])).toBeNull();
+    expect(benchPick([])).toBeNull();
   });
-  it("target_must_match_port_and_address", () => {
-    expect(steps(base).confirm).toBe(true);
-    expect(steps({ ...base, address: 1 }).confirm).toBe(false);
-    expect(steps({ ...base, port: "/dev/y" }).confirm).toBe(false);
-    expect(steps({ ...base, target: null }).confirm).toBe(false);
+  it("says what it knows about the master marker before flashing address 0", () => {
+    const on = { marker: "on" } as MasterView;
+    expect(benchMarkerKey(scan(), 0, false, image)).toBe("fw.bench.markerNoCan");
+    expect(benchMarkerKey(scan({ same_board: false }), 0, true, image)).toBe("fw.bench.markerOther");
+    expect(benchMarkerKey(scan({ master: on }), 0, true, image)).toBe("fw.bench.markerOn");
+    expect(benchMarkerKey(scan({ master: on }), 0, true, { ...image, kind: "maintenance" })).toBeNull();
+    expect(benchMarkerKey(scan(), 0, true, image)).toBeNull();
+    expect(benchMarkerKey(scan({ packs: [pack(3)] }), 3, false, image)).toBeNull();
   });
-  it("a check made for another installation does not count", () => {
-    const forA = { ...base, checkedFor: { port: "/dev/x", address: 0, inst: "inst-a" }, typed: "FLASH 0" };
-    expect(steps({ ...forA, inst: "inst-a" }).start).toBe(true);
-    expect(steps({ ...forA, inst: "inst-b" }).confirm).toBe(false);
-    expect(steps({ ...forA, inst: "inst-b" }).start).toBe(false);
-  });
-  it("start_needs_exact_phrase", () => {
+  it("the phrase of a custom image differs", () => {
     expect(confirmationPhrase(3)).toBe("FLASH 3");
-    expect(steps({ ...base, typed: "FLASH 0" }).start).toBe(true);
-    expect(steps({ ...base, typed: " FLASH 0 " }).start).toBe(true);
-    expect(steps({ ...base, typed: "flash 0" }).start).toBe(false);
-    expect(steps({ ...base, typed: "FLASH 1" }).start).toBe(false);
-  });
-  it("custom image needs FLASH CUSTOM", () => {
-    const custom: FwSetup = { ...base, image: { ...image, release: "custom", kind: "custom", custom: true } };
     expect(confirmationPhrase(2, true)).toBe("FLASH CUSTOM 2");
-    expect(steps({ ...custom, typed: "FLASH CUSTOM 0" }).start).toBe(true);
-    expect(steps({ ...custom, typed: "FLASH 0" }).start).toBe(false);
-    expect(steps({ ...base, typed: "FLASH CUSTOM 0" }).start).toBe(false);
-  });
-  it("another action (pack check, measurement, End step) locks the inputs while it runs", () => {
-    expect(steps({ ...base, typed: "FLASH 0", busy: true })).toEqual({ image: false, inspect: false, confirm: false, start: false });
-  });
-  it("nothing is editable while running", () => {
-    const s = steps({ ...base, typed: "FLASH 0", running: true });
-    expect(s).toEqual({ image: false, inspect: false, confirm: false, start: false });
-  });
-  it("a shown result blocks a second run with the old confirmation", () => {
-    const s = steps({ ...base, typed: "FLASH 0", done: true });
-    expect(s).toEqual({ image: false, inspect: false, confirm: false, start: false });
-  });
-  it("after New update the pack must be checked and confirmed again", () => {
-    // what reset() and start() leave behind
-    const cleared = { ...base, target: null, checkedFor: null, typed: "" };
-    expect(steps(cleared)).toEqual({ image: true, inspect: true, confirm: false, start: false });
-    expect(steps({ ...cleared, typed: "FLASH 0" }).start).toBe(false);
   });
 });
 

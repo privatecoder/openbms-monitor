@@ -771,7 +771,7 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
 }
 
 /// String 2 of a pack on the pack bus as a board identity (canonical raw bytes, a real value), or None.
-fn canonical_string2(link: &mut Connection, address: u8) -> Option<String> {
+pub fn canonical_string2(link: &mut Connection, address: u8) -> Option<String> {
     match link.bms_serial_canonical(address) {
         Ok((SerialValue::Set { value, truncated: false }, true)) => Some(value),
         _ => None,

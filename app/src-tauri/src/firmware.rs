@@ -92,16 +92,6 @@ pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&
     }
 }
 
-/// A "checked" marker from the installation's control channel holds for the chosen pack bus endpoint only if that is the
-/// installation's own port, or the master read there (canonical String 2 of address 0) is the installation's current
-/// board at address 0. Otherwise the flash goes on "unchecked" with its hint.
-pub fn marker_for_endpoint(marker: Option<&'static str>, own_port: bool, read: Option<&str>, stored: Option<&str>) -> Option<&'static str> {
-    match marker {
-        Some("checked") if !own_port && (read.is_none() || read != stored) => Some("unchecked"),
-        m => m,
-    }
-}
-
 fn lang(code: &str) -> Lang {
     if code.starts_with("de") { Lang::De } else { Lang::En }
 }
@@ -258,29 +248,6 @@ pub async fn firmware_check_image(path: String, allow_custom: bool, lang: String
     read_image(&path, allow_custom, self::lang(&lang)).map(|(_, info)| info)
 }
 
-/// Stops the monitor, then checks the target on the pack bus without resetting it. A pack that answers with the
-/// String 2 stored in its pending record is no longer pending in its bootloader.
-#[tauri::command]
-pub async fn firmware_inspect(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, lang: String, installation: Option<String>) -> Result<DeviceInfo, String> {
-    let l = self::lang(&lang);
-    let _port_slot = crate::control::reserve_bus_wait(&state)
-        .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
-    if state.flashing.load(Ordering::SeqCst) {
-        return Err(l.pick("Ein Firmware-Update läuft", "a firmware update is running").into());
-    }
-    let key = maint::pack_key(&port).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
-    stop_monitor(&state)?;
-    let mut link = open_port(&key, l)?;
-    let (mut log, _, _) = new_log(&app, &state, installation.as_deref(), address, "inspect", None)?;
-    let info = session::inspect(&mut link, address, &mut log, session::Options::default()).map_err(|e| e.text(l))?;
-    // only the board that was flashed (its String 2 in the record) clears a pending record
-    if let Ok(pending) = maint::with_store(&state, |s| s.pending_on(&key)) {
-        let answered = maint::answered_with_serial(&pending, &[address], &mut link);
-        let _ = maint::with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()));
-    }
-    Ok(info)
-}
-
 /// Before flashing an image with the patch functions: the target's Group0 now, from a fresh 0x47 on the pack bus (the
 /// flash takes over the release bits as they are). Stops the monitor like the other pack bus steps; reads only while the
 /// bus is quiet (a polling master would collide). None: not readable now (the UI shows the last snapshot with its age).
@@ -299,15 +266,17 @@ pub async fn firmware_group0(app: AppHandle, state: State<'_, AppState>, port: S
 const FLASHING_TEXT: &str = "a firmware update is running";
 
 /// Validates everything again, then the kept checks before the restart (design: simple flash flow): no other pack
-/// pending in its bootloader, on any endpoint (`maint::pending_refusal`), and with `checks` (the installation's own
-/// RS485-1/2 port) a patched master with its marker on is released before a non-maintenance image (C'), the master's
-/// serial number matches (right bank) and the target's String 2 is the board stored for its address (when both are
-/// known). Quiet bus and the target's 0x51/0x47 are the flash's own preflight. A flash belongs to an installation; its
-/// log is named and indexed with it on the installation's own port (`checks`), else „ohne Anlage“.
-/// Flashes on its own thread and returns at once. Refusals reach the UI as a JSON string of `MaintError`.
+/// pending in its bootloader, on any endpoint (`maint::pending_refusal`). With an `installation` (the pack bus panel, on
+/// its own RS485-1/2 port) a patched master with its marker on is released before a non-maintenance image (C'), the
+/// master's serial number matches (right bank) and the target's String 2 is the board stored for its address (when both
+/// are known). Without one („Platine flashen“) the board is known by its String 2 alone: the proof and hard-stop sighting
+/// of every place where it is the current board end, and for address 0 the master marker is checked over the board's own
+/// CAN socket (`control`) and cleared before an image without the maintenance functions. Quiet bus and the target's
+/// 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals reach the UI as a JSON
+/// string of `MaintError`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: String, checks: bool) -> Result<FlashStarted, String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, control: Option<String>) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if address > 15 {
         return Err(openbms_flash::Error::Address(address).text(l));
@@ -318,20 +287,26 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     if !confirmation_ok(address, info.custom, &confirmation) {
         return Err(openbms_flash::Error::Cancelled.text(l));
     }
+    let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let control = if installation.is_some() { None } else { control.filter(|c| !c.trim().is_empty()) };
+    crate::bench::distinct(&port, control.as_deref()).map_err(to_text)?;
     let port_slot = crate::control::reserve_bus_wait(&state)
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     let _action = maint::begin_action(&state, "flash");
-    let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
     // the endpoint key as the UI formed it: the pending record below is written and checked under this one key
     let key = maint::pack_key(&port).map_err(to_text)?;
     maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
-    let owner = maint::installation(&state, &installation).map_err(to_text)?;
-    let inst = checks.then(|| owner.clone());
-    // C' belongs to the installation's master, not to the pack bus endpoint chosen: also a manual endpoint (another
-    // gateway channel or adapter on the same bus) gets the check
-    let fresh = if address == 0 && owner.control.is_some() { maint::read_master(&state, &owner).ok() } else { None };
-    let last_on = address == 0 && maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
-    let marker = master_marker_check(address, maint_kind(info.kind), fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?;
+    let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
+    let kind = maint_kind(info.kind);
+    // C' belongs to the installation's master
+    let marker = match &inst {
+        Some(owner) => {
+            let fresh = if address == 0 && owner.control.is_some() { maint::read_master(&state, owner).ok() } else { None };
+            let last_on = address == 0 && maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
+            master_marker_check(address, kind, fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?
+        }
+        None => None,
+    };
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
@@ -341,49 +316,61 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     crate::bank::clear_live(&state, crate::link_now(&state).gen, address);
     stop_monitor(&state)?;
     let mut link = open_port(&key, l)?;
-    let bank = match &inst {
+    let (bank, target, marker) = match &inst {
         Some(i) => {
             // traffic refuses at once: no 0xA4 checks skipped for a bus that is quiet only by the preflight
             quiet_first(&bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?).map_err(|e| e.text(l))?;
-            match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
+            let bank = match maint::check_bank(&state.maint, i, &mut link).map_err(to_text)? {
                 maint::Bank::Mismatch(serial) => return Err(to_text(maint::MaintError::OtherBank { serial })),
                 maint::Bank::Match => "match",
                 maint::Bank::Stored(_) => "stored",
                 maint::Bank::Unchecked => "unchecked",
-            }
+            };
+            // another board than the one stored for its address is not flashed. Its String 2 goes with the pending
+            // record: only that board's answer clears it.
+            (bank, maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?, marker)
         }
-        None => "none",
+        None => {
+            let target = maint::string2(&mut link, address);
+            let marker = if address == 0 {
+                let pack0 = maint::canonical_string2(&mut link, 0);
+                let mut can = control.as_deref().map(crate::bench::open_control).transpose().map_err(to_text)?;
+                let m = crate::bench::bench_marker(can.as_mut(), pack0.as_deref(), kind).map_err(to_text)?;
+                if m == "released" {
+                    maint::event(&state, None, "bench flash: master marker cleared over the board's CAN socket");
+                }
+                Some(m)
+            } else {
+                None
+            };
+            ("none", target, marker)
+        }
     };
-    // the target itself, also on another port than the installation's (manual tab): another board than the one stored
-    // for its address is not flashed. Its String 2 goes with the pending record: only that board's answer clears it.
-    let target = maint::check_target_board(&state.maint, &owner, address, &mut link).map_err(to_text)?;
     // the pending pack again: only as the same board
-    // a manual endpoint: the control channel's marker counts as checked only for the installation's own master there
-    let marker = if address == 0 && !checks && marker == Some("checked") {
-        let read = match link.bms_serial_canonical(0) {
-            Ok((openbms_proto::SerialValue::Set { value, truncated: false }, true)) => Some(value),
-            _ => None,
-        };
-        let stored = maint::with_store(&state, |s| Ok(s.current_board(&owner.id, 0)?.map(|b| b.bms_serial))).map_err(to_text)?;
-        marker_for_endpoint(marker, false, read.as_deref(), stored.as_deref())
-    } else {
-        marker
-    };
     let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
     maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
-    let (mut log, log_path, log_id) = new_log(&app, &state, checks.then_some(installation.as_str()), address, "flash", Some(&info.release))?;
-    writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank}", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
-    // written before the restart, so a crash or power loss leaves it behind; in the same transaction the place's version
-    // proof and its hard-stop observation end (also for a flash that breaks off): all or nothing, so a failed step leaves no pending record.
-    // Only a finished flash of an image with the patch functions sets the proof again, for the String 2 read back.
+    // where the app knows this board: its place in the installation, else every place where it is the current board
+    let places: Vec<(String, u8)> = match (&inst, target.as_deref()) {
+        (Some(i), _) => vec![(i.id.clone(), address)],
+        (None, Some(serial)) => maint::with_store(&state, |s| crate::bench::places_of(s, serial)).map_err(to_text)?,
+        (None, None) => vec![],
+    };
+    let (mut log, log_path, log_id) = new_log(&app, &state, installation.as_deref(), address, "flash", Some(&info.release))?;
+    writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank} string2={}", info.sha256, info.release, info.custom, target.as_deref().unwrap_or("-")).map_err(|e| e.to_string())?;
+    // written before the restart, so a crash or power loss leaves it behind; in the same transaction the version proof
+    // and the hard-stop observation of its places end (also for a flash that breaks off): all or nothing, so a failed
+    // step leaves no pending record. Only a finished flash of an image with the patch functions sets the proof again,
+    // for the String 2 read back.
     let pending = maint::with_store(&state, |s| s.add_pending_with(&key, address, &info.release, target.as_deref(), crate::history::now_ms(), |s| {
-        s.clear_patch_proof(&owner.id, address)?;
-        // what the old image showed about the hard stop no longer holds
-        s.clear_hard_stop(&owner.id, address)
+        for (inst, a) in &places {
+            s.clear_patch_proof(inst, *a)?;
+            // what the old image showed about the hard stop no longer holds
+            s.clear_hard_stop(inst, *a)?;
+        }
+        Ok(())
     })).map_err(to_text)?;
-    maint::event(&state, Some(&installation), &format!("flash start address={address} release={} custom={} bank={bank} marker={} log={}", info.release, info.custom, marker.unwrap_or("-"), log_path.display()));
+    maint::event(&state, installation.as_deref(), &format!("flash start address={address} release={} custom={} bank={bank} marker={} places={} log={}", info.release, info.custom, marker.unwrap_or("-"), places.len(), log_path.display()));
     let patch_image = known::patch_image(&info.sha256);
-    let owner_id = owner.id.clone();
     let store = state.maint.clone();
     let stored = target.clone();
     std::thread::spawn(move || {
@@ -400,7 +387,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let pending = maint::settle_pending(&store, pending, address, stored.as_deref(), ok, last, &mut link);
         if let (true, Some(release)) = (ok, patch_image) {
             if let Some(serial) = proof_serial(stored.as_deref(), maint::string2(&mut link, address)) {
-                let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(&owner_id, address, &serial, release, "flash", crate::history::now_ms()));
+                for (inst, a) in &places {
+                    let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(inst, *a, &serial, release, "flash", crate::history::now_ms()));
+                }
             }
         }
         drop(link);
@@ -411,7 +400,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None },
         };
         let state = app.state::<AppState>();
-        maint::event(&state, Some(&installation), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?}", done.ok, done.stage, done.error, done.log_error));
+        maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?}", done.ok, done.stage, done.error, done.log_error));
         if let Some(id) = log_id {
             let result = if done.ok { "ok" } else if done.pending { "pending" } else { "failed" };
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));
@@ -520,17 +509,6 @@ mod tests {
         assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), false), Ok(Some("unchecked")));
         // another address: no marker question
         assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
-    }
-
-    #[test]
-    fn a_manual_endpoint_is_checked_only_with_the_installations_master_on_it() {
-        assert_eq!(marker_for_endpoint(Some("checked"), false, Some("SYN-0"), Some("SYN-0")), Some("checked"));
-        assert_eq!(marker_for_endpoint(Some("checked"), false, Some("SYN-0"), None), Some("unchecked"), "no stored board");
-        assert_eq!(marker_for_endpoint(Some("checked"), false, Some("SYN-B"), Some("SYN-0")), Some("unchecked"), "another board");
-        assert_eq!(marker_for_endpoint(Some("checked"), false, None, Some("SYN-0")), Some("unchecked"), "not readable");
-        assert_eq!(marker_for_endpoint(Some("checked"), true, None, None), Some("checked"), "the installation's own port");
-        assert_eq!(marker_for_endpoint(Some("unchecked"), false, Some("SYN-0"), Some("SYN-0")), Some("unchecked"));
-        assert_eq!(marker_for_endpoint(None, false, None, None), None);
     }
 
     #[test]
