@@ -32,6 +32,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [benchCan, setBenchCan] = useState<{ kind: PortKind; target: string }>({ kind: "serial", target: "" });
   const [scan, setScan] = useState<BenchScan | null>(null);
   const [scanning, setScanning] = useState(false);
+  // every search starts a new generation: what was read for the earlier one (Group0) no longer counts
+  const [searchGen, setSearchGen] = useState(0);
   const [address, setAddress] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
@@ -120,7 +122,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   const search = async () => {
-    onUserAction(); setScanning(true); setError(null); setScan(null);
+    onUserAction(); setScanning(true); setError(null); setScan(null); setSearchGen((g) => g + 1);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
     try {
@@ -163,7 +165,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
       {/* bound to the port and board it reads: another one starts without a fresh value */}
-      {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
+      {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
         latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
     </div>
   );
