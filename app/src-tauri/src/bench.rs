@@ -50,6 +50,15 @@ pub fn open_control(key: &str) -> Result<Connection, MaintError> {
     Ok(c)
 }
 
+/// The board the user chose is the one flashed: with a String 2 shown at the search (`expected`), the fresh read must be
+/// that one; an unreadable or other value refuses. Without one (none readable at the search) nothing is compared.
+pub fn chosen_board(expected: Option<&str>, read: Option<&str>) -> Result<(), MaintError> {
+    match expected {
+        Some(e) if read != Some(e) => Err(maint::refused("bench-board-changed")),
+        _ => Ok(()),
+    }
+}
+
 /// The two ports must differ: the pack bus and the CAN socket are two buses.
 pub fn distinct(pack: &str, control: Option<&str>) -> Result<(), MaintError> {
     match control {
@@ -89,26 +98,31 @@ pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String
         return Ok(BenchScan { traffic: heard.bytes, packs: vec![], cancelled: false, master: None, same_board: None });
     }
     let found = link.scan(maint::scan_addresses(&state.scan_cancel)).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    let cancelled = state.scan_cancel.swap(false, Ordering::SeqCst);
+    // „Abbrechen“ counts between every exchange: no String 2, pending or CAN read after it
+    let stop = || state.scan_cancel.load(Ordering::SeqCst);
     let mut packs = vec![];
     for (address, info) in found {
-        packs.push(BenchPack { address, info, serial: maint::string2(&mut link, address) });
+        let serial = if stop() { None } else { maint::string2(&mut link, address) };
+        packs.push(BenchPack { address, info, serial });
     }
     let addresses: Vec<u8> = packs.iter().map(|p| p.address).collect();
-    let pending = maint::with_store(&state, |s| s.pending_on(&key))?;
-    let answered = maint::answered_with_serial(&pending, &addresses, &mut link);
-    maint::with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()))?;
-    let pack0 = if addresses.contains(&0) && !cancelled { maint::canonical_string2(&mut link, 0) } else { None };
+    if !stop() {
+        let pending = maint::with_store(&state, |s| s.pending_on(&key))?;
+        let answered = maint::answered_with_serial(&pending, &addresses, &mut link);
+        maint::with_store(&state, |s| s.clear_answered(&key, &answered, crate::history::now_ms()))?;
+    }
+    let pack0 = if addresses.contains(&0) && !stop() { maint::canonical_string2(&mut link, 0) } else { None };
     drop(link);
     let (mut master, mut same) = (None, None);
-    if let (Some(c), true) = (control.as_deref(), addresses.contains(&0) && !cancelled) {
+    if let (Some(c), true) = (control.as_deref(), addresses.contains(&0) && !stop()) {
         let mut can = open_control(c)?;
         let tied = same_board(pack0.as_deref(), can_string2(&mut can).as_deref());
         same = Some(tied);
-        if tied {
+        if tied && !stop() {
             master = dialog::read(&mut can, &SystemClock::new(), Budgets::default()).ok().map(|m| maint::master_view(&m));
         }
     }
+    let cancelled = state.scan_cancel.swap(false, Ordering::SeqCst);
     Ok(BenchScan { traffic: 0, packs, cancelled, master, same_board: same })
 }
 
@@ -126,19 +140,22 @@ pub fn bench_marker(control: Option<&mut Connection>, pack0: Option<&str>, image
         Ok(m) => m,
         Err(_) => return Ok("unchecked"),
     };
-    marker_step(&m, image, || dialog::dialog(can, &clock, Action::Clear, Budgets::default()).map(|_| ()).map_err(|e| e.to_string()))
+    marker_step(&m, image, || dialog::dialog(can, &clock, Action::Clear, Budgets::default()).map(|s| s.effective_slaves).map_err(|e| e.to_string()))
 }
 
 /// `bench_marker` once the board is tied and read: `clear` runs only for a trusted marker on before an image without
-/// the maintenance functions; a failed clear refuses the flash.
-pub fn marker_step(m: &Master, image: ImageKind, clear: impl FnOnce() -> Result<(), String>) -> Result<&'static str, MaintError> {
+/// the maintenance functions and returns the slave count the master polls one DIP cycle later. A failed clear refuses
+/// the flash; so does a master that polls slaves then (DIP 5–8 not OFF): the marker is gone, the bus would not be quiet.
+pub fn marker_step(m: &Master, image: ImageKind, clear: impl FnOnce() -> Result<u8, String>) -> Result<&'static str, MaintError> {
     match m.marker() {
         Some(MarkerWord::On) if image != ImageKind::Maintenance => {
             if !m.may_release() {
                 return Err(maint::refused("release-master-first-unread"));
             }
-            clear().map_err(|message| MaintError::Connection { message })?;
-            Ok("released")
+            match clear().map_err(|message| MaintError::Connection { message })? {
+                0 => Ok("released"),
+                _ => Err(maint::refused("bench-dip-on")),
+            }
         }
         Some(MarkerWord::On | MarkerWord::Off) => Ok("checked"),
         _ => Ok("unchecked"),
@@ -184,9 +201,11 @@ mod tests {
     fn a_marker_on_is_cleared_before_an_image_without_maintenance_only() {
         let (on, off) = (master(0), master(u32::MAX));
         let mut cleared = 0;
-        assert_eq!(marker_step(&on, ImageKind::Original, || { cleared += 1; Ok(()) }).unwrap(), "released");
-        assert_eq!(marker_step(&on, ImageKind::Custom, || { cleared += 1; Ok(()) }).unwrap(), "released");
+        assert_eq!(marker_step(&on, ImageKind::Original, || { cleared += 1; Ok(0) }).unwrap(), "released");
+        assert_eq!(marker_step(&on, ImageKind::Custom, || { cleared += 1; Ok(0) }).unwrap(), "released");
         assert_eq!(cleared, 2);
+        // cleared, but DIP 5–8 not OFF: the master polls, the flash does not start
+        assert!(matches!(marker_step(&on, ImageKind::Original, || Ok(1)), Err(MaintError::Refused { reason }) if reason == "bench-dip-on"));
         assert_eq!(marker_step(&on, ImageKind::Maintenance, || panic!("kept")).unwrap(), "checked");
         assert_eq!(marker_step(&off, ImageKind::Original, || panic!("off")).unwrap(), "checked");
         // a failed clear refuses the flash
@@ -212,6 +231,15 @@ mod tests {
         assert_eq!(places_of(&s, "SYN-X").unwrap(), vec![(b.id.clone(), 5)]);
         assert_eq!(places_of(&s, "SYN-Y").unwrap(), vec![(a.id.clone(), 2)]);
         assert!(places_of(&s, "SYN-Z").unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_the_board_shown_at_the_search_is_flashed() {
+        assert!(chosen_board(Some("SYN-A"), Some("SYN-A")).is_ok());
+        assert!(chosen_board(Some("SYN-A"), Some("SYN-B")).is_err());
+        assert!(chosen_board(Some("SYN-A"), None).is_err());
+        assert!(chosen_board(None, Some("SYN-B")).is_ok());
+        assert!(chosen_board(None, None).is_ok());
     }
 
     #[test]

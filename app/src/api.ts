@@ -532,9 +532,9 @@ const tauriApi = {
   benchScan: (port: string, control: string | null) => invoke<BenchScan>("bench_scan", { port, control }),
   /** Returns at once; progress and result arrive as events. With an installation (the pack bus panel, on its own
    *  RS485-1/2 port) its bank, board and master checks apply; without one („Platine flashen“) `control` is the board's
-   *  CAN socket for the master marker. */
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, control: string | null) =>
-    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, control }),
+   *  CAN socket for the master marker and `expected` the String 2 the search showed (the board flashed must be that one). */
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, control: string | null, expected: string | null) =>
+    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, control, expected }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
   /** lookup only: every installation that lists the endpoint or has it as CAN socket */
   maintInstallationsOf: (endpoint: Endpoint, activeOnly = false) => invoke<Installation[]>("maint_installations_of", { endpoint, activeOnly }),

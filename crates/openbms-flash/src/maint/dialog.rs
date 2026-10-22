@@ -28,7 +28,7 @@ pub enum Action {
     /// clear the marker; done once the master reports it off with `expected` effective slaves again (its DIP count)
     Stop { expected: u8 },
     /// clear the marker on a board alone (flashing one board): done once the master reports it off, whatever slave count
-    /// its DIP switches give
+    /// its DIP switches give; the state returned is read after one more DIP cycle, so it shows whether the master polls
     Clear,
 }
 
@@ -263,6 +263,12 @@ pub fn dialog(link: &mut impl Link, clock: &impl Clock, action: Action, b: Budge
                     if action == (Action::Stop { expected: 0 }) {
                         link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
                     }
+                    if action == Action::Clear {
+                        // the DIP count shows only with the next cycle; a lost read keeps the state seen (the flash's
+                        // own quiet check still hears a polling master)
+                        link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
+                        return Ok(status_read(link, clock, b).ok().and_then(|r| status_of(r).ok()).unwrap_or(s));
+                    }
                     return Ok(s);
                 }
             }
@@ -354,7 +360,10 @@ mod tests {
     #[test]
     fn clear_needs_only_the_marker_off_whatever_slave_count() {
         let (mut link, t) = link_with(Master15::new(3, true, ms(500)));
-        // the marker word is off at once; the DIP count follows with the next cycle, not waited for
+        // the marker word is off at once; the state after one more DIP cycle shows the master polling its DIP count
+        assert_eq!(dialog(&mut link, &t, Action::Clear, Budgets::default()).unwrap(), st(false, 3));
+        assert!(t.now() >= ms(1100));
+        let (mut link, t) = link_with(Master15::new(0, true, ms(500)));
         assert_eq!(dialog(&mut link, &t, Action::Clear, Budgets::default()).unwrap(), st(false, 0));
     }
 
