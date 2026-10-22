@@ -5,10 +5,10 @@
 
 use crate::maint::{self, MaintError};
 use crate::maint_store::Store;
-use crate::marker::{rs485_kind, Found};
+use crate::marker::{rs485_found, Found};
 use crate::AppState;
 use openbms_flash::known::ImageKind;
-use openbms_flash::maint::dialog::{self, Action, Budgets};
+use openbms_flash::maint::dialog::{self, Budgets};
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_proto::{DeviceInfo, MarkerWord};
 use openbms_transport::Connection;
@@ -46,17 +46,9 @@ pub fn chosen_board(expected: Option<&str>, read: Option<&str>) -> Result<(), Ma
     }
 }
 
-/// The identity and marker of the pack at `address` over RS485-1/2: a build with image flag bit 4 shows its state,
-/// anything else none (`trusted` false).
+/// The identity and marker of the pack at `address` over RS485-1/2 (`marker::rs485_found`).
 pub fn rs485_marker(link: &mut Connection, address: u8) -> Found {
-    let clock = SystemClock::new();
-    let budget = crate::profile::identity_budget(link);
-    let (kind, info) = rs485_kind(dialog::probe_pack(link, &clock, address, budget).unwrap_or(dialog::PackAnswer::Undecided));
-    if kind != "patched" {
-        return Found { kind, info, state: None, trusted: false };
-    }
-    let state = dialog::dialog_at(link, &clock, address, Action::Status, Budgets::default()).ok();
-    Found { kind, info, state, trusted: true }
+    rs485_found(link, &SystemClock::new(), address)
 }
 
 /// One search on a board's RS485-1/2 port, without an installation: listen first (a polling master or other traffic:
@@ -105,21 +97,22 @@ pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String
 pub fn bench_marker(link: &mut Connection, address: u8, image: ImageKind) -> Result<&'static str, MaintError> {
     let f = rs485_marker(link, address);
     let clock = SystemClock::new();
-    marker_step(&f, image, || dialog::dialog_at(link, &clock, address, Action::Clear, Budgets::default()).map(|s| s.effective_slaves).map_err(|e| e.to_string()))
+    marker_step(&f, image, || dialog::clear_at(link, &clock, address, Budgets::default()).map_err(|e| e.to_string()))
 }
 
 /// `bench_marker` once the board is read: `clear` runs only for a trusted marker on before an image without the
-/// maintenance functions and returns the slave count the board polls one DIP cycle later. A failed clear refuses the
-/// flash; so does a master that polls slaves then (DIP 5–8 not OFF): the marker is gone, the bus would not be quiet.
-pub fn marker_step(f: &Found, image: ImageKind, clear: impl FnOnce() -> Result<u8, String>) -> Result<&'static str, MaintError> {
+/// maintenance functions and returns the slave count the board polls one DIP cycle later (None: not read back). A
+/// failed clear refuses the flash; so does a master that polls slaves then (DIP 5–8 not OFF): the marker is gone, the
+/// bus would not be quiet. Not read back: the flash's own quiet check decides.
+pub fn marker_step(f: &Found, image: ImageKind, clear: impl FnOnce() -> Result<Option<u8>, String>) -> Result<&'static str, MaintError> {
     match f.state.map(|s| s.marker()) {
         Some(MarkerWord::On) if image != ImageKind::Maintenance => {
             if !f.may_clear() {
                 return Err(maint::refused("release-master-first-unread"));
             }
             match clear().map_err(|message| MaintError::Connection { message })? {
-                0 => Ok("released"),
-                _ => Err(maint::refused("bench-dip-on")),
+                Some(0) | None => Ok("released"),
+                Some(_) => Err(maint::refused("bench-dip-on")),
             }
         }
         Some(MarkerWord::On | MarkerWord::Off) if f.trusted => Ok("checked"),
@@ -149,18 +142,20 @@ mod tests {
 
     fn found(word: Option<u32>, trusted: bool) -> Found {
         let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 6], patch_rev: 1, build_id: [1; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0: true, reserved_flags: 0 };
-        Found { kind: if trusted { "patched" } else { "no-uart0" }, info: Some(info), state: word.map(|w| MaintState { marker_word: w, effective_slaves: 0 }), trusted }
+        Found { kind: if trusted { "patched" } else { "no-uart0" }, info: Some(info), state: word.map(|w| MaintState { marker_word: w, effective_slaves: 0 }), trusted, master: openbms_flash::maint::policy::Master::Unknown }
     }
 
     #[test]
     fn a_marker_on_is_cleared_before_an_image_without_maintenance_only() {
         let (on, off) = (found(Some(0), true), found(Some(u32::MAX), true));
         let mut cleared = 0;
-        assert_eq!(marker_step(&on, ImageKind::Original, || { cleared += 1; Ok(0) }).unwrap(), "released");
-        assert_eq!(marker_step(&on, ImageKind::Custom, || { cleared += 1; Ok(0) }).unwrap(), "released");
+        assert_eq!(marker_step(&on, ImageKind::Original, || { cleared += 1; Ok(Some(0)) }).unwrap(), "released");
+        assert_eq!(marker_step(&on, ImageKind::Custom, || { cleared += 1; Ok(Some(0)) }).unwrap(), "released");
         assert_eq!(cleared, 2);
         // cleared, but DIP 5–8 not OFF: the master polls, the flash does not start
-        assert!(matches!(marker_step(&on, ImageKind::Original, || Ok(1)), Err(MaintError::Refused { reason }) if reason == "bench-dip-on"));
+        assert!(matches!(marker_step(&on, ImageKind::Original, || Ok(Some(1))), Err(MaintError::Refused { reason }) if reason == "bench-dip-on"));
+        // cleared, not read back (a polling master is silent on RS485-1/2): the flash's quiet check decides
+        assert_eq!(marker_step(&on, ImageKind::Original, || Ok(None)).unwrap(), "released");
         assert_eq!(marker_step(&on, ImageKind::Maintenance, || panic!("kept")).unwrap(), "checked");
         assert_eq!(marker_step(&off, ImageKind::Original, || panic!("off")).unwrap(), "checked");
         // a failed clear refuses the flash

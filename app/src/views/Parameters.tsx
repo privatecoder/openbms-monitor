@@ -68,7 +68,7 @@ function commonAssignment(assigned: Record<number, Assignment>): Assignment | un
 
 /** Read the packs' parameters (RS485-1/2, or the CAN socket of a pack with the patched parameter service), show the stored state of the chosen installation, or open BatteryMonitor
  *  exports, and compare them side by side. Editing needs a connection with that installation. */
-export function ParametersView({ connected, bus, packs, installation }: { connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null }) {
+export function ParametersView({ connected, bus, packs, installation, onMarkerChanged }: { connected: boolean; bus: Bus | null; packs: number[]; installation: Installation | null; onMarkerChanged?: () => void }) {
   const { t, i18n } = useTranslation();
   const db = useCellDb();
   const site = installation?.id ?? "";
@@ -611,7 +611,7 @@ export function ParametersView({ connected, bus, packs, installation }: { connec
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link} />
-        <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={lockedBut("marker")} onBusy={busyFor("marker")} linkKey={link} />
+        <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={lockedBut("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
         {chosen !== null && controlHint(where) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}

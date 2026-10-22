@@ -28,9 +28,6 @@ pub enum Action {
     Start,
     /// clear the marker; done once the master reports it off with `expected` effective slaves again (its DIP count)
     Stop { expected: u8 },
-    /// clear the marker on a board alone (flashing one board): done once the master reports it off, whatever slave count
-    /// its DIP switches give; the state returned is read after one more DIP cycle, so it shows whether the master polls
-    Clear,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -240,7 +237,6 @@ pub fn reached(action: Action, s: MaintState) -> bool {
         Action::Status => true,
         Action::Start => s.marker() == MarkerWord::On && s.effective_slaves == 0,
         Action::Stop { expected } => s.marker() == MarkerWord::Off && s.effective_slaves == expected,
-        Action::Clear => s.marker() == MarkerWord::Off,
     }
 }
 
@@ -256,7 +252,7 @@ pub fn dialog_at(link: &mut impl Link, clock: &impl Clock, address: u8, action: 
     let request = match action {
         Action::Status => return status_of(status_read_at(link, clock, address, b)?),
         Action::Start => MaintState::set_request_at(address, true).map_err(Error::from)?,
-        Action::Stop { .. } | Action::Clear => MaintState::set_request_at(address, false).map_err(Error::from)?,
+        Action::Stop { .. } => MaintState::set_request_at(address, false).map_err(Error::from)?,
     };
     let mut last = status_of(reply_of(exchange(link, clock, &request, Bound::Status(address), b.answer)?)?)?;
     let since = clock.now();
@@ -277,12 +273,6 @@ pub fn dialog_at(link: &mut impl Link, clock: &impl Clock, address: u8, action: 
                     if action == (Action::Stop { expected: 0 }) {
                         link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
                     }
-                    if action == Action::Clear {
-                        // the DIP count shows only with the next cycle; a lost read keeps the state seen (the flash's
-                        // own quiet check still hears a polling master)
-                        link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
-                        return Ok(status_read_at(link, clock, address, b).ok().and_then(|r| status_of(r).ok()).unwrap_or(s));
-                    }
                     return Ok(s);
                 }
             }
@@ -291,6 +281,34 @@ pub fn dialog_at(link: &mut impl Link, clock: &impl Clock, address: u8, action: 
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Clear the marker at `address` whatever slave count its DIP switches give (a board alone, „Wartungs-Marker“): done once
+/// a reply shows the marker off, also the immediate one. Returns the slave count read one DIP cycle later; None when that
+/// read got no answer (a master polling again does not answer on RS485-1/2): cleared, the polling not verified.
+pub fn clear_at(link: &mut impl Link, clock: &impl Clock, address: u8, b: Budgets) -> std::result::Result<Option<u8>, DialogError> {
+    let request = MaintState::set_request_at(address, false).map_err(Error::from)?;
+    let mut last = status_of(reply_of(exchange(link, clock, &request, Bound::Status(address), b.answer)?)?)?;
+    let since = clock.now();
+    let left = || b.change.saturating_sub(clock.now().saturating_sub(since));
+    while last.marker() != MarkerWord::Off {
+        if left().is_zero() {
+            return Err(DialogError::Timeout { after: b.change, last });
+        }
+        link.wait(b.interval.min(left()));
+        if left().is_zero() {
+            return Err(DialogError::Timeout { after: b.change, last });
+        }
+        match status_of(status_read_at(link, clock, address, Budgets { answer: b.answer.min(left()), ..b })?) {
+            Ok(s) => last = s,
+            // one lost answer while waiting is not final; the budget decides
+            Err(DialogError::NoAnswer) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    // the DIP count shows only with the next cycle
+    link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
+    Ok(status_read_at(link, clock, address, b).ok().and_then(|r| status_of(r).ok()).filter(|s| s.marker() == MarkerWord::Off).map(|s| s.effective_slaves))
 }
 
 #[cfg(test)]
@@ -317,11 +335,12 @@ mod tests {
 
     /// A patched master on UART1. A start or stop takes effect in the status `delay` later; `refuse_start`: RTN 05.
     /// `addr`: the address it answers at (0 on the CAN socket; any pack's own over RS485-1/2 with image flag bit 4).
-    struct Master15 { dip: u8, marker: bool, active: bool, switch_at: Option<Duration>, delay: Duration, refuse_start: bool, addr: u8 }
+    /// `polls_silent`: polling its slaves it answers no `02` (RS485-1/2).
+    struct Master15 { dip: u8, marker: bool, active: bool, switch_at: Option<Duration>, delay: Duration, refuse_start: bool, addr: u8, polls_silent: bool }
 
     impl Master15 {
         fn new(dip: u8, marker: bool, delay: Duration) -> Self {
-            Self { dip, marker, active: marker, switch_at: None, delay, refuse_start: false, addr: 0 }
+            Self { dip, marker, active: marker, switch_at: None, delay, refuse_start: false, addr: 0, polls_silent: false }
         }
         fn reply(&mut self, req: &[u8], now: Duration) -> Vec<(Duration, Vec<u8>)> {
             if self.switch_at.is_some_and(|t| now >= t) {
@@ -335,6 +354,7 @@ mod tests {
             let a = self.addr;
             match f.info.as_slice() {
                 [0x03] => return vec![(now + ms(40), answer(a, 0x00, &mnt([1, 5], ID15)))],
+                [0x02] if self.polls_silent && !self.active && self.dip > 0 => return vec![],
                 [0x02] => {}
                 [1, 0xC3, 0x5A] if self.refuse_start => return vec![(now + ms(40), answer(a, 0x05, &[]))],
                 [on @ (0 | 1), 0xC3, 0x5A] => {
@@ -376,11 +396,22 @@ mod tests {
     #[test]
     fn clear_needs_only_the_marker_off_whatever_slave_count() {
         let (mut link, t) = link_with(Master15::new(3, true, ms(500)));
-        // the marker word is off at once; the state after one more DIP cycle shows the master polling its DIP count
-        assert_eq!(dialog(&mut link, &t, Action::Clear, Budgets::default()).unwrap(), st(false, 3));
+        // the marker word is off at once; the read one DIP cycle later shows the master polling its DIP count
+        assert_eq!(clear_at(&mut link, &t, 0, Budgets::default()).unwrap(), Some(3));
         assert!(t.now() >= ms(1100));
         let (mut link, t) = link_with(Master15::new(0, true, ms(500)));
-        assert_eq!(dialog(&mut link, &t, Action::Clear, Budgets::default()).unwrap(), st(false, 0));
+        assert_eq!(clear_at(&mut link, &t, 0, Budgets::default()).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn a_confirmed_clear_stays_a_clear_when_the_polling_master_falls_silent() {
+        // RS485-1/2: the reply shows the marker off; the next cycle polls and answers no 02 any more
+        let mut m = Master15::new(1, true, ms(100));
+        m.polls_silent = true;
+        let (mut link, t) = link_with(m);
+        assert_eq!(clear_at(&mut link, &t, 0, Budgets::default()).unwrap(), None);
+        // no repeat of the clear
+        assert_eq!(link.sent.iter().filter(|r| frame::parse(r).unwrap().info.len() == 3).count(), 1);
     }
 
     #[test]
@@ -389,7 +420,7 @@ mod tests {
         m.addr = 7;
         let (mut link, t) = link_with(m);
         assert_eq!(dialog_at(&mut link, &t, 7, Action::Status, Budgets::default()).unwrap(), st(true, 0));
-        assert_eq!(dialog_at(&mut link, &t, 7, Action::Clear, Budgets::default()).unwrap(), st(false, 0));
+        assert_eq!(clear_at(&mut link, &t, 7, Budgets::default()).unwrap(), Some(0));
         assert!(link.sent.iter().all(|r| frame::parse(r).unwrap().address == 7));
         // another address does not answer: no state, never another pack's
         let mut m = Master15::new(0, true, ms(0));

@@ -320,20 +320,27 @@ pub fn master_view(m: &Master) -> MasterView {
 pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {
     let m = with_control(state, inst, |c| dialog::read(c, &SystemClock::new(), Budgets::default()))?
         .map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    keep_master_read(state, &inst.id, &m)?;
+    Ok(m)
+}
+
+/// Keep what a read of installation `inst`'s master showed, for the banner (also „Wartungs-Marker“ under Parameters).
+/// A read without a valid answer never replaces the last one: a set marker stays visible until a read shows it off.
+pub fn keep_master_read(state: &AppState, inst: &str, m: &Master) -> Result<(), MaintError> {
     // the monitor connection of this installation shows a pack of another installation: nothing is kept for it
     let link = crate::link_now(state);
-    let foreign = link.installation.as_deref() == Some(inst.id.as_str()) && crate::bank::foreign(state, link.gen);
-    if m != Master::Unknown && !foreign {
-        let v = master_view(&m);
+    let foreign = link.installation.as_deref() == Some(inst) && crate::bank::foreign(state, link.gen);
+    if *m != Master::Unknown && !foreign {
+        let v = master_view(m);
         let data = serde_json::to_string(&v).unwrap_or_default();
         let now = crate::history::now_ms();
-        match marker_update(&m) {
-            Some(on) => with_store(state, |s| s.set_master_read(&inst.id, &data, on, now))?,
+        match marker_update(m) {
+            Some(on) => with_store(state, |s| s.set_master_read(inst, &data, on, now))?,
             // no valid state: the stored marker stays as it was (a lost 02 never clears a marker seen on)
-            None => with_store(state, |s| s.set_master_read_keep_marker(&inst.id, &data, now))?,
+            None => with_store(state, |s| s.set_master_read_keep_marker(inst, &data, now))?,
         }
     }
-    Ok(m)
+    Ok(())
 }
 
 /// What a master read says about the stored marker: only a valid `02` of a patched master sets (on) or clears (off) it.
@@ -870,7 +877,7 @@ pub async fn maint_expected_slaves(state: State<'_, AppState>, installation: Str
     with_store(&state, |s| s.expected_slaves(&installation, board))
 }
 
-fn master_board(state: &AppState, inst: &str) -> Result<Option<i64>, MaintError> {
+pub(crate) fn master_board(state: &AppState, inst: &str) -> Result<Option<i64>, MaintError> {
     with_store(state, |s| Ok(s.current_board(inst, 0)?.map(|b| b.id)))
 }
 
