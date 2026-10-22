@@ -146,14 +146,31 @@ pub async fn marker_read(state: State<'_, AppState>, address: u8, installation: 
     let (link, can) = bound(&state, installation.as_deref(), address)?;
     let f = read(&state, &link, address, can)?;
     // the installation's master: the banner follows what this read showed
+    // (only for its own master: a read of another bank is shown, never kept under this installation)
     if let Some(i) = link.installation.as_deref().filter(|_| address == 0) {
-        keep_master_read(&state, i, &f.master).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+        if right_bank(&state, &link, i, address, can).is_ok() {
+            keep_master_read(&state, i, &f.master).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+        }
     }
     Ok(view(link.gen, address, can, &f))
 }
 
+/// The target belongs to installation `inst`: over the CAN socket (the master) its stored battery serial must be the one
+/// the master reports there (Modbus, as the maintenance view's halt and release; none stored: not checked); over
+/// RS485-1/2 the right-bank check of every write (ASCII 0xA4).
+fn right_bank(state: &AppState, link: &Link, inst: &str, address: u8, can: bool) -> Result<(), String> {
+    if !can {
+        return crate::bank::check_target(state, link, address).map(|_| ());
+    }
+    let text = |e: MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let stored = with_store(state, |s| Ok(s.current_board(inst, 0)?.and_then(|b| b.battery_serial))).map_err(text)?;
+    let Some(stored) = stored else { return Ok(()) };
+    let read = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(c.master_battery_serial()))?;
+    crate::maint::master_check(&stored, read.ok().as_ref()).map_err(text)
+}
+
 /// Set (`on`, the CAN socket only) or clear the marker, after a fresh read that offers it; the view after the change.
-/// With an installation the target must be its board (the right-bank check of every write), and at the master the
+/// With an installation the target must be its board (`right_bank`), and at the master the
 /// maintenance view's records follow: the slave count kept before a set, dropped with a clear, and the marker for the
 /// banner. Clearing waits for the marker off and reads the slave count one DIP cycle later (None: not read back).
 #[tauri::command]
@@ -161,8 +178,8 @@ pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: O
     let _guard = reserve_pack_wait(&state, address, "marker")?;
     let (link, can) = bound(&state, installation.as_deref(), address)?;
     let inst = link.installation.clone();
-    if inst.is_some() {
-        crate::bank::check_target(&state, &link, address)?;
+    if let Some(i) = inst.as_deref() {
+        right_bank(&state, &link, i, address, can)?;
     }
     let before = read(&state, &link, address, can)?;
     let offered = if on { before.may_set(can) } else { before.may_clear() };
