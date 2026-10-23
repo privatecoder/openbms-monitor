@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { PackPatch, Status } from "./api";
-import { bankText, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, learnedFullAllowed, learnedFullRaw, remainingAllowed, remainingRaw, relockAsk, relockable, shownOff, socOf, switchUnclear } from "./control";
+import { bankText, chargeLine, uart1Error, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, linkChanged, noAnswer, lockState, offCutoffText, offExpect, offKind, offOutcome, offReasons, packBusy, learnedFullAllowed, learnedFullRaw, remainingAllowed, remainingRaw, relockAsk, relockable, shownOff, socOf, switchUnclear } from "./control";
 
 const status = (system_status: number, switch_state: number, alarms: [string, Status["alarms"][number]["severity"]][] = []): Status => ({
   address: 1, cell_limits: [], events: [0, 0, 0, 0, 0, 0, 0, 0], switch_state, balancing: 0, system_status,
@@ -280,5 +280,15 @@ describe("learned full capacity", () => {
     expect(learnedFullAllowed(28000, 100)).toBe(true);
     expect(learnedFullAllowed(28000, undefined)).toBe(false);
     expect(learnedFullAllowed(null, 100)).toBe(false);
+  });
+});
+
+describe("the charge before/after a restart", () => {
+  it("shows both sides and a missing one as a dash", () => {
+    const t = (_k: string, o?: Record<string, unknown>) => JSON.stringify(o);
+    const fmt = (v: number, d: number) => v.toFixed(d);
+    const c = { soc: 79.1, remaining_ah: 221.5, full_ah: 280, cycles: 7 };
+    expect(JSON.parse(chargeLine(c, { ...c, soc: 26.8, remaining_ah: 75 }, fmt, t))).toEqual({ soc: "79.1 → 26.8", rest: "221.5 → 75.0", full: "280.0 → 280.0", cycles: "7 → 7" });
+    expect(JSON.parse(chargeLine(c, null, fmt, t)).soc).toBe("79.1 → –");
   });
 });

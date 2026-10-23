@@ -20,6 +20,12 @@ pub struct BootSim {
     capture_paused: bool,
     /// every write: bootloader framing, and whether the frame capture was paused then
     writes: Vec<(bool, bool)>,
+    /// W F G was acknowledged: the new application answers from now on
+    flashed: bool,
+    /// INFO of an ASCII answer by CID2: before and after the flash (none: an empty INFO, as before)
+    answers: Vec<(u8, Vec<u8>, Vec<u8>)>,
+    /// time of each ASCII request by CID2
+    asked: Vec<(u8, Duration)>,
 }
 
 impl BootSim {
@@ -38,7 +44,19 @@ impl BootSim {
             boot_reply_ready_at: Duration::ZERO,
             capture_paused: false,
             writes: Vec::new(),
+            flashed: false,
+            answers: Vec::new(),
+            asked: Vec::new(),
         }
+    }
+    /// Answer `cid2` with INFO `before` until the flash, `after` from then on.
+    pub fn set_answer(&mut self, cid2: u8, before: Vec<u8>, after: Vec<u8>) {
+        self.answers.retain(|(c, _, _)| *c != cid2);
+        self.answers.push((cid2, before, after));
+    }
+    /// Every ASCII request as (CID2, simulated time).
+    pub fn asked(&self) -> &[(u8, Duration)] {
+        &self.asked
     }
     pub fn set_boot_ack_delay(&mut self, delay: Duration) {
         self.boot_ack_delay = delay;
@@ -85,10 +103,14 @@ impl BootSim {
             self.enabled = false;
             return;
         }
+        self.asked.push((request.rtn, self.now));
         if self.now < self.app_resume_at {
             return;
         }
-        let info = if request.rtn == 0x51 {
+        let set = self.answers.iter().find(|(c, _, _)| *c == request.rtn);
+        let info = if let Some((_, before, after)) = set {
+            if self.flashed { after.clone() } else { before.clone() }
+        } else if request.rtn == 0x51 {
             let mut data = Vec::new();
             data.extend_from_slice(b"1101-SP85 ");
             data.extend_from_slice(&[16, 6]);
@@ -128,6 +150,7 @@ impl BootSim {
             }
             (b'W', b'G') if self.enabled => {
                 self.app_resume_at = self.now + Duration::from_millis(100);
+                self.flashed = true;
                 self.queue(boot::encode(b'W', b'B', 0, &[]).unwrap());
             }
             _ => {}

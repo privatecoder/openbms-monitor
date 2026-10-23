@@ -406,3 +406,64 @@ fn a_log_error_after_the_confirmed_erase_no_longer_stops_the_flash() {
     let ok = session::flash(&mut BootSim::new(), 0, &image(), &mut Vec::new(), fast()).unwrap();
     assert!(ok.log_error.is_none());
 }
+
+/// A synthetic 0x42 INFO: 16 cells, 6 temperatures, remaining/full capacity in 10 mAh, SOC in 0.1 %, cycles.
+fn telemetry_info(address: u8, remaining: u16, soc: u16, cycles: u16) -> Vec<u8> {
+    let mut i = vec![0x00, address, 16];
+    i.extend(std::iter::repeat_n([0x0D, 0x05], 16).flatten());
+    i.push(6);
+    i.extend(std::iter::repeat_n([0x0B, 0x27], 6).flatten());
+    i.extend([0x00, 0x00, 0x14, 0xD6]);
+    i.extend(remaining.to_be_bytes());
+    i.extend([0x0A, 0x6D, 0x60]);
+    i.extend(soc.to_be_bytes());
+    i.extend([0x6D, 0x60]);
+    i.extend(cycles.to_be_bytes());
+    i.extend([0x03, 0xE8, 0x14, 0xD9]);
+    i.extend([0u8; 8]);
+    i
+}
+
+/// A synthetic 0x47 INFO: P0..P59 = 1000 + i, P60.. = i, switches as given, name "SYN-TEST".
+fn params_info(address: u8, p10: u16, switches: [u8; 8]) -> Vec<u8> {
+    let mut b = vec![address, 0x3C];
+    for i in 0..60u16 {
+        b.extend(if i == 10 { p10 } else { 1000 + i }.to_be_bytes());
+    }
+    b.push(0x1B);
+    b.extend(60..87u8);
+    b.push(0x08);
+    b.extend(switches);
+    b.extend(b"SYN-TEST  ");
+    b
+}
+
+#[test]
+fn a_flash_keeps_the_state_before_and_after_for_the_comparison() {
+    let mut sim = BootSim::new();
+    sim.set_answer(0x42, telemetry_info(0, 22170, 791, 7), telemetry_info(0, 7500, 268, 7));
+    sim.set_answer(0x47, params_info(0, 3500, [0x18, 0, 0, 0, 0, 0, 0, 0]), params_info(0, 3400, [0x38, 0, 0, 0, 0, 0, 0, 0]));
+    let r = session::flash(&mut sim, 0, &image(), &mut Vec::new(), fast()).unwrap();
+    let (b, a) = (r.state_before.telemetry.unwrap(), r.state_after.telemetry.unwrap());
+    assert_eq!((b.soc, a.soc), (79.1, 26.8));
+    assert_eq!((b.remaining_capacity_ah, a.remaining_capacity_ah), (221.7, 75.0));
+    let (b, a) = (r.state_before.parameters.unwrap(), r.state_after.parameters.unwrap());
+    assert_eq!((b.parameters[10].raw, a.parameters[10].raw), (3500, 3400));
+    assert_eq!((b.function_switches[0], a.function_switches[0]), (0x18, 0x38));
+    // the state after is read once the application has settled, not right at its first answer
+    let first_answer = sim.asked().iter().rposition(|(c, _)| *c == 0x44).unwrap();
+    let back = sim.asked().iter().take(first_answer).rfind(|(c, _)| *c == 0x51).unwrap().1;
+    let read = sim.asked().iter().skip(first_answer).find(|(c, _)| *c == 0x47).unwrap().1;
+    // (the session counts from the answer in real time, the simulator from the request in its own time)
+    assert!(read - back >= openbms_transport::timing::FLASH_SETTLE - Duration::from_millis(50), "{:?}", read - back);
+}
+
+#[test]
+fn a_missing_state_answer_is_not_compared_and_does_not_fail_the_flash() {
+    // the simulator's default answers have an empty INFO: neither 0x42 nor 0x47 parse
+    let mut sim = BootSim::new();
+    let r = session::flash(&mut sim, 0, &image(), &mut Vec::new(), fast()).unwrap();
+    assert_eq!(r.state_before, session::PackState::default());
+    assert_eq!(r.state_after, session::PackState::default());
+    assert!(r.app_returned);
+}

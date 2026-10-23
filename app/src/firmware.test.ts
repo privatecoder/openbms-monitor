@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { benchMarkerKey, benchPick, confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
-import type { BenchPack, FirmwareImage } from "./api";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
+import type { BenchPack, FirmwareImage, FlashComparison, FlashSide } from "./api";
 import i18n from "./i18n";
 
 const image: FirmwareImage = { release: "16.06.13", device: "EMU1101_10D_HW16", bytes: 53000, blocks: 209, sha256: "ab", kind: "original", custom: false };
@@ -100,5 +100,51 @@ describe("inputs while a flash runs", () => {
     const html = renderToStaticMarkup(createElement(Switch, { checked: false, onChange: () => {}, disabled: true }));
     expect(html).toContain("disabled");
     expect(html).toContain("disabled:opacity-40");
+  });
+});
+
+describe("the comparison before/after a flash", () => {
+  const t = (k: string, o?: Record<string, unknown>) => (o ? `${k} ${JSON.stringify(o)}` : k);
+  const side = (over: Partial<FlashSide> = {}): FlashSide => ({ serial: "SYN-1", build: null, positive: null, switches: [0x1d, 0, 0, 0, 0, 0, 0, 0], charge: { soc: 79.1, remaining_ah: 221.5, full_ah: 280, cycles: 7 }, ...over });
+  const cmp = (over: Partial<FlashComparison> = {}): FlashComparison => ({ before: side(), after: side(), identity: "same", params: [], switches: [], charge: false, verdict: "same", ...over });
+  const keys = (c: FlashComparison, img: FirmwareImage | null = image) => compareLines(c, img, t).map((l) => l.key);
+  it("says the same pack is unchanged", () => {
+    expect(keys(cmp())).toEqual(["fw.cmp.verdict.same", "fw.cmp.board.same", "fw.cmp.build", "fw.cmp.params.same", "fw.cmp.switches.same"]);
+  });
+  it("lists changed parameters with their index and changed switch bytes raw", () => {
+    const lines = compareLines(cmp({ verdict: "differs", params: [{ index: 10, key: "x", unit: "V", before: 3.5, after: 3.4 }], switches: [{ group: 0, before: 0x1d, after: 0x3d }] }), image, t);
+    expect(lines.find((l) => l.param === 10)?.vars).toEqual({ a: 3.5, b: 3.4, unit: "V" });
+    expect(lines.find((l) => l.key === "fw.cmp.switches.line")?.vars).toEqual({ g: 0, a: "1D", b: "3D" });
+    expect(lines[0]).toMatchObject({ key: "fw.cmp.verdict.differs", tone: "warn" });
+  });
+  it("keeps what was not read apart from unchanged", () => {
+    const k = keys(cmp({ identity: "unchecked", params: null, switches: null, verdict: "incomplete" }));
+    expect(k).toContain("fw.cmp.board.unchecked");
+    expect(k).toContain("fw.cmp.params.unchecked");
+    expect(k).not.toContain("fw.cmp.params.same");
+    // no 64/03 over RS485-1/2: not supported, on each side
+    expect(compareLines(cmp(), image, t)[2].vars).toEqual({ a: "fw.cmp.unsupported", b: "fw.cmp.unsupported" });
+  });
+  it("another board is an alarm", () => {
+    expect(compareLines(cmp({ identity: "changed", verdict: "differs", after: side({ serial: "SYN-2" }) }), image, t)[1]).toMatchObject({ key: "fw.cmp.board.changed", tone: "alarm", vars: { a: "SYN-1", b: "SYN-2" } });
+  });
+  it("reads the release bits under the image flashed and keeps a stored pack lock visible", () => {
+    const img: FirmwareImage = { ...image, kind: "maintenance", power_rtc: true, pack_cutoff: true };
+    // 1.6.1: bit 3 set allows power/clock, bit 4 extended off on, bit 5 at 0 a stored lock
+    const k = keys(cmp({ after: side({ positive: true, switches: [0x1d, 0, 0, 0, 0, 0, 0, 0] }) }), img);
+    expect(k).toEqual(expect.arrayContaining(["fw.cmp.meaning", "fw.patch.powerOpen", "fw.patch.cutoffOn", "fw.patch.lockKept"]));
+    // the original image: no meaning shown
+    expect(keys(cmp({ after: side({ positive: null }) }), image)).not.toContain("fw.cmp.meaning");
+  });
+  it("says when the same raw bit 3 means the opposite after the flash", () => {
+    expect(keys(cmp({ before: side({ positive: false }), after: side({ positive: true }) }))).toContain("fw.cmp.polarity");
+    expect(keys(cmp({ before: side({ positive: true }), after: side({ positive: true }) }))).not.toContain("fw.cmp.polarity");
+    expect(keys(cmp({ before: side({ positive: null }), after: side({ positive: true }) }))).not.toContain("fw.cmp.polarity");
+  });
+  it("has every key in both languages", () => {
+    const all = ["fw.cmp.title", "fw.cmp.verdict.same", "fw.cmp.verdict.differs", "fw.cmp.verdict.incomplete", "fw.cmp.board.same", "fw.cmp.board.changed", "fw.cmp.board.unchecked", "fw.cmp.build", "fw.cmp.unsupported",
+      "fw.cmp.params.unchecked", "fw.cmp.params.same", "fw.cmp.params.changed", "fw.cmp.params.line", "fw.cmp.switches.same", "fw.cmp.switches.line", "fw.cmp.meaning", "fw.cmp.polarity", "fw.cmp.chargeUnchecked",
+      "ctl.charge.line", "ctl.charge.hint", "ctl.charge.unchecked"];
+    for (const lng of ["de", "en"]) for (const k of all) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });
 });

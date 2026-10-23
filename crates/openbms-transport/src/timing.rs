@@ -76,11 +76,15 @@ pub const BUS_LISTEN: Duration = ms(1200);
 pub const BOOT_DELAY: Duration = ms(50);
 pub const BOOT_ACK: Duration = ms(10_000);
 pub const BOOT_COMEBACK: Duration = ms(20_000);
-/// The ASCII checks around a flash (before: 0x51/0x47; after: 0x42/0x44) and one 0x51 try while the application
-/// comes back, with the pause between tries.
+/// The ASCII checks around a flash (before: 0x51/0x47, 0x42 kept for the comparison; after: 0x42/0x44, then 0x47/0x42
+/// for the comparison) and one 0x51 try while the application comes back, with the pause between tries.
 pub const FLASH_ASCII: Duration = ms(600);
 pub const FLASH_REACH_TRY: Duration = ms(300);
 pub const FLASH_REACH_PAUSE: Duration = ms(100);
+/// From the application's first answer after a flash or restart until its parameters and charge are read for the
+/// comparison: the firmware loads the stored SOC about 2 s after its start and starts measuring at about 3 s (timer
+/// ticks 400/600 of 5 ms, 16.06.13), so an earlier read could show values not loaded yet.
+pub const FLASH_SETTLE: Duration = ms(5000);
 /// After a failed flash: how long the pack may take to answer as an application again, and the pause between tries.
 pub const RECOVERY: Duration = ms(6000);
 pub const RECOVERY_PAUSE: Duration = ms(200);

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, learnedFullAllowed, learnedFullRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
+import { chargeLine, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, learnedFullAllowed, learnedFullRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
 import { capacityResets } from "../paramWrite";
@@ -155,7 +155,11 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     if (!same(a, lk)) return null;
     await reload(a);
     if (r.kind !== "not_reachable") { forced.delete(`${lk}|${a}`); if (same(a, lk)) onChanged?.(a); if (can) void recheck(a); }
-    return r.kind === "back" ? { text: t("ctl.restart.back", { pack: no(a), s: nf(1).format(r.after_ms / 1000) }), tone: "ok" }
+    // the charge before and once back: a difference is said, never corrected
+    const c = r.charge;
+    const charge = c === undefined ? "" : c === null ? ` ${t("ctl.charge.unchecked")}`
+      : ` ${chargeLine(c.before, c.after, (v, d) => nf(d).format(v), t)}${c.differs ? ` ${t("ctl.charge.hint")}` : ""}`;
+    return r.kind === "back" ? { text: t("ctl.restart.back", { pack: no(a), s: nf(1).format(r.after_ms / 1000) }) + charge, tone: c?.differs ? "warn" : "ok" }
       : r.kind === "no_interruption" ? { text: t("ctl.restart.noInterruption"), tone: "warn" }
       : r.kind === "no_answer" ? { text: t("ctl.restart.noAnswer", { pack: no(a) }), tone: "error" }
       : r.kind === "sent_link_lost" ? { text: t("ctl.restart.linkLost", { err: errorText(r.error, t) }), tone: "error" }

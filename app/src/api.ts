@@ -250,7 +250,28 @@ export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "fi
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
  *  pack may hang in its bootloader and its record stays. */
-export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null }
+export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null; comparison?: FlashComparison | null }
+/** SOC, remaining and learned full capacity, cycles (backend `flash_check::Charge`). */
+export interface Charge { soc: number; remaining_ah: number; full_ah: number; cycles: number }
+/** One side of the comparison before/after a flash (backend `flash_check::Side`); null: not read or not supported. */
+export interface FlashSide {
+  serial: string | null;
+  build: { version: string; format: number; build_id: string; flags: number } | null;
+  /** Group0 bit 3 set allows power/clock over the CAN socket (MAINT 1.6 on); false: clear allows; null: unknown */
+  positive: boolean | null;
+  switches: number[] | null;
+  charge: Charge | null;
+}
+/** The target before and once back after a finished flash (backend `flash_check::Comparison`): a report, nothing acts on it. */
+export interface FlashComparison {
+  before: FlashSide;
+  after: FlashSide;
+  identity: "same" | "changed" | "unchecked";
+  params: { index: number; key: string; unit: string; before: number; after: number }[] | null;
+  switches: { group: number; before: number; after: number }[] | null;
+  charge: boolean | null;
+  verdict: "same" | "differs" | "incomplete";
+}
 /** The right-bank check of a flash: "none" without an installation. */
 /** `marker` (master only): "checked" when a fresh read of the installation's control channel decided C', "unchecked"
  *  without one (the marker last seen was not on). */
