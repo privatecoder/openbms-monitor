@@ -260,7 +260,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
                   <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
                 </>
               )}
-              {done.comparison && <FlashCompare c={done.comparison} image={image} />}
+              {/* the image this run flashed, not the one chosen since */}
+              {done.comparison && <FlashCompare c={done.comparison} image={flashed?.image ?? null} />}
               {done.pending && flashed && <p className="text-sm text-alarm">{t("fw.pendingAfter", { pack: flashed.address })}</p>}
               {done.log_error && <p className="text-sm text-alarm">{t("fw.logError", { err: done.log_error })}</p>}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
