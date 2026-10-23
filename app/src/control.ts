@@ -1,5 +1,5 @@
 /** Pack control (0x45, 0x49 index 59): pure helpers for the „Steuern“ block of the Parameters view. */
-import type { PackPatch, Status } from "./api";
+import type { Charge, PackPatch, Status } from "./api";
 import { CUTOFF_BIT, LOCK_BIT } from "./profile";
 import { parseNumber } from "./calibration";
 
@@ -140,9 +140,23 @@ export function energyText(kwh: number, lang: string): string {
   return `${new Intl.NumberFormat(lang, { maximumFractionDigits: mwh ? 1 : 0 }).format(v)} ${mwh ? "MWh" : "kWh"}`;
 }
 
-/** Outcome of a restart (backend `Restart`). */
-export type RestartResult = { kind: "not_reachable" } | { kind: "back"; after_ms: number } | { kind: "no_interruption" } | { kind: "no_answer" }
-  | { kind: "sent_link_lost"; error: string };
+/** Outcome of a restart (backend `RestartDone`): `charge` before and once back where the link reads it from the pack
+ *  itself (RS485-1/2, or the master on the CAN socket); absent or null: not compared. */
+export type RestartResult = ({ kind: "not_reachable" } | { kind: "back"; after_ms: number } | { kind: "no_interruption" } | { kind: "no_answer" }
+  | { kind: "sent_link_lost"; error: string }) & { charge?: RestartCharge | null };
+export interface RestartCharge { before: Charge | null; after: Charge | null; differs: boolean | null }
+
+/** SOC, remaining and full capacity, cycles before → after (`ctl.charge.line`; a side not read: "–"). `fmt(v, digits)`
+ *  formats a number in the UI language. */
+export function chargeLine(before: Charge | null, after: Charge | null, fmt: (v: number, digits: number) => string, t: (k: string, o?: Record<string, unknown>) => string): string {
+  const v = (c: Charge | null, f: (c: Charge) => string) => (c ? f(c) : "–");
+  return t("ctl.charge.line", {
+    soc: `${v(before, (c) => fmt(c.soc, 1))} → ${v(after, (c) => fmt(c.soc, 1))}`,
+    rest: `${v(before, (c) => fmt(c.remaining_ah, 1))} → ${v(after, (c) => fmt(c.remaining_ah, 1))}`,
+    full: `${v(before, (c) => fmt(c.full_ah, 1))} → ${v(after, (c) => fmt(c.full_ah, 1))}`,
+    cycles: `${v(before, (c) => String(c.cycles))} → ${v(after, (c) => String(c.cycles))}`,
+  });
+}
 
 const kindOf = (e: unknown): unknown => {
   let v: unknown = e;

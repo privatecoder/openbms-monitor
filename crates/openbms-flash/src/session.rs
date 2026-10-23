@@ -2,7 +2,7 @@
 //! writes has not been measured. Each bootloader reply is awaited before the next frame.
 
 use crate::{boot, ehex::Image, link::Link, Error, Result};
-use openbms_proto::{frame, DeviceInfo};
+use openbms_proto::{frame, DeviceInfo, Parameters, Telemetry};
 use openbms_transport::timing;
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,11 +35,23 @@ pub struct FlashResult {
     pub before: DeviceInfo,
     /// 0x51 answer of the restarted application.
     pub after: DeviceInfo,
+    /// The target's parameters and charge before the reset and once the restarted application has settled: for a
+    /// comparison only, nothing depends on them.
+    pub state_before: PackState,
+    pub state_after: PackState,
     pub blocks: usize,
     pub app_returned: bool,
     pub wfd_reply_times: ReplyTimes,
     /// The first log write or flush error after the confirmed erase: the flash went on, the log is incomplete.
     pub log_error: Option<String>,
+}
+
+/// What a flash keeps of the target for the comparison before/after: its own 0x47 and 0x42 (on the pack bus, at its
+/// address: the pack's local values). None: no valid answer, not compared.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PackState {
+    pub parameters: Option<Parameters>,
+    pub telemetry: Option<Telemetry>,
 }
 
 /// The log of a flash: until the erase is confirmed a write or flush error ends the flash like any other (the board
@@ -162,9 +174,20 @@ pub(crate) fn ascii_query(
     log_file: &mut impl Write,
     timeout: Duration,
 ) -> Result<frame::Frame> {
-    link.clear_input()?;
     let request = frame::encode_request(address, cid2, &[])?;
-    send(link, log_file, &request)?;
+    ascii_exchange(link, address, &request, log_file, timeout)
+}
+
+/// One ASCII request and the first valid answer from `address` within `timeout`.
+fn ascii_exchange(
+    link: &mut impl Link,
+    address: u8,
+    request: &[u8],
+    log_file: &mut impl Write,
+    timeout: Duration,
+) -> Result<frame::Frame> {
+    link.clear_input()?;
+    send(link, log_file, request)?;
     let deadline = Instant::now() + timeout;
     let mut pending = Vec::new();
     let mut buf = [0u8; 512];
@@ -186,7 +209,7 @@ pub(crate) fn ascii_query(
         }
     }
     Err(Error::Timeout {
-        what: format!("ASCII 0x{cid2:02X}"),
+        what: format!("ASCII 0x{:02X}", frame::parse(request).map(|f| f.rtn).unwrap_or(0)),
         after: timeout,
     })
 }
@@ -309,7 +332,7 @@ fn preflight(
     address: u8,
     log_file: &mut impl Write,
     options: Options,
-) -> Result<DeviceInfo> {
+) -> Result<(DeviceInfo, Option<Parameters>)> {
     if address > 15 {
         return Err(Error::Address(address));
     }
@@ -321,11 +344,40 @@ fn preflight(
             other => other,
         })?;
     let before = DeviceInfo::parse(&answer.info)?;
-    ascii_query(link, address, 0x47, log_file, ascii_timeout).map_err(|e| match e {
+    let params = ascii_query(link, address, 0x47, log_file, ascii_timeout).map_err(|e| match e {
         Error::Timeout { .. } => Error::NotPackBus(address),
         other => other,
     })?;
-    Ok(before)
+    Ok((before, Parameters::parse(&params.info).ok()))
+}
+
+/// The pack's own 0x42, for the comparison only: no answer or another layout is None, never a failure.
+fn read_telemetry(link: &mut impl Link, address: u8, log_file: &mut impl Write, timeout: Duration) -> Result<Option<Telemetry>> {
+    let request = Telemetry::request(address)?;
+    match ascii_exchange(link, address, &request, log_file, timeout) {
+        Ok(reply) => Ok(Telemetry::parse(&reply.info).ok()),
+        Err(Error::Timeout { .. }) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Parameters and charge once the restarted application has settled (`timing::FLASH_SETTLE` after its first answer:
+/// before that the stored SOC may not be loaded yet). Only a link error ends it; a missing answer is None.
+fn settled_state(
+    link: &mut impl Link,
+    address: u8,
+    log_file: &mut impl Write,
+    timeout: Duration,
+    back: Instant,
+) -> Result<PackState> {
+    link.wait(timing::FLASH_SETTLE.saturating_sub(back.elapsed()));
+    let parameters = match ascii_query(link, address, 0x47, log_file, timeout) {
+        Ok(reply) => Parameters::parse(&reply.info).ok(),
+        Err(Error::Timeout { .. }) => None,
+        Err(e) => return Err(e),
+    };
+    let telemetry = read_telemetry(link, address, log_file, timeout)?;
+    Ok(PackState { parameters, telemetry })
 }
 
 fn enter_boot(
@@ -385,7 +437,7 @@ pub fn inspect(
     log_file: &mut impl Write,
     options: Options,
 ) -> Result<DeviceInfo> {
-    preflight(link, address, log_file, options)
+    preflight(link, address, log_file, options).map(|(info, _)| info)
 }
 
 /// Read-only bootloader probe. The reset does not get an ACK and no flash command is sent.
@@ -395,7 +447,7 @@ pub fn probe(
     log_file: &mut impl Write,
     options: Options,
 ) -> Result<ProbeResult> {
-    let before = preflight(link, address, log_file, options)?;
+    let (before, _) = preflight(link, address, log_file, options)?;
     let rfl = boot::encode(b'R', b'L', 0, &[])?;
     let entered = enter_boot(link, address, log_file, options, &rfl);
     link.pause_capture(false);
@@ -516,7 +568,9 @@ fn flash_steps<W: Write>(
     let frames = dry_run(image)?;
     let total = frames.len() - 3;
     progress(Progress::Preflight);
-    let before = preflight(link, address, log_file, options)?;
+    let (before, parameters) = preflight(link, address, log_file, options)?;
+    let ascii_timeout = options.ack_timeout.min(timing::FLASH_ASCII);
+    let state_before = PackState { parameters, telemetry: read_telemetry(link, address, log_file, ascii_timeout)? };
     // R F L up to and including W F G stay out of a frame capture, also when one of them fails
     let wfd_times = boot_phase(link, address, &frames, log_file, options, progress);
     link.pause_capture(false);
@@ -524,12 +578,14 @@ fn flash_steps<W: Write>(
     progress(Progress::AppRestart);
     let after = wait_for_app(link, address, log_file, options)
         .map_err(|e| uncertain("application restart", e))?;
+    let back = Instant::now();
     progress(Progress::PostCheck);
-    let ascii_timeout = options.ack_timeout.min(timing::FLASH_ASCII);
     ascii_query(link, address, 0x42, log_file, ascii_timeout)
         .map_err(|e| uncertain("0x42 post-check", e))?;
     ascii_query(link, address, 0x44, log_file, ascii_timeout)
         .map_err(|e| uncertain("0x44 post-check", e))?;
+    // the flash is done here: a lost link while reading the state leaves the comparison out, not the result
+    let state_after = settled_state(link, address, log_file, ascii_timeout, back).unwrap_or_default();
     let wfd_reply_times = ReplyTimes::from_samples(wfd_times)?;
     note(
         log_file,
@@ -547,6 +603,8 @@ fn flash_steps<W: Write>(
     Ok(FlashResult {
         before,
         after,
+        state_before,
+        state_after,
         blocks: total,
         app_returned: true,
         wfd_reply_times,

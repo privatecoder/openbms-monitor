@@ -14,11 +14,13 @@
 //! further frame is sent.
 
 use crate::bank::{check_target, Written};
+use crate::flash_check::{charge_differs, Charge};
 use crate::bms_memory::{bound_bus, refusable, refusal_error};
 use crate::power::{way, Act, Done, Way};
 use crate::maint::{refused, MaintError};
 use crate::{current_action, reserve_port, with_link, AppState, Link, PortSlot};
 use openbms_proto::Comeback;
+use openbms_transport::Bus;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -205,6 +207,46 @@ pub enum Restart {
     SentLinkLost { error: String },
 }
 
+/// A restart and the pack's charge before and once back (`charge`: None where the link does not read it from the pack
+/// itself, `own_charge`).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct RestartDone {
+    #[serde(flatten)]
+    pub outcome: Restart,
+    pub charge: Option<RestartCharge>,
+}
+
+/// SOC, remaining and learned full capacity and cycles before the restart and `FLASH_SETTLE` after the pack answered
+/// again (None: not read); `differs` as `flash_check::charge_differs`. Shown, never corrected.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct RestartCharge {
+    pub before: Option<Charge>,
+    pub after: Option<Charge>,
+    pub differs: Option<bool>,
+}
+
+/// The link reads the pack's own charge: on RS485-1/2 every pack, on the CAN socket only the master (a slave's values
+/// there come from the master and may predate the restart).
+fn own_charge(bus: Bus, address: u8) -> bool {
+    bus == Bus::PackBus || address == 0
+}
+
+/// The charge once back: only after a comeback, `FLASH_SETTLE` after it (the stored SOC loads about 2 s after start).
+fn charge_after(outcome: &Restart, read: impl FnOnce() -> Option<Charge>) -> Option<Charge> {
+    match outcome {
+        Restart::Back { .. } => {
+            std::thread::sleep(openbms_transport::timing::FLASH_SETTLE);
+            read()
+        }
+        _ => None,
+    }
+}
+
+fn restart_charge(before: Option<Charge>, after: Option<Charge>) -> RestartCharge {
+    let differs = before.as_ref().zip(after.as_ref()).map(|(b, a)| charge_differs(b, a));
+    RestartCharge { before, after, differs }
+}
+
 impl From<Comeback> for Restart {
     fn from(c: Comeback) -> Self {
         match c {
@@ -320,16 +362,24 @@ fn ascii_frame(state: &AppState, link: &Link, address: u8, f: impl FnOnce(&mut o
 /// back to back for up to 15 s. One frame per lock: the bus stays usable, polling skips this pack meanwhile.
 /// CAN socket: identity and lock bit instead of the 0x51 before (`power::run`), sent once, then the same watch.
 #[tauri::command]
-pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<Restart>, String> {
+pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<RestartDone>, String> {
     // the pack first: no connect runs while it is reserved, so the bus taken with the link stays that link's
     let guard = reserve_pack_wait(&state, address, "restart")?;
     let (link, bus) = bound_bus(&state, installation.as_deref())?;
     let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
+    let own = own_charge(bus, address);
+    let charge = {
+        let (conn, flashing, links, link) = (conn.clone(), flashing.clone(), links.clone(), link.clone());
+        move || with_link(&conn, &flashing, &links, &link, |c| c.telemetry(address)).ok().map(|t| Charge::of(&t))
+    };
     if way(Act::Restart.action(), bus)? == Way::Power {
+        let before = if own { charge() } else { None };
         let Done::Restarted(sent) = crate::power::run(&state, &link, address, Act::Restart)? else { return Err("no result".into()) };
         let value = tauri::async_runtime::spawn_blocking(move || {
             let _guard = guard;
-            watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)))
+            let outcome = watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)));
+            let charge = own.then(|| restart_charge(before, charge_after(&outcome, charge)));
+            RestartDone { outcome, charge }
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -340,10 +390,13 @@ pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation:
     let value = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         if !with_link(&conn, &flashing, &links, &link, |c| c.answers(address))? {
-            return Ok(Restart::NotReachable);
+            return Ok(RestartDone { outcome: Restart::NotReachable, charge: None });
         }
+        let before = if own { charge() } else { None };
         let sent = with_link(&conn, &flashing, &links, &link, |c| refusable(c.restart(address)))?.map_err(refusal_error)?;
-        Ok::<_, String>(watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY))))
+        let outcome = watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)));
+        let charge = own.then(|| restart_charge(before, charge_after(&outcome, charge)));
+        Ok::<_, String>(RestartDone { outcome, charge })
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -574,5 +627,23 @@ mod tests {
         assert_eq!(Restart::from(Comeback::Back { after_ms: 3100 }), Restart::Back { after_ms: 3100 });
         assert_eq!(serde_json::to_string(&Restart::from(Comeback::Back { after_ms: 3100 })).unwrap(), r#"{"kind":"back","after_ms":3100}"#);
         assert_eq!(serde_json::to_string(&Restart::SentLinkLost { error: "not connected".into() }).unwrap(), r#"{"kind":"sent_link_lost","error":"not connected"}"#);
+        let done = RestartDone { outcome: Restart::Back { after_ms: 3100 }, charge: None };
+        assert_eq!(serde_json::to_string(&done).unwrap(), r#"{"kind":"back","after_ms":3100,"charge":null}"#);
+    }
+
+    #[test]
+    fn the_restart_charge_is_read_from_the_pack_itself_and_only_after_a_comeback() {
+        assert!(own_charge(Bus::PackBus, 5) && own_charge(Bus::CanSocketBus, 0) && !own_charge(Bus::CanSocketBus, 5));
+        let c = |soc: f64| Charge { soc, remaining_ah: soc * 2.8, full_ah: 280.0, cycles: 7 };
+        // no comeback: no read, no wait
+        let t = Instant::now();
+        for outcome in [Restart::NoAnswer, Restart::NoInterruption, Restart::SentLinkLost { error: "x".into() }] {
+            assert_eq!(charge_after(&outcome, || panic!("read without a comeback")), None);
+        }
+        assert!(t.elapsed() < Duration::from_millis(100));
+        // a step back is shown as a difference, a drift is not, a missing side leaves it open
+        assert_eq!(restart_charge(Some(c(79.1)), Some(c(26.8))).differs, Some(true));
+        assert_eq!(restart_charge(Some(c(79.1)), Some(c(78.5))).differs, Some(false));
+        assert_eq!(restart_charge(Some(c(79.1)), None).differs, None);
     }
 }

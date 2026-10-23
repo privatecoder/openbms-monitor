@@ -90,14 +90,13 @@ pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String
     Ok(BenchScan { traffic: 0, packs, cancelled })
 }
 
-/// What a flash outside an installation does with the board's marker, over RS485-1/2: "unchecked" (the build does not
+/// What a flash outside an installation does with the board's marker (`f`: its `rs485_marker` read), over RS485-1/2: "unchecked" (the build does not
 /// show it there: an older MAINT build or the original), "checked" (off, or on for an image with the maintenance
 /// functions, which starts halted then), "released" (on, cleared before an image without them: an original image
 /// ignores the marker and would keep it hidden for a later patched one).
-pub fn bench_marker(link: &mut Connection, address: u8, image: ImageKind) -> Result<&'static str, MaintError> {
-    let f = rs485_marker(link, address);
+pub fn bench_marker(link: &mut Connection, f: &Found, address: u8, image: ImageKind) -> Result<&'static str, MaintError> {
     let clock = SystemClock::new();
-    marker_step(&f, image, || dialog::clear_at(link, &clock, address, Budgets::default()).map_err(|e| e.to_string()))
+    marker_step(f, image, || dialog::clear_at(link, &clock, address, Budgets::default()).map_err(|e| e.to_string()))
 }
 
 /// `bench_marker` once the board is read: `clear` runs only for a trusted marker on before an image without the

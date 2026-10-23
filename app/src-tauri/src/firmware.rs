@@ -2,7 +2,7 @@
 //! the vendor allowlist; other images only after an explicit opt-in and their own confirmation phrase.
 //! The flash runs on its own thread and reports progress as events.
 
-use crate::{maint, reveal, stop_monitor, AppState};
+use crate::{flash_check, maint, reveal, stop_monitor, AppState};
 use openbms_flash::maint::policy::{self, Master};
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
@@ -55,6 +55,8 @@ struct FirmwareDone {
     pending: bool,
     /// a log write error after the confirmed erase: the flash went on, the log is incomplete
     log_error: Option<String>,
+    /// the target before and once back (`flash_check`), only after a finished flash
+    comparison: Option<crate::flash_check::Comparison>,
 }
 
 /// What `firmware_start` checked before it began: the right-bank check ("match" | "stored" | "unchecked" |
@@ -315,7 +317,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     crate::bank::clear_live(&state, crate::link_now(&state).gen, address);
     stop_monitor(&state)?;
     let mut link = open_port(&key, l)?;
-    let (bank, target, marker) = match &inst {
+    // `found_before`: the identity the board shows over RS485-1/2 before (MAINT 1.5.1/1.6.1), for the comparison and
+    // the bench marker; read on a quiet bus only
+    let (bank, target, marker, found_before) = match &inst {
         Some(i) => {
             // traffic refuses at once: no 0xA4 checks skipped for a bus that is quiet only by the preflight
             quiet_first(&bus::listen(&mut link, &SystemClock::new(), maint::LISTEN).map_err(|e| e.text(l))?).map_err(|e| e.text(l))?;
@@ -327,18 +331,20 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             };
             // another board than the one stored for its address is not flashed. Its String 2 goes with the pending
             // record: only that board's answer clears it.
-            (bank, maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?, marker)
+            let target = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
+            (bank, target, marker, crate::bench::rs485_marker(&mut link, address))
         }
         None => {
             // the board shown at the search, before anything changes on it
             let target = maint::string2(&mut link, address);
             crate::bench::chosen_board(expected.as_deref(), target.as_deref()).map_err(to_text)?;
-            let m = crate::bench::bench_marker(&mut link, address, kind).map_err(to_text)?;
+            let found = crate::bench::rs485_marker(&mut link, address);
+            let m = crate::bench::bench_marker(&mut link, &found, address, kind).map_err(to_text)?;
             if m == "released" {
                 maint::event(&state, None, &format!("bench flash: marker of pack {address} cleared over RS485-1/2"));
             }
             let marker = Some(m);
-            ("none", target, marker)
+            ("none", target, marker, found)
         }
     };
     // the pending pack again: only as the same board
@@ -366,6 +372,10 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     })).map_err(to_text)?;
     maint::event(&state, installation.as_deref(), &format!("flash start address={address} release={} custom={} bank={bank} marker={} places={} log={}", info.release, info.custom, marker.unwrap_or("-"), places.len(), log_path.display()));
     let patch_image = known::patch_image(&info.sha256);
+    // the bit-3 direction of the image flashed (None: no patch functions)
+    let positive_after = known::patch_by_code(&info.sha256)
+        .filter(|b| b.caps().is_some())
+        .map(|b| openbms_proto::access::positive_build(openbms_proto::access::Patch::Version(b.patch), None));
     let store = state.maint.clone();
     let stored = target.clone();
     std::thread::spawn(move || {
@@ -380,22 +390,33 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let ok = matches!(result, Ok(Ok(_)));
         // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
         let pending = maint::settle_pending(&store, pending, address, stored.as_deref(), ok, last, &mut link);
-        if let (true, Some(release)) = (ok, patch_image) {
-            if let Some(serial) = proof_serial(stored.as_deref(), maint::string2(&mut link, address)) {
-                for (inst, a) in &places {
-                    let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(inst, *a, &serial, release, "flash", crate::history::now_ms()));
+        // after a finished flash: the board's String 2 and identity again, for the proof and the comparison
+        let mut comparison = None;
+        if let Ok(Ok(r)) = &result {
+            let serial_after = maint::string2(&mut link, address);
+            let found_after = crate::bench::rs485_marker(&mut link, address);
+            if let Some(release) = patch_image {
+                if let Some(serial) = proof_serial(stored.as_deref(), serial_after.clone()) {
+                    for (inst, a) in &places {
+                        let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(inst, *a, &serial, release, "flash", crate::history::now_ms()));
+                    }
                 }
             }
+            let before = flash_check::Side::new(stored.clone(), Some(&found_before), None, &r.state_before);
+            let after = flash_check::Side::new(serial_after, Some(&found_after), positive_after, &r.state_after);
+            let c = flash_check::compare(before, after, &r.state_before, &r.state_after);
+            let _ = writeln!(log, "{}", flash_check::summary(&c));
+            comparison = Some(c);
         }
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None },
         };
         let state = app.state::<AppState>();
-        maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?}", done.ok, done.stage, done.error, done.log_error));
+        maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?} compare={}", done.ok, done.stage, done.error, done.log_error, done.comparison.as_ref().map_or("-", |c| c.verdict)));
         if let Some(id) = log_id {
             let result = if done.ok { "ok" } else if done.pending { "pending" } else { "failed" };
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));

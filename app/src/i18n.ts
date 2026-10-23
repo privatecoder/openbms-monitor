@@ -346,6 +346,22 @@ const resources = {
         failAfter: "Das Pack ist vermutlich im Update-Modus. Nicht einfach neu starten: Log sichern und Hilfe lesen.",
         logError: "Das Log ließ sich nach dem Löschen nicht mehr vollständig schreiben ({{err}}); das Update lief trotzdem bis zum Ende weiter. Das Log ist unvollständig.",
         log: "Log", showLog: "Im Ordner zeigen", back: "Zurück zum Monitor", again: "Neues Update", reports: "Pack meldet {{v}}",
+        cmp: {
+          title: "Vorher/nachher",
+          verdict: {
+            same: "Zustand vorher/nachher: keine Abweichung (Platine, Parameter, Funktionsschalter, Ladung).",
+            differs: "Zustand vorher/nachher: Abweichungen, siehe unten. Die App ändert deswegen nichts und flasht nicht erneut.",
+            incomplete: "Zustand vorher/nachher: keine Abweichung gefunden, aber nicht alles ließ sich lesen.",
+          },
+          board: { same: "Platine: dieselbe Seriennummer ({{sn}}).", changed: "Andere Seriennummer: vorher {{a}}, nachher {{b}}.", unchecked: "Seriennummer: nicht geprüft (nicht vorher und nachher lesbar)." },
+          build: "Kennung 64/03 über RS485-1/2: vorher {{a}}, nachher {{b}}",
+          unsupported: "nicht unterstützt",
+          params: { unchecked: "Parameter und Funktionsschalter: nicht geprüft (nicht vorher und nachher lesbar).", same: "Parameter: unverändert.", changed: "{{n}} Parameter geändert:", line: "{{a}} → {{b}} {{unit}}" },
+          switches: { same: "Funktionsschalter: Rohwerte unverändert.", line: "Funktionsschalter {{g}}: {{a}} → {{b}} (Rohwert)" },
+          meaning: "Bedeutung unter dem neuen Image (Funktionsschalter 0 = {{v}}):",
+          polarity: "Funktionsschalter 0, Bit 3 hat im neuen Image die umgekehrte Richtung: Derselbe Rohwert bedeutet dort das Gegenteil.",
+          chargeUnchecked: "SOC und Kapazität: nicht geprüft (nicht vorher und nachher lesbar).",
+        },
         runTitle: "Update Pack {{address}}", pendingAfter: "Pack {{pack}} hängt eventuell im Bootloader (Hinweis oben).",
         tab: { bus: "RS485-1/2-Bus", bench: "Platine flashen" },
         bench: {
@@ -484,6 +500,11 @@ const resources = {
           noAnswer: "Pack {{pack}} antwortet seit dem Neustart nicht. Später neu lesen.",
           notReachable: "Das Pack antwortet nicht; nichts gesendet. Ein Master mit Slaves antwortet auf dem RS485-1/2-Bus nicht: erst den Master anhalten (Wartungsstopp) oder DIP 5–8 auf OFF stellen.",
           linkLost: "Neustart gesendet, Verbindung danach verloren ({{err}}). Ob das Pack wieder antwortet, zeigt das nächste Lesen.",
+        },
+        charge: {
+          line: "SOC {{soc}} %, Rest {{rest}} Ah, voll {{full}} Ah, Zyklen {{cycles}} (vorher → nachher)",
+          hint: "Deutliche Abweichung bei SOC, Vollkapazität oder Zyklen. Beim Start lädt die Firmware den zuletzt gespeicherten Stand; der kann älter sein, und sind beide gespeicherten Kopien ungültig, gelten P59/P58. Die Ursache lässt sich aus diesen Abfragen nicht bestimmen; die App korrigiert und schreibt nichts zurück.",
+          unchecked: "SOC vor und nach dem Neustart nicht verglichen: Über die CAN-Buchse liest die App nur die Werte des Masters direkt vom Pack.",
         },
         onOff: {
           on: "Einschalten", off: "Ausschalten",
@@ -1390,6 +1411,22 @@ const resources = {
         failAfter: "The pack is probably in update mode. Do not just restart it: keep the log and read the help.",
         logError: "The log could no longer be written completely after the erase ({{err}}); the update went on to the end nevertheless. The log is incomplete.",
         log: "Log", showLog: "Show in folder", back: "Back to monitor", again: "New update", reports: "pack reports {{v}}",
+        cmp: {
+          title: "Before/after",
+          verdict: {
+            same: "State before/after: no difference (board, parameters, function switches, charge).",
+            differs: "State before/after: differences, see below. The app changes nothing because of them and does not flash again.",
+            incomplete: "State before/after: no difference found, but not everything could be read.",
+          },
+          board: { same: "Board: the same serial number ({{sn}}).", changed: "Another serial number: before {{a}}, after {{b}}.", unchecked: "Serial number: not checked (not readable before and after)." },
+          build: "Identity 64/03 via RS485-1/2: before {{a}}, after {{b}}",
+          unsupported: "not supported",
+          params: { unchecked: "Parameters and function switches: not checked (not readable before and after).", same: "Parameters: unchanged.", changed: "{{n}} parameters changed:", line: "{{a}} → {{b}} {{unit}}" },
+          switches: { same: "Function switches: raw values unchanged.", line: "Function switch {{g}}: {{a}} → {{b}} (raw)" },
+          meaning: "Meaning under the new image (function switch 0 = {{v}}):",
+          polarity: "Function switch 0, bit 3 has the opposite direction in the new image: the same raw value means the opposite there.",
+          chargeUnchecked: "SOC and capacity: not checked (not readable before and after).",
+        },
         runTitle: "Update pack {{address}}", pendingAfter: "Pack {{pack}} may hang in its bootloader (note above).",
         tab: { bus: "RS485-1/2 bus", bench: "Flash a board" },
         bench: {
@@ -1528,6 +1565,11 @@ const resources = {
           noAnswer: "Pack {{pack}} has not answered since the restart. Read again later.",
           notReachable: "The pack does not answer; nothing sent. A master with slaves does not answer on the RS485-1/2 bus: halt the master first (maintenance halt) or set DIP 5–8 to OFF.",
           linkLost: "Restart sent, connection lost afterwards ({{err}}). The next read shows whether the pack answers again.",
+        },
+        charge: {
+          line: "SOC {{soc}} %, remaining {{rest}} Ah, full {{full}} Ah, cycles {{cycles}} (before → after)",
+          hint: "Clear difference in SOC, full capacity or cycles. At start the firmware loads the last stored state; it may be older, and with both stored copies invalid P59/P58 apply. These reads cannot tell the cause; the app corrects nothing and writes nothing back.",
+          unchecked: "SOC before and after the restart not compared: via the CAN socket the app reads only the master's values directly from the pack.",
         },
         onOff: {
           on: "Switch on", off: "Switch off",

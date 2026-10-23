@@ -1,4 +1,4 @@
-import type { BenchPack, BenchScan, FirmwareDone, FirmwareImage, FirmwareProgress } from "./api";
+import type { BenchPack, BenchScan, FirmwareDone, FirmwareImage, FirmwareProgress, FlashComparison, FlashSide } from "./api";
 
 /** Custom images get their own phrase, so consent to one kind never covers the other. */
 export const confirmationPhrase = (address: number, custom = false) => custom ? `FLASH CUSTOM ${address}` : `FLASH ${address}`;
@@ -75,3 +75,39 @@ export function flashGateKeys(g0: number, powerRtc = false, packCutoff = false):
 /** The image, „Eigene Firmware zulassen“, port and address are fixed while a flash runs (until its end event) or a pack
  *  check runs: a change then could not reach the running flash and would only mislead. */
 export const firmwareInputsLocked = (running: boolean, busy: boolean) => running || busy;
+
+/** One line of the comparison before/after a flash: an i18n key with its values, and its tone. `param` lines carry the
+ *  parameter index (the view names it). */
+export interface CompareLine { key: string; vars?: Record<string, unknown>; tone: "ok" | "warn" | "alarm" | "muted"; param?: number }
+
+const hex = (b: number) => b.toString(16).toUpperCase().padStart(2, "0");
+const buildText = (s: FlashSide, t: T) => (s.build ? `${s.build.version} · ${s.build.build_id} · Flags ${hex(s.build.flags)}` : t("fw.cmp.unsupported"));
+
+/** The comparison as lines, in order: verdict, board, identity 64/03, parameters, switch bytes (raw), the release bits'
+ *  meaning under the image flashed (`image` with the patch functions), a changed bit-3 direction, the charge. Not read
+ *  or not answered: said so, never taken as unchanged. The charge line itself comes from the view (`chargeLine`). */
+export function compareLines(c: FlashComparison, image: FirmwareImage | null, t: T): CompareLine[] {
+  const out: CompareLine[] = [];
+  out.push({ key: `fw.cmp.verdict.${c.verdict}`, tone: c.verdict === "same" ? "ok" : c.verdict === "differs" ? "warn" : "muted" });
+  out.push(c.identity === "same" ? { key: "fw.cmp.board.same", vars: { sn: c.after.serial }, tone: "muted" }
+    : c.identity === "changed" ? { key: "fw.cmp.board.changed", vars: { a: c.before.serial, b: c.after.serial }, tone: "alarm" }
+    : { key: "fw.cmp.board.unchecked", tone: "muted" });
+  out.push({ key: "fw.cmp.build", vars: { a: buildText(c.before, t), b: buildText(c.after, t) }, tone: "muted" });
+  if (!c.params) out.push({ key: "fw.cmp.params.unchecked", tone: "muted" });
+  else if (c.params.length === 0) out.push({ key: "fw.cmp.params.same", tone: "muted" });
+  else {
+    out.push({ key: "fw.cmp.params.changed", vars: { n: c.params.length }, tone: "warn" });
+    for (const p of c.params) out.push({ key: "fw.cmp.params.line", vars: { a: p.before, b: p.after, unit: p.unit }, tone: "warn", param: p.index });
+  }
+  if (c.switches) {
+    if (c.switches.length === 0) out.push({ key: "fw.cmp.switches.same", tone: "muted" });
+    for (const w of c.switches) out.push({ key: "fw.cmp.switches.line", vars: { g: w.group, a: hex(w.before), b: hex(w.after) }, tone: "warn" });
+  }
+  const g0 = c.after.switches?.[0];
+  if (g0 !== undefined && image && c.after.positive !== null && (image.power_rtc || image.pack_cutoff)) {
+    out.push({ key: "fw.cmp.meaning", vars: { v: hex(g0) }, tone: "muted" });
+    for (const k of flashGateKeys(g0, image.power_rtc, image.pack_cutoff)) out.push({ key: k, tone: k === "fw.patch.lockKept" ? "warn" : "muted" });
+  }
+  if (c.before.positive !== null && c.after.positive !== null && c.before.positive !== c.after.positive) out.push({ key: "fw.cmp.polarity", tone: "warn" });
+  return out;
+}

@@ -17,6 +17,7 @@ mod cell_analysis;
 mod control;
 mod installation_bundle;
 mod firmware;
+mod flash_check;
 mod health;
 mod history;
 mod installations;

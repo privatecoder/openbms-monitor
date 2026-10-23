@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, Cpu, FolderOpen, TriangleAlert } from "lucide-react";
-import { api, isDemo, type BenchScan, type FirmwareDone, type FirmwareImage, type FirmwareProgress } from "../api";
+import { api, isDemo, type BenchScan, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type FlashComparison } from "../api";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { benchMarkerKey, benchPick, confirmationPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
+import { chargeLine } from "../control";
+import { useWriteTexts } from "../components/ParamEdit";
 import { errorKey, packPortOf, portKey, type PortKind } from "../maint";
 import type { Maint } from "../maintStore";
 import { KindSelect, PortInput } from "./MaintSetup";
@@ -258,6 +260,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
                   <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
                 </>
               )}
+              {done.comparison && <FlashCompare c={done.comparison} image={image} />}
               {done.pending && flashed && <p className="text-sm text-alarm">{t("fw.pendingAfter", { pack: flashed.address })}</p>}
               {done.log_error && <p className="text-sm text-alarm">{t("fw.logError", { err: done.log_error })}</p>}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
@@ -269,6 +272,31 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
             </div>
           )}
         </section>
+      )}
+    </div>
+  );
+}
+
+const toneClass = { ok: "text-ok", warn: "text-discharge", alarm: "text-alarm", muted: "text-muted" } as const;
+
+/** The target before and once back (`compareLines`): shown, nothing acts on it. */
+function FlashCompare({ c, image }: { c: FlashComparison; image: FirmwareImage | null }) {
+  const { t, i18n } = useTranslation();
+  const { pname } = useWriteTexts();
+  const fmt = (v: number, d: number) => new Intl.NumberFormat(i18n.language, { minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
+  return (
+    <div className="space-y-1 rounded border border-line p-3 text-sm">
+      <p className="font-medium">{t("fw.cmp.title")}</p>
+      {compareLines(c, image, t).map((l, i) => (
+        <p key={i} className={cn(toneClass[l.tone], l.param !== undefined && "pl-4")}>
+          {l.param !== undefined ? `${pname(l.param)}: ` : ""}{t(l.key, l.vars)}
+        </p>
+      ))}
+      {c.charge === null ? <p className="text-muted">{t("fw.cmp.chargeUnchecked")}</p> : (
+        <>
+          <p className={c.charge ? toneClass.warn : toneClass.muted}>{chargeLine(c.before.charge, c.after.charge, fmt, t)}</p>
+          {c.charge && <p className="text-discharge">{t("ctl.charge.hint")}</p>}
+        </>
       )}
     </div>
   );
