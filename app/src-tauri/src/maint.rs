@@ -1163,26 +1163,26 @@ mod tests {
 
     #[test]
     fn the_master_view_names_version_marker_and_actions() {
-        let info = |patch: [u8; 2], id: [u8; 8]| MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: if patch[1] == 5 { 2 } else { 3 }, uart0: false };
+        let info = |patch: [u8; 2], id: [u8; 8]| MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 3, uart0: false };
         let st = |word: u32| Some(MaintState { marker_word: word, effective_slaves: 0 });
-        let listed = [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA];
+        let listed = [0xBA, 0xA0, 0x1E, 0xCD, 0x5A, 0xF4, 0xEB, 0x28];
         let patched = |i: MaintInfo, s| Master::Patched { patch: Patch::recognise(i).unwrap(), state: s };
-        let v = master_view(&patched(info([1, 5], listed), st(0)));
-        assert_eq!((v.kind, v.version.as_deref(), v.listed.as_deref(), v.marker, v.marker_word.as_deref()), ("patched", Some("16.06.13 MAINT 1.5.2"), Some("16.06.13 MAINT 1.5.2"), Some("on"), Some("00000000")));
+        let v = master_view(&patched(info([1, 6], listed), st(0)));
+        assert_eq!((v.kind, v.version.as_deref(), v.listed.as_deref(), v.marker, v.marker_word.as_deref()), ("patched", Some("16.06.13 MAINT 1.6.3"), Some("16.06.13 MAINT 1.6.3"), Some("on"), Some("00000000")));
         assert!(v.may_release && !v.may_halt && v.caps.is_some_and(|c| c.start_gate));
         let v = master_view(&patched(info([1, 5], listed), st(0x0102_0304)));
         assert_eq!((v.marker, v.may_release, v.may_halt), (Some("foreign"), false, false));
         // not listed, same patch version: same configuration, no name
         let v = master_view(&patched(info([1, 5], [0; 8]), st(0)));
-        assert_eq!((v.kind, v.listed, v.may_release, v.patch.as_deref(), v.base.as_deref()), ("patched", None, true, Some("1.5.2"), Some("16.06.13")));
+        assert_eq!((v.kind, v.listed, v.may_release, v.patch.as_deref(), v.base.as_deref()), ("patched", None, true, Some("1.5.3"), Some("16.06.13")));
         let v = master_view(&Master::UnknownPatch(Some(info([1, 4], [0; 8]))));
         assert_eq!((v.kind, v.may_release, v.caps), ("unknown-patch", false, None));
         let v = master_view(&Master::No0x64);
         assert_eq!((v.kind, v.marker, v.version, v.hard_stop), ("no-0x64", None, None, None));
         // format 3: the hard stop of the image; an unknown OEM revision
-        let i3 = MaintInfo { format: 4, base: [16, 6, 0xFF], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false };
+        let i3 = MaintInfo { format: 4, base: [16, 6, 0xFF], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 3, uart0: false };
         let v = master_view(&patched(i3, st(u32::MAX)));
-        assert_eq!((v.kind, v.hard_stop, v.base.as_deref(), v.version.as_deref(), v.may_halt), ("patched", Some(false), Some("16.06.?"), Some("16.06.? MAINT 1.5.2"), true));
+        assert_eq!((v.kind, v.hard_stop, v.base.as_deref(), v.version.as_deref(), v.may_halt), ("patched", Some(false), Some("16.06.?"), Some("16.06.? MAINT 1.5.3"), true));
         assert_eq!(master_view(&patched(info([1, 5], listed), st(0))).hard_stop, None);
     }
 
@@ -1284,7 +1284,7 @@ mod tests {
 
     #[test]
     fn a_lost_02_never_clears_a_stored_marker_and_the_flash_stays_refused() {
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false };
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 3, uart0: false };
         let patched = |state| Master::Patched { patch: Patch::recognise(info).unwrap(), state };
         let on = patched(Some(MaintState { marker_word: 0, effective_slaves: 0 }));
         let off = patched(Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }));
@@ -1356,7 +1356,7 @@ mod tests {
     fn the_pack_list_asks_64_03_fresh_after_a_matching_string_2() {
         use openbms_flash::maint::dialog::PackAnswer;
         use openbms_flash::maint::policy::PackFinding;
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false };
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 3, uart0: false };
         let fresh = PackFinding::of(PackAnswer::Info(info));
         let never = || -> Result<PackFinding, ()> { panic!("no 64/03 without a matching String 2 or after a cancel") };
         // another board on the CAN side, or none readable: no 64/03

@@ -96,7 +96,7 @@ fn check_address(address: u8) -> Result<()> {
     Ok(())
 }
 
-/// Answer to `0x64 INFO=04` (MAINT 1.5.2/1.6.3, image flag bit 5): the stored parameter and SOC copies as read straight
+/// Answer to `0x64 INFO=04` (MAINT 1.5.3/1.6.3, image flag bit 5): the stored parameter and SOC copies as read straight
 /// from flash, nothing repaired or changed. Two valid copies that differ do not tell which is newer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MemoryDiagnosis {
@@ -160,7 +160,7 @@ impl MemoryDiagnosis {
 pub const TEMP_16_BUILD: &str = "18daf61d8a93671d";
 
 /// The lowest supported build of the 1.5 line and of the 1.6 line and later (major, minor, revision).
-pub const SUPPORTED_15: [u8; 3] = [1, 5, 2];
+pub const SUPPORTED_15: [u8; 3] = [1, 5, 3];
 pub const SUPPORTED_16: [u8; 3] = [1, 6, 3];
 
 /// Format-2, -3 or -4 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
@@ -274,7 +274,7 @@ impl MaintInfo {
         self.reserved_flags & 0x08 != 0
     }
 
-    /// Format 4, image flag bit 5: the memory diagnosis `0x64/04` over RS485-1/2 and the CAN socket (MAINT 1.5.2/1.6.3).
+    /// Format 4, image flag bit 5: the memory diagnosis `0x64/04` over RS485-1/2 and the CAN socket (MAINT 1.5.3/1.6.3).
     pub fn diagnostics(&self) -> bool {
         self.format4_flag(5)
     }
@@ -295,11 +295,11 @@ impl MaintInfo {
         self.hard_stop_configurable().then_some(self.reserved_flags & 0x01 != 0)
     }
 
-    /// Whether the app supports this build's patch functions: MNT format 4 from MAINT 1.5.2 in the 1.5 line and from
+    /// Whether the app supports this build's patch functions: MNT format 4 from MAINT 1.5.3 in the 1.5 line and from
     /// 1.6.3 on. Below, the patch is shown but treated like the original firmware.
     pub fn supported(&self) -> bool {
-        // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF: format 3, image flags 06, bit 3 at 0 allows power/RTC as in
-        // 1.5.2) stays supported until the installation runs 1.6.3; then remove this and the format-3 decoding
+        // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF: format 3, image flags 06, bit 3 at 0 allows power/RTC, unlike
+        // 1.5.3/1.6.3) stays supported until the installation runs 1.6.3; then remove this and the format-3 decoding
         if self.format == 3 && self.patch == [1, 6] && self.build_id_hex() == TEMP_16_BUILD {
             return true;
         }
@@ -449,11 +449,13 @@ mod tests {
     }
 
     #[test]
-    fn the_published_1_5_2_and_1_6_3_identities_and_their_new_flags() {
-        // MAINT 1.5.2 DIAGNOSTICS (flags 32): diagnosis, no checkpoint, fixed soft stop, bit 3 at 0 allows power/RTC
-        let a = MaintInfo::parse(&hex("4D4E540410060D01050289D85C61B40E03DA32")).unwrap();
-        assert_eq!((a.patch_text(), a.image_flags(), a.hard_stop, a.hard_stop_default()), ("1.5.2".to_string(), 0x32, Some(false), None));
-        assert_eq!((a.diagnostics(), a.checkpoint(), a.hard_stop_configurable(), a.positive(), a.uart0, a.supported()), (true, false, false, false, true, true));
+    fn the_1_5_3_and_1_6_3_identities_and_their_new_flags() {
+        // MAINT 1.5.3 (planned, flags 3A): diagnosis, positive bit 3, no checkpoint, fixed soft stop
+        let a = MaintInfo::parse(&hex("4D4E540410060D0105030102030405060708 3A".replace(' ', "").as_str())).unwrap();
+        assert_eq!((a.patch_text(), a.image_flags(), a.hard_stop, a.hard_stop_default()), ("1.5.3".to_string(), 0x3A, Some(false), None));
+        assert_eq!((a.diagnostics(), a.checkpoint(), a.hard_stop_configurable(), a.positive(), a.uart0, a.supported()), (true, false, false, true, true, true));
+        // the published 1.5.2 (flags 32, bit 3 at 0 allows) is no longer supported
+        assert!(!MaintInfo::parse(&hex("4D4E540410060D01050289D85C61B40E03DA32")).unwrap().supported());
         // MAINT 1.6.3 (flags FE): configurable hard stop with soft as default, checkpoint, positive bits
         let b = MaintInfo::parse(&hex("4D4E540410060D010603BAA01ECD5AF4EB28FE")).unwrap();
         assert_eq!((b.patch_text(), b.image_flags(), b.hard_stop, b.hard_stop_default()), ("1.6.3".to_string(), 0xFE, None, Some(false)));
@@ -483,7 +485,7 @@ mod tests {
         let d = MemoryDiagnosis::parse(&hex("01010101010101000006")).unwrap();
         assert_eq!((d.params, d.params_compare, d.soc, d.soc_compare), (["valid", "valid"], "same", ["valid", "valid"], "same"));
         assert_eq!((d.lock, d.cache), ([Some(false), Some(false)], 0x06));
-        // 1.5.2: no lock or cache support (FF FF 00); an empty backup, differing SOC copies
+        // 1.5.3: no lock or cache support (FF FF 00); an empty backup, differing SOC copies
         let d = MemoryDiagnosis::parse(&hex("01010000010102FFFF00")).unwrap();
         assert_eq!((d.params[1], d.params_compare, d.soc_compare, d.lock), ("empty", "not-comparable", "different", [None, None]));
         assert!(MemoryDiagnosis::parse(&hex("020101010101010000")).is_err());

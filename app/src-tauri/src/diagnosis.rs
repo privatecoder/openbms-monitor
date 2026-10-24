@@ -1,4 +1,4 @@
-//! „Speicherdiagnose“: the pack's own memory diagnosis (0x64/04, MAINT 1.5.2/1.6.3, image flag bit 5) over RS485-1/2 or
+//! „Speicherdiagnose“: the pack's own memory diagnosis (0x64/04, MAINT 1.5.3/1.6.3, image flag bit 5) over RS485-1/2 or
 //! the CAN socket, at any pack's own address. It reads the stored parameter and SOC copies straight from flash and
 //! changes nothing, so it needs no installation and no release.
 

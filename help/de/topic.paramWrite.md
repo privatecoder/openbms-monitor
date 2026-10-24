@@ -1,6 +1,6 @@
 ---
 title: Parameter und Seriennummern schreiben
-short: Die Parameter eines Packs ändern und schreiben, einen Pack an andere angleichen, dieselbe Änderung auf mehrere Packs schreiben, Seriennummern setzen. Über den RS485-1/2-Bus; Parameter mit Patch-Firmware (ab MAINT 1.5.2/1.6.3) auch über die CAN-Buchse.
+short: Die Parameter eines Packs ändern und schreiben, einen Pack an andere angleichen, dieselbe Änderung auf mehrere Packs schreiben, Seriennummern setzen. Über den RS485-1/2-Bus; Parameter mit Patch-Firmware (ab MAINT 1.5.3/1.6.3) auch über die CAN-Buchse.
 related: topic.params, topic.paramCheck, topic.switches, topic.firmware
 ---
 - **Bearbeiten:** Nach dem Lesen hat jede Pack-Spalte einen Stift. Die Zellen der Spalte werden zu Eingabefeldern (Werte in der angezeigten Einheit, Schalter als Häkchen); es wird immer nur eine Spalte bearbeitet. Geänderte Zellen sind farbig markiert, die Leiste über der Tabelle listet die Änderungen.
