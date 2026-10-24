@@ -13,7 +13,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, fixedSearchedLine, mergeAfterSearch, lastConn, noAnswer, otherBus, padAddress, parseSel, partialLine, saveLastConn, selAddresses, selText, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -33,13 +33,15 @@ const declined = new Set<string>();
 /** The offer under the connection status to store the connected endpoint as a port of the installation. */
 interface SaveAsk { inst: string; name: string; bus: Bus; kind: PortKind; target: string }
 
-export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onBoard, onDisconnected, view, setView, maint, packs, locked, maintenance, setMaintenance }: {
+export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onBoard, onDisconnected, view, setView, maint, packs, answering, locked, maintenance, setMaintenance }: {
   connected: boolean;
   /** the app stopped the monitor itself for a maintenance step (not lost, not closed by the user) */
   paused: boolean;
   /** the chosen installation (null: „Nur ansehen“) and the list */
   maint: Maint;
   packs: number[];
+  /** the packs with fresh values now (the connect's gap note names only the ones still silent) */
+  answering: number[];
   lastUpdate: number;
   onConnected: (found: [number, DeviceInfo | undefined][], bus: Bus) => void;
   onDevices: (found: [number, DeviceInfo][]) => void;
@@ -79,6 +81,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [ports, setPorts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // the packs the connect missed, shown after `msg` as long as any of them is still silent
+  const [gap, setGap] = useState<Gap | null>(null);
   // the last connect found no pack: the message is an error; `offer`: the other bus answered, one click switches
   const [failed, setFailed] = useState(false);
   const [offer, setOffer] = useState<Bus | null>(null);
@@ -87,6 +91,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [since, setSince] = useState(0);
   const [lastTry, setLastTry] = useState(0);
   const now = useNow();
+  const shown = [msg, gap ? gapLine(gap, answering, t) : ""].filter(Boolean).join(" ") || null;
   const maintRef = useRef(maint); maintRef.current = maint;
   const recStatus = useHistoryStatus().status;
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
@@ -213,7 +218,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     forgetBank();
     if (!retry) connInst.current = inst !== undefined ? inst : maint.installation;
     const bus = useBus;
-    setBusy(true); setFailed(false); setOffer(null); if (!retry) { setMsg(null); setLost(false); }
+    setBusy(true); setFailed(false); setOffer(null); setGap(null); if (!retry) { setMsg(null); setLost(false); }
     setLastTry(Date.now());
     try {
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
@@ -281,17 +286,15 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             const at = all.map(([a]) => a);
             // the expected packs stay (a silent one is polled on, „ohne aktuelle Antwort“), the ones found elsewhere join
             const merged = mergeAfterSearch(addrs, at);
-            const silent = addrs.filter((a) => !at.includes(a));
-            const silentNote = silent.length ? t("conn.expectedSilent", { count: silent.length, list: silent.map(padAddress).join(", ") }) : "";
-            setMsg([linkedNote, answeredNote, fixedSearchedLine(addrs.filter((a) => !got.includes(a)), at, t), silentNote].filter(Boolean).join(" "));
+            setMsg([linkedNote, answeredNote].filter(Boolean).join(" "));
+            setGap({ expected: addrs, missing: addrs.filter((a) => !got.includes(a)), searched: at });
             const device = (a: number) => all.find(([b]) => b === a)?.[1] ?? found.find(([b]) => b === a)?.[1];
             onConnected(merged.map((a) => [a, device(a)]), bus);
             await api.startPolling(merged, 2000);
             void readSerials(at, linkGen);
             return;
           }
-          const gaps = found.length ? partialLine(addrs, found.map(([a]) => a), t) : t("conn.noAnswer");
-          if (gaps) setMsg(`${base} ${gaps}`);
+          setGap({ expected: addrs, missing: addrs.filter((a) => !got.includes(a)), searched: null });
           onDevices(found); void readSerials(found.map(([a]) => a), linkGen);
         }).catch(() => { if (gen === serialGen.current) void api.bankReadsDone(linkGen).catch(() => {}); });
         return;
@@ -341,7 +344,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     // a running pack action (a restart up to 15 s) ends first
     setMsg(t("conn.disconnectWait"));
     await api.disconnect();
-    onDisconnected(false); setMsg(null); setLost(false);
+    onDisconnected(false); setMsg(null); setGap(null); setLost(false);
   };
   // another installation chosen anywhere (installations view, banner, new installation): this connection ends first
   const live = useRef(false);
@@ -360,7 +363,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const markLost = (text: string) => {
     serialGen.current += 1; forgetBank(); linkOpen.current = false;
     setLost(true);
-    setMsg(text);
+    setMsg(text); setGap(null);
     setLastTry(Date.now());
     onDisconnected(true);
     api.disconnect(true).catch(() => {});
@@ -604,7 +607,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         </div>
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
-          {msg && <p title={msg} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{msg}</p>}
+          {shown && <p title={shown} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{shown}</p>}
           {connected && <FirmwareProfileLine locked={locked} />}
           {saveAsk && connected && (
             <div className="space-y-1 pt-1">

@@ -14,6 +14,7 @@ import { History } from "./views/History";
 import { Installations } from "./views/Installations";
 import { HelpProvider, helpTitle } from "./help";
 import { useLiveData } from "./store";
+import { packFresh } from "./freshness";
 import { useMaint } from "./maintStore";
 import { api, isDemo, type Bus } from "./api";
 import { defaultName, type Monitor } from "./maint";
@@ -69,6 +70,8 @@ export default function App() {
     enableMaintenance(); setView("firmware"); setPack(null);
   };
   const packList = Object.keys(live.packs).map(Number).sort((a, b) => a - b);
+  // the packs answering now (fresh telemetry or status): the connect message drops gaps that have answered since
+  const answering = packList.filter((a) => { const f = packFresh(live.packs[a], Date.now()); return f.telemetry || f.status; });
 
   return (
     <HelpProvider>
@@ -79,6 +82,7 @@ export default function App() {
           paused={monitor === "paused"}
           maint={maint}
           packs={packList}
+          answering={answering}
           // the connection lives while valid answers come: pack readings or status, or the master's system values (CAN socket)
           lastUpdate={Math.max(0, live.system?.updated ?? 0, ...Object.values(live.packs).map((p) => Math.max(p.updated, p.statusUpdated)))}
           locked={flashing}
