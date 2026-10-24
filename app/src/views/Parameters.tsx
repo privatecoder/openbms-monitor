@@ -8,7 +8,7 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
-import { afterUart1Write, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
+import { afterUart1Write, capacityResets, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
@@ -376,8 +376,16 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
 
   /** „Hard-Stop bei Nachladepause“: the pack's last read with only Group0 bits 6/7 changed (`withHardStop`); the
    *  parameter write reads the pack again and sends this change on top of it. */
-  const writeHardStop = async (a: number, read: Parameters, enabled: boolean) => {
+  const writeHardStop = async (a: number, read: Parameters, enabled: boolean, confirmed: boolean) => {
     const raws = rawsOf(read), sw = [...read.function_switches];
+    // every A1 sets the learned full capacity to P58 when they are 10 Ah apart: said first, written only on „trotzdem“
+    if (!confirmed) {
+      let fullAh: number | null = null, err = "";
+      try { fullAh = await api.packFullCapacity(a); } catch (e) { err = String(e); }
+      const nf = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+      if (fullAh === null) return { text: t("pw.full.unknown", { err }), error: true, confirm: true };
+      if (capacityResets(fullAh, raws[RATED_INDEX])) return { text: t("pw.full.resets", { full: nf.format(fullAh), rated: nf.format(fromRaw(RATED_INDEX, raws[RATED_INDEX])) }), error: true, confirm: true };
+    }
     const next = sw.map((v, g) => (g === 0 ? withHardStop(v, enabled) : v));
     const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, linkNow());
     if (!r) return { text: writeError(error, t, (err) => t("pw.error", { err })), error: true };
@@ -627,9 +635,9 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")}
           installation={!!installation} firmware={fwOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={lockedBut("can")} onBusy={busyFor("can")} />
-        <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} flags={chosen !== null ? targetRead(chosen)?.patch?.caps.flags : undefined}
-          usable={offers("hard-stop")} locked={lockedBut("hs") || (edit !== null && edit.address === chosen)} onBusy={busyFor("hs")} write={writeHardStop} />
-        <DiagnosisLine address={chosen} usable={offers("read-diagnosis")} flags={chosen !== null ? targetRead(chosen)?.patch?.caps.flags : undefined} locked={lockedBut()} />
+        <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined}
+          connected={connected && !!installation && !isDemo} linkKey={link} locked={lockedBut("hs") || (edit !== null && edit.address === chosen)} onBusy={busyFor("hs")} write={writeHardStop} />
+        <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={lockedBut()} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={offers("write-name")} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />

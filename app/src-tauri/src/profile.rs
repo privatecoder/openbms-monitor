@@ -340,6 +340,19 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
     Some(PackPatch { source: proof.source.clone(), role, release: proof.release.clone(), caps: caps_view(known::PROOF_CAPS, None, None, version, None), at: Some(proof.at) })
 }
 
+/// The pack's own identity on this link names a build the app does not support (an older patch, another MNT format):
+/// the master by its profile, another pack by its live finding. Unknown (no answer yet) is not unsupported.
+pub fn unsupported_of(address: u8, profile: Option<&Profile>, live: Option<&PackFinding>) -> bool {
+    if address == 0 {
+        return profile.is_some_and(|p| matches!(p.master, Master::UnknownPatch(_)));
+    }
+    matches!(live, Some(PackFinding::Negative(_)))
+}
+
+pub fn unsupported_here(state: &AppState, link: &Link, address: u8) -> bool {
+    unsupported_of(address, bank::profile(state, link.gen).as_ref(), bank::live(state, link.gen, address).as_ref())
+}
+
 /// `pack_patch_of` with the connection's profile, the pack's live finding and the installation's stored proof.
 pub fn pack_patch(state: &AppState, link: &Link, address: u8, serial: Option<&str>) -> Option<PackPatch> {
     let profile = bank::profile(state, link.gen);
@@ -1099,6 +1112,18 @@ mod tests {
         // the master never takes a slave's answer: address 0 keeps its profile path
         assert_eq!(pack_patch_of(0, None, Some(&live([1, 5], Some(true))), None, None), None);
         assert_eq!(pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap().role, "master");
+    }
+
+    #[test]
+    fn an_older_patch_on_this_link_is_unsupported_unknown_is_not() {
+        let old = PackFinding::Negative(Some(MaintInfo { patch_rev: 1, ..match live([1, 5], None) { PackFinding::Proven { info, .. } => info, _ => unreachable!() } }));
+        assert!(unsupported_of(3, None, Some(&old)));
+        assert!(unsupported_of(3, None, Some(&PackFinding::Negative(None))));
+        assert!(!unsupported_of(3, None, Some(&live([1, 5], None))));
+        assert!(!unsupported_of(3, None, Some(&PackFinding::Undecided)));
+        assert!(!unsupported_of(3, None, None));
+        assert!(unsupported_of(0, Some(&profile(Master::UnknownPatch(None), Bus::CanSocketBus)), None));
+        assert!(!unsupported_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None));
     }
 
     #[test]

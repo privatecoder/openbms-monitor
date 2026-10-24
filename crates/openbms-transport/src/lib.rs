@@ -553,6 +553,12 @@ impl Connection {
         }
     }
 
+    /// The pack's own identity (0x64/03; a patched build at its own address, over RS485-1/2 only with image flag bit 4).
+    pub fn maint_info(&mut self, address: u8) -> Result<openbms_proto::MaintInfo> {
+        let f = self.ascii_as(&openbms_proto::MaintInfo::request_at(address)?, address, |i| openbms_proto::MaintInfo::parse(i).is_ok())?;
+        Ok(openbms_proto::MaintInfo::parse(&f.info)?)
+    }
+
     /// The memory diagnosis of the pack at `address` (0x64/04, MAINT 1.5.2/1.6.3; changes nothing).
     pub fn memory_diagnosis(&mut self, address: u8) -> Result<openbms_proto::MemoryDiagnosis> {
         let f = self.ascii_as(&openbms_proto::MemoryDiagnosis::request_at(address)?, address, |i| openbms_proto::MemoryDiagnosis::parse(i).is_ok())?;

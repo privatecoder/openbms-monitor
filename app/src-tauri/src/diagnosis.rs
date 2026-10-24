@@ -9,6 +9,16 @@ use openbms_proto::access::Action;
 use openbms_proto::MemoryDiagnosis;
 use tauri::State;
 
+/// The image flags of the pack at `address` from its own 0x64/03 on the current link, for the functions that depend on
+/// them (hard stop choice, diagnosis lock fields) on either bus. None: no answer, or a build the app does not support.
+#[tauri::command]
+pub async fn pack_image_flags(state: State<'_, AppState>, address: u8) -> Result<Option<u8>, String> {
+    let _guard = reserve_pack_wait(&state, address, "identity")?;
+    let link = link_now(&state);
+    let info = with_link(&state.conn, &state.flashing, &state.link, &link, |c| Ok(c.maint_info(address).ok()))?;
+    Ok(info.filter(|i| i.supported()).map(|i| i.image_flags()))
+}
+
 #[tauri::command]
 pub async fn pack_diagnosis(state: State<'_, AppState>, address: u8) -> Result<MemoryDiagnosis, String> {
     let _guard = reserve_pack_wait(&state, address, "diagnosis")?;
