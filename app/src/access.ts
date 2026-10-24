@@ -86,6 +86,37 @@ export const FLAG_CUTOFF = CATALOG.flags.cutoff;
 export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state };
 const NEEDS_INSTALLATION = new Set(CATALOG.needs_installation);
 
+type V3 = [number, number, number];
+/** The first MAINT version whose builds carry an image flag: the power/RTC build of 1.5 (from 1.5.1 every build), the
+ *  pack cutoff with 1.6, the RS485-1/2 identity and marker with 1.5.1/1.6.1 (format 4). */
+const FLAG_FROM: Record<number, V3> = { [CATALOG.flags.power]: [1, 5, 0], [CATALOG.flags.cutoff]: [1, 6, 0], [CATALOG.flags.uart0]: [1, 5, 1] };
+const MAINT_151: V3 = [1, 5, 1];
+
+/** The firmware a way needs at least, for the matrix: the MAINT patch version (`patch`), whether at that version only
+ *  the power/RTC build has it (`powerBuild`), the OEM base (`base`). Null where the original firmware is enough. */
+export interface RouteNeed { patch: V3 | null; powerBuild: boolean; base: V3 | null }
+export function routeNeed(r: Pick<Route, "firmware" | "needs">): RouteNeed | null {
+  let patch: V3 | null = null;
+  const at = (v: V3) => { if (!patch || cmp3(v, patch) > 0) patch = v; };
+  for (const f of r.firmware) at(f.kind === "patch-from" ? [f.version[0], f.version[1], 0] : FLAG_FROM[f.bit] ?? [MAINT_MIN[0], MAINT_MIN[1], 0]);
+  const base = r.needs.reduce<V3 | null>((b, n) => (n.kind === "base-from" && (!b || cmp3(n.base, b) > 0) ? n.base : b), null);
+  const powerBuild = r.firmware.some((f) => f.kind === "image-flag" && f.bit === FLAG_POWER) && !!patch && cmp3(patch, MAINT_151) < 0;
+  return patch || base ? { patch, powerBuild, base } : null;
+}
+
+/** „ab MAINT 1.5 (Power/RTC-Build)“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
+export function needText(t: TFunction, n: RouteNeed | null): string {
+  if (!n) return "";
+  const v = (x: V3) => (x[2] ? x.join(".") : `${x[0]}.${x[1]}`);
+  return [
+    n.patch && t(n.powerBuild ? "acc.need.patchPower" : "acc.need.patch", { v: v(n.patch) }),
+    n.base && t("acc.need.base", { v: n.base.map((x) => String(x).padStart(2, "0")).join(".") }),
+  ].filter(Boolean).join(" · ");
+}
+
+/** The catalog route of a decision (same action, channel and command). */
+export const routeOf = (d: AccessDecision["route"]) => ROUTES.find((r) => r.action === d.action && r.channel === d.channel && r.wire === d.wire);
+
 const cmp3 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 const cmp2 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1];
 

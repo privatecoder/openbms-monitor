@@ -54,3 +54,20 @@ describe("the catalog evaluated as in Rust", () => {
     }
   });
 });
+
+describe("the firmware a way needs", () => {
+  it("names the first MAINT version, the power/RTC build of 1.5 and the OEM base", async () => {
+    const { needText, routeNeed } = await import("./access");
+    const de = i18n.getFixedT("de");
+    const need = (action: string, channel: string) => needText(de, routeNeed(ROUTES.find((r) => r.action === action && r.channel === channel)!));
+    expect(need("read-parameters", "uart1")).toBe("ab MAINT 1.5");
+    expect(need("power-on-off", "uart1")).toBe("ab MAINT 1.5 (Power/RTC-Build)");
+    expect(need("pack-lock-set", "uart1")).toBe("ab MAINT 1.6");
+    expect(need("read-identity", "uart0")).toBe("ab MAINT 1.5.1");
+    expect(need("read-system", "uart1")).toBe("ab OEM 16.06.04");
+    // the original firmware is enough
+    expect(need("read-telemetry", "uart0")).toBe("");
+    // every way with a firmware condition gets a text
+    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab MAINT /);
+  });
+});
