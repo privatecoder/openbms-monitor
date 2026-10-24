@@ -83,33 +83,44 @@ export const inverted = (group: number, bit: number, patch: Patch, flags: number
   group === 0 && (bit === B.g0_extended_off || (bit === B.g0_power_lock && positiveBuild(patch, flags)));
 export const FLAG_CUTOFF = CATALOG.flags.cutoff;
 /** Group0 bits of the patched firmware as masks. */
-export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state };
+export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state,
+  hardStop: 1 << B.g0_hard_stop, hardStopInherit: 1 << B.g0_hard_stop_inherit };
+
+/** MAINT 1.6.3 (image flag bit 7): the hard stop at a recharge pause is chosen by Group0 bits 6/7. */
+export const hardStopConfigurable = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << CATALOG.flags.hard_stop)) !== 0;
+/** The hard stop a Group0 chooses: bit 7 at 1 takes the build's default (image flag bit 0), else bit 6 (explicit). */
+export function hardStopChoice(group0: number, flags: number): { enabled: boolean; inherited: boolean } {
+  const inherited = (group0 & G0.hardStopInherit) !== 0;
+  return { enabled: inherited ? (flags & 1) !== 0 : (group0 & G0.hardStop) !== 0, inherited };
+}
+/** Group0 with an explicit choice: bits 6/7 together, every lower bit as it was. */
+export const withHardStop = (group0: number, enabled: boolean): number => (group0 & ~(G0.hardStop | G0.hardStopInherit) & 0xff) | (enabled ? G0.hardStop : 0);
 const NEEDS_INSTALLATION = new Set(CATALOG.needs_installation);
 
 type V3 = [number, number, number];
-/** The first MAINT version whose builds carry an image flag: the power/RTC build of 1.5 (from 1.5.1 every build), the
- *  pack cutoff with 1.6, the RS485-1/2 identity and marker with 1.5.1/1.6.1 (format 4). */
-const FLAG_FROM: Record<number, V3> = { [CATALOG.flags.power]: [1, 5, 0], [CATALOG.flags.cutoff]: [1, 6, 0], [CATALOG.flags.uart0]: [1, 5, 1] };
-const MAINT_151: V3 = [1, 5, 1];
+/** The first supported build of a patch line (1.5 → 1.5.2, 1.6 → 1.6.3) and the first one carrying an image flag. */
+const LINE_FROM: Record<string, V3> = { "1.5": [1, 5, 2], "1.6": [1, 6, 3] };
+const FLAG_FROM: Record<number, V3> = {
+  [CATALOG.flags.power]: [1, 5, 2], [CATALOG.flags.uart0]: [1, 5, 2], [CATALOG.flags.diagnosis]: [1, 5, 2],
+  [CATALOG.flags.cutoff]: [1, 6, 3], [CATALOG.flags.positive]: [1, 6, 3], [CATALOG.flags.checkpoint]: [1, 6, 3], [CATALOG.flags.hard_stop]: [1, 6, 3],
+};
 
-/** The firmware a way needs at least, for the matrix: the MAINT patch version (`patch`), whether at that version only
- *  the power/RTC build has it (`powerBuild`), the OEM base (`base`). Null where the original firmware is enough. */
-export interface RouteNeed { patch: V3 | null; powerBuild: boolean; base: V3 | null }
+/** The firmware a way needs at least, for the matrix: the first supported MAINT build (`patch`), the OEM base (`base`).
+ *  Null where the original firmware is enough. */
+export interface RouteNeed { patch: V3 | null; base: V3 | null }
 export function routeNeed(r: Pick<Route, "firmware" | "needs">): RouteNeed | null {
   let patch: V3 | null = null;
   const at = (v: V3) => { if (!patch || cmp3(v, patch) > 0) patch = v; };
-  for (const f of r.firmware) at(f.kind === "patch-from" ? [f.version[0], f.version[1], 0] : FLAG_FROM[f.bit] ?? [MAINT_MIN[0], MAINT_MIN[1], 0]);
+  for (const f of r.firmware) at(f.kind === "patch-from" ? LINE_FROM[f.version.join(".")] ?? [f.version[0], f.version[1], 0] : FLAG_FROM[f.bit] ?? LINE_FROM["1.5"]);
   const base = r.needs.reduce<V3 | null>((b, n) => (n.kind === "base-from" && (!b || cmp3(n.base, b) > 0) ? n.base : b), null);
-  const powerBuild = r.firmware.some((f) => f.kind === "image-flag" && f.bit === FLAG_POWER) && !!patch && cmp3(patch, MAINT_151) < 0;
-  return patch || base ? { patch, powerBuild, base } : null;
+  return patch || base ? { patch, base } : null;
 }
 
-/** „ab MAINT 1.5 (Power/RTC-Build)“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
+/** „ab MAINT 1.5.2“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
 export function needText(t: TFunction, n: RouteNeed | null): string {
   if (!n) return "";
-  const v = (x: V3) => (x[2] ? x.join(".") : `${x[0]}.${x[1]}`);
   return [
-    n.patch && t(n.powerBuild ? "acc.need.patchPower" : "acc.need.patch", { v: v(n.patch) }),
+    n.patch && t("acc.need.patch", { v: n.patch.join(".") }),
     n.base && t("acc.need.base", { v: n.base.map((x) => String(x).padStart(2, "0")).join(".") }),
   ].filter(Boolean).join(" · ");
 }

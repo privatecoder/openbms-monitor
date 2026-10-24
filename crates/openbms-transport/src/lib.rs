@@ -553,6 +553,12 @@ impl Connection {
         }
     }
 
+    /// The memory diagnosis of the pack at `address` (0x64/04, MAINT 1.5.2/1.6.3; changes nothing).
+    pub fn memory_diagnosis(&mut self, address: u8) -> Result<openbms_proto::MemoryDiagnosis> {
+        let f = self.ascii_as(&openbms_proto::MemoryDiagnosis::request_at(address)?, address, |i| openbms_proto::MemoryDiagnosis::parse(i).is_ok())?;
+        Ok(openbms_proto::MemoryDiagnosis::parse(&f.info)?)
+    }
+
     /// Switch the pack on or off (0x45 type 4). „Off“ blocks only the discharge MOSFET, from the next 1-s evaluation.
     pub fn on_off(&mut self, address: u8, on: bool) -> Result<()> {
         self.ascii(&control::on_off_request(address, on)?, address)?;
@@ -1388,7 +1394,8 @@ mod tests {
         // silence is what a restart looks like; a refusal is still an error
         let started = Instant::now();
         let sent = c.restart(1).unwrap();
-        assert!(sent >= started && sent.elapsed() < Duration::from_millis(1000));
+        // the wait for a refusal (`RESTART_ANSWER`, 1.6.3 saves the SOC first) ends at its limit
+        assert!(sent >= started && sent.elapsed() < timing::RESTART_ANSWER + Duration::from_millis(700));
         assert!(matches!(c.restart(2), Err(Error::Proto(openbms_proto::Error::Rtn(0x04)))));
         c.on_off(1, false).unwrap();
         c.heater(1, true).unwrap();

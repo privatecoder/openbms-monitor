@@ -52,6 +52,9 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   // the image's own flag only for the master of a format-3 profile; every other pack by its behaviour
   const hardFlag = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null)
     : probe?.state === "proven" ? probe.hard_stop : null;
+  // a build that takes the choice from the parameters (MAINT 1.6.3): its image flags
+  const imageFlags = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.caps?.flags : null)
+    : probe?.state === "proven" ? probe.flags : null;
   // the full version from 64/03 on this connection: the master's profile, a slave's own proven answer
   const proven = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.listed ?? profile.master.version : null)
     : probe?.state === "proven" ? probe.listed ?? probe.version : null;
@@ -86,7 +89,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
                 <button className="underline disabled:opacity-40" disabled={probing} onClick={recheck}>{t("probe.recheck")}</button>
               </span>
             )}
-            <span className="flex items-center gap-1">{hardStopLine(hardFlag, hardFlag === null || hardFlag === undefined ? hardStops[p.address] : undefined, t, i18n.language)}<InfoIcon id="topic.hardStop" /></span>
+            <span className="flex items-center gap-1">{hardStopLine(hardFlag, hardFlag === null || hardFlag === undefined ? hardStops[p.address] : undefined, t, i18n.language, imageFlags)}<InfoIcon id="topic.hardStop" /></span>
           </p>
         </div>
         <LiveIndicator updated={p.updated} expected={p.interval} />

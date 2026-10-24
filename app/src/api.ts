@@ -372,6 +372,11 @@ export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?
  *  negative (another MNT or an older patch), undecided (silence or an error). */
 /** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket); `pack_cutoff`: its
  *  stored pack cutoff (image flag bit 2, patch 1.6 or later). */
+/** 0x64/04 (MAINT 1.5.2/1.6.3): the stored parameter and SOC copies (primary, backup) as read from flash; `lock`: the
+ *  pack lock stored in each parameter copy (null: unknown or not supported); `cache`: runtime cache flags. */
+export type DiagRecord = "empty" | "valid" | "invalid" | "unknown";
+export type DiagCompare = "not-comparable" | "same" | "different" | "unknown";
+export interface MemoryDiagnosis { params: [DiagRecord, DiagRecord]; params_compare: DiagCompare; soc: [DiagRecord, DiagRecord]; soc_compare: DiagCompare; lock: [boolean | null, boolean | null]; cache: number }
 export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
   /** the patch version of its 64/03 (also a negative finding's) and, when proven, its image flag byte */
   patch_version?: [number, number] | null; flags?: number | null }
@@ -445,6 +450,7 @@ const tauriApi = {
   patchProofConfirm: (installation: string, address: number, serial: string, gen: number) => invoke<PackPatch>("patch_proof_confirm", { installation, address, serial, gen }),
   /** the hard-stop observations of the connection's installation for the boards now current */
   hardStops: () => invoke<HardStopSeen[]>("hard_stops"),
+  packDiagnosis: (address: number) => invoke<MemoryDiagnosis>("pack_diagnosis", { address }),
   /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
   packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
   packProbes: () => invoke<PackProbeView[]>("pack_probes"),
@@ -676,6 +682,7 @@ function demoApi(): typeof tauriApi {
     patchProofConfirm: async () => { throw new Error("desktop app only"); },
     patchProofRevoke: async () => { throw new Error("desktop app only"); },
     hardStops: async () => [],
+    packDiagnosis: async () => ({ params: ["valid", "valid"], params_compare: "same", soc: ["valid", "valid"], soc_compare: "same", lock: [false, false], cache: 6 }) as MemoryDiagnosis,
     packProbe: async () => { throw new Error("desktop app only"); },
     packProbes: async () => [],
     accessView: async () => ({ gen: 0, channel: null, decisions: [] }),

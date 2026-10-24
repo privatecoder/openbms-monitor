@@ -56,18 +56,35 @@ describe("the catalog evaluated as in Rust", () => {
 });
 
 describe("the firmware a way needs", () => {
-  it("names the first MAINT version, the power/RTC build of 1.5 and the OEM base", async () => {
+  it("names the first supported MAINT build and the OEM base", async () => {
     const { needText, routeNeed } = await import("./access");
     const de = i18n.getFixedT("de");
     const need = (action: string, channel: string) => needText(de, routeNeed(ROUTES.find((r) => r.action === action && r.channel === channel)!));
-    expect(need("read-parameters", "uart1")).toBe("ab MAINT 1.5");
-    expect(need("power-on-off", "uart1")).toBe("ab MAINT 1.5 (Power/RTC-Build)");
-    expect(need("pack-lock-set", "uart1")).toBe("ab MAINT 1.6");
-    expect(need("read-identity", "uart0")).toBe("ab MAINT 1.5.1");
+    expect(need("read-parameters", "uart1")).toBe("ab MAINT 1.5.2");
+    expect(need("power-on-off", "uart1")).toBe("ab MAINT 1.5.2");
+    expect(need("read-identity", "uart0")).toBe("ab MAINT 1.5.2");
+    expect(need("read-diagnosis", "uart1")).toBe("ab MAINT 1.5.2");
+    expect(need("pack-lock-set", "uart1")).toBe("ab MAINT 1.6.3");
+    expect(need("hard-stop", "uart1")).toBe("ab MAINT 1.6.3");
     expect(need("read-system", "uart1")).toBe("ab OEM 16.06.04");
     // the original firmware is enough
     expect(need("read-telemetry", "uart0")).toBe("");
     // every way with a firmware condition gets a text
-    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab MAINT /);
+    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab MAINT 1\.[56]\.[23]/);
+  });
+});
+
+describe("the hard stop choice (MAINT 1.6.3, Group0 bits 6/7)", () => {
+  it("takes the build's default while bit 7 is 1 and keeps every lower bit when set", async () => {
+    const { hardStopChoice, hardStopConfigurable, withHardStop } = await import("./access");
+    expect([hardStopConfigurable(0xfe), hardStopConfigurable(0x32), hardStopConfigurable(null)]).toEqual([true, false, false]);
+    // FF in the FE image: the default soft stop; in an FF image the default hard stop
+    expect(hardStopChoice(0xff, 0xfe)).toEqual({ enabled: false, inherited: true });
+    expect(hardStopChoice(0xff, 0xff)).toEqual({ enabled: true, inherited: true });
+    expect(hardStopChoice(0x40, 0xfe)).toEqual({ enabled: true, inherited: false });
+    expect(hardStopChoice(0x3f, 0xff)).toEqual({ enabled: false, inherited: false });
+    // one switch writes both bits; bit 5 (lock state) and the others stay
+    expect(withHardStop(0xdf, true)).toBe(0x5f);
+    expect(withHardStop(0xff, false)).toBe(0x3f);
   });
 });

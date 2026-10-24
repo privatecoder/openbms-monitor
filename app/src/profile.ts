@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { HardStopSeen, MasterView, PackPatch, ProfileView } from "./api";
-import { G0, group0Plan, positiveBuild, tri, type Proof } from "./access";
+import { G0, group0Plan, hardStopConfigurable, positiveBuild, tri, type Proof } from "./access";
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -43,12 +43,14 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
   }
 }
 
-/** „Hard-Stop: …“ of one pack: the image's own flag wins (a format-3 master, `flag` true/false); else a stored sighting
- *  in the pack's behaviour (`seen`: waiting for recharge with the charge MOSFET off, no other visible block) shows „an
+/** „Hard-Stop: …“ of one pack: the image's own flag wins (`flag` true/false: fixed in the build); a build where it is
+ *  chosen by the parameters (`flags` with bit 7, MAINT 1.6.3) says so with its default; else a stored sighting in the
+ *  pack's behaviour (`seen`: waiting for recharge with the charge MOSFET off, no other visible block) shows „an
  *  (beobachtet am …)“; else unknown. Never from a version number or a flash, and never „not seen“. */
-export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSeen | undefined, t: T, lang = "de"): string {
+export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSeen | undefined, t: T, lang = "de", flags?: number | null): string {
   const at = (ms: number) => new Date(ms).toLocaleDateString(lang);
   const state = flag === true ? t("profile.hardStopOn") : flag === false ? t("profile.hardStopOff")
+    : hardStopConfigurable(flags) ? t((flags! & 1) ? "profile.hardStopChosenOn" : "profile.hardStopChosenOff")
     : seen ? t("profile.hardStopSeen", { at: at(seen.at) })
     : t("profile.hardStopUnknown");
   return t("profile.hardStop", { state });
@@ -133,7 +135,8 @@ export const switchOn = (v: number, b: number) => ((v >> b) & 1) === 1;
 /** The bits of Group0 an edit takes from the pack as it is now instead of the edited (or restored) block: bit 5 always,
  *  and over the CAN socket or in a proven column every patch bit this path does not change. */
 export function keepMask(patch: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): number {
-  return fixedOf(patch, uart1) | (uart1 && !writeReleased(group0) ? G0.extendedOff : 0);
+  // the hard stop choice (bits 6/7) is set by its own switch only, never by an edit, a file or an earlier block
+  return fixedOf(patch, uart1) | (uart1 && !writeReleased(group0) ? G0.extendedOff : 0) | G0.hardStop | G0.hardStopInherit;
 }
 
 /** The label of the shared rows of bits 4 and 5: by their function only when every column with switches has a proof
