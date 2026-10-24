@@ -74,10 +74,10 @@ export const FLAG_POWER = CATALOG.flags.power;
 export const FLAG_POSITIVE = CATALOG.flags.positive;
 /** Whether the image flag byte announces the positive bits 3/4 (null: not known). */
 export const positiveOf = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << FLAG_POSITIVE)) !== 0;
-/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3, or any build from 1.6 (the first 1.6
- *  build with bit 3 at 0 is not followed); 1.5 and 1.5.1 keep bit 3 at 0. */
+/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3; without known flags (a stored proof) a
+ *  build from 1.6 (as 1.6.3). 1.5.2 keeps bit 3 at 0, TEMP(maint-1.6) so does the first 1.6 (flags 06). */
 export const positiveBuild = (patch: Patch, flags: number | null | undefined): boolean =>
-  positiveOf(flags) || (patch.kind === "version" && (patch.version[0] - CUTOFF_MIN[0] || patch.version[1] - CUTOFF_MIN[1]) >= 0);
+  positiveOf(flags) || (flags == null && patch.kind === "version" && (patch.version[0] - CUTOFF_MIN[0] || patch.version[1] - CUTOFF_MIN[1]) >= 0);
 /** `access::inverted`: Group0 bit 4 always, bit 3 in a positive build act at 1 where the routes are written for 0. */
 export const inverted = (group: number, bit: number, patch: Patch, flags: number | null | undefined): boolean =>
   group === 0 && (bit === B.g0_extended_off || (bit === B.g0_power_lock && positiveBuild(patch, flags)));

@@ -197,18 +197,19 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[
         code_sha256: "fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f",
         ehex_sha256: "99ea2cc5496358ec127300b55a4ca718acb1c4f6ee16f13edbe346f7aa4db062",
     },
-    // TEMP(maint-1.6): MAINT 1.6 with the positive Group0 bits 3/4, MNT format 3 with image flags 0E; hard stop off (56624
-    // app bytes, 223 update blocks). Supported until the installation runs 1.6.3, then remove this entry.
+    // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF), MNT format 3 with image flags 06: power and clock (bit 3 at 0
+    // allows, as 1.5.2), the stored pack cutoff; hard stop off. Supported until the installation runs 1.6.3, then remove
+    // this entry.
     PatchBuild {
-        name: "16.06.13 MAINT 1.6 positive",
+        name: "16.06.13 MAINT 1.6",
         base: [16, 6, 13],
         patch: [1, 6],
         patch_rev: 0,
         mnt_format: 3,
-        flags: 0x0E,
-        build_id: "39e0c5d9ccf13396",
-        code_sha256: "010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8",
-        ehex_sha256: "2bb9ca9798fcd6885d8320d67af4f646afc97e25b643fac33759e491478d3b7c",
+        flags: 0x06,
+        build_id: "18daf61d8a93671d",
+        code_sha256: "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
+        ehex_sha256: "32f27f3f128a591759bd2e205579b2dfdccf50c3717e50c7092c1e30f44d146f",
     },
 ];
 
@@ -279,11 +280,11 @@ mod tests {
         assert_eq!(kind_of_hash("9c1d8a912222d6f8ec9329a17b332776803f5d2a955a6028ae17e3cf0f1d1e1f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5.2")));
         assert_eq!(kind_of_hash("fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6.3")));
         // TEMP(maint-1.6)
-        assert_eq!(kind_of_hash("010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6 positive")));
+        assert_eq!(kind_of_hash("be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6")));
         assert_eq!(kind_of_hash(&"0".repeat(64)), (ImageKind::Custom, None));
-        // older patch builds (1.5, 1.5.1, the first 1.6, 1.6.1, 1.6.2) are custom images now
+        // older patch builds (1.5, 1.5.1, the positive 1.6, 1.6.1) are custom images now
         for old in ["5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12", "58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a",
-            "619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437", "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
+            "619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437", "010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8",
             "fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f"] {
             assert_eq!(kind_of_hash(old), (ImageKind::Custom, None));
         }
@@ -326,8 +327,10 @@ mod tests {
         assert_eq!(caps_of(&info(3, [1, 5], 0, 0x02)), None, "1.5");
         assert_eq!(caps_of(&info(2, [1, 5], 0, 0)), None, "1.5 format 2");
         // TEMP(maint-1.6): the positive 1.6 only
-        assert_eq!(caps_of(&info(3, [1, 6], 0, 0x0E)), Some(Caps { mnt_format: 3, ..PROOF_CAPS }));
+        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF) by its build, not another format-3 1.6
+        assert_eq!(PATCH_BUILDS[2].caps(), Some(Caps { mnt_format: 3, ..PROOF_CAPS }));
         assert_eq!(caps_of(&info(3, [1, 6], 0, 0x06)), None);
+        assert_eq!(caps_of(&info(3, [1, 6], 0, 0x0E)), None);
         let c = PROOF_CAPS;
         assert_eq!(c.pack(), PackCaps { uart1_params: true, uart1_identity: true, write_gate_bit0: true, keeps_start_bit2: true });
         assert_eq!(c.master(), MasterCaps { status_split: true, start_gate_bit2: true });

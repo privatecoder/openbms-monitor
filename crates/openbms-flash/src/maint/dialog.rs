@@ -471,9 +471,9 @@ mod tests {
     #[test]
     fn a_format_3_identity_is_bound_and_read_then_02() {
         let t = VTime::default();
-        // TEMP(maint-1.6): the positive 1.6 is the supported format-3 build
+        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF) is the supported format-3 build; flags 07 with the hard stop
         let mut id3 = b"MNT".to_vec();
-        id3.extend_from_slice(&[3, 16, 6, 13, 1, 6, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x0F]);
+        id3.extend_from_slice(&[3, 16, 6, 13, 1, 6, 0x18, 0xDA, 0xF6, 0x1D, 0x8A, 0x93, 0x67, 0x1D, 0x07]);
         let mut link = FakeLink::new(t.clone(), move |req, now| match frame::parse(req) {
             Ok(f) if f.info == [0x03] => vec![(now + ms(40), answer(0, 0x00, &id3))],
             Ok(f) if f.info == [0x02] => vec![(now + ms(40), answer(0, 0x00, &state(false, 2)))],

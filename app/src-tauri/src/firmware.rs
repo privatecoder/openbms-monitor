@@ -375,7 +375,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // the bit-3 direction of the image flashed (None: no patch functions)
     let positive_after = known::patch_by_code(&info.sha256)
         .filter(|b| b.caps().is_some())
-        .map(|b| openbms_proto::access::positive_build(openbms_proto::access::Patch::Version(b.patch), None));
+        .map(|b| openbms_proto::access::positive_build(openbms_proto::access::Patch::Version(b.patch), Some(b.flags)));
     let store = state.maint.clone();
     let stored = target.clone();
     std::thread::spawn(move || {
