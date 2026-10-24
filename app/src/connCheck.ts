@@ -56,6 +56,23 @@ export function partialLine(addrs: number[], found: number[], t: TFunction): str
   return t("conn.partial", { n: addrs.length - missing.length, total: addrs.length, list: missing.map(pad).join(", ") });
 }
 
+/** The packs the connect's device query missed: `expected` were asked, `missing` did not answer, `searched` what the
+ *  search of 0..15 found afterwards (null: no search). */
+export interface Gap { expected: number[]; missing: number[]; searched: number[] | null }
+
+/** The connect's gap note against the packs answering now: only the addresses still silent are named, and the note is
+ *  gone once all have answered (a pack slow at connect is polled on). */
+export function gapLine(g: Gap, answering: number[], t: TFunction): string {
+  const still = g.missing.filter((a) => !answering.includes(a));
+  if (!still.length) return "";
+  if (g.searched) {
+    const silent = still.filter((a) => !g.searched!.includes(a));
+    const silentNote = silent.length ? t("conn.expectedSilent", { count: silent.length, list: silent.map(pad).join(", ") }) : "";
+    return [fixedSearchedLine(still, g.searched, t), silentNote].filter(Boolean).join(" ");
+  }
+  return still.length === g.expected.length ? t("conn.noAnswer") : partialLine(g.expected, g.expected.filter((a) => !still.includes(a)), t);
+}
+
 /** A fixed pack count (0..n-1) or a fixed address (k) is polled without a search. Fall back to the normal search (0..15)
  *  when the connect check answered at an address outside them (decided before polling, `found` null); after the device
  *  query, a count searches as soon as any expected address is missing (a pack may sit outside 0..n-1), a fixed address

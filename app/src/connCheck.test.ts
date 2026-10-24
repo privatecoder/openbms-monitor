@@ -195,3 +195,20 @@ describe("after a fallback search", () => {
     expect(i18n.t("conn.expectedSilent", { count: 1, list: "05", lng: "de" })).toBe("Pack 05 ohne aktuelle Antwort, wird weiter abgefragt.");
   });
 });
+
+describe("the connect's gap note", () => {
+  it("names only the packs still silent and is gone once all answer", async () => {
+    const { gapLine } = await import("./connCheck");
+    const twelve = Array.from({ length: 12 }, (_, i) => i);
+    // device query missed 1, 4, 9, 10; the search found 0, 3, 4, 6, 9, 10 (busy bus): 1 stays unanswered
+    const g = { expected: twelve, missing: [1, 4, 9, 10], searched: [0, 3, 4, 6, 9, 10] };
+    expect(gapLine(g, [], t)).toBe("Keine Antwort an Adresse 01, 04, 09, 10; gesucht: Packs 00, 03, 04, 06, 09, 10 gefunden. Pack 01 ohne aktuelle Antwort, wird weiter abgefragt.");
+    // packs that answered the device query are never called silent; 4, 9, 10 answering by now drop out
+    expect(gapLine(g, [0, 2, 3, 4, 5, 9, 10], t)).toBe("Keine Antwort an Adresse 01; gesucht: Packs 00, 03, 04, 06, 09, 10 gefunden. Pack 01 ohne aktuelle Antwort, wird weiter abgefragt.");
+    expect(gapLine(g, twelve, t)).toBe("");
+    // without a search: the partial line shrinks the same way
+    const p = { expected: [0, 1, 2], missing: [1, 2], searched: null };
+    expect(gapLine(p, [0, 2], t)).toBe(partialLine([0, 1, 2], [0, 2], t));
+    expect(gapLine(p, [0, 1, 2], t)).toBe("");
+  });
+});
