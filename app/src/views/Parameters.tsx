@@ -378,6 +378,10 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
    *  parameter write reads the pack again and sends this change on top of it. */
   const writeHardStop = async (a: number, read: Parameters, enabled: boolean, confirmed: boolean) => {
     const raws = rawsOf(read), sw = [...read.function_switches];
+    // the link the read belongs to: a change of connection or installation meanwhile sends nothing
+    const l = linkNow();
+    const col = sources.find((x) => x.id === `pack-${a}`);
+    if (col?.link !== l) return { text: t("hs.linkChanged"), error: true };
     // every A1 sets the learned full capacity to P58 when they are 10 Ah apart: said first, written only on „trotzdem“
     if (!confirmed) {
       let fullAh: number | null = null, err = "";
@@ -385,9 +389,10 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
       const nf = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
       if (fullAh === null) return { text: t("pw.full.unknown", { err }), error: true, confirm: true };
       if (capacityResets(fullAh, raws[RATED_INDEX])) return { text: t("pw.full.resets", { full: nf.format(fullAh), rated: nf.format(fromRaw(RATED_INDEX, raws[RATED_INDEX])) }), error: true, confirm: true };
+      if (linkNow() !== l) return { text: t("hs.linkChanged"), error: true };
     }
     const next = sw.map((v, g) => (g === 0 ? withHardStop(v, enabled) : v));
-    const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, linkNow());
+    const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, l);
     if (!r) return { text: writeError(error, t, (err) => t("pw.error", { err })), error: true };
     if (r.kind === "written" && out.kind === "written") return { text: t(enabled ? "hs.doneOn" : "hs.doneOff"), error: false };
     if (r.kind === "stale") return { text: t("hs.stale"), error: true };

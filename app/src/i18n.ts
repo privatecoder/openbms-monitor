@@ -993,7 +993,7 @@ const resources = {
       },
       hs: {
         title: "Hard-Stop bei Nachladepause", unread: "Parameter dieses Packs lesen, um die Einstellung zu sehen.", on: "Eingeschaltet", off: "Ausgeschaltet",
-        inherited: "(Standard des Builds übernommen, Funktionsschalter 0, Bit 7 = 1)", turnOn: "Einschalten", turnOff: "Ausschalten", writing: "Schreibe …", anyway: "Trotzdem schreiben",
+        inherited: "(Standard des Builds übernommen, Funktionsschalter 0, Bit 7 = 1)", turnOn: "Einschalten", turnOff: "Ausschalten", writing: "Schreibe …", anyway: "Trotzdem schreiben", linkChanged: "Die Verbindung hat sich seit dem Lesen geändert: nichts geschrieben. Parameter neu lesen.",
         doneOn: "Hard-Stop eingeschaltet (Funktionsschalter 0, Bits 6/7 zurückgelesen).", doneOff: "Hard-Stop ausgeschaltet (Funktionsschalter 0, Bits 6/7 zurückgelesen).",
         stale: "Das Pack hat sich seit dem Lesen geändert: nichts geschrieben. Die Spalte zeigt jetzt den aktuellen Stand; erneut wählen.",
         unclear: "Ergebnis ungeklärt: Parameter neu lesen und die Einstellung prüfen.",
@@ -2079,7 +2079,7 @@ const resources = {
       },
       hs: {
         title: "Hard stop at a recharge pause", unread: "Read this pack's parameters to see the setting.", on: "On", off: "Off",
-        inherited: "(the build's default, function switch 0, bit 7 = 1)", turnOn: "Switch on", turnOff: "Switch off", writing: "Writing …", anyway: "Write anyway",
+        inherited: "(the build's default, function switch 0, bit 7 = 1)", turnOn: "Switch on", turnOff: "Switch off", writing: "Writing …", anyway: "Write anyway", linkChanged: "The connection changed since the read: nothing written. Read the parameters again.",
         doneOn: "Hard stop switched on (function switch 0, bits 6/7 read back).", doneOff: "Hard stop switched off (function switch 0, bits 6/7 read back).",
         stale: "The pack changed since the read: nothing written. The column shows the current state now; choose again.",
         unclear: "Outcome unclear: read the parameters again and check the setting.",
