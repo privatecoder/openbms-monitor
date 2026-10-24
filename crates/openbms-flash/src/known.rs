@@ -2,6 +2,7 @@
 //! CRLF/LF conversion while the strict parser still validates every record and the header.
 
 use crate::{ehex::Image, Error, Result};
+use openbms_proto::MaintInfo;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Release {
@@ -36,13 +37,12 @@ pub const RELEASES: &[Release] = &[
     },
 ];
 
-/// What a patched master or pack offers. Patch functions are cumulative: a later patch version keeps every function of
-/// the earlier ones unchanged, and a new OEM base gets the same functions. So each capability has a minimum patch version
-/// (`CAP_MIN`), and a format-2 identity with a patch version at or above it has it, whatever its base or build ID. The
-/// app asks these, never a version number.
+/// What a patched master or pack offers. Every supported build (`MaintInfo::supported`) has all of these; functions
+/// that differ between builds come from the image flags. The app asks these, never a version number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
-    /// layout of the `0x64/03` identity (2: 17 bytes; 3: 18 bytes with image flags; neither has runtime state)
+    /// layout of the `0x64/03` identity (3: 18 bytes with image flags; 4: 19 bytes with a third patch byte; no runtime
+    /// state)
     pub mnt_format: u8,
     /// `0x64/02` and start/stop answer with the 5-byte state (marker word, effective slaves)
     pub status_split: bool,
@@ -84,26 +84,14 @@ impl Caps {
     }
 }
 
-/// The pack capabilities of a `0x64/03` identity read at any address (None: another format or below `MIN_PATCH`).
-pub fn pack_caps_of(format: u8, patch: [u8; 2]) -> Option<PackCaps> {
-    caps_of(format, patch).map(|c| c.pack())
+/// The pack capabilities of a `0x64/03` identity read at any address (None: not a supported build).
+pub fn pack_caps_of(info: &MaintInfo) -> Option<PackCaps> {
+    caps_of(info).map(|c| c.pack())
 }
 
-/// The lowest patch version of each capability: (status_split, uart1_params, uart1_identity, write_gate_bit0,
-/// start_gate_bit2). The app supports the patch functions as a whole from `MIN_PATCH` on.
-pub const CAP_MIN: CapMin = CapMin { status_split: MIN_PATCH, uart1_params: MIN_PATCH, uart1_identity: MIN_PATCH, write_gate_bit0: MIN_PATCH, start_gate_bit2: MIN_PATCH };
-/// Below this a format-2 identity is an unknown patch (no patch functions): 1.4 has format 2 but no release bits
-/// (`openbms_proto::access::MAINT_MIN`).
+/// The lowest patch version the app knows functions of (`openbms_proto::access::MAINT_MIN`); which builds are supported
+/// decides `MaintInfo::supported`.
 pub const MIN_PATCH: [u8; 2] = openbms_proto::access::MAINT_MIN;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CapMin {
-    pub status_split: [u8; 2],
-    pub uart1_params: [u8; 2],
-    pub uart1_identity: [u8; 2],
-    pub write_gate_bit0: [u8; 2],
-    pub start_gate_bit2: [u8; 2],
-}
 
 /// From this patch version on, image flag bit 2 announces the stored pack cutoff (Group0 bit 4 extended off, bit 5 the
 /// lock state). Below it the bits are not read that way, whatever the flag says.
@@ -113,26 +101,20 @@ pub const PACK_CUTOFF_MIN: [u8; 2] = openbms_proto::access::CUTOFF_MIN;
 pub use openbms_proto::access::pack_cutoff_of;
 
 /// The `0x64/03` formats the app decodes; all carry the same identity fields (format 3 adds the image flags, format 4 a
-/// third patch byte).
+/// third patch byte). Only format 4 (and TEMP(maint-1.6) the positive 1.6 in format 3) can be supported.
 pub const MNT_FORMATS: [u8; 3] = [2, 3, 4];
 
-/// The capabilities of a `0x64/03` identity (`format`, `patch`): None for another format or a patch below `MIN_PATCH`.
-pub fn caps_of(format: u8, patch: [u8; 2]) -> Option<Caps> {
-    if !MNT_FORMATS.contains(&format) || patch < MIN_PATCH {
-        return None;
-    }
-    Some(Caps {
-        mnt_format: format,
-        status_split: patch >= CAP_MIN.status_split,
-        uart1_params: patch >= CAP_MIN.uart1_params,
-        uart1_identity: patch >= CAP_MIN.uart1_identity,
-        write_gate_bit0: patch >= CAP_MIN.write_gate_bit0,
-        start_gate_bit2: patch >= CAP_MIN.start_gate_bit2,
-    })
+/// The capabilities of a supported `0x64/03` identity (`MaintInfo::supported`): every supported build has them all;
+/// None for another or an older build (its patch functions are not used).
+pub fn caps_of(info: &MaintInfo) -> Option<Caps> {
+    info.supported().then_some(PROOF_CAPS).map(|c| Caps { mnt_format: info.format, ..c })
 }
 
+/// The capabilities a stored proof stands for (a supported build; it carries no format or image flags).
+pub const PROOF_CAPS: Caps = Caps { mnt_format: 4, status_split: true, uart1_params: true, uart1_identity: true, write_gate_bit0: true, start_gate_bit2: true };
+
 /// A listed patched build: modified firmware, accepted only like custom images; listed so a flash image is recognised
-/// (code hash) and the master's build shown by name. Capabilities come from its patch version (`caps_of`), not from the
+/// (code hash) and the master's build shown by name. Capabilities come from its identity (`caps_of`), not from the
 /// listing.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PatchBuild {
@@ -140,16 +122,13 @@ pub struct PatchBuild {
     pub name: &'static str,
     /// base firmware major, minor, patch as `0x64/03` reports it
     pub base: [u8; 3],
-    /// patch version major, minor as `0x64/03` reports it
+    /// patch version major, minor and (format 4) revision as `0x64/03` reports it
     pub patch: [u8; 2],
+    pub patch_rev: u8,
     /// the `0x64/03` format of this build (builds are told apart by format and build ID)
     pub mnt_format: u8,
-    /// format 3: the hard-stop patch is compiled in; None for a format-2 build (not reported)
-    pub hard_stop: Option<bool>,
-    /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket with the lock Group0 bit 3
-    pub power_rtc: bool,
-    /// format 3, image flag bit 2 with patch 1.6: the stored pack cutoff (Group0 bits 4/5)
-    pub pack_cutoff: bool,
+    /// the image flag byte of its `0x64/03`
+    pub flags: u8,
     /// the build ID of `0x64/03`, 16 lower-case hex digits
     pub build_id: &'static str,
     /// SHA-256 of the decoded application code (`ehex::Image::code_sha256`)
@@ -159,107 +138,79 @@ pub struct PatchBuild {
 }
 
 impl PatchBuild {
+    /// The `0x64/03` identity this build answers.
+    pub fn info(&self) -> MaintInfo {
+        let mut v = b"MNT".to_vec();
+        v.push(self.mnt_format);
+        v.extend_from_slice(&self.base);
+        v.extend_from_slice(&self.patch);
+        if self.mnt_format == 4 {
+            v.push(self.patch_rev);
+        }
+        v.extend((0..8).map(|i| u8::from_str_radix(&self.build_id[2 * i..2 * i + 2], 16).unwrap_or(0)));
+        if self.mnt_format != 2 {
+            v.push(self.flags);
+        }
+        MaintInfo::parse(&v).expect("a listed build has a valid identity")
+    }
+
     pub fn caps(&self) -> Option<Caps> {
-        caps_of(self.mnt_format, self.patch)
+        caps_of(&self.info())
+    }
+
+    /// Image flag bit 1: power, restart and clock over the CAN socket.
+    pub fn power_rtc(&self) -> bool {
+        self.info().power_rtc
+    }
+
+    /// The stored pack cutoff (`pack_cutoff_of`).
+    pub fn pack_cutoff(&self) -> bool {
+        pack_cutoff_of(self.patch, self.info().pack_cutoff)
     }
 }
 
-/// The listed patched builds. A later build: append one entry.
-pub const PATCH_BUILDS: &[PatchBuild] = &[PatchBuild {
-    name: "16.06.13 MAINT 1.5",
-    base: [16, 6, 13],
-    patch: [1, 5],
-    mnt_format: 2,
-    hard_stop: None,
-    power_rtc: false,
-    pack_cutoff: false,
-    build_id: "909a604e60e9225b",
-    code_sha256: "5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12",
-    ehex_sha256: "346959edab55e857c2ae8a47cb2f4a7a2be2b279024857ce83ed612304060ee1",
-},
-// MNT format 3, 64/03 answered at every pack's own address; hard stop off (54584 app bytes, 215 update blocks)
-PatchBuild {
-    name: "16.06.13 MAINT 1.5",
-    base: [16, 6, 13],
-    patch: [1, 5],
-    mnt_format: 3,
-    hard_stop: Some(false),
-    power_rtc: false,
-    pack_cutoff: false,
-    build_id: "297f9f2aa8402e9f",
-    code_sha256: "02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508",
-    ehex_sha256: "31a6477f938bf2ac017deec3d0158f72039a3898d28686e428094946ae609fe0",
-},
-// MNT format 3 with image flags 02: ein/aus, restart and the clock over the CAN socket, lock Group0 bit 3; hard stop off
-// (55124 app bytes, 217 update blocks)
-PatchBuild {
-    name: "16.06.13 MAINT 1.5",
-    base: [16, 6, 13],
-    patch: [1, 5],
-    mnt_format: 3,
-    hard_stop: Some(false),
-    power_rtc: true,
-    pack_cutoff: false,
-    build_id: "d75a7b24cb6e8590",
-    code_sha256: "58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a",
-    ehex_sha256: "9b8f7b1535a2491e883b61f8bd7566d074842aadcfdc3095d715f2d968e49052",
-},
-// MAINT 1.6, MNT format 3 with image flags 06: power and clock as 1.5, plus the stored pack cutoff (Group0 bits 4/5) and
-// the master's CCL clamp; hard stop off
-PatchBuild {
-    name: "16.06.13 MAINT 1.6",
-    base: [16, 6, 13],
-    patch: [1, 6],
-    mnt_format: 3,
-    hard_stop: Some(false),
-    power_rtc: true,
-    pack_cutoff: true,
-    build_id: "18daf61d8a93671d",
-    code_sha256: "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
-    ehex_sha256: "32f27f3f128a591759bd2e205579b2dfdccf50c3717e50c7092c1e30f44d146f",
-},
-// MAINT 1.6 with the positive Group0 bits 3/4, MNT format 3 with image flags 0E; hard stop off (56624 app bytes, 223
-// update blocks)
-PatchBuild {
-    name: "16.06.13 MAINT 1.6 positive",
-    base: [16, 6, 13],
-    patch: [1, 6],
-    mnt_format: 3,
-    hard_stop: Some(false),
-    power_rtc: true,
-    pack_cutoff: true,
-    build_id: "39e0c5d9ccf13396",
-    code_sha256: "010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8",
-    ehex_sha256: "2bb9ca9798fcd6885d8320d67af4f646afc97e25b643fac33759e491478d3b7c",
-},
-// MAINT 1.5.1, MNT format 4 with image flags 12: power and clock as 1.5 (bit 3 at 0 allows), marker and identity also
-// over RS485-1/2; hard stop off (55544 app bytes, 218 update blocks)
-PatchBuild {
-    name: "16.06.13 MAINT 1.5.1",
-    base: [16, 6, 13],
-    patch: [1, 5],
-    mnt_format: 4,
-    hard_stop: Some(false),
-    power_rtc: true,
-    pack_cutoff: false,
-    build_id: "96cb4859ef3c3f3b",
-    code_sha256: "619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437",
-    ehex_sha256: "80ad12a8ff6b3dfbedced952946e53866017e076a039a036204c153497da2dab",
-},
-// MAINT 1.6.1, MNT format 4 with image flags 1E: the positive 1.6 plus marker and identity over RS485-1/2; hard stop off
-// (57036 app bytes, 224 update blocks)
-PatchBuild {
-    name: "16.06.13 MAINT 1.6.1",
-    base: [16, 6, 13],
-    patch: [1, 6],
-    mnt_format: 4,
-    hard_stop: Some(false),
-    power_rtc: true,
-    pack_cutoff: true,
-    build_id: "cecca6889e95d5c8",
-    code_sha256: "fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f",
-    ehex_sha256: "a2d3474e8ad8d3830cabd4c714f118d7521ab0c2e12235caebb03e0215aa09d2",
-}];
+/// The listed patched builds (the supported ones). A later build: append one entry.
+pub const PATCH_BUILDS: &[PatchBuild] = &[
+    // MAINT 1.5.2 DIAGNOSTICS, MNT format 4 with image flags 32: power and clock (bit 3 at 0 allows), RS485-1/2 marker and
+    // identity, the 64/04 diagnosis; fixed soft stop (56016 app bytes, 220 update blocks)
+    PatchBuild {
+        name: "16.06.13 MAINT 1.5.2",
+        base: [16, 6, 13],
+        patch: [1, 5],
+        patch_rev: 2,
+        mnt_format: 4,
+        flags: 0x32,
+        build_id: "89d85c61b40e03da",
+        code_sha256: "9c1d8a912222d6f8ec9329a17b332776803f5d2a955a6028ae17e3cf0f1d1e1f",
+        ehex_sha256: "0348364aed035582562e7289bed144ad355a519dbb8140c9c6ec4ea1e2cc367e",
+    },
+    // MAINT 1.6.3 CUTOFF_POSITIVE, MNT format 4 with image flags FE: positive bits 3/4, stored pack cutoff, diagnosis,
+    // SOC checkpoint before a planned restart, configurable hard stop with soft as default (57948 app bytes, 228 blocks)
+    PatchBuild {
+        name: "16.06.13 MAINT 1.6.3",
+        base: [16, 6, 13],
+        patch: [1, 6],
+        patch_rev: 3,
+        mnt_format: 4,
+        flags: 0xFE,
+        build_id: "baa01ecd5af4eb28",
+        code_sha256: "fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f",
+        ehex_sha256: "99ea2cc5496358ec127300b55a4ca718acb1c4f6ee16f13edbe346f7aa4db062",
+    },
+    // TEMP(maint-1.6): MAINT 1.6 with the positive Group0 bits 3/4, MNT format 3 with image flags 0E; hard stop off (56624
+    // app bytes, 223 update blocks). Supported until the installation runs 1.6.3, then remove this entry.
+    PatchBuild {
+        name: "16.06.13 MAINT 1.6 positive",
+        base: [16, 6, 13],
+        patch: [1, 6],
+        patch_rev: 0,
+        mnt_format: 3,
+        flags: 0x0E,
+        build_id: "39e0c5d9ccf13396",
+        code_sha256: "010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8",
+        ehex_sha256: "2bb9ca9798fcd6885d8320d67af4f646afc97e25b643fac33759e491478d3b7c",
+    },
+];
 
 /// The entry `0x64/03` describes in `table`: format, base, patch and build ID all match.
 pub fn patch_in<'a>(table: &'a [PatchBuild], format: u8, base: [u8; 3], patch: [u8; 2], build_id: &str) -> Option<&'a PatchBuild> {
@@ -325,99 +276,75 @@ mod tests {
     #[test]
     fn kind_of_hash_tells_originals_patched_builds_and_custom_apart() {
         assert_eq!(kind_of_hash(RELEASES[0].code_sha256), (ImageKind::Original, Some(RELEASES[0].name)));
-        assert_eq!(kind_of_hash("5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5")));
-        // the format-4 builds and the positive 1.6
-        assert_eq!(kind_of_hash("619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5.1")));
-        assert_eq!(kind_of_hash("fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6.1")));
+        assert_eq!(kind_of_hash("9c1d8a912222d6f8ec9329a17b332776803f5d2a955a6028ae17e3cf0f1d1e1f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5.2")));
+        assert_eq!(kind_of_hash("fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6.3")));
+        // TEMP(maint-1.6)
         assert_eq!(kind_of_hash("010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6 positive")));
-        assert_eq!(patch_build(4, [16, 6, 13], [1, 6], "cecca6889e95d5c8").map(|b| b.name), Some("16.06.13 MAINT 1.6.1"));
         assert_eq!(kind_of_hash(&"0".repeat(64)), (ImageKind::Custom, None));
-        // earlier unpublished patch builds are custom images now
-        for old in ["734a4a4c73abbf991b2616b50958aff6c05cdcca93ebf3781867a179194e38f1", "4d76a96fa7f7ad0e1aa3de1ac4fbe51f0fc4ae03a19aea2d4e696c2812d8f55d",
-            "bc1235ade82dba79b58ea6e96cbf8196e5a1dc6160d17b8434a5fbc5766efbf6", "e00ed8fcf75c696b23de37605752d9a961022d8a43e11466c89e5a8840511ccb"] {
+        // older patch builds (1.5, 1.5.1, the first 1.6, 1.6.1, 1.6.2) are custom images now
+        for old in ["5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12", "58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a",
+            "619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437", "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
+            "fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f"] {
             assert_eq!(kind_of_hash(old), (ImageKind::Custom, None));
         }
     }
 
     #[test]
-    fn the_listed_build_is_recognised_only_by_its_exact_identity() {
-        let b = patch_build(2, [16, 6, 13], [1, 5], "909a604e60e9225b").unwrap();
-        assert_eq!(b.name, "16.06.13 MAINT 1.5");
-        assert_eq!(b.ehex_sha256, "346959edab55e857c2ae8a47cb2f4a7a2be2b279024857ce83ed612304060ee1");
-        assert!(patch_build(1, [16, 6, 13], [1, 5], "909a604e60e9225b").is_none(), "other format");
-        assert!(patch_build(2, [16, 6, 13], [1, 4], "909a604e60e9225b").is_none(), "other patch");
-        assert!(patch_build(2, [16, 6, 12], [1, 5], "909a604e60e9225b").is_none(), "other base");
-        assert!(patch_build(2, [16, 6, 13], [1, 5], "0000000000000000").is_none(), "other build");
-        assert_eq!(patch_image(b.code_sha256), Some("16.06.13 MAINT 1.5"));
+    fn the_listed_builds_are_recognised_by_their_exact_identity_and_carry_their_flags() {
+        let b = patch_build(4, [16, 6, 13], [1, 6], "baa01ecd5af4eb28").unwrap();
+        assert_eq!((b.name, b.info().patch_text(), b.info().image_flags()), ("16.06.13 MAINT 1.6.3", "1.6.3".to_string(), 0xFE));
+        assert_eq!((b.power_rtc(), b.pack_cutoff(), b.info().checkpoint(), b.info().hard_stop_configurable()), (true, true, true, true));
+        let a = patch_build(4, [16, 6, 13], [1, 5], "89d85c61b40e03da").unwrap();
+        assert_eq!((a.power_rtc(), a.pack_cutoff(), a.info().diagnostics(), a.info().checkpoint(), a.info().hard_stop), (true, false, true, false, Some(false)));
+        assert!(patch_build(3, [16, 6, 13], [1, 6], "baa01ecd5af4eb28").is_none(), "other format");
+        assert!(patch_build(4, [16, 6, 12], [1, 6], "baa01ecd5af4eb28").is_none(), "other base");
+        assert!(patch_build(4, [16, 6, 13], [1, 6], "0000000000000000").is_none(), "other build");
+        assert_eq!(patch_image(b.code_sha256), Some("16.06.13 MAINT 1.6.3"));
+        // every listed build is supported
+        assert!(PATCH_BUILDS.iter().all(|b| b.caps().is_some()));
     }
 
     #[test]
-    fn capabilities_follow_the_patch_version_cumulatively() {
-        let full = Caps { mnt_format: 2, status_split: true, uart1_params: true, uart1_identity: true, write_gate_bit0: true, start_gate_bit2: true };
-        assert_eq!(caps_of(2, [1, 5]), Some(full));
-        assert_eq!(caps_of(2, [1, 6]), Some(full));
-        assert_eq!(caps_of(2, [2, 0]), Some(full));
-        assert_eq!(caps_of(3, [1, 5]), Some(Caps { mnt_format: 3, ..full }), "format 3: the same patch functions");
-        assert_eq!(caps_of(4, [1, 5]), Some(Caps { mnt_format: 4, ..full }), "format 4 (1.5.1): the same patch functions");
-        assert_eq!(caps_of(5, [1, 5]), None, "format 5");
-        assert_eq!(caps_of(2, [1, 4]), None, "1.4: format 2 without release bits");
-        assert_eq!(caps_of(1, [1, 5]), None, "format 1");
-        assert_eq!(PATCH_BUILDS[0].caps(), Some(full));
-    }
-
-    #[test]
-    fn the_power_rtc_build_is_listed_with_its_image_flag() {
-        let b = patch_build(3, [16, 6, 13], [1, 5], "d75a7b24cb6e8590").unwrap();
-        assert_eq!((b.name, b.hard_stop, b.power_rtc, b.caps()), ("16.06.13 MAINT 1.5", Some(false), true, caps_of(3, [1, 5])));
-        assert_eq!(patch_image("58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a"), Some("16.06.13 MAINT 1.5"));
-        assert_eq!(kind_of_hash("58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a").0, ImageKind::Maintenance);
-        // the earlier builds have no power and clock service
-        assert!(!patch_build(3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").unwrap().power_rtc);
-        assert!(!patch_build(2, [16, 6, 13], [1, 5], "909a604e60e9225b").unwrap().power_rtc);
-    }
-
-    #[test]
-    fn the_pack_cutoff_build_is_listed_and_the_capability_needs_patch_1_6() {
-        let b = patch_build(3, [16, 6, 13], [1, 6], "18daf61d8a93671d").unwrap();
-        assert_eq!((b.name, b.hard_stop, b.power_rtc, b.pack_cutoff), ("16.06.13 MAINT 1.6", Some(false), true, true));
-        assert_eq!(b.caps(), caps_of(3, [1, 6]), "the 1.5 functions, cumulatively");
-        assert_eq!(patch_image("be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d"), Some("16.06.13 MAINT 1.6"));
-        assert_eq!(kind_of_hash("be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d").0, ImageKind::Maintenance);
-        assert!(PATCH_BUILDS.iter().filter(|b| b.patch < [1, 6]).all(|b| !b.pack_cutoff));
-        // the flag alone is not enough, nor the version alone
+    fn capabilities_come_with_a_supported_build_only() {
+        let info = |format: u8, patch: [u8; 2], patch_rev: u8, flags: u8| MaintInfo::parse(&{
+            let mut v = b"MNT".to_vec();
+            v.extend_from_slice(&[format, 16, 6, 13, patch[0], patch[1]]);
+            if format == 4 {
+                v.push(patch_rev);
+            }
+            v.extend_from_slice(&[1; 8]);
+            if format > 2 {
+                v.push(flags);
+            }
+            v
+        }).unwrap();
+        assert_eq!(caps_of(&info(4, [1, 5], 2, 0x32)), Some(PROOF_CAPS));
+        assert_eq!(caps_of(&info(4, [1, 6], 3, 0xFE)), Some(PROOF_CAPS));
+        assert_eq!(caps_of(&info(4, [1, 7], 0, 0xFE)), Some(PROOF_CAPS), "a later version");
+        assert_eq!(caps_of(&info(4, [1, 5], 1, 0x12)), None, "1.5.1");
+        assert_eq!(caps_of(&info(4, [1, 6], 2, 0x7E)), None, "1.6.2");
+        assert_eq!(caps_of(&info(3, [1, 5], 0, 0x02)), None, "1.5");
+        assert_eq!(caps_of(&info(2, [1, 5], 0, 0)), None, "1.5 format 2");
+        // TEMP(maint-1.6): the positive 1.6 only
+        assert_eq!(caps_of(&info(3, [1, 6], 0, 0x0E)), Some(Caps { mnt_format: 3, ..PROOF_CAPS }));
+        assert_eq!(caps_of(&info(3, [1, 6], 0, 0x06)), None);
+        let c = PROOF_CAPS;
+        assert_eq!(c.pack(), PackCaps { uart1_params: true, uart1_identity: true, write_gate_bit0: true, keeps_start_bit2: true });
+        assert_eq!(c.master(), MasterCaps { status_split: true, start_gate_bit2: true });
+        assert_eq!(pack_caps_of(&info(4, [1, 5], 2, 0x32)), Some(c.pack()));
+        assert_eq!(pack_caps_of(&info(4, [1, 5], 1, 0x12)), None);
+        // the flag alone is not enough for the pack cutoff, nor the version alone
         assert!(pack_cutoff_of([1, 6], true));
-        assert!(pack_cutoff_of([1, 7], true));
         assert!(!pack_cutoff_of([1, 5], true));
         assert!(!pack_cutoff_of([1, 6], false));
     }
 
     #[test]
-    fn the_slave_addressed_build_is_listed_by_format_and_build_id() {
-        let b = patch_build(3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").unwrap();
-        assert_eq!((b.name, b.hard_stop, b.caps()), ("16.06.13 MAINT 1.5", Some(false), caps_of(3, [1, 5])));
-        assert_eq!(patch_image("02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508"), Some("16.06.13 MAINT 1.5"));
-        assert_eq!(kind_of_hash("02b50e2e4772ec787db86de5c6f69dcd364e484516f8cf2f04311c3478f59508").0, ImageKind::Maintenance);
-        // the format-2 build stays listed; the same build ID under another format is not this entry
-        assert!(patch_build(2, [16, 6, 13], [1, 5], "909a604e60e9225b").is_some());
-        assert!(patch_build(2, [16, 6, 13], [1, 5], "297f9f2aa8402e9f").is_none());
-    }
-
-    #[test]
-    fn pack_and_master_capabilities_are_apart() {
-        let c = caps_of(3, [1, 5]).unwrap();
-        assert_eq!(c.pack(), PackCaps { uart1_params: true, uart1_identity: true, write_gate_bit0: true, keeps_start_bit2: true });
-        assert_eq!(c.master(), MasterCaps { status_split: true, start_gate_bit2: true });
-        assert_eq!(pack_caps_of(2, [1, 5]), Some(c.pack()));
-        assert_eq!(pack_caps_of(2, [1, 4]), None);
-        assert_eq!(pack_caps_of(1, [1, 5]), None);
-    }
-
-    #[test]
     fn a_later_build_is_one_more_table_entry() {
-        let later = PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], build_id: "0123456789abcdef", code_sha256: "c0de", ehex_sha256: "f11e", ..PATCH_BUILDS[0] };
-        let table = [PatchBuild { ..PATCH_BUILDS[0] }, later];
-        let found = patch_in(&table, 2, [16, 6, 14], [1, 6], "0123456789abcdef").unwrap();
-        assert_eq!((found.name, found.caps()), ("16.06.14 MAINT 1.6", PATCH_BUILDS[0].caps()));
+        let later = PatchBuild { name: "16.06.14 MAINT 1.6.4", base: [16, 6, 14], patch_rev: 4, build_id: "0123456789abcdef", code_sha256: "c0de", ehex_sha256: "f11e", ..PATCH_BUILDS[1] };
+        let table = [PatchBuild { ..PATCH_BUILDS[1] }, later];
+        let found = patch_in(&table, 4, [16, 6, 14], [1, 6], "0123456789abcdef").unwrap();
+        assert_eq!((found.name, found.caps()), ("16.06.14 MAINT 1.6.4", PATCH_BUILDS[1].caps()));
     }
 
     #[test]

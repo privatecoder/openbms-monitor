@@ -254,7 +254,9 @@ mod tests {
     use super::*;
 
     fn info(format: u8, patch: [u8; 2], uart0: bool) -> MaintInfo {
-        MaintInfo { format, base: [16, 6, 13], patch, patch_rev: u8::from(format == 4), build_id: [1; 8], hard_stop: (format > 2).then_some(false), power_rtc: true, pack_cutoff: true, uart0, reserved_flags: 0 }
+        MaintInfo { format, base: [16, 6, 13], patch, patch_rev: if format == 4 { 3 } else { 0 }, build_id: [1; 8], hard_stop: (format > 2).then_some(false), power_rtc: true, pack_cutoff: true, uart0,
+            // TEMP(maint-1.6): format 3 as the positive 1.6
+            reserved_flags: if format == 3 { 0x08 } else { 0 } }
     }
 
     #[test]

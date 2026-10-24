@@ -1,9 +1,9 @@
 //! What the app makes of the master's answer, and the one rule for flashing the master itself (design:
 //! docs/superpowers/specs/2026-10-13-simple-flash-flow.md, scenario C'). Pure, so every case is tested.
 //!
-//! What a patched master offers follows from its format-2 identity's patch version (`known::caps_of`): patch functions
-//! are cumulative, so an unlisted build or a later OEM base with a supported patch version gets them too. The build list
-//! (`known::PATCH_BUILDS`) only names a build; it grants nothing.
+//! What a patched master offers follows from its identity (`known::caps_of`, a supported build): an unlisted build or a
+//! later OEM base of a supported version gets the functions too. The build list (`known::PATCH_BUILDS`) only names a
+//! build; it grants nothing.
 
 use super::dialog::Probe;
 use crate::known::{self, Caps, ImageKind, PatchBuild};
@@ -18,9 +18,9 @@ pub struct Patch {
 }
 
 impl Patch {
-    /// The identity against `table`: capabilities by its patch version (None: not a supported patch), the name if listed.
+    /// The identity against `table`: capabilities of a supported build (None: not a supported patch), the name if listed.
     pub fn recognise_in(table: &'static [PatchBuild], info: MaintInfo) -> Option<Self> {
-        let caps = known::caps_of(info.format, info.patch)?;
+        let caps = known::caps_of(&info)?;
         let listed = known::patch_in(table, info.format, info.base, info.patch, &info.build_id_hex()).map(|b| b.name);
         Some(Self { info, caps, listed })
     }
@@ -129,7 +129,7 @@ impl PackFinding {
     pub fn of_in(table: &'static [PatchBuild], answer: super::dialog::PackAnswer) -> Self {
         use super::dialog::PackAnswer;
         match answer {
-            PackAnswer::Info(info) => match known::pack_caps_of(info.format, info.patch) {
+            PackAnswer::Info(info) => match known::pack_caps_of(&info) {
                 Some(caps) => PackFinding::Proven { info, caps, listed: known::patch_in(table, info.format, info.base, info.patch, &info.build_id_hex()).map(|b| b.name) },
                 None => PackFinding::Negative(Some(info)),
             },
@@ -150,13 +150,16 @@ pub fn release_first(master: &Master, image: ImageKind) -> bool {
 mod tests {
     use super::*;
 
+    /// A format-4 identity; 1.5 and 1.6 as their supported revisions 1.5.2 and 1.6.3, any other version with revision 0.
     fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
-        MaintInfo { format: 2, base, patch, build_id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false }
+        let patch_rev = match patch { [1, 5] => 2, [1, 6] => 3, _ => 0 };
+        MaintInfo { format: 4, base, patch, build_id, hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0x20, patch_rev, uart0: true }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })
     }
-    const LISTED: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
+    /// the build ID of the listed 1.5.2
+    const LISTED: [u8; 8] = [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA];
     const OTHER: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
     fn patched(i: MaintInfo, s: Option<MaintState>) -> Master {
@@ -166,9 +169,9 @@ mod tests {
     #[test]
     fn the_listed_build_is_named_and_trusted() {
         let m = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
-        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.5"), .. }, .. }));
+        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.5.2"), .. }, .. }));
         assert!(m.trusted() && m.may_halt() && !m.may_release());
-        assert_eq!(m.caps(), known::caps_of(2, [1, 5]));
+        assert_eq!(m.caps(), Some(known::PROOF_CAPS));
     }
 
     #[test]
@@ -185,24 +188,27 @@ mod tests {
     #[test]
     fn a_second_listed_entry_is_configured_like_the_first() {
         static TABLE: [PatchBuild; 2] = [
-            PatchBuild { name: "16.06.13 MAINT 1.5", base: [16, 6, 13], patch: [1, 5], mnt_format: 2, hard_stop: None, power_rtc: false, pack_cutoff: false, build_id: "909a604e60e9225b", code_sha256: "a", ehex_sha256: "b" },
-            PatchBuild { name: "16.06.14 MAINT 1.6", base: [16, 6, 14], patch: [1, 6], mnt_format: 2, hard_stop: None, power_rtc: false, pack_cutoff: false, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
+            PatchBuild { name: "16.06.13 MAINT 1.5.2", base: [16, 6, 13], patch: [1, 5], patch_rev: 2, mnt_format: 4, flags: 0x32, build_id: "89d85c61b40e03da", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "16.06.14 MAINT 1.6.3", base: [16, 6, 14], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
         ];
         let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 5], LISTED)))).with_state(state(0, 0));
         let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));
-        assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("16.06.14 MAINT 1.6"), .. }, .. }));
+        assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("16.06.14 MAINT 1.6.3"), .. }, .. }));
         assert_eq!((second.caps(), second.may_release(), second.may_halt()), (first.caps(), first.may_release(), first.may_halt()));
     }
 
     #[test]
-    fn formats_2_and_3_with_the_same_patch_version_offer_the_same() {
-        let f2 = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
-        let f3 = patched(MaintInfo { format: 3, hard_stop: Some(true), ..info([16, 6, 13], [1, 5], OTHER) }, state(u32::MAX, 3));
-        let (c2, c3) = (f2.caps().unwrap(), f3.caps().unwrap());
-        assert_eq!(Caps { mnt_format: 2, ..c3 }, c2);
-        assert_eq!((f3.trusted(), f3.may_halt()), (true, true));
-        // a format-3 build is told apart from the listed format-2 build by format and build ID
-        assert!(matches!(f3, Master::Patched { patch: Patch { listed: None, .. }, .. }));
+    fn an_older_build_offers_nothing() {
+        // 1.5.1 and 1.6.2 (format 4), 1.5 (format 3): shown as a patch the app does not use
+        for i in [MaintInfo { patch_rev: 1, ..info([16, 6, 13], [1, 5], OTHER) }, MaintInfo { patch_rev: 2, ..info([16, 6, 13], [1, 6], OTHER) },
+            MaintInfo { format: 3, patch_rev: 0, ..info([16, 6, 13], [1, 5], OTHER) }] {
+            let m = patched(i, state(u32::MAX, 3));
+            assert!(matches!(m, Master::UnknownPatch(Some(_))), "{m:?}");
+            assert!(!m.trusted() && m.caps().is_none());
+        }
+        // TEMP(maint-1.6): the positive 1.6 (format 3, flag bit 3) is supported
+        let temp = patched(MaintInfo { format: 3, patch_rev: 0, reserved_flags: 0x08, pack_cutoff: true, ..info([16, 6, 13], [1, 6], OTHER) }, state(u32::MAX, 3));
+        assert_eq!(temp.caps(), Some(Caps { mnt_format: 3, ..known::PROOF_CAPS }));
     }
 
     #[test]
@@ -229,9 +235,9 @@ mod tests {
     #[test]
     fn a_packs_own_03_is_proven_negative_or_undecided() {
         use super::super::dialog::PackAnswer;
-        let p = PackFinding::of(PackAnswer::Info(MaintInfo { format: 3, hard_stop: Some(false), ..info([16, 6, 13], [1, 6], OTHER) }));
+        let p = PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 6], OTHER)));
         assert!(matches!(p, PackFinding::Proven { caps, listed: None, .. } if caps.write_gate_bit0 && caps.uart1_identity));
-        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 5], LISTED))), PackFinding::Proven { listed: Some("16.06.13 MAINT 1.5"), .. }));
+        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 5], LISTED))), PackFinding::Proven { listed: Some("16.06.13 MAINT 1.5.2"), .. }));
         assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 4], OTHER))), PackFinding::Negative(Some(_))));
         assert_eq!(PackFinding::of(PackAnswer::OtherMnt), PackFinding::Negative(None));
         assert_eq!(PackFinding::of(PackAnswer::Undecided), PackFinding::Undecided);

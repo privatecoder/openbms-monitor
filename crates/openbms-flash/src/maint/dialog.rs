@@ -319,13 +319,17 @@ mod tests {
     use openbms_proto::frame;
 
     /// The 17 INFO bytes of a format-2 identity.
+    /// A format-4 identity with flags 32; 1.5 and 1.6 as their supported revisions 1.5.2 and 1.6.3.
     fn mnt(patch: [u8; 2], id: [u8; 8]) -> Vec<u8> {
+        let rev = match patch { [1, 5] => 2, [1, 6] => 3, _ => 0 };
         let mut v = b"MNT".to_vec();
-        v.extend_from_slice(&[2, 16, 6, 13, patch[0], patch[1]]);
+        v.extend_from_slice(&[4, 16, 6, 13, patch[0], patch[1], rev]);
         v.extend_from_slice(&id);
+        v.push(0x32);
         v
     }
-    const ID15: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
+    /// the listed 1.5.2
+    const ID15: [u8; 8] = [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA];
 
     fn state(marker: bool, slaves: u8) -> Vec<u8> {
         let mut v = (if marker { 0u32 } else { u32::MAX }).to_le_bytes().to_vec();
@@ -467,8 +471,9 @@ mod tests {
     #[test]
     fn a_format_3_identity_is_bound_and_read_then_02() {
         let t = VTime::default();
+        // TEMP(maint-1.6): the positive 1.6 is the supported format-3 build
         let mut id3 = b"MNT".to_vec();
-        id3.extend_from_slice(&[3, 16, 6, 13, 1, 5, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 1]);
+        id3.extend_from_slice(&[3, 16, 6, 13, 1, 6, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x0F]);
         let mut link = FakeLink::new(t.clone(), move |req, now| match frame::parse(req) {
             Ok(f) if f.info == [0x03] => vec![(now + ms(40), answer(0, 0x00, &id3))],
             Ok(f) if f.info == [0x02] => vec![(now + ms(40), answer(0, 0x00, &state(false, 2)))],
@@ -477,7 +482,7 @@ mod tests {
         let m = read(&mut link, &t, Budgets::default()).unwrap();
         assert!(matches!(m, Master::Patched { patch, .. } if patch.info.hard_stop == Some(true) && patch.info.format == 3));
         assert_eq!(m.effective_slaves(), Some(2));
-        // format 4 (18 bytes): unknown patch, no 02
+        // format 4 with 18 bytes: unknown patch, no 02
         let mut id4 = b"MNT".to_vec();
         id4.extend_from_slice(&[4, 16, 6, 13, 1, 5, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 1]);
         let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(40), answer(0, 0x00, &id4))]);
@@ -506,9 +511,9 @@ mod tests {
         let r = probe_pack(&mut link, &t, 7, ms(600)).unwrap();
         assert!(matches!(r, PackAnswer::Info(i) if i.hard_stop == Some(true) && i.format == 3));
         assert_eq!(link.sent, vec![MaintInfo::request_at(7).unwrap()]);
-        // MNT02 with 17 bytes
+        // MNT04 with 19 bytes
         let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &mnt([1, 5], ID15)))]);
-        assert!(matches!(probe_pack(&mut link, &t, 3, ms(600)).unwrap(), PackAnswer::Info(i) if i.hard_stop.is_none()));
+        assert!(matches!(probe_pack(&mut link, &t, 3, ms(600)).unwrap(), PackAnswer::Info(i) if i.format == 4 && i.diagnostics()));
     }
 
     #[test]
@@ -517,7 +522,8 @@ mod tests {
         let (mut link, t) = pack_link(move |a| if a == 1 { vec![(ms(40), measured.clone())] } else { vec![] });
         let PackAnswer::Info(i) = probe_pack(&mut link, &t, 1, ms(600)).unwrap() else { panic!() };
         assert_eq!((i.format, i.base, i.patch, i.build_id_hex().as_str(), i.hard_stop), (3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f", Some(false)));
-        assert!(matches!(super::super::policy::PackFinding::of(PackAnswer::Info(i)), super::super::policy::PackFinding::Proven { listed: Some("16.06.13 MAINT 1.5"), .. }));
+        // MAINT 1.5 is no longer supported: shown, its functions not used
+        assert!(matches!(super::super::policy::PackFinding::of(PackAnswer::Info(i)), super::super::policy::PackFinding::Negative(Some(_))));
         // the same answer does not belong to address 2
         assert_eq!(probe_pack(&mut link, &t, 2, ms(600)).unwrap(), PackAnswer::Undecided);
     }
