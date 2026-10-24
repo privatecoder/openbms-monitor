@@ -26,7 +26,7 @@ pub use error::{Error, Result};
 pub use frame::Frame;
 pub use intra_pack::IntraPackRecord;
 pub use memory::{BmsTime, HistoryRecord};
-pub use maint::{InfoAnswer, MaintInfo, MaintState, MarkerWord};
+pub use maint::{InfoAnswer, MaintInfo, MaintState, MarkerWord, MemoryDiagnosis};
 pub use modbus::SystemValues;
 pub use params::{Parameters, Values};
 pub use serial::{SerialNumbers, SerialValue};

@@ -21,6 +21,9 @@ import { SERIES, paramFindings, paramLimits, type ParamLevel, type ParamLimit } 
 import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
+import { HardStopLine } from "../components/HardStopLine";
+import { DiagnosisLine } from "../components/DiagnosisLine";
+import { withHardStop } from "../access";
 import { PackControlSection } from "../components/PackControl";
 import { MarkerSection } from "../components/MarkerControl";
 import { errorText, packBusy, uart1Error, writeError } from "../control";
@@ -118,7 +121,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const [gone, setGone] = useState<{ address: number; board: number; at: number | null; gen: number; armed: boolean } | null>(null);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
-  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, marker: false, multi: false });
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, marker: false, multi: false, hs: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
   const lockedBut = (...ks: (keyof typeof writing)[]) => Object.entries(writing).some(([o, b]) => !ks.includes(o as keyof typeof writing) && b);
   const paramsBusy = writing.params || writing.multi;
@@ -371,6 +374,19 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     return { r, out: outcomeOf(r, raws, switches) };
   };
 
+  /** „Hard-Stop bei Nachladepause“: the pack's last read with only Group0 bits 6/7 changed (`withHardStop`); the
+   *  parameter write reads the pack again and sends this change on top of it. */
+  const writeHardStop = async (a: number, read: Parameters, enabled: boolean) => {
+    const raws = rawsOf(read), sw = [...read.function_switches];
+    const next = sw.map((v, g) => (g === 0 ? withHardStop(v, enabled) : v));
+    const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, linkNow());
+    if (!r) return { text: writeError(error, t, (err) => t("pw.error", { err })), error: true };
+    if (r.kind === "written" && out.kind === "written") return { text: t(enabled ? "hs.doneOn" : "hs.doneOff"), error: false };
+    if (r.kind === "stale") return { text: t("hs.stale"), error: true };
+    if (r.kind === "refused") return { text: t(r.refusal === "locked" ? "pw.locked" : "pw.refusedShort"), error: true };
+    return { text: t("hs.unclear"), error: true };
+  };
+
   /** A stale write: the edit of `a` moves onto the pack's current state, the user's changes stay on top of it. */
   const rebaseEdit = (a: number, p: Parameters) => {
     const fresh = rawsOf(p), fs = p.function_switches;
@@ -611,6 +627,9 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")}
           installation={!!installation} firmware={fwOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={lockedBut("can")} onBusy={busyFor("can")} />
+        <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} flags={chosen !== null ? targetRead(chosen)?.patch?.caps.flags : undefined}
+          usable={offers("hard-stop")} locked={lockedBut("hs") || (edit !== null && edit.address === chosen)} onBusy={busyFor("hs")} write={writeHardStop} />
+        <DiagnosisLine address={chosen} usable={offers("read-diagnosis")} flags={chosen !== null ? targetRead(chosen)?.patch?.caps.flags : undefined} locked={lockedBut()} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={offers("write-name")} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />

@@ -96,6 +96,66 @@ fn check_address(address: u8) -> Result<()> {
     Ok(())
 }
 
+/// Answer to `0x64 INFO=04` (MAINT 1.5.2/1.6.3, image flag bit 5): the stored parameter and SOC copies as read straight
+/// from flash, nothing repaired or changed. Two valid copies that differ do not tell which is newer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MemoryDiagnosis {
+    /// parameter record primary, backup: "empty" (256 bytes FF), "valid" (form and CRC), "invalid", "unknown" (another
+    /// code)
+    pub params: [&'static str; 2],
+    /// "not-comparable", "same", "different", "unknown"
+    pub params_compare: &'static str,
+    pub soc: [&'static str; 2],
+    pub soc_compare: &'static str,
+    /// the individual pack lock stored in the parameter primary, backup: Some(true) locked, Some(false) unlocked, None
+    /// unknown (FF: not supported by the build, or the record invalid)
+    pub lock: [Option<bool>; 2],
+    /// runtime cache flags: bit 0 latch not 0, bit 1 cache consistency value 1, bit 2 cache identifier valid (A6)
+    pub cache: u8,
+}
+
+impl MemoryDiagnosis {
+    pub const LEN: usize = 10;
+
+    /// Ask the pack at `address` (0–21) for its memory diagnosis (changes nothing).
+    pub fn request_at(address: u8) -> Result<Vec<u8>> {
+        check_address(address)?;
+        encode_request(address, 0x64, &[0x04])
+    }
+
+    /// Exactly format 01 with 10 bytes.
+    pub fn parse(info: &[u8]) -> Result<Self> {
+        if info.len() != Self::LEN || info[0] != 0x01 {
+            return Err(Error::Layout("0x64/04 answer is not format 01 with 10 bytes"));
+        }
+        let record = |b: u8| match b {
+            0 => "empty",
+            1 => "valid",
+            2 => "invalid",
+            _ => "unknown",
+        };
+        let compare = |b: u8| match b {
+            0 => "not-comparable",
+            1 => "same",
+            2 => "different",
+            _ => "unknown",
+        };
+        let lock = |b: u8| match b {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        Ok(Self {
+            params: [record(info[1]), record(info[2])],
+            params_compare: compare(info[3]),
+            soc: [record(info[4]), record(info[5])],
+            soc_compare: compare(info[6]),
+            lock: [lock(info[7]), lock(info[8])],
+            cache: info[9],
+        })
+    }
+}
+
 /// The lowest supported build of the 1.5 line and of the 1.6 line and later (major, minor, revision).
 pub const SUPPORTED_15: [u8; 3] = [1, 5, 2];
 pub const SUPPORTED_16: [u8; 3] = [1, 6, 3];
@@ -410,6 +470,21 @@ mod tests {
         assert!(MaintInfo::parse(&hex("4D4E540310060D010639E0C5D9CCF133960E")).unwrap().supported());
         assert!(!MaintInfo::parse(&hex("4D4E540310060D010618DAF61D8A93671D06")).unwrap().supported());
         assert!(!MaintInfo::parse(&info15()).unwrap().supported());
+    }
+
+    #[test]
+    fn the_memory_diagnosis_reads_format_01_with_10_bytes() {
+        assert_eq!(MemoryDiagnosis::request_at(3).unwrap(), crate::frame::encode_request(3, 0x64, &[0x04]).unwrap());
+        assert!(MemoryDiagnosis::request_at(22).is_err());
+        // the contract's example: both copies valid and equal, both locks off, cache valid and consistent
+        let d = MemoryDiagnosis::parse(&hex("01010101010101000006")).unwrap();
+        assert_eq!((d.params, d.params_compare, d.soc, d.soc_compare), (["valid", "valid"], "same", ["valid", "valid"], "same"));
+        assert_eq!((d.lock, d.cache), ([Some(false), Some(false)], 0x06));
+        // 1.5.2: no lock or cache support (FF FF 00); an empty backup, differing SOC copies
+        let d = MemoryDiagnosis::parse(&hex("01010000010102FFFF00")).unwrap();
+        assert_eq!((d.params[1], d.params_compare, d.soc_compare, d.lock), ("empty", "not-comparable", "different", [None, None]));
+        assert!(MemoryDiagnosis::parse(&hex("020101010101010000")).is_err());
+        assert!(MemoryDiagnosis::parse(&hex("0201010101010100000600")).is_err());
     }
 
     /// The 19 INFO bytes of a format-4 identity: 16.06.13, patch 1.6.`rev`, image flags `flags`.

@@ -118,17 +118,17 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
     expect(cutoffBits(proof, true, 0xff).cutoffEditable).toBe(false);
     expect(cutoffBits(null, false, 0xff)).toEqual({ cutoff: null, cutoffEditable: false });
   });
-  it("never takes bit 5 from an edit, a file or an older state", () => {
-    // RS485-1/2 without proof: only the lock state is kept
-    expect(keepMask(null, false, 0xff)).toBe(0x20);
-    // RS485-1/2 with a 1.6 pack: bits 0, 2, 3, 4 free, 5 kept
-    expect(keepMask(live(true), false, 0xff)).toBe(0x20);
-    // CAN socket: bits 2, 3, 5 kept; 4 with the proven cutoff and writing released, else kept too
-    expect(keepMask(live(true), true, 0xff)).toBe(0x2c);
-    expect(keepMask(live(null), true, 0xff)).toBe(0x3c);
-    expect(keepMask(null, true, 0xff)).toBe(0x3d);
-    // a 1.5 pack over RS485-1/2: bit 4 has no function and stays
-    expect(keepMask(live(false), false, 0xff)).toBe(0x30);
+  it("never takes bit 5 or the hard stop choice (bits 6/7) from an edit, a file or an older state", () => {
+    // RS485-1/2 without proof: the lock state and bits 6/7 are kept
+    expect(keepMask(null, false, 0xff)).toBe(0xe0);
+    // RS485-1/2 with a 1.6 pack: bits 0, 2, 3, 4 free
+    expect(keepMask(live(true), false, 0xff)).toBe(0xe0);
+    // CAN socket: bits 2, 3 kept too; 4 with the proven cutoff and writing released, else kept too
+    expect(keepMask(live(true), true, 0xff)).toBe(0xec);
+    expect(keepMask(live(null), true, 0xff)).toBe(0xfc);
+    expect(keepMask(null, true, 0xff)).toBe(0xfd);
+    // a 1.5.2 pack over RS485-1/2: bit 4 has no function and stays
+    expect(keepMask(live(false), false, 0xff)).toBe(0xf0);
   });
   it("shows an active lock only where this connection proved the cutoff, and notices a changed lock state", () => {
     expect(packLockActive(live(true), 0xdf)).toBe(true);
