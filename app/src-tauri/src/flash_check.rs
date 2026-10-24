@@ -240,6 +240,7 @@ mod tests {
         let f = |i: MaintInfo| Found { kind: "patched", info: Some(i), state: None, trusted: true, master: Master::No0x64 };
         assert_eq!(Side::new(None, Some(&f(i)), Some(true), &PackState::default()).positive, Some(false));
         i.patch = [1, 6];
+        i.reserved_flags = 0x08;
         assert_eq!(Side::new(None, Some(&f(i)), None, &PackState::default()).positive, Some(true));
         assert_eq!(Side::new(None, None, Some(true), &PackState::default()).positive, Some(true));
         assert_eq!(Side::new(None, None, None, &PackState::default()).positive, None);

@@ -156,6 +156,9 @@ impl MemoryDiagnosis {
     }
 }
 
+/// TEMP(maint-1.6): the build ID of the first MAINT 1.6 (V1_6_CUTOFF), supported until the installation runs 1.6.3.
+pub const TEMP_16_BUILD: &str = "18daf61d8a93671d";
+
 /// The lowest supported build of the 1.5 line and of the 1.6 line and later (major, minor, revision).
 pub const SUPPORTED_15: [u8; 3] = [1, 5, 2];
 pub const SUPPORTED_16: [u8; 3] = [1, 6, 3];
@@ -295,9 +298,9 @@ impl MaintInfo {
     /// Whether the app supports this build's patch functions: MNT format 4 from MAINT 1.5.2 in the 1.5 line and from
     /// 1.6.3 on. Below, the patch is shown but treated like the original firmware.
     pub fn supported(&self) -> bool {
-        // TEMP(maint-1.6): the positive MAINT 1.6 (format 3, image flag bit 3) stays supported until the installation runs
-        // 1.6.3; then remove this line and the format-3 decoding
-        if self.format == 3 && self.patch == [1, 6] && self.positive() {
+        // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF: format 3, image flags 06, bit 3 at 0 allows power/RTC as in
+        // 1.5.2) stays supported until the installation runs 1.6.3; then remove this and the format-3 decoding
+        if self.format == 3 && self.patch == [1, 6] && self.build_id_hex() == TEMP_16_BUILD {
             return true;
         }
         let v = [self.patch[0], self.patch[1], self.patch_rev];
@@ -466,9 +469,9 @@ mod tests {
         ff[8] = 7;
         ff[9] = 0;
         assert!(MaintInfo::parse(&ff).unwrap().supported());
-        // TEMP(maint-1.6): the positive 1.6 (format 3, flags 0E) yes, the first 1.6 (flags 06) and 1.5 no
-        assert!(MaintInfo::parse(&hex("4D4E540310060D010639E0C5D9CCF133960E")).unwrap().supported());
-        assert!(!MaintInfo::parse(&hex("4D4E540310060D010618DAF61D8A93671D06")).unwrap().supported());
+        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF, flags 06) yes, the positive 1.6 (flags 0E) and 1.5 no
+        assert!(MaintInfo::parse(&hex("4D4E540310060D010618DAF61D8A93671D06")).unwrap().supported());
+        assert!(!MaintInfo::parse(&hex("4D4E540310060D010639E0C5D9CCF133960E")).unwrap().supported());
         assert!(!MaintInfo::parse(&info15()).unwrap().supported());
     }
 

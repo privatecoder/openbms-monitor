@@ -141,7 +141,7 @@ pub fn release_patch(release: &str) -> Option<[u8; 2]> {
     let mut parts = v.split('.').map(|p| p.trim_start_matches(|c: char| !c.is_ascii_digit()).chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u8>().ok());
     let (major, minor) = (parts.next().flatten()?, parts.next().flatten()?);
     let v = [major, minor, parts.next().flatten().unwrap_or(0)];
-    // TEMP(maint-1.6): „MAINT 1.6“ (the positive 1.6 build; a stored proof does not tell it from the first 1.6)
+    // TEMP(maint-1.6): „MAINT 1.6“, the first 1.6 (V1_6_CUTOFF)
     let temp = v == [1, 6, 0];
     (temp || v >= openbms_proto::maint::SUPPORTED_16 || (openbms_proto::maint::SUPPORTED_15 <= v && v < [1, 6, 0])).then_some([major, minor])
 }
@@ -709,8 +709,8 @@ mod tests {
         assert_eq!(release_patch("16.06.13 MAINT 1.5.2"), Some([1, 5]));
         assert_eq!(release_patch("16.06.13 MAINT 1.12 (Test)"), Some([1, 12]));
         assert_eq!(release_patch(&confirmed_release()), Some([1, 5]));
-        // TEMP(maint-1.6)
-        assert_eq!(release_patch("16.06.13 MAINT 1.6 positive"), Some([1, 6]));
+        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF)
+        assert_eq!(release_patch("16.06.13 MAINT 1.6"), Some([1, 6]));
         for old in ["16.06.13 MAINT 1.4", "16.06.13 MAINT 1.5", "16.06.13 MAINT 1.5.1", "16.06.13 MAINT 1.6.1", "16.06.13 MAINT 1.6.2"] {
             assert_eq!(release_patch(old), None, "{old}");
         }

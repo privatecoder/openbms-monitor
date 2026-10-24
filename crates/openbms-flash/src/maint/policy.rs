@@ -206,9 +206,11 @@ mod tests {
             assert!(matches!(m, Master::UnknownPatch(Some(_))), "{m:?}");
             assert!(!m.trusted() && m.caps().is_none());
         }
-        // TEMP(maint-1.6): the positive 1.6 (format 3, flag bit 3) is supported
-        let temp = patched(MaintInfo { format: 3, patch_rev: 0, reserved_flags: 0x08, pack_cutoff: true, ..info([16, 6, 13], [1, 6], OTHER) }, state(u32::MAX, 3));
+        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF, flags 06) is supported, by its build
+        let id = [0x18, 0xDA, 0xF6, 0x1D, 0x8A, 0x93, 0x67, 0x1D];
+        let temp = patched(MaintInfo { format: 3, patch_rev: 0, reserved_flags: 0, pack_cutoff: true, ..info([16, 6, 13], [1, 6], id) }, state(u32::MAX, 3));
         assert_eq!(temp.caps(), Some(Caps { mnt_format: 3, ..known::PROOF_CAPS }));
+        assert!(matches!(temp, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.6"), .. }, .. }));
     }
 
     #[test]
