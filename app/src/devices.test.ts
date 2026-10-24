@@ -13,7 +13,7 @@ describe("device settings", () => {
       assign: { "2": [{ from: 3, device: "a" }, { from: "y" }], pack: [] },
     });
     expect(d.defs).toHaveLength(1);
-    expect(d.defs[0].revs).toEqual([{ from: 1, start_mv: null, trigger_mv: 8, stop_mv: null, when: "always", max_a: null }]);
+    expect(d.defs[0].revs).toEqual([{ from: 1, start_mv: null, stop_cell_mv: null, trigger_mv: 8, stop_mv: null, when: "always", max_a: null }]);
     expect(d.assign).toEqual({ "2": [{ from: 3, device: "a" }] });
   });
 
@@ -62,16 +62,16 @@ describe("device settings", () => {
     expect(summary(BALANCER_DEFAULTS, de)).toBe("ab 5 mV Spreizung, immer");
     const en = i18n.getFixedT("en");
     // numbers in the system's format (fmt)
-    expect(summary({ start_mv: 3400, trigger_mv: 10, stop_mv: 3, when: "charging", max_a: 4 }, en)).toMatch(/^from 10 mV spread, until 3 mV, highest cell from 3[.,]400 V, while charging, 4 A$/);
+    expect(summary({ start_mv: 3400, stop_cell_mv: 3370, trigger_mv: 10, stop_mv: 3, when: "charging", max_a: 4 }, en)).toMatch(/^from 10 mV spread, until 3 mV, highest cell from 3[.,]400 V, until below 3[.,]370 V, while charging, 4 A$/);
     // a stop at or above the trigger is no hysteresis and is not shown
     expect(summary({ ...BALANCER_DEFAULTS, stop_mv: 9 }, en)).toBe("from 5 mV spread, always");
   });
 
   it("take the editor's fields only in range", () => {
     const f = toForm("A", BALANCER_DEFAULTS);
-    expect(f).toEqual({ name: "A", trigger_mv: "5", stop_mv: "", start_mv: "", when: "always", max_a: "" });
+    expect(f).toEqual({ name: "A", trigger_mv: "5", stop_mv: "", start_mv: "", stop_cell_mv: "", when: "always", max_a: "" });
     expect(fromForm(f)).toEqual(BALANCER_DEFAULTS);
-    expect(fromForm({ ...f, stop_mv: "3", start_mv: "3400", max_a: "4,5", when: "charging" })).toEqual({ trigger_mv: 5, stop_mv: 3, start_mv: 3400, when: "charging", max_a: 4.5 });
-    for (const bad of [{ trigger_mv: "" }, { trigger_mv: "0" }, { trigger_mv: "2.5" }, { stop_mv: "x" }, { start_mv: "9000" }, { max_a: "-1" }]) expect(fromForm({ ...f, ...bad })).toBeNull();
+    expect(fromForm({ ...f, stop_mv: "3", start_mv: "3400", stop_cell_mv: "3370", max_a: "4,5", when: "charging" })).toEqual({ trigger_mv: 5, stop_mv: 3, start_mv: 3400, stop_cell_mv: 3370, when: "charging", max_a: 4.5 });
+    for (const bad of [{ trigger_mv: "" }, { trigger_mv: "0" }, { trigger_mv: "2.5" }, { stop_mv: "x" }, { start_mv: "9000" }, { stop_cell_mv: "0" }, { max_a: "-1" }]) expect(fromForm({ ...f, ...bad })).toBeNull();
   });
 });

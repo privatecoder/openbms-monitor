@@ -5,7 +5,7 @@
 //! use it.
 //!
 //! A single answer is decided with the state carried from the row before (hysteresis between `stop_mv` and
-//! `trigger_mv`), within one session and without a gap of more than GAP_PERIODS poll periods. A minute row (compacted)
+//! `trigger_mv`, and between `stop_cell_mv` and `start_mv`), within one session and without a gap of more than GAP_PERIODS poll periods. A minute row (compacted)
 //! only by its extremes (`spread_lo/hi`, `i_lo/hi`, highest and lowest cell of the minute): active or inactive where
 //! that is certain for every answer of the minute, unknown otherwise and without the range columns.
 
@@ -41,8 +41,10 @@ pub enum When {
 /// The manual settings of an active balancer valid at a time (mV).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
-    /// the highest cell must be at least this
+    /// the highest cell must be at least this to start
     pub start_mv: Option<i64>,
+    /// highest cell below which it stops; None (or above the start): the start, no hysteresis
+    pub stop_cell_mv: Option<i64>,
     /// spread from which it starts
     pub trigger_mv: i64,
     /// spread below which it stops; None (or above the trigger): the trigger, no hysteresis
@@ -53,6 +55,11 @@ pub struct Rule {
 impl Rule {
     fn stop(&self) -> i64 {
         self.stop_mv.map_or(self.trigger_mv, |s| s.min(self.trigger_mv))
+    }
+
+    /// the highest cell below which it is off for certain (None: no cell condition)
+    fn cell_stop(&self) -> Option<i64> {
+        self.start_mv.map(|s| self.stop_cell_mv.map_or(s, |c| c.min(s)))
     }
 
     fn when_holds(&self, ma: i64) -> bool {
@@ -147,25 +154,26 @@ impl Ext {
 
 fn single(rule: &Rule, row: &Row, before: Activity) -> Activity {
     let (Some(ma), Some(hi), Some(lo)) = (row.current, row.cell_max, row.cell_min) else { return Activity::Unknown };
-    if !rule.when_holds(ma) || rule.start_mv.is_some_and(|s| hi < s) {
+    if !rule.when_holds(ma) || rule.cell_stop().is_some_and(|s| hi < s) {
         return Activity::Inactive;
     }
     let spread = hi - lo;
-    if spread >= rule.trigger_mv {
+    if spread >= rule.trigger_mv && rule.start_mv.is_none_or(|s| hi >= s) {
         Activity::Active
     } else if spread < rule.stop() {
         Activity::Inactive
     } else {
-        // between stop and trigger: as before (unknown stays unknown)
+        // between stop and trigger, or the highest cell between its stop and the start: as before (unknown stays
+        // unknown)
         before
     }
 }
 
 fn minute(rule: &Rule, row: &Row) -> Activity {
     let (Some(s_lo), Some(s_hi), Some(i_lo), Some(i_hi)) = (row.spread_lo, row.spread_hi, row.i_lo, row.i_hi) else { return Activity::Unknown };
-    // off for every answer: no current of the minute meets `when`, its highest cell stays below the start, or every
+    // off for every answer: no current of the minute meets `when`, its highest cell stays below the cell stop, or every
     // spread is below the stop
-    if !rule.when_holds(i_hi) || rule.start_mv.zip(row.cell_max).is_some_and(|(s, hi)| hi < s) || s_hi < rule.stop() {
+    if !rule.when_holds(i_hi) || rule.cell_stop().zip(row.cell_max).is_some_and(|(s, hi)| hi < s) || s_hi < rule.stop() {
         return Activity::Inactive;
     }
     // on for every answer: every current meets `when`, even the lowest cell of the minute reaches the start, and every
@@ -254,6 +262,8 @@ struct RawRev {
     #[serde(default)]
     start_mv: Option<i64>,
     #[serde(default)]
+    stop_cell_mv: Option<i64>,
+    #[serde(default)]
     trigger_mv: Option<i64>,
     #[serde(default)]
     stop_mv: Option<i64>,
@@ -280,7 +290,7 @@ impl Devices {
                     .into_iter()
                     .flatten()
                     .filter_map(|r| serde_json::from_value::<RawRev>(r.clone()).ok())
-                    .map(|r| DefRev { from: r.from, rule: Rule { start_mv: r.start_mv, trigger_mv: r.trigger_mv.unwrap_or(DEFAULT_TRIGGER_MV), stop_mv: r.stop_mv, when: r.when } })
+                    .map(|r| DefRev { from: r.from, rule: Rule { start_mv: r.start_mv, stop_cell_mv: r.stop_cell_mv, trigger_mv: r.trigger_mv.unwrap_or(DEFAULT_TRIGGER_MV), stop_mv: r.stop_mv, when: r.when } })
                     .collect();
                 Some(Def { id: d["id"].as_str()?.to_string(), name: d["name"].as_str().unwrap_or("").to_string(), kind: d["kind"].as_str().unwrap_or("").to_string(), revs, to: d["to"].as_i64() })
             })
@@ -477,7 +487,7 @@ mod tests {
     use serde_json::json;
     use Activity::*;
 
-    const RULE: Rule = Rule { start_mv: None, trigger_mv: 10, stop_mv: Some(5), when: When::Always };
+    const RULE: Rule = Rule { start_mv: None, stop_cell_mv: None, trigger_mv: 10, stop_mv: Some(5), when: When::Always };
 
     /// A single answer: spread from 3300 mV up, current in mA.
     fn answer(t: i64, session: i64, spread: i64, ma: i64) -> Row {
@@ -512,6 +522,20 @@ mod tests {
         // the highest cell (3300 + spread) must reach the start
         let start = Rule { start_mv: Some(3_320), ..RULE };
         assert_eq!(run(&start, &[answer(0, 1, 15, 0), answer(10_000, 1, 20, 0), answer(20_000, 1, 19, 0)]), vec![Inactive, Active, Inactive]);
+    }
+
+    #[test]
+    fn a_cell_stop_below_the_start_keeps_it_running_down_to_the_cell_stop() {
+        // start at a highest cell of 3320, stop below 3310 (as NEEY RunVol / StopVol): between them as before
+        let rule = Rule { start_mv: Some(3_320), stop_cell_mv: Some(3_310), ..RULE };
+        let rows: Vec<Row> = [15, 25, 15, 8, 15, 25].iter().enumerate().map(|(i, &s)| answer(i as i64 * 10_000, 1, s, 0)).collect();
+        assert_eq!(run(&rule, &rows), vec![Inactive, Active, Active, Inactive, Inactive, Active]);
+        // a cell stop above the start is the start
+        assert_eq!(run(&Rule { stop_cell_mv: Some(3_400), ..rule }, &rows), vec![Inactive, Active, Inactive, Inactive, Inactive, Active]);
+        // a minute whose highest cell stays between the cell stop and the start is not off for certain
+        let m = minute_row(0, (20, 20), (0, 0), (3_305, 3_315));
+        assert_eq!(run(&rule, std::slice::from_ref(&m)), vec![Unknown]);
+        assert_eq!(run(&Rule { stop_cell_mv: None, ..rule }, &[m]), vec![Inactive]);
     }
 
     #[test]
