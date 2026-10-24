@@ -54,6 +54,8 @@ pub enum Error {
     NotPackBus(u8),
     #[error("the bootloader did not answer within {0:?}")]
     NoBootloader(Duration),
+    #[error("the pack refused the restart (RTN {0:02X}: e.g. the SOC could not be saved first); nothing was flashed, the restart is not repeated")]
+    ResetRefused(u8),
     #[error("bootloader reports packet size {0}; only 256 is supported")]
     PacketSize(u32),
     #[error("bootloader rejected the frame (R F N)")]
@@ -96,6 +98,7 @@ impl Error {
             Error::MasterSilent => "Der Master (Adresse 0) antwortet hier nicht auf 0x47: nicht RS485-1/2, oder der Master ist nicht still".into(),
             Error::NotPackBus(a) => format!("Pack {a} antwortet auf 0x51, aber nicht auf 0x47: nicht an RS485-1/2 (Pack-Bus) angeschlossen"),
             Error::NoBootloader(d) => format!("Der Bootloader hat nicht innerhalb von {d:?} geantwortet"),
+            Error::ResetRefused(r) => format!("Das Pack hat den Neustart abgelehnt (RTN {r:02X}: z. B. SOC nicht sicherbar); nichts geflasht, der Neustart wird nicht wiederholt"),
             Error::PacketSize(n) => format!("Der Bootloader meldet Paketgröße {n}; unterstützt ist nur 256"),
             Error::Rejected => "Der Bootloader hat den Rahmen abgelehnt (R F N)".into(),
             Error::Unexpected(s) => format!("Unerwartete Antwort des Bootloaders: {s}"),

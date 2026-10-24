@@ -26,6 +26,11 @@ pub struct BootSim {
     answers: Vec<(u8, Vec<u8>, Vec<u8>)>,
     /// time of each ASCII request by CID2
     asked: Vec<(u8, Duration)>,
+    /// MAINT 1.6.3: the time the SOC save takes before the reset; the bootloader listens only after it
+    soc_save: Duration,
+    /// answer the reset with this RTN and do not restart (1.6.3: RTN 08, the SOC could not be saved)
+    refuse_reset: Option<u8>,
+    resets: usize,
 }
 
 impl BootSim {
@@ -47,7 +52,22 @@ impl BootSim {
             flashed: false,
             answers: Vec::new(),
             asked: Vec::new(),
+            soc_save: Duration::ZERO,
+            refuse_reset: None,
+            resets: 0,
         }
+    }
+    /// The bootloader listens only this long after the reset request (a SOC save before the reset).
+    pub fn set_soc_save(&mut self, d: Duration) {
+        self.soc_save = d;
+    }
+    /// Answer the reset with RTN `rtn` and stay in the application.
+    pub fn refuse_reset(&mut self, rtn: u8) {
+        self.refuse_reset = Some(rtn);
+    }
+    /// How many reset requests came.
+    pub fn resets(&self) -> usize {
+        self.resets
     }
     /// Answer `cid2` with INFO `before` until the flash, `after` from then on.
     pub fn set_answer(&mut self, cid2: u8, before: Vec<u8>, after: Vec<u8>) {
@@ -85,9 +105,13 @@ impl BootSim {
     }
 
     fn ascii_answer(address: u8, info: &[u8]) -> Vec<u8> {
+        Self::reply(address, 0, info)
+    }
+
+    fn reply(address: u8, rtn: u8, info: &[u8]) -> Vec<u8> {
         let info_hex = info.iter().map(|b| format!("{b:02X}")).collect::<String>();
         let len = frame::length_field(info_hex.len()).unwrap();
-        let body = format!("20{address:02X}4600{len:04X}{info_hex}");
+        let body = format!("20{address:02X}46{rtn:02X}{len:04X}{info_hex}");
         let chk = frame::checksum(body.as_bytes());
         format!("~{body}{chk:04X}\r").into_bytes()
     }
@@ -97,7 +121,12 @@ impl BootSim {
             return;
         };
         if request.rtn == 0x45 && request.info == [1, 6, 0] {
-            self.reset_at = Some(self.now);
+            self.resets += 1;
+            if let Some(rtn) = self.refuse_reset {
+                self.queue(Self::reply(request.address, rtn, &[]));
+                return;
+            }
+            self.reset_at = Some(self.now + self.soc_save);
             self.app_resume_at = self.now + Duration::from_millis(500);
             self.locked = false;
             self.enabled = false;
@@ -127,9 +156,11 @@ impl BootSim {
             return;
         };
         self.boot_writes.push((request.cid3, self.now));
+        // an answer already on its way keeps its time; a frame sent meanwhile does not hold it back
+        let was_empty = self.pending.is_empty();
         let window = self
             .reset_at
-            .is_some_and(|t| self.now.saturating_sub(t) <= Duration::from_millis(800));
+            .is_some_and(|t| self.now >= t && self.now - t <= Duration::from_millis(800));
         match (request.cid1, request.cid3) {
             (b'R', b'L') if window => {
                 self.locked = true;
@@ -155,7 +186,7 @@ impl BootSim {
             }
             _ => {}
         }
-        if !self.pending.is_empty() {
+        if was_empty && !self.pending.is_empty() {
             self.boot_reply_ready_at = self.now + self.boot_ack_delay;
         }
     }
