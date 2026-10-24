@@ -1,6 +1,6 @@
 ---
 title: Writing parameters and serial numbers
-short: Change a pack's parameters and write them, bring a pack in line with the others, write the same change to several packs, set serial numbers. Via the RS485-1/2 bus; parameters with patched firmware (from MAINT 1.5.2/1.6.3) also via the CAN socket.
+short: Change a pack's parameters and write them, bring a pack in line with the others, write the same change to several packs, set serial numbers. Via the RS485-1/2 bus; parameters with patched firmware (from MAINT 1.5.3/1.6.3) also via the CAN socket.
 related: topic.params, topic.paramCheck, topic.switches, topic.firmware
 ---
 - **Edit:** after reading, every pack column has a pencil. The column's cells become inputs (values in the unit shown, switches as check boxes); only one column is edited at a time. Changed cells are coloured, the bar above the table lists the changes.

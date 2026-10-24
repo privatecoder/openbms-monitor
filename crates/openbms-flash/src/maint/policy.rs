@@ -150,16 +150,16 @@ pub fn release_first(master: &Master, image: ImageKind) -> bool {
 mod tests {
     use super::*;
 
-    /// A format-4 identity; 1.5 and 1.6 as their supported revisions 1.5.2 and 1.6.3, any other version with revision 0.
+    /// A format-4 identity; 1.5 and 1.6 as their supported revisions 1.5.3 and 1.6.3, any other version with revision 0.
     fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
-        let patch_rev = match patch { [1, 5] => 2, [1, 6] => 3, _ => 0 };
+        let patch_rev = match patch { [1, 5] => 3, [1, 6] => 3, _ => 0 };
         MaintInfo { format: 4, base, patch, build_id, hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0x20, patch_rev, uart0: true }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })
     }
-    /// the build ID of the listed 1.5.2
-    const LISTED: [u8; 8] = [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA];
+    /// the build ID of the listed 1.6.3
+    const LISTED: [u8; 8] = [0xBA, 0xA0, 0x1E, 0xCD, 0x5A, 0xF4, 0xEB, 0x28];
     const OTHER: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
     fn patched(i: MaintInfo, s: Option<MaintState>) -> Master {
@@ -168,15 +168,15 @@ mod tests {
 
     #[test]
     fn the_listed_build_is_named_and_trusted() {
-        let m = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
-        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.5.2"), .. }, .. }));
+        let m = patched(info([16, 6, 13], [1, 6], LISTED), state(u32::MAX, 3));
+        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.6.3"), .. }, .. }));
         assert!(m.trusted() && m.may_halt() && !m.may_release());
         assert_eq!(m.caps(), Some(known::PROOF_CAPS));
     }
 
     #[test]
     fn an_unlisted_build_with_a_supported_patch_version_gets_the_same_configuration() {
-        let listed = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 3));
+        let listed = patched(info([16, 6, 13], [1, 6], LISTED), state(u32::MAX, 3));
         for i in [info([16, 6, 13], [1, 5], OTHER), info([16, 6, 13], [1, 6], OTHER), info([16, 7, 2], [1, 5], OTHER)] {
             let m = patched(i, state(u32::MAX, 3));
             let Master::Patched { patch, .. } = m else { panic!("{m:?}") };
@@ -188,10 +188,10 @@ mod tests {
     #[test]
     fn a_second_listed_entry_is_configured_like_the_first() {
         static TABLE: [PatchBuild; 2] = [
-            PatchBuild { name: "16.06.13 MAINT 1.5.2", base: [16, 6, 13], patch: [1, 5], patch_rev: 2, mnt_format: 4, flags: 0x32, build_id: "89d85c61b40e03da", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "16.06.13 MAINT 1.6.3", base: [16, 6, 13], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, build_id: "baa01ecd5af4eb28", code_sha256: "a", ehex_sha256: "b" },
             PatchBuild { name: "16.06.14 MAINT 1.6.3", base: [16, 6, 14], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
         ];
-        let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 5], LISTED)))).with_state(state(0, 0));
+        let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 6], LISTED)))).with_state(state(0, 0));
         let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));
         assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("16.06.14 MAINT 1.6.3"), .. }, .. }));
         assert_eq!((second.caps(), second.may_release(), second.may_halt()), (first.caps(), first.may_release(), first.may_halt()));
@@ -199,8 +199,8 @@ mod tests {
 
     #[test]
     fn an_older_build_offers_nothing() {
-        // 1.5.1 and 1.6.2 (format 4), 1.5 (format 3): shown as a patch the app does not use
-        for i in [MaintInfo { patch_rev: 1, ..info([16, 6, 13], [1, 5], OTHER) }, MaintInfo { patch_rev: 2, ..info([16, 6, 13], [1, 6], OTHER) },
+        // 1.5.1, 1.5.2 and 1.6.2 (format 4), 1.5 (format 3): shown as a patch the app does not use
+        for i in [MaintInfo { patch_rev: 1, ..info([16, 6, 13], [1, 5], OTHER) }, MaintInfo { patch_rev: 2, ..info([16, 6, 13], [1, 5], OTHER) }, MaintInfo { patch_rev: 2, ..info([16, 6, 13], [1, 6], OTHER) },
             MaintInfo { format: 3, patch_rev: 0, ..info([16, 6, 13], [1, 5], OTHER) }] {
             let m = patched(i, state(u32::MAX, 3));
             assert!(matches!(m, Master::UnknownPatch(Some(_))), "{m:?}");
@@ -227,10 +227,10 @@ mod tests {
 
     #[test]
     fn a_foreign_marker_word_or_no_state_is_neither_halted_nor_released() {
-        let m = patched(info([16, 6, 13], [1, 5], LISTED), state(0x1234_5678, 0));
+        let m = patched(info([16, 6, 13], [1, 6], LISTED), state(0x1234_5678, 0));
         assert_eq!(m.marker(), Some(MarkerWord::Foreign(0x1234_5678)));
         assert!(!m.may_halt() && !m.may_release());
-        let m = patched(info([16, 6, 13], [1, 5], LISTED), None);
+        let m = patched(info([16, 6, 13], [1, 6], LISTED), None);
         assert!(m.trusted() && !m.may_halt() && !m.may_release());
     }
 
@@ -239,7 +239,7 @@ mod tests {
         use super::super::dialog::PackAnswer;
         let p = PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 6], OTHER)));
         assert!(matches!(p, PackFinding::Proven { caps, listed: None, .. } if caps.write_gate_bit0 && caps.uart1_identity));
-        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 5], LISTED))), PackFinding::Proven { listed: Some("16.06.13 MAINT 1.5.2"), .. }));
+        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 6], LISTED))), PackFinding::Proven { listed: Some("16.06.13 MAINT 1.6.3"), .. }));
         assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 4], OTHER))), PackFinding::Negative(Some(_))));
         assert_eq!(PackFinding::of(PackAnswer::OtherMnt), PackFinding::Negative(None));
         assert_eq!(PackFinding::of(PackAnswer::Undecided), PackFinding::Undecided);
@@ -247,8 +247,8 @@ mod tests {
 
     #[test]
     fn a_master_with_its_marker_on_is_released_before_a_non_patched_image() {
-        let on = patched(info([16, 6, 13], [1, 5], LISTED), state(0, 0));
-        let off = patched(info([16, 6, 13], [1, 5], LISTED), state(u32::MAX, 0));
+        let on = patched(info([16, 6, 13], [1, 6], LISTED), state(0, 0));
+        let off = patched(info([16, 6, 13], [1, 6], LISTED), state(u32::MAX, 0));
         assert!(release_first(&on, ImageKind::Original));
         assert!(release_first(&on, ImageKind::Custom));
         assert!(!release_first(&on, ImageKind::Maintenance));

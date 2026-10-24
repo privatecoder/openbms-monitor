@@ -372,7 +372,7 @@ export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?
  *  negative (another MNT or an older patch), undecided (silence or an error). */
 /** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket); `pack_cutoff`: its
  *  stored pack cutoff (image flag bit 2, patch 1.6 or later). */
-/** 0x64/04 (MAINT 1.5.2/1.6.3): the stored parameter and SOC copies (primary, backup) as read from flash; `lock`: the
+/** 0x64/04 (MAINT 1.5.3/1.6.3): the stored parameter and SOC copies (primary, backup) as read from flash; `lock`: the
  *  pack lock stored in each parameter copy (null: unknown or not supported); `cache`: runtime cache flags. */
 export type DiagRecord = "empty" | "valid" | "invalid" | "unknown";
 export type DiagCompare = "not-comparable" | "same" | "different" | "unknown";

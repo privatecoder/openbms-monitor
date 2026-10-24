@@ -1,5 +1,5 @@
 //! Which action goes over which of the three UARTs, and under which conditions, in one place: the firmware stage
-//! (original, or a supported patch: MAINT 1.5.2 or 1.6.3 and later, `MaintInfo::supported`; its image flags say which
+//! (original, or a supported patch: MAINT 1.5.3 or 1.6.3 and later, `MaintInfo::supported`; its image flags say which
 //! functions it has), the release and lock bits of Group0/Group7, the address, and whether the app implements the way
 //! at all.
 //!
@@ -16,7 +16,7 @@ use crate::maint::MarkerWord;
 use serde::Serialize;
 
 /// The patch line every supported build belongs to or follows (major, minor); which builds of it are supported decides
-/// `MaintInfo::supported` (1.5.2, 1.6.3 and later), a pack below it counts as without patch.
+/// `MaintInfo::supported` (1.5.3, 1.6.3 and later), a pack below it counts as without patch.
 pub const MAINT_MIN: [u8; 2] = [1, 5];
 /// From this patch version on, image flag bit 2 announces the stored pack cutoff (Group0 bit 4/5).
 pub const CUTOFF_MIN: [u8; 2] = [1, 6];
@@ -126,10 +126,10 @@ pub const FLAG_POWER: u8 = 1;
 pub const FLAG_CUTOFF: u8 = 2;
 /// MNT format 4: status, clear and identity of 0x64 also over RS485-1/2
 pub const FLAG_UART0: u8 = 4;
-/// The positive Group0 bits 3/4 (MAINT 1.6.3): bit 3 at 1 allows power and clock over the CAN socket, bit 4 at 1
-/// switches the extended off on.
+/// The positive Group0 bits 3/4 (MAINT 1.5.3, 1.6.3): bit 3 at 1 allows power and clock over the CAN socket, bit 4 at 1
+/// switches the extended off on (1.6.3; reserved in 1.5.3).
 pub const FLAG_POSITIVE: u8 = 3;
-/// The memory diagnosis 0x64/04 over RS485-1/2 and the CAN socket (MAINT 1.5.2, 1.6.3)
+/// The memory diagnosis 0x64/04 over RS485-1/2 and the CAN socket (MAINT 1.5.3, 1.6.3)
 pub const FLAG_DIAGNOSIS: u8 = 5;
 /// A planned restart saves the SOC first; RTN 08 when that fails, then no restart (MAINT 1.6.3)
 pub const FLAG_CHECKPOINT: u8 = 6;
@@ -141,11 +141,11 @@ pub fn positive_of(flags: Option<u8>) -> bool {
     flags.is_some_and(|f| f & (1 << FLAG_POSITIVE) != 0)
 }
 
-/// Bit 3 at 1 allows power and clock: a build with image flag bit 3; without known flags (a stored proof) a build from
-/// 1.6 (as 1.6.3). 1.5.2 keeps bit 3 at 0, TEMP(maint-1.6) so does the first 1.6 (flags 06; a stored proof of it is read
-/// as 1.6.3, its power ways stay unknown without the flags anyway).
+/// Bit 3 at 1 allows power and clock: a build with image flag bit 3 (MAINT 1.5.3, 1.6.3); without known flags (a stored
+/// proof) every supported build. TEMP(maint-1.6): the first 1.6 (flags 06) keeps bit 3 at 0; a stored proof of it is read
+/// as positive, its power ways stay unknown without the flags anyway.
 pub fn positive_build(patch: Patch, flags: Option<u8>) -> bool {
-    positive_of(flags) || (flags.is_none() && matches!(patch, Patch::Version(v) if v >= CUTOFF_MIN))
+    positive_of(flags) || (flags.is_none() && matches!(patch, Patch::Version(_)))
 }
 
 /// Whether Group0 bit `bit` acts at 1 where the routes are written for 0: bit 4 (the extended off) always, bit 3 (power
@@ -592,8 +592,8 @@ mod tests {
         };
         let flags = match (power, cutoff) {
             (Tri::Unknown, _) | (_, Tri::Unknown) => None,
-            // a cutoff build as 1.6.3: with the positive bits 3/4
-            (p, c) => Some((u8::from(p == Tri::Yes) << FLAG_POWER) | (u8::from(c == Tri::Yes) << FLAG_CUTOFF) | (u8::from(c == Tri::Yes) << FLAG_POSITIVE)),
+            // every supported power build (1.5.3, 1.6.3) has the positive bit 3
+            (p, c) => Some((u8::from(p == Tri::Yes) << FLAG_POWER) | (u8::from(c == Tri::Yes) << FLAG_CUTOFF) | (u8::from(p == Tri::Yes || c == Tri::Yes) << FLAG_POSITIVE)),
         };
         Facts { patch, flags, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]), slaves: None }
     }
@@ -620,7 +620,7 @@ mod tests {
         let facts: Vec<Facts> = (0..96usize)
             .map(|i| Facts {
                 patch: [Patch::Unknown, Patch::None, Patch::Version([1, 4]), Patch::Version([1, 5]), Patch::Version([1, 6]), Patch::Version([1, 7])][i % 6],
-                flags: [None, Some(0x00), Some(0x02), Some(0x06), Some(0x0E), Some(0x32), Some(0xFE)][(i / 6) % 7],
+                flags: [None, Some(0x00), Some(0x02), Some(0x06), Some(0x0E), Some(0x3A), Some(0xFE)][(i / 6) % 7],
                 group0: [None, Some(0x00), Some(0xFF), Some(0xF7), Some(0xEF), Some(0xDA)][(i * 7) % 6],
                 group7: [None, Some(0x00), Some(0x08), Some(0x18), Some(0x38)][(i * 5) % 5],
                 address: [0, 3][(i / 2) % 2],
@@ -735,12 +735,12 @@ mod tests {
     fn the_positive_build_reads_bits_3_and_4_the_other_way_round() {
         // 1.6.3: flags FE (power, cutoff, positive, UART0 marker, diagnosis, checkpoint, configurable hard stop)
         let f = |g0: u8| Facts { patch: Patch::Version([1, 6]), flags: Some(0xFE), group0: Some(g0), group7: None, address: 2, installation: true, marker: None, base: None, slaves: None };
-        // TEMP(maint-1.6): the first 1.6 build (flags 06) keeps bit 3 at 0, as 1.5.2
+        // TEMP(maint-1.6): the first 1.6 build (flags 06) keeps bit 3 at 0
         let first = |g0: u8| Facts { flags: Some(0x06), ..f(g0) };
         assert!(ready(A::PowerOnOff, U1, &first(0xF7)) && !ready(A::PowerOnOff, U1, &first(0xFF)));
-        // 1.5.2 keeps bit 3 at 0
-        let p15 = |g0: u8| Facts { patch: Patch::Version([1, 5]), flags: Some(0x32), ..f(g0) };
-        assert!(ready(A::PowerOnOff, U1, &p15(0xF7)) && !ready(A::PowerOnOff, U1, &p15(0xFF)));
+        // 1.5.3 (flags 3A) reads bit 3 as 1.6.3
+        let p15 = |g0: u8| Facts { patch: Patch::Version([1, 5]), flags: Some(0x3A), ..f(g0) };
+        assert!(ready(A::PowerOnOff, U1, &p15(0xFF)) && !ready(A::PowerOnOff, U1, &p15(0xF7)));
         // power over the CAN socket: bit 3 at 1 allows it
         assert!(ready(A::PowerOnOff, U1, &f(0xFF)));
         assert!(!ready(A::PowerOnOff, U1, &f(0xF7)));
@@ -781,11 +781,12 @@ mod tests {
     }
 
     #[test]
-    fn power_over_the_can_socket_needs_the_own_image_flag_and_bit3_clear() {
-        assert!(ready(A::PowerOnOff, U1, &facts(Tri::Yes, Tri::Yes, Tri::No, Some(0xF7), 2)));
-        assert!(!ready(A::PowerOnOff, U1, &facts(Tri::Yes, Tri::Yes, Tri::No, Some(0xFF), 2)));
+    fn power_over_the_can_socket_needs_the_own_image_flag_and_bit3_set() {
+        // 1.5.3/1.6.3: bit 3 at 1 allows
+        assert!(ready(A::PowerOnOff, U1, &facts(Tri::Yes, Tri::Yes, Tri::No, Some(0xFF), 2)));
+        assert!(!ready(A::PowerOnOff, U1, &facts(Tri::Yes, Tri::Yes, Tri::No, Some(0xF7), 2)));
         // a stored proof: the flag is not known
-        assert_eq!(decide(route(A::PowerOnOff, U1).unwrap(), &facts(Tri::Yes, Tri::Unknown, Tri::Unknown, Some(0xF7), 2)).state, State::Unknown);
+        assert_eq!(decide(route(A::PowerOnOff, U1).unwrap(), &facts(Tri::Yes, Tri::Unknown, Tri::Unknown, Some(0xFF), 2)).state, State::Unknown);
         // RS485-1/2 needs nothing of it, only the note on the quiet bus
         let d = decide(route(A::PowerOnOff, U0).unwrap(), &facts(Tri::No, Tri::No, Tri::No, None, 2));
         assert_eq!((d.state, d.reasons), (State::Ready, vec![Reason::QuietBus]));

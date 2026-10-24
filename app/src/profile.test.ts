@@ -127,7 +127,7 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
     expect(keepMask(live(true), true, 0xff)).toBe(0xec);
     expect(keepMask(live(null), true, 0xff)).toBe(0xfc);
     expect(keepMask(null, true, 0xff)).toBe(0xfd);
-    // a 1.5.2 pack over RS485-1/2: bit 4 has no function and stays
+    // a 1.5.3 pack over RS485-1/2: bit 4 has no function and stays
     expect(keepMask(live(false), false, 0xff)).toBe(0xf0);
   });
   it("shows an active lock only where this connection proved the cutoff, and notices a changed lock state", () => {

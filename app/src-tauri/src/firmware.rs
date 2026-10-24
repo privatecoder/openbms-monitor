@@ -496,7 +496,7 @@ mod tests {
     fn the_master_marker_is_checked_for_the_installation_whatever_endpoint() {
         use openbms_flash::maint::policy::Patch;
         use openbms_proto::{MaintInfo, MaintState};
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false };
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 3, uart0: false };
         let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
         let (on, off) = (with(0), with(u32::MAX));
         let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);
@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(proof_serial(Some("SYN-3"), Some("SYN-B".into())), None);
         assert_eq!(proof_serial(Some("SYN-3"), None), None);
         // only images with the patch functions set it
-        assert_eq!(known::patch_image("9c1d8a912222d6f8ec9329a17b332776803f5d2a955a6028ae17e3cf0f1d1e1f"), Some("16.06.13 MAINT 1.5.2"));
+        assert_eq!(known::patch_image("fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f"), Some("16.06.13 MAINT 1.6.3"));
         assert_eq!(known::patch_image(known::RELEASES[5].code_sha256), None);
     }
 

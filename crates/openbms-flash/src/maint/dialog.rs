@@ -319,16 +319,16 @@ mod tests {
     use openbms_proto::frame;
 
     /// The 17 INFO bytes of a format-2 identity.
-    /// A format-4 identity with flags 32; 1.5 and 1.6 as their supported revisions 1.5.2 and 1.6.3.
+    /// A format-4 identity with flags 3A; 1.5 and 1.6 as their supported revisions 1.5.3 and 1.6.3.
     fn mnt(patch: [u8; 2], id: [u8; 8]) -> Vec<u8> {
-        let rev = match patch { [1, 5] => 2, [1, 6] => 3, _ => 0 };
+        let rev = match patch { [1, 5] => 3, [1, 6] => 3, _ => 0 };
         let mut v = b"MNT".to_vec();
         v.extend_from_slice(&[4, 16, 6, 13, patch[0], patch[1], rev]);
         v.extend_from_slice(&id);
-        v.push(0x32);
+        v.push(0x3A);
         v
     }
-    /// the listed 1.5.2
+    /// a 1.5.3 build (not listed)
     const ID15: [u8; 8] = [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA];
 
     fn state(marker: bool, slaves: u8) -> Vec<u8> {

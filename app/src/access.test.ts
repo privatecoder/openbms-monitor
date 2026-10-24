@@ -60,10 +60,10 @@ describe("the firmware a way needs", () => {
     const { needText, routeNeed } = await import("./access");
     const de = i18n.getFixedT("de");
     const need = (action: string, channel: string) => needText(de, routeNeed(ROUTES.find((r) => r.action === action && r.channel === channel)!));
-    expect(need("read-parameters", "uart1")).toBe("ab MAINT 1.5.2");
-    expect(need("power-on-off", "uart1")).toBe("ab MAINT 1.5.2");
-    expect(need("read-identity", "uart0")).toBe("ab MAINT 1.5.2");
-    expect(need("read-diagnosis", "uart1")).toBe("ab MAINT 1.5.2");
+    expect(need("read-parameters", "uart1")).toBe("ab MAINT 1.5.3");
+    expect(need("power-on-off", "uart1")).toBe("ab MAINT 1.5.3");
+    expect(need("read-identity", "uart0")).toBe("ab MAINT 1.5.3");
+    expect(need("read-diagnosis", "uart1")).toBe("ab MAINT 1.5.3");
     expect(need("pack-lock-set", "uart1")).toBe("ab MAINT 1.6.3");
     expect(need("hard-stop", "uart1")).toBe("ab MAINT 1.6.3");
     expect(need("read-system", "uart1")).toBe("ab OEM 16.06.04");

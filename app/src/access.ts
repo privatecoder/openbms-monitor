@@ -74,10 +74,10 @@ export const FLAG_POWER = CATALOG.flags.power;
 export const FLAG_POSITIVE = CATALOG.flags.positive;
 /** Whether the image flag byte announces the positive bits 3/4 (null: not known). */
 export const positiveOf = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << FLAG_POSITIVE)) !== 0;
-/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3; without known flags (a stored proof) a
- *  build from 1.6 (as 1.6.3). 1.5.2 keeps bit 3 at 0, TEMP(maint-1.6) so does the first 1.6 (flags 06). */
+/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3 (MAINT 1.5.3, 1.6.3); without known
+ *  flags (a stored proof) every supported build. TEMP(maint-1.6): the first 1.6 (flags 06) keeps bit 3 at 0. */
 export const positiveBuild = (patch: Patch, flags: number | null | undefined): boolean =>
-  positiveOf(flags) || (flags == null && patch.kind === "version" && (patch.version[0] - CUTOFF_MIN[0] || patch.version[1] - CUTOFF_MIN[1]) >= 0);
+  positiveOf(flags) || (flags == null && patch.kind === "version");
 /** `access::inverted`: Group0 bit 4 always, bit 3 in a positive build act at 1 where the routes are written for 0. */
 export const inverted = (group: number, bit: number, patch: Patch, flags: number | null | undefined): boolean =>
   group === 0 && (bit === B.g0_extended_off || (bit === B.g0_power_lock && positiveBuild(patch, flags)));
@@ -98,11 +98,11 @@ export const withHardStop = (group0: number, enabled: boolean): number => (group
 const NEEDS_INSTALLATION = new Set(CATALOG.needs_installation);
 
 type V3 = [number, number, number];
-/** The first supported build of a patch line (1.5 → 1.5.2, 1.6 → 1.6.3) and the first one carrying an image flag. */
-const LINE_FROM: Record<string, V3> = { "1.5": [1, 5, 2], "1.6": [1, 6, 3] };
+/** The first supported build of a patch line (1.5 → 1.5.3, 1.6 → 1.6.3) and the first one carrying an image flag. */
+const LINE_FROM: Record<string, V3> = { "1.5": [1, 5, 3], "1.6": [1, 6, 3] };
 const FLAG_FROM: Record<number, V3> = {
-  [CATALOG.flags.power]: [1, 5, 2], [CATALOG.flags.uart0]: [1, 5, 2], [CATALOG.flags.diagnosis]: [1, 5, 2],
-  [CATALOG.flags.cutoff]: [1, 6, 3], [CATALOG.flags.positive]: [1, 6, 3], [CATALOG.flags.checkpoint]: [1, 6, 3], [CATALOG.flags.hard_stop]: [1, 6, 3],
+  [CATALOG.flags.power]: [1, 5, 3], [CATALOG.flags.uart0]: [1, 5, 3], [CATALOG.flags.diagnosis]: [1, 5, 3], [CATALOG.flags.positive]: [1, 5, 3],
+  [CATALOG.flags.cutoff]: [1, 6, 3], [CATALOG.flags.checkpoint]: [1, 6, 3], [CATALOG.flags.hard_stop]: [1, 6, 3],
 };
 
 /** The firmware a way needs at least, for the matrix: the first supported MAINT build (`patch`), the OEM base (`base`).
@@ -116,7 +116,7 @@ export function routeNeed(r: Pick<Route, "firmware" | "needs">): RouteNeed | nul
   return patch || base ? { patch, base } : null;
 }
 
-/** „ab MAINT 1.5.2“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
+/** „ab MAINT 1.5.3“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
 export function needText(t: TFunction, n: RouteNeed | null): string {
   if (!n) return "";
   return [
