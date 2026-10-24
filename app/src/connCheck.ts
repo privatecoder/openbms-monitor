@@ -73,6 +73,14 @@ export function gapLine(g: Gap, answering: number[], t: TFunction): string {
   return still.length === g.expected.length ? t("conn.noAnswer") : partialLine(g.expected, g.expected.filter((a) => !still.includes(a)), t);
 }
 
+/** The gap without the packs that have answered by now: an answer ends a pack's gap for good, so a monitor stopped
+ *  later (no fresh values at all) does not bring the note back; null once none is left. */
+export function pruneGap(g: Gap, answering: number[]): Gap | null {
+  const missing = g.missing.filter((a) => !answering.includes(a));
+  if (!missing.length) return null;
+  return missing.length === g.missing.length ? g : { ...g, missing };
+}
+
 /** A fixed pack count (0..n-1) or a fixed address (k) is polled without a search. Fall back to the normal search (0..15)
  *  when the connect check answered at an address outside them (decided before polling, `found` null); after the device
  *  query, a count searches as soon as any expected address is missing (a pack may sit outside 0..n-1), a fixed address

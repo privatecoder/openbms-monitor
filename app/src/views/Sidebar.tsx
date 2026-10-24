@@ -13,7 +13,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -91,7 +91,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [since, setSince] = useState(0);
   const [lastTry, setLastTry] = useState(0);
   const now = useNow();
-  const shown = [msg, gap ? gapLine(gap, answering, t) : ""].filter(Boolean).join(" ") || null;
+  // a pack that answered leaves the gap for good; the note shows only while the monitor polls
+  useEffect(() => { if (gap) { const g = pruneGap(gap, answering); if (g !== gap) setGap(g); } }, [gap, answering.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = [msg, gap && connected ? gapLine(gap, answering, t) : ""].filter(Boolean).join(" ") || null;
   const maintRef = useRef(maint); maintRef.current = maint;
   const recStatus = useHistoryStatus().status;
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));

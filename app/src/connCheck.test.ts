@@ -212,3 +212,16 @@ describe("the connect's gap note", () => {
     expect(gapLine(p, [0, 1, 2], t)).toBe("");
   });
 });
+
+describe("a gap after the packs answered", () => {
+  it("drops answered packs for good, so an emptied monitor does not bring them back", async () => {
+    const { gapLine, pruneGap } = await import("./connCheck");
+    const g = { expected: [0, 1, 2], missing: [1, 2], searched: [0] };
+    const after = pruneGap(g, [0, 1]);
+    expect(after).toEqual({ ...g, missing: [2] });
+    // the monitor stopped for maintenance: no fresh values, pack 1 stays out of the note
+    expect(gapLine(after!, [], t)).not.toContain("01");
+    expect(pruneGap(after!, [2])).toBeNull();
+    expect(pruneGap(g, [0])).toBe(g);
+  });
+});
