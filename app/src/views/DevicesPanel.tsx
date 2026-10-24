@@ -142,6 +142,7 @@ function Editor({ form, saving, onChange, onSave, onCancel }: { form: BalancerFo
         {field("trigger_mv", t("dev.f.trigger"))}
         {field("stop_mv", t("dev.f.stop"), t("dev.f.stopPh"))}
         {field("start_mv", t("dev.f.start"), t("dev.f.startPh"))}
+        {field("stop_cell_mv", t("dev.f.stopCell"), t("dev.f.stopCellPh"))}
         <label className="flex flex-col gap-0.5">
           <span className="text-muted">{t("dev.f.when")}</span>
           <select className={input} value={form.when} disabled={saving} onChange={(e) => onChange({ ...form, when: e.target.value as BalancerForm["when"] })}>

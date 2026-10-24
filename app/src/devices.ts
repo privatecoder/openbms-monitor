@@ -8,14 +8,15 @@ import { fmt } from "./lib/utils";
 export type BalancerWhen = "always" | "charging" | "not-discharging";
 export const WHENS: BalancerWhen[] = ["always", "charging", "not-discharging"];
 
-/** The manual settings (mV, A). stop_mv null: the trigger (no hysteresis); max_a is shown only. */
-export interface BalancerValues { start_mv: number | null; trigger_mv: number; stop_mv: number | null; when: BalancerWhen; max_a: number | null }
+/** The manual settings (mV, A). stop_mv null: the trigger (no hysteresis); stop_cell_mv null: the start (no
+ *  hysteresis of the highest cell); max_a is shown only. */
+export interface BalancerValues { start_mv: number | null; stop_cell_mv: number | null; trigger_mv: number; stop_mv: number | null; when: BalancerWhen; max_a: number | null }
 export interface DeviceRev extends BalancerValues { from: number }
 export interface DeviceDef { id: string; name: string; kind: "active-balancer"; profile: null; revs: DeviceRev[]; to: number | null }
 export interface AssignRev { from: number; device: string | null }
 export interface Devices { defs: DeviceDef[]; assign: Record<string, AssignRev[]> }
 
-export const BALANCER_DEFAULTS: BalancerValues = { start_mv: null, trigger_mv: 5, stop_mv: null, when: "always", max_a: null };
+export const BALANCER_DEFAULTS: BalancerValues = { start_mv: null, stop_cell_mv: null, trigger_mv: 5, stop_mv: null, when: "always", max_a: null };
 export const MV_RANGE = [1, 5000] as const;
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -24,6 +25,7 @@ const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object"
 function values(o: Record<string, unknown>): BalancerValues {
   return {
     start_mv: num(o.start_mv),
+    stop_cell_mv: num(o.stop_cell_mv),
     trigger_mv: num(o.trigger_mv) ?? BALANCER_DEFAULTS.trigger_mv,
     stop_mv: num(o.stop_mv),
     when: WHENS.includes(o.when as BalancerWhen) ? (o.when as BalancerWhen) : "always",
@@ -82,7 +84,7 @@ function push<T extends { from: number }>(list: T[], rev: T): T[] {
 }
 
 const sameValues = (a: BalancerValues, b: BalancerValues) =>
-  a.start_mv === b.start_mv && a.trigger_mv === b.trigger_mv && a.stop_mv === b.stop_mv && a.when === b.when && a.max_a === b.max_a;
+  a.start_mv === b.start_mv && a.stop_cell_mv === b.stop_cell_mv && a.trigger_mv === b.trigger_mv && a.stop_mv === b.stop_mv && a.when === b.when && a.max_a === b.max_a;
 
 const newId = (d: Devices, now: number) => {
   let id = `bal-${now.toString(36)}`;
@@ -128,16 +130,18 @@ export function summary(v: BalancerValues, t: (k: string, o?: Record<string, unk
     t("dev.sum.trigger", { mv: v.trigger_mv }),
     v.stop_mv !== null && v.stop_mv < v.trigger_mv ? t("dev.sum.stop", { mv: v.stop_mv }) : null,
     v.start_mv !== null ? t("dev.sum.start", { v: fmt(v.start_mv / 1000, 3, "V") }) : null,
+    v.start_mv !== null && v.stop_cell_mv !== null && v.stop_cell_mv < v.start_mv ? t("dev.sum.stopCell", { v: fmt(v.stop_cell_mv / 1000, 3, "V") }) : null,
     t(`dev.when.${v.when}`),
     v.max_a !== null ? t("dev.sum.maxA", { a: fmt(v.max_a, v.max_a % 1 ? 1 : 0, "A") }) : null,
   ].filter(Boolean).join(", ");
 }
 
 /** The editor's fields as typed. */
-export interface BalancerForm { name: string; trigger_mv: string; stop_mv: string; start_mv: string; when: BalancerWhen; max_a: string }
+export interface BalancerForm { name: string; trigger_mv: string; stop_mv: string; start_mv: string; stop_cell_mv: string; when: BalancerWhen; max_a: string }
 
 export const toForm = (name: string, v: BalancerValues): BalancerForm => ({
   name, trigger_mv: String(v.trigger_mv), stop_mv: v.stop_mv === null ? "" : String(v.stop_mv), start_mv: v.start_mv === null ? "" : String(v.start_mv),
+  stop_cell_mv: v.stop_cell_mv === null ? "" : String(v.stop_cell_mv),
   when: v.when, max_a: v.max_a === null ? "" : String(v.max_a),
 });
 
@@ -149,8 +153,8 @@ export function fromForm(f: BalancerForm): BalancerValues | null {
     const n = Number(x.replace(",", "."));
     return Number.isInteger(n) && n >= MV_RANGE[0] && n <= MV_RANGE[1] ? n : undefined;
   };
-  const trigger = mv(f.trigger_mv, true), stop = mv(f.stop_mv, false), start = mv(f.start_mv, false);
+  const trigger = mv(f.trigger_mv, true), stop = mv(f.stop_mv, false), start = mv(f.start_mv, false), stopCell = mv(f.stop_cell_mv, false);
   const a = f.max_a.trim() ? Number(f.max_a.trim().replace(",", ".")) : null;
-  if (trigger == null || stop === undefined || start === undefined || (a !== null && !(a > 0 && a < 1000))) return null;
-  return { trigger_mv: trigger, stop_mv: stop, start_mv: start, when: f.when, max_a: a };
+  if (trigger == null || stop === undefined || start === undefined || stopCell === undefined || (a !== null && !(a > 0 && a < 1000))) return null;
+  return { trigger_mv: trigger, stop_mv: stop, start_mv: start, stop_cell_mv: stopCell, when: f.when, max_a: a };
 }
