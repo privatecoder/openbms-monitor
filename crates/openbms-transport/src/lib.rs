@@ -539,9 +539,10 @@ impl Connection {
         Ok(())
     }
 
-    /// Restart the pack (0x45 type 6; RS485-1/2, and the CAN socket of a pack with the power and clock service). The board resets before it can answer, so a missing answer is
-    /// the expected outcome and waits only 300 ms; RTN 00 counts as well. Returns when the request was sent, the start
-    /// of the silence `await_comeback` measures.
+    /// Restart the pack (0x45 type 6; RS485-1/2, and the CAN socket of a pack with the power and clock service). The
+    /// board resets before it can answer, so a missing answer is the expected outcome (`RESTART_ANSWER`); RTN 00 counts as
+    /// well, another RTN is an error (MAINT 1.6.3: RTN 08, the SOC could not be saved, no restart). Returns when the request
+    /// was sent, the start of the silence `await_comeback` measures.
     pub fn restart(&mut self, address: u8) -> Result<Instant> {
         let request = control::restart_request(address)?;
         let sent = Instant::now();

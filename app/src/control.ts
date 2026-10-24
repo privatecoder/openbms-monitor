@@ -216,7 +216,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
-  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed"
+  | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "restart-not-saved" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed"
   | "unsupported" | "bit-blocked" | "not-ready";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number; group?: number; bit?: number };
 export function uart1Error(e: unknown): Uart1Error | null {

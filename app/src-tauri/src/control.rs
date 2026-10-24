@@ -393,7 +393,11 @@ pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation:
             return Ok(RestartDone { outcome: Restart::NotReachable, charge: None });
         }
         let before = if own { charge() } else { None };
-        let sent = with_link(&conn, &flashing, &links, &link, |c| refusable(c.restart(address)))?.map_err(refusal_error)?;
+        // RTN 08 (MAINT 1.6.3: the SOC could not be saved, no restart) as on the CAN socket; never retried
+        let sent = match with_link(&conn, &flashing, &links, &link, |c| Ok(c.restart(address)))? {
+            Err(e @ openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => return Err(crate::power::restart_error(e)),
+            r => refusable(r).map_err(|e| e.to_string())?.map_err(refusal_error)?,
+        };
         let outcome = watch(sent, || with_link(&conn, &flashing, &links, &link, |c| c.answers_within(address, WATCH_TRY)));
         let charge = own.then(|| restart_charge(before, charge_after(&outcome, charge)));
         Ok::<_, String>(RestartDone { outcome, charge })

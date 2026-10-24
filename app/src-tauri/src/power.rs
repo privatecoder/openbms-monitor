@@ -137,6 +137,15 @@ pub(crate) fn power_error(e: openbms_transport::Error) -> String {
     }
 }
 
+/// A refused restart: RTN 08 is MAINT 1.6.3's „the SOC could not be saved first, no restart“ (never retried); every
+/// other error as `power_error`.
+pub(crate) fn restart_error(e: openbms_transport::Error) -> String {
+    match e {
+        openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08)) => uart1_refusal("restart-not-saved"),
+        e => power_error(e),
+    }
+}
+
 /// Ein/aus of a build with the stored pack cutoff (MAINT 1.6) answers RTN 08 when storing or verifying the lock failed
 /// (`control::cutoff_failed`): never a success or a release. A request that left and then lost its link (gateway
 /// closed, I/O) is open like silence (`power-lost`); every other error as `power_error`.
@@ -212,7 +221,7 @@ fn command(dev: &mut impl PowerDev, address: u8, fw: &access::Facts, act: Act) -
         Act::Switch { on: false, expect } if crate::profile::extended_changed(expect, fresh.function_switches[0]) => Err(uart1_refusal("cutoff-changed")),
         Act::Switch { on, .. } => dev.on_off(address, on).map(|_| Done::Switched).map_err(|e| switch_error(e, on)),
         // once, no retry: a timeout proves nothing either way
-        Act::Restart => dev.restart(address).map(Done::Restarted).map_err(power_error),
+        Act::Restart => dev.restart(address).map(Done::Restarted).map_err(restart_error),
         Act::SetClock(time) => {
             dev.set_clock(address, time).map_err(power_error)?;
             dev.clock(address).map(Done::Clock).map_err(power_error)
@@ -266,6 +275,14 @@ pub(crate) fn run(state: &AppState, link: &Link, address: u8, act: Act) -> Resul
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_restart_refused_with_rtn_08_says_the_soc_was_not_saved() {
+        use openbms_transport::Error as E;
+        assert_eq!(restart_error(E::Proto(openbms_proto::Error::Rtn(0x08))), uart1_refusal("restart-not-saved"));
+        assert_eq!(restart_error(E::Proto(openbms_proto::Error::Rtn(0x05))), power_error(E::Proto(openbms_proto::Error::Rtn(0x05))));
+    }
+
     use super::*;
     use crate::uart1_id::tests::{block, board, facts, raw, with_group0, Bank};
     use openbms_proto::{uart1, Parameters, SerialValue};

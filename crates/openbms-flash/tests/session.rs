@@ -163,11 +163,14 @@ fn delayed_ack_at_230_ms_succeeds_without_frame_gap() {
     assert!(result.wfd_reply_times.min >= Duration::from_millis(230));
     assert!(result.wfd_reply_times.min <= result.wfd_reply_times.median);
     assert!(result.wfd_reply_times.median <= result.wfd_reply_times.max);
-    for pair in sim.boot_writes().windows(2) {
+    // after the R F L probes (one every 120 ms while no answer has begun) each frame waits for its acknowledgement
+    let writes: Vec<_> = sim.boot_writes().iter().filter(|w| w.0 != b'L').collect();
+    for pair in writes.windows(2) {
         let separation = pair[1].1 - pair[0].1;
         assert!(separation >= Duration::from_millis(230));
         assert!(separation < Duration::from_millis(300));
     }
+    assert!(sim.boot_writes().iter().filter(|w| w.0 == b'L').count() > 1, "a late bootloader is probed again");
     let log = String::from_utf8(log).unwrap();
     assert_eq!(log.matches("TIMING command=WFD").count(), 3);
     assert!(log.contains("TIMING command=RFL"));
@@ -274,7 +277,8 @@ fn configured_gap_is_added_after_delayed_ack() {
         ..Options::default()
     };
     session::flash(&mut sim, 0, &image(), &mut Vec::new(), options).unwrap();
-    for pair in sim.boot_writes().windows(2) {
+    let writes: Vec<_> = sim.boot_writes().iter().filter(|w| w.0 != b'L').collect();
+    for pair in writes.windows(2) {
         assert!(pair[1].1 - pair[0].1 >= Duration::from_millis(330));
     }
 }
@@ -466,4 +470,27 @@ fn a_missing_state_answer_is_not_compared_and_does_not_fail_the_flash() {
     assert_eq!(r.state_before, session::PackState::default());
     assert_eq!(r.state_after, session::PackState::default());
     assert!(r.app_returned);
+}
+
+#[test]
+fn a_bootloader_late_after_the_soc_save_is_found_by_a_later_probe() {
+    // MAINT 1.6.3 saves the SOC before it resets: the first R F L after 50 ms comes too early
+    let mut sim = BootSim::new();
+    sim.set_soc_save(Duration::from_millis(400));
+    let options = Options { ack_timeout: Duration::from_secs(3), ..Options::default() };
+    let result = session::flash(&mut sim, 0, &image(), &mut Vec::new(), options).unwrap();
+    assert_eq!(result.blocks, 3);
+    assert!(sim.boot_writes().iter().filter(|w| w.0 == b'L').count() > 1);
+    assert_eq!(sim.resets(), 1, "the reset is never repeated");
+}
+
+#[test]
+fn a_refused_restart_ends_the_entry_and_nothing_is_flashed() {
+    use openbms_flash::Error;
+    let mut sim = BootSim::new();
+    sim.refuse_reset(0x08);
+    let err = session::flash(&mut sim, 0, &image(), &mut Vec::new(), fast()).err().unwrap();
+    assert!(matches!(err, Error::ResetRefused(0x08)), "{err:?}");
+    assert_eq!(sim.resets(), 1);
+    assert!(!sim.wrote_flash() && sim.boot_writes().iter().all(|w| w.0 == b'L'));
 }

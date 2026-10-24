@@ -55,8 +55,10 @@ pub const GAP: Duration = ms(100);
 pub const UART1_QUIET: Duration = ms(200);
 /// The longest wait for that quiet: traffic that never pauses (noise, a bus busy with another master) sends nothing.
 pub const QUIET_LIMIT: Duration = ms(2000);
-/// The answer to a restart (0x45 type 6): the board resets before it can answer, so a missing one is expected.
-pub const RESTART_ANSWER: Duration = ms(300);
+/// The answer to a restart (0x45 type 6): the board resets before it can answer, so a missing one is expected. A MAINT
+/// 1.6.3 first saves the SOC and answers RTN 08 when that fails (no restart then); how long the save takes is not
+/// measured, so the wait covers well more than a flash erase and write.
+pub const RESTART_ANSWER: Duration = ms(1500);
 /// One 0x51 try of the restart watch; tied to `SILENT_FOR`, so a longer try would hide a short restart.
 pub const WATCH_TRY: Duration = ms(600);
 /// Silence that counts as an interruption in the restart watch: so many unanswered tries in a row, or this long.
@@ -74,6 +76,9 @@ pub const BUS_LISTEN: Duration = ms(1200);
 /// Bootloader (`openbms_flash::session::Options`): after the reset until RFL, each bootloader acknowledgement, the
 /// application's comeback after the flash.
 pub const BOOT_DELAY: Duration = ms(50);
+/// After an R F L without the start of an answer within this, the next R F L (a MAINT 1.6.3 saves the SOC before it
+/// resets, so the bootloader comes later than the first probe); a begun answer is collected first
+pub const RFL_PROBE: Duration = ms(120);
 pub const BOOT_ACK: Duration = ms(10_000);
 pub const BOOT_COMEBACK: Duration = ms(20_000);
 /// The ASCII checks around a flash (before: 0x51/0x47, 0x42 kept for the comparison; after: 0x42/0x44, then 0x47/0x42

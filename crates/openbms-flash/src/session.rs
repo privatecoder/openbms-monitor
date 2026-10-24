@@ -126,7 +126,6 @@ impl ReplyTimes {
 }
 
 struct BootReply {
-    frame: boot::Frame,
     elapsed: Duration,
 }
 
@@ -259,6 +258,87 @@ fn read_boot(
     })
 }
 
+/// R F L probes after the one reset until the bootloader answers, within `ack_timeout` in all: a next probe only after
+/// `RFL_PROBE` without any byte of a bootloader answer begun (a begun one is collected, never answered twice). A MAINT
+/// 1.6.3 saves the SOC before it resets, so the first probe may come too early. An ASCII answer to the reset with an RTN
+/// other than 00 (1.6.3: RTN 08, the SOC could not be saved, no restart) ends it: nothing is flashed, nothing repeated.
+fn boot_entry(link: &mut impl Link, address: u8, reset: &[u8], rfl: &[u8], log_file: &mut impl Write, options: Options) -> Result<boot::Frame> {
+    let deadline = Instant::now() + options.ack_timeout;
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 512];
+    let mut probes = 0u32;
+    loop {
+        probes += 1;
+        log(log_file, "TX", rfl)?;
+        let sent = Instant::now();
+        link.write_raw(rfl)?;
+        let next = sent + timing::RFL_PROBE;
+        loop {
+            let n = link.read_raw(&mut buf)?;
+            if n > 0 {
+                log(log_file, "RX", &buf[..n])?;
+                pending.extend_from_slice(&buf[..n]);
+            }
+            // an ASCII answer to the reset before any bootloader frame: RTN 00 changes nothing, another one refuses the
+            // restart (an echo of the reset itself is skipped)
+            while let Some(end) = pending.iter().position(|b| *b == b'\r') {
+                if pending.windows(4).position(|w| w == b"::::").is_some_and(|s| s < end) {
+                    break;
+                }
+                let line: Vec<u8> = pending.drain(..=end).collect();
+                let Some(start) = line.iter().position(|b| *b == b'~') else { continue };
+                if line[start..] == *reset {
+                    continue;
+                }
+                if let Ok(reply) = frame::parse(&line[start..]) {
+                    if reply.address == address && reply.rtn != 0 {
+                        return Err(Error::ResetRefused(reply.rtn));
+                    }
+                }
+            }
+            if let Some(start) = pending.windows(4).position(|w| w == b"::::") {
+                pending.drain(..start);
+                if pending.len() >= 9 {
+                    let len = u16::from_be_bytes([pending[7], pending[8]]) as usize;
+                    if len > 1024 {
+                        return Err(Error::Proto(format!("boot answer length {len} is excessive")));
+                    }
+                    if pending.len() >= len + 17 {
+                        let answer = boot::decode(&pending[..len + 17])?;
+                        note(log_file, &format!("TIMING command=RFL response={}{}{} response_ms={:.1}", answer.cid1 as char, answer.cid2 as char, answer.cid3 as char, sent.elapsed().as_secs_f64() * 1000.0))?;
+                        if !options.min_frame_gap.is_zero() {
+                            link.wait(options.min_frame_gap);
+                        }
+                        // a later answer to an earlier probe must not be taken for the answer to W F E
+                        if probes > 1 {
+                            link.wait(2 * timing::RFL_PROBE);
+                            link.clear_input()?;
+                            note(log_file, &format!("boot entry after {probes} R F L probes; later answers dropped"))?;
+                        }
+                        return match (answer.cid1, answer.cid2, answer.cid3) {
+                            (b'R', b'F', b'B') => Ok(answer),
+                            (b'R', b'F', b'N') => Err(Error::Rejected),
+                            _ => Err(Error::Unexpected(format!("{}{}{}", answer.cid1 as char, answer.cid2 as char, answer.cid3 as char))),
+                        };
+                    }
+                }
+            }
+            if pending.len() > 4096 {
+                return Err(Error::Proto("boot entry answer too long".into()));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(Error::NoBootloader(options.ack_timeout));
+            }
+            // a begun bootloader answer (or the first colons of one) is collected before another probe
+            let begun = pending.windows(4).any(|w| w == b"::::") || pending.ends_with(b":");
+            if now >= next && !begun {
+                break;
+            }
+        }
+    }
+}
+
 fn boot_exchange(
     link: &mut impl Link,
     bytes: &[u8],
@@ -301,10 +381,7 @@ fn boot_answer(
     }
     let (answer, elapsed) = answer?;
     match (answer.cid1, answer.cid2, answer.cid3) {
-        (b'R' | b'W', b'F', b'B') => Ok(BootReply {
-            frame: answer,
-            elapsed,
-        }),
+        (b'R' | b'W', b'F', b'B') => Ok(BootReply { elapsed }),
         (b'R', b'F', b'N') => Err(Error::Rejected),
         _ => Err(Error::Unexpected(format!(
             "{}{}{}",
@@ -393,11 +470,7 @@ fn enter_boot(
     link.wait(options.boot_delay);
     // from R F L on the frame capture leaves the bootloader out; the caller takes the link in again
     link.pause_capture(true);
-    let answer = boot_exchange(link, rfl, log_file, options).map_err(|e| match e {
-        Error::Timeout { .. } => Error::NoBootloader(options.ack_timeout),
-        other => other,
-    })?;
-    let answer = answer.frame;
+    let answer = boot_entry(link, address, &reset, rfl, log_file, options)?;
     if answer.cid1 != b'R' || answer.address != 0 || answer.data.len() != 2 {
         return Err(Error::Unexpected(
             "R F L did not return a two-byte packet size".into(),
