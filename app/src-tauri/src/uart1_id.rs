@@ -364,6 +364,11 @@ pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expecte
 pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expected: Option<&str>, base: Values, edited: Values, restore: bool) -> Result<bank::Written<ParamWrite>, String> {
     let inst = link.installation.clone().ok_or("view only: writing to a pack needs a connection with an installation")?;
     uart1_pending(state, link, address)?;
+    // a pack whose own 64/03 on this link shows a build the app does not support (an older patch): its binary service
+    // may still answer, but its rules are not the app's; written over RS485-1/2 only
+    if crate::profile::unsupported_here(state, link, address) {
+        return Err(uart1_refusal("unsupported"));
+    }
     let facts = crate::maint::with_store(state, |s| {
         Ok(Facts {
             refs: s.current_refs(&inst)?,

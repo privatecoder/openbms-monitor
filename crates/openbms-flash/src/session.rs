@@ -213,11 +213,14 @@ fn ascii_exchange(
     })
 }
 
+/// The next bootloader frame within `timeout`. `skip_rfb`: an R F B is a late answer to an R F L probe of the entry,
+/// never the answer to a write: it is dropped and the wait goes on (frames that came with it are kept).
 fn read_boot(
     link: &mut impl Link,
     log_file: &mut impl Write,
     timeout: Duration,
     sent_at: Instant,
+    skip_rfb: bool,
 ) -> Result<(boot::Frame, Duration)> {
     let deadline = Instant::now() + timeout;
     let mut pending = Vec::new();
@@ -242,6 +245,11 @@ fn read_boot(
                 }
                 if pending.len() >= len + 17 {
                     let frame = boot::decode(&pending[..len + 17])?;
+                    if skip_rfb && (frame.cid1, frame.cid2, frame.cid3) == (b'R', b'F', b'B') {
+                        pending.drain(..len + 17);
+                        note(log_file, "late R F B (an earlier R F L probe) skipped")?;
+                        continue;
+                    }
                     return Ok((frame, received_at.duration_since(sent_at)));
                 }
             }
@@ -360,7 +368,8 @@ fn boot_answer(
     options: Options,
     started: Instant,
 ) -> Result<BootReply> {
-    let answer = read_boot(link, log_file, options.ack_timeout, started);
+    // every frame answered here is a write (W F E, W F D, W F G): only an empty W F B at address 0 acknowledges it
+    let answer = read_boot(link, log_file, options.ack_timeout, started, true);
     if let Ok((reply, elapsed)) = &answer {
         let command = std::str::from_utf8(&bytes[4..7]).unwrap_or("???");
         let response = format!(
@@ -381,7 +390,7 @@ fn boot_answer(
     }
     let (answer, elapsed) = answer?;
     match (answer.cid1, answer.cid2, answer.cid3) {
-        (b'R' | b'W', b'F', b'B') => Ok(BootReply { elapsed }),
+        (b'W', b'F', b'B') if answer.address == 0 && answer.data.is_empty() => Ok(BootReply { elapsed }),
         (b'R', b'F', b'N') => Err(Error::Rejected),
         _ => Err(Error::Unexpected(format!(
             "{}{}{}",
@@ -727,8 +736,22 @@ mod tests {
             &mut std::io::sink(),
             Duration::from_millis(200),
             started,
+            false,
         )
         .map(|(frame, _)| frame)
+    }
+
+    #[test]
+    fn a_late_rfb_is_never_taken_for_the_answer_to_a_write() {
+        let rfb = boot::encode(b'R', b'B', 0, &[1, 0]).unwrap();
+        let wfb = boot::encode(b'W', b'B', 0, &[]).unwrap();
+        // both in one read: the W F B behind the late R F B is kept
+        let mut link = Chunks(vec![[rfb.clone(), wfb.clone()].concat()].into());
+        let (frame, _) = read_boot(&mut link, &mut std::io::sink(), Duration::from_millis(200), Instant::now(), true).unwrap();
+        assert_eq!((frame.cid1, frame.cid3), (b'W', b'B'));
+        // an R F B alone is no acknowledgement: the wait ends without one
+        let mut link = Chunks(vec![rfb].into());
+        assert!(read_boot(&mut link, &mut std::io::sink(), Duration::from_millis(100), Instant::now(), true).is_err());
     }
 
     #[test]

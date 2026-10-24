@@ -451,6 +451,7 @@ const tauriApi = {
   /** the hard-stop observations of the connection's installation for the boards now current */
   hardStops: () => invoke<HardStopSeen[]>("hard_stops"),
   packDiagnosis: (address: number) => invoke<MemoryDiagnosis>("pack_diagnosis", { address }),
+  packImageFlags: (address: number) => invoke<number | null>("pack_image_flags", { address }),
   /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
   packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
   packProbes: () => invoke<PackProbeView[]>("pack_probes"),
@@ -682,6 +683,7 @@ function demoApi(): typeof tauriApi {
     patchProofConfirm: async () => { throw new Error("desktop app only"); },
     patchProofRevoke: async () => { throw new Error("desktop app only"); },
     hardStops: async () => [],
+    packImageFlags: async () => null,
     packDiagnosis: async () => ({ params: ["valid", "valid"], params_compare: "same", soc: ["valid", "valid"], soc_compare: "same", lock: [false, false], cache: 6 }) as MemoryDiagnosis,
     packProbe: async () => { throw new Error("desktop app only"); },
     packProbes: async () => [],
