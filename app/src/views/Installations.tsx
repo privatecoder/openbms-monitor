@@ -233,7 +233,6 @@ function Ports({ inst, maint }: { inst: Installation; maint: Maint }) {
           <dt className="text-muted">{t("inst.ports.pack")}</dt>
           <dd>
             {packIsCanAdapter(inst) ? t("maint.panel.canAdapter") : show(pack)}
-            {pack?.kind === "tcp" && <span className="block text-discharge">{t("maint.setup.rs485Tcp")}</span>}
           </dd>
           {more.length > 0 && <><dt className="text-muted">{t("inst.ports.more")}</dt><dd>{more.map(keyLabel).join(", ")}</dd></>}
         </dl>

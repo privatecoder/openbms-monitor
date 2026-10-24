@@ -93,7 +93,6 @@ export function MaintSetup({ installation, pending, markerOn, onSaved, onCancel,
           <KindSelect value={f.packKind} disabled={disabled} onChange={(k) => edit({ packKind: k, packValue: "" })} label={t("maint.setup.rs485Kind")} />
           <PortInput kind={f.packKind} value={f.packValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ packValue: v })} label={t("maint.setup.rs485")} disabled={disabled} />
         </div>
-        {f.packKind === "tcp" && <p className="text-discharge">{t("maint.setup.rs485Tcp")}</p>}
         <p className="text-muted">{t("maint.setup.rs485Hint")}</p>
       </div>
       {installation.master_serial && <p className="text-muted">{t("maint.setup.serial", { serial: installation.master_serial })}</p>}
