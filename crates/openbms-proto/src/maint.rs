@@ -96,6 +96,10 @@ fn check_address(address: u8) -> Result<()> {
     Ok(())
 }
 
+/// The lowest supported build of the 1.5 line and of the 1.6 line and later (major, minor, revision).
+pub const SUPPORTED_15: [u8; 3] = [1, 5, 2];
+pub const SUPPORTED_16: [u8; 3] = [1, 6, 3];
+
 /// Format-2, -3 or -4 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintInfo {
@@ -108,7 +112,8 @@ pub struct MaintInfo {
     pub patch_rev: u8,
     /// identifies the build (not an authentication of the device)
     pub build_id: [u8; 8],
-    /// format 3, image flag bit 0: the hard-stop patch is compiled in; None with format 2 (not reported)
+    /// image flag bit 0: the hard-stop patch is compiled in, fixed by the image; None with format 2 (not reported) and
+    /// with a configurable hard stop (flag bit 7, format 4: bit 0 is then only the default, `hard_stop_default`)
     pub hard_stop: Option<bool>,
     /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket (0x45/0x4D/0x4E) with the shared
     /// lock Group0 bit 3 are compiled in; false with format 2 (no such build)
@@ -119,8 +124,9 @@ pub struct MaintInfo {
     /// image flag bit 4 (format 4): status `02`, clear `00` and identity `03` also over RS485-1/2 (UART0) at the pack's
     /// own address; the start stays on the CAN socket
     pub uart0: bool,
-    /// image flag bits 3 and 5–7 as reported (bit 3: the positive Group0 bit 3/4 semantics, not evaluated yet; the
-    /// others reserved); 0 with format 2
+    /// image flag bits 3 and 5–7 as reported, and bit 0 where it is only the default of a configurable hard stop (bit 3:
+    /// the positive Group0 bits 3/4; format 4: bit 5 the 64/04 diagnosis, bit 6 the SOC checkpoint before a planned
+    /// restart, bit 7 the configurable hard stop; read through the methods below); 0 with format 2
     pub reserved_flags: u8,
 }
 
@@ -179,12 +185,14 @@ impl MaintInfo {
         let bit = |b: u8| flags.is_some_and(|f| f & (1 << b) != 0);
         // bit 4 only in format 4; bit 3 and 5–7 kept as reported
         let uart0 = info[3] == 4 && bit(4);
-        let reserved_flags = flags.map_or(0, |f| f & if info[3] == 4 { 0xE8 } else { 0xF8 });
+        // a configurable hard stop (format 4, bit 7) keeps bit 0 as its default, not as a compiled-in hard stop
+        let configurable = info[3] == 4 && bit(7);
+        let reserved_flags = flags.map_or(0, |f| f & if info[3] == 4 { 0xE8 | u8::from(configurable) } else { 0xF8 });
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[id..id + 8]);
         InfoAnswer::Known(Self {
             format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], patch_rev: rev, build_id,
-            hard_stop: flags.map(|f| f & 0x01 != 0), power_rtc: bit(1), pack_cutoff: bit(2), uart0, reserved_flags,
+            hard_stop: flags.filter(|_| !configurable).map(|f| f & 0x01 != 0), power_rtc: bit(1), pack_cutoff: bit(2), uart0, reserved_flags,
         })
     }
 
@@ -192,6 +200,48 @@ impl MaintInfo {
     pub fn image_flags(&self) -> u8 {
         u8::from(self.hard_stop == Some(true)) | (u8::from(self.power_rtc) << 1) | (u8::from(self.pack_cutoff) << 2) | (u8::from(self.uart0) << 4)
             | self.reserved_flags
+    }
+
+    fn format4_flag(&self, bit: u8) -> bool {
+        self.format == 4 && self.reserved_flags & (1 << bit) != 0
+    }
+
+    /// Image flag bit 3: Group0 bits 3/4 positive (bit 3 at 1 allows power and clock, bit 4 at 1 the extended off).
+    pub fn positive(&self) -> bool {
+        self.reserved_flags & 0x08 != 0
+    }
+
+    /// Format 4, image flag bit 5: the memory diagnosis `0x64/04` over RS485-1/2 and the CAN socket (MAINT 1.5.2/1.6.3).
+    pub fn diagnostics(&self) -> bool {
+        self.format4_flag(5)
+    }
+
+    /// Format 4, image flag bit 6: a planned restart (0x45/06) first saves the SOC record verified into both copies; a
+    /// memory error answers RTN 08 and does not restart (MAINT 1.6.3).
+    pub fn checkpoint(&self) -> bool {
+        self.format4_flag(6)
+    }
+
+    /// Format 4, image flag bit 7: the hard stop at a recharge pause is chosen by Group0 bits 6/7 (MAINT 1.6.3).
+    pub fn hard_stop_configurable(&self) -> bool {
+        self.format4_flag(7)
+    }
+
+    /// The default a configurable hard stop takes while Group0 bit 7 is 1 (image flag bit 0); None: not configurable.
+    pub fn hard_stop_default(&self) -> Option<bool> {
+        self.hard_stop_configurable().then_some(self.reserved_flags & 0x01 != 0)
+    }
+
+    /// Whether the app supports this build's patch functions: MNT format 4 from MAINT 1.5.2 in the 1.5 line and from
+    /// 1.6.3 on. Below, the patch is shown but treated like the original firmware.
+    pub fn supported(&self) -> bool {
+        // TEMP(maint-1.6): the positive MAINT 1.6 (format 3, image flag bit 3) stays supported until the installation runs
+        // 1.6.3; then remove this line and the format-3 decoding
+        if self.format == 3 && self.patch == [1, 6] && self.positive() {
+            return true;
+        }
+        let v = [self.patch[0], self.patch[1], self.patch_rev];
+        self.format == 4 && (v >= SUPPORTED_16 || (SUPPORTED_15 <= v && v < [1, 6, 0]))
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -329,6 +379,37 @@ mod tests {
         let mut f5 = info4(1, 0x16);
         f5[3] = 5;
         assert_eq!(MaintInfo::classify(&f5), InfoAnswer::OtherFormat);
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn the_published_1_5_2_and_1_6_3_identities_and_their_new_flags() {
+        // MAINT 1.5.2 DIAGNOSTICS (flags 32): diagnosis, no checkpoint, fixed soft stop, bit 3 at 0 allows power/RTC
+        let a = MaintInfo::parse(&hex("4D4E540410060D01050289D85C61B40E03DA32")).unwrap();
+        assert_eq!((a.patch_text(), a.image_flags(), a.hard_stop, a.hard_stop_default()), ("1.5.2".to_string(), 0x32, Some(false), None));
+        assert_eq!((a.diagnostics(), a.checkpoint(), a.hard_stop_configurable(), a.positive(), a.uart0, a.supported()), (true, false, false, false, true, true));
+        // MAINT 1.6.3 (flags FE): configurable hard stop with soft as default, checkpoint, positive bits
+        let b = MaintInfo::parse(&hex("4D4E540410060D010603BAA01ECD5AF4EB28FE")).unwrap();
+        assert_eq!((b.patch_text(), b.image_flags(), b.hard_stop, b.hard_stop_default()), ("1.6.3".to_string(), 0xFE, None, Some(false)));
+        assert_eq!((b.diagnostics(), b.checkpoint(), b.hard_stop_configurable(), b.positive(), b.supported()), (true, true, true, true, true));
+        // FF: the default is hard; the flag byte comes back unchanged
+        let mut ff = hex("4D4E540410060D010603BAA01ECD5AF4EB28FF");
+        assert_eq!(MaintInfo::parse(&ff).unwrap().hard_stop_default(), Some(true));
+        assert_eq!(MaintInfo::parse(&ff).unwrap().image_flags(), 0xFF);
+        // older format-4 builds and 1.6.2 are not supported; a later version is
+        ff[9] = 2;
+        assert!(!MaintInfo::parse(&ff).unwrap().supported());
+        assert!(!MaintInfo::parse(&info4(1, 0x1E)).unwrap().supported());
+        ff[8] = 7;
+        ff[9] = 0;
+        assert!(MaintInfo::parse(&ff).unwrap().supported());
+        // TEMP(maint-1.6): the positive 1.6 (format 3, flags 0E) yes, the first 1.6 (flags 06) and 1.5 no
+        assert!(MaintInfo::parse(&hex("4D4E540310060D010639E0C5D9CCF133960E")).unwrap().supported());
+        assert!(!MaintInfo::parse(&hex("4D4E540310060D010618DAF61D8A93671D06")).unwrap().supported());
+        assert!(!MaintInfo::parse(&info15()).unwrap().supported());
     }
 
     /// The 19 INFO bytes of a format-4 identity: 16.06.13, patch 1.6.`rev`, image flags `flags`.

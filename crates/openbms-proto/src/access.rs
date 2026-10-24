@@ -1,7 +1,7 @@
 //! Which action goes over which of the three UARTs, and under which conditions, in one place: the firmware stage
-//! (original, patched from MAINT 1.5, the 1.5 build with power and clock, 1.6 with the stored pack cutoff, 1.5.1/1.6.1
-//! with the marker and identity also over RS485-1/2), the release
-//! and lock bits of Group0/Group7, the address, and whether the app implements the way at all.
+//! (original, or a supported patch: MAINT 1.5.2 or 1.6.3 and later, `MaintInfo::supported`; its image flags say which
+//! functions it has), the release and lock bits of Group0/Group7, the address, and whether the app implements the way
+//! at all.
 //!
 //! - UART0: RS485-1/2, Seplos ASCII, 19200 Bd; the host needs a quiet bus (the master's polling stopped).
 //! - UART1: the RS485 pair of the CAN socket, 9600 Bd: OEM ASCII reads, Modbus (master), the MAINT binary service and
@@ -15,7 +15,8 @@
 use crate::maint::MarkerWord;
 use serde::Serialize;
 
-/// The lowest patch version the app supports as a whole (format-2/3 identity with the release bits; 1.4 has none).
+/// The patch line every supported build belongs to or follows (major, minor); which builds of it are supported decides
+/// `MaintInfo::supported` (1.5.2, 1.6.3 and later), a pack below it counts as without patch.
 pub const MAINT_MIN: [u8; 2] = [1, 5];
 /// From this patch version on, image flag bit 2 announces the stored pack cutoff (Group0 bit 4/5).
 pub const CUTOFF_MIN: [u8; 2] = [1, 6];
@@ -26,6 +27,10 @@ pub const G0_START: u8 = 2;
 pub const G0_POWER_LOCK: u8 = 3;
 pub const G0_EXTENDED_OFF: u8 = 4;
 pub const G0_LOCK_STATE: u8 = 5;
+/// MAINT 1.6.3 (image flag bit 7): bit 6 the hard stop at a recharge pause while bit 7 is 0 (an explicit choice); bit 7
+/// at 1 takes the build's default (image flag bit 0)
+pub const G0_HARD_STOP: u8 = 6;
+pub const G0_HARD_STOP_INHERIT: u8 = 7;
 /// Group7 bits that gate a way.
 pub const G7_DISPLAY: u8 = 3;
 pub const G7_EXTENDED_DISPLAY: u8 = 4;
@@ -67,8 +72,10 @@ pub enum Action {
     SetLearnedFull,
     Calibrate,
     SetCanProtocol,
+    HardStop,
     ReadHistory,
     ReadIdentity,
+    ReadDiagnosis,
     MaintStatus,
     MaintStart,
     MaintStop,
@@ -79,12 +86,12 @@ pub enum Action {
 
 impl Action {
     /// In the order the UI lists them.
-    pub const ALL: [Action; 28] = [
+    pub const ALL: [Action; 30] = [
         Action::ReadTelemetry, Action::ReadStatus, Action::ReadInfo, Action::ReadParameters, Action::WriteParameters, Action::WriteName,
         Action::ReadSerials, Action::WriteSerials, Action::ReadClock, Action::SetClock, Action::PowerOnOff, Action::PackLockSet,
         Action::PackLockRelease, Action::Restart,
         Action::ForceHeater, Action::ClearHistory, Action::SetRemaining, Action::SetLearnedFull, Action::Calibrate, Action::SetCanProtocol,
-        Action::ReadHistory, Action::ReadIdentity, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
+        Action::HardStop, Action::ReadHistory, Action::ReadIdentity, Action::ReadDiagnosis, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
         Action::DisplayTunnel, Action::Flash,
     ];
 
@@ -93,7 +100,7 @@ impl Action {
         !matches!(
             self,
             Action::ReadTelemetry | Action::ReadStatus | Action::ReadInfo | Action::ReadParameters | Action::ReadSerials | Action::ReadClock
-                | Action::ReadHistory | Action::ReadIdentity | Action::MaintStatus | Action::ReadSystem
+                | Action::ReadHistory | Action::ReadIdentity | Action::ReadDiagnosis | Action::MaintStatus | Action::ReadSystem
         )
     }
 
@@ -117,19 +124,25 @@ pub enum Firmware {
 /// Image flag bits a way depends on today.
 pub const FLAG_POWER: u8 = 1;
 pub const FLAG_CUTOFF: u8 = 2;
-/// MNT format 4 (MAINT 1.5.1/1.6.1): status, clear and identity of 0x64 also over RS485-1/2
+/// MNT format 4: status, clear and identity of 0x64 also over RS485-1/2
 pub const FLAG_UART0: u8 = 4;
-/// The positive Group0 bits 3/4 (MAINT 1.6.1 and the positive 1.6 build): bit 3 at 1 allows power and clock over the
-/// CAN socket, bit 4 at 1 switches the extended off on.
+/// The positive Group0 bits 3/4 (MAINT 1.6.3; TEMP(maint-1.6): the positive 1.6 build): bit 3 at 1 allows power and
+/// clock over the CAN socket, bit 4 at 1 switches the extended off on.
 pub const FLAG_POSITIVE: u8 = 3;
+/// The memory diagnosis 0x64/04 over RS485-1/2 and the CAN socket (MAINT 1.5.2, 1.6.3)
+pub const FLAG_DIAGNOSIS: u8 = 5;
+/// A planned restart saves the SOC first; RTN 08 when that fails, then no restart (MAINT 1.6.3)
+pub const FLAG_CHECKPOINT: u8 = 6;
+/// The hard stop at a recharge pause chosen by Group0 bits 6/7 (MAINT 1.6.3)
+pub const FLAG_HARD_STOP: u8 = 7;
 
 /// Whether an image flag byte announces the positive Group0 bits 3/4 (None: not known, read as not).
 pub fn positive_of(flags: Option<u8>) -> bool {
     flags.is_some_and(|f| f & (1 << FLAG_POSITIVE) != 0)
 }
 
-/// Bit 3 at 1 allows power and clock: a build with image flag bit 3, and every build from 1.6 (the app reads 1.6 as 1.6.1
-/// does, the first 1.6 build with bit 3 at 0 is not followed). 1.5 and 1.5.1 keep bit 3 at 0.
+/// Bit 3 at 1 allows power and clock: a build with image flag bit 3, and every supported build from 1.6 (a stored proof
+/// carries no flags). 1.5.2 keeps bit 3 at 0.
 pub fn positive_build(patch: Patch, flags: Option<u8>) -> bool {
     positive_of(flags) || matches!(patch, Patch::Version(v) if v >= CUTOFF_MIN)
 }
@@ -190,6 +203,10 @@ const POWER: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_POWER }];
 const CUTOFF: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }];
 /// 0x64 over RS485-1/2 (image flag bit 4)
 const UART0_MAINT: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_UART0 }];
+/// 0x64/04 (image flag bit 5)
+const DIAGNOSIS: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_DIAGNOSIS }];
+/// the configurable hard stop (image flag bit 7)
+const HARD_STOP: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_HARD_STOP }];
 const CUTOFF_POWER: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }, Firmware::ImageFlag { bit: FLAG_POWER }];
 
 const QUIET: &[Need] = &[Need::QuietBus];
@@ -250,9 +267,14 @@ pub const ROUTES: &[Route] = &[
     r(A::Calibrate, U0, "ASCII A0", ANY, QUIET, true),
     r(A::SetCanProtocol, U0, "ASCII A6", ANY, QUIET, true),
     r(A::SetCanProtocol, U2, "binär 63", ANY, LOCAL, false),
+    r(A::HardStop, U0, "ASCII A1 (Group0.Bit6/7)", HARD_STOP, QUIET, true),
+    r(A::HardStop, U1, "binär A1 (Group0.Bit6/7)", HARD_STOP, WRITE_RELEASE, true),
+    r(A::HardStop, U2, "binär A1 (Group0.Bit6/7)", HARD_STOP, LOCAL, false),
     r(A::ReadHistory, U0, "ASCII 4B", ANY, QUIET, true),
     r(A::ReadIdentity, U0, "ASCII 64/03 (Erkennung)", UART0_MAINT, QUIET, true),
     r(A::ReadIdentity, U1, "ASCII 64/03 (Erkennung)", ANY, &[], true),
+    r(A::ReadDiagnosis, U0, "ASCII 64/04", DIAGNOSIS, QUIET, true),
+    r(A::ReadDiagnosis, U1, "ASCII 64/04", DIAGNOSIS, &[], true),
     r(A::MaintStatus, U0, "ASCII 64/02", UART0_MAINT, QUIET, true),
     r(A::MaintStatus, U1, "ASCII 64/02", MAINT, MASTER, true),
     r(A::MaintStart, U1, "ASCII 64/01", MAINT, START, true),
@@ -596,7 +618,7 @@ mod tests {
         let facts: Vec<Facts> = (0..96usize)
             .map(|i| Facts {
                 patch: [Patch::Unknown, Patch::None, Patch::Version([1, 4]), Patch::Version([1, 5]), Patch::Version([1, 6]), Patch::Version([1, 7])][i % 6],
-                flags: [None, Some(0x00), Some(0x02), Some(0x04), Some(0x06), Some(0x0E)][(i / 6) % 6],
+                flags: [None, Some(0x00), Some(0x02), Some(0x06), Some(0x0E), Some(0x32), Some(0xFE)][(i / 6) % 7],
                 group0: [None, Some(0x00), Some(0xFF), Some(0xF7), Some(0xEF), Some(0xDA)][(i * 7) % 6],
                 group7: [None, Some(0x00), Some(0x08), Some(0x18), Some(0x38)][(i * 5) % 5],
                 address: [0, 3][(i / 2) % 2],
@@ -633,9 +655,9 @@ mod tests {
             "cutoff_min": CUTOFF_MIN,
             "bits": {
                 "g0_write": G0_WRITE, "g0_start": G0_START, "g0_power_lock": G0_POWER_LOCK, "g0_extended_off": G0_EXTENDED_OFF,
-                "g0_lock_state": G0_LOCK_STATE, "g7_display": G7_DISPLAY, "g7_extended_display": G7_EXTENDED_DISPLAY, "g7_auto_address": G7_AUTO_ADDRESS,
+                "g0_lock_state": G0_LOCK_STATE, "g0_hard_stop": G0_HARD_STOP, "g0_hard_stop_inherit": G0_HARD_STOP_INHERIT, "g7_display": G7_DISPLAY, "g7_extended_display": G7_EXTENDED_DISPLAY, "g7_auto_address": G7_AUTO_ADDRESS,
             },
-            "flags": { "power": FLAG_POWER, "cutoff": FLAG_CUTOFF, "uart0": FLAG_UART0, "positive": FLAG_POSITIVE },
+            "flags": { "power": FLAG_POWER, "cutoff": FLAG_CUTOFF, "uart0": FLAG_UART0, "positive": FLAG_POSITIVE, "diagnosis": FLAG_DIAGNOSIS, "checkpoint": FLAG_CHECKPOINT, "hard_stop": FLAG_HARD_STOP },
             "needs_installation": Action::ALL.iter().filter(|a| a.needs_installation()).collect::<Vec<_>>(),
             "routes": ROUTES,
         });

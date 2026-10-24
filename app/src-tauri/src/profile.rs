@@ -134,14 +134,16 @@ pub fn caps_of_info(c: Caps, info: &openbms_proto::MaintInfo) -> CapsView {
     caps_view(c, Some(info.power_rtc), Some(known::pack_cutoff_of(info.patch, info.pack_cutoff)), info.patch, Some(info.image_flags()))
 }
 
-/// The patch version a stored proof's release names ("16.06.13 MAINT 1.6" → 1.6), at least the lowest supported.
-pub fn release_patch(release: &str) -> [u8; 2] {
-    let named = release.split_once("MAINT ").and_then(|(_, v)| {
-        let (a, b) = v.split_once('.')?;
-        let b: String = b.chars().take_while(char::is_ascii_digit).collect();
-        Some([a.trim().parse().ok()?, b.parse().ok()?])
-    });
-    named.filter(|v| *v >= known::MIN_PATCH).unwrap_or(known::MIN_PATCH)
+/// The patch version (major, minor) a stored proof's release names ("16.06.13 MAINT 1.6.3" → 1.6); None where it names
+/// no supported build (1.5.1, 1.6.2 …; a release without a version, e.g. a user's proof, counts as the lowest supported).
+pub fn release_patch(release: &str) -> Option<[u8; 2]> {
+    let Some((_, v)) = release.split_once("MAINT ") else { return Some(known::MIN_PATCH) };
+    let mut parts = v.split('.').map(|p| p.trim_start_matches(|c: char| !c.is_ascii_digit()).chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u8>().ok());
+    let (major, minor) = (parts.next().flatten()?, parts.next().flatten()?);
+    let v = [major, minor, parts.next().flatten().unwrap_or(0)];
+    // TEMP(maint-1.6): „MAINT 1.6“ (the positive 1.6 build; a stored proof does not tell it from the first 1.6)
+    let temp = v == [1, 6, 0];
+    (temp || v >= openbms_proto::maint::SUPPORTED_16 || (openbms_proto::maint::SUPPORTED_15 <= v && v < [1, 6, 0])).then_some([major, minor])
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -324,7 +326,7 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
     } else {
         match live {
             Some(PackFinding::Proven { info, listed, .. }) => {
-                let caps = known::caps_of(info.format, info.patch)?;
+                let caps = known::caps_of(info)?;
                 return Some(PackPatch { source: "live".into(), role, release: listed.map(String::from).unwrap_or_else(|| info.version()), caps: caps_of_info(caps, info), at: None });
             }
             // another MNT or a patch below the supported one: a stored proof no longer holds on this connection
@@ -333,9 +335,9 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
         }
     }
     let proof = proof.filter(|p| serial == Some(p.bms_serial.as_str()))?;
-    // a proof means „at least the lowest supported patch“: its capabilities
-    let caps = known::caps_of(2, known::MIN_PATCH)?;
-    Some(PackPatch { source: proof.source.clone(), role, release: proof.release.clone(), caps: caps_view(caps, None, None, release_patch(&proof.release), None), at: Some(proof.at) })
+    // a proof means „a supported patch“: its capabilities; one naming an older build no longer holds
+    let version = release_patch(&proof.release)?;
+    Some(PackPatch { source: proof.source.clone(), role, release: proof.release.clone(), caps: caps_view(known::PROOF_CAPS, None, None, version, None), at: Some(proof.at) })
 }
 
 /// `pack_patch_of` with the connection's profile, the pack's live finding and the installation's stored proof.
@@ -600,7 +602,8 @@ pub fn start_refusal(caps: Option<Caps>, block: Option<&[u8]>) -> &'static str {
 
 /// The proof text of a confirmation: at least the lowest supported patch version.
 pub fn confirmed_release() -> String {
-    format!("MAINT ≥ {}.{}", known::MIN_PATCH[0], known::MIN_PATCH[1])
+    let [a, b, c] = openbms_proto::maint::SUPPORTED_15;
+    format!("MAINT ≥ {a}.{b}.{c}")
 }
 
 /// „Dieses Pack hat die Patch-Funktionen“: bound to String 2 read now at `address` on this connection, equal to `serial`
@@ -645,7 +648,7 @@ mod tests {
     use openbms_proto::{MaintInfo, MaintState};
 
     fn patched(patch: [u8; 2], build: [u8; 8]) -> Master {
-        let info = MaintInfo { format: 2, base: [16, 6, 13], patch, build_id: build, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false };
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: build, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: if patch[1] == 5 { 2 } else { 3 }, uart0: false };
         Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) }
     }
     const LISTED: [u8; 8] = [0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B];
@@ -665,7 +668,7 @@ mod tests {
     fn the_master_proves_itself_only_at_address_0_on_the_can_socket() {
         let p = profile(patched([1, 5], LISTED), Bus::CanSocketBus);
         let m = pack_patch_of(0, Some(&p), None, None, None).unwrap();
-        assert_eq!((m.source.as_str(), m.release.as_str(), m.caps.write_gate, m.caps.start_gate), ("master", "16.06.13 MAINT 1.5", true, true));
+        assert_eq!((m.source.as_str(), m.release.as_str(), m.caps.write_gate, m.caps.start_gate), ("master", "16.06.13 MAINT 1.5.2", true, true));
         // a slave is not proven by its master
         assert_eq!(pack_patch_of(3, Some(&p), None, None, Some("SYN-3")), None);
         // RS485-1/2 knows no 0x64
@@ -682,7 +685,7 @@ mod tests {
         // the same capabilities; only the reported version differs
         assert_eq!(CapsView { version: listed.caps.version, ..later.caps }, listed.caps);
         assert_eq!((later.caps.version, listed.caps.version), ([1, 6], [1, 5]));
-        assert_eq!(later.release, "16.06.13 MAINT 1.6");
+        assert_eq!(later.release, "16.06.13 MAINT 1.6.3");
         let v = view(1, &profile(patched([1, 6], [9; 8]), Bus::CanSocketBus));
         assert_eq!((v.master.kind, v.master.listed.as_deref(), v.gates), ("patched", None, Some(Gates { write: Some(true), start: Some(true), power: None })));
     }
@@ -690,7 +693,7 @@ mod tests {
     #[test]
     fn formats_2_and_3_configure_the_master_alike() {
         let f2 = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap();
-        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(true), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false };
+        let info3 = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(true), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false };
         let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) };
         let f3 = pack_patch_of(0, Some(&profile(m3, Bus::CanSocketBus)), None, None, None).unwrap();
         // the same capabilities; format 3 reports its image flags (here the hard stop), format 2 none
@@ -701,16 +704,22 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_proof_names_its_patch_version_at_least_the_lowest_supported() {
-        assert_eq!(release_patch("16.06.13 MAINT 1.6"), [1, 6]);
-        assert_eq!(release_patch("16.06.13 MAINT 1.12 (Test)"), [1, 12]);
-        assert_eq!(release_patch("16.06.13 MAINT 1.4"), known::MIN_PATCH);
-        assert_eq!(release_patch("irgendwas"), known::MIN_PATCH);
+    fn a_stored_proof_names_its_patch_version_and_holds_only_for_a_supported_build() {
+        assert_eq!(release_patch("16.06.13 MAINT 1.6.3"), Some([1, 6]));
+        assert_eq!(release_patch("16.06.13 MAINT 1.5.2"), Some([1, 5]));
+        assert_eq!(release_patch("16.06.13 MAINT 1.12 (Test)"), Some([1, 12]));
+        assert_eq!(release_patch(&confirmed_release()), Some([1, 5]));
+        // TEMP(maint-1.6)
+        assert_eq!(release_patch("16.06.13 MAINT 1.6 positive"), Some([1, 6]));
+        for old in ["16.06.13 MAINT 1.4", "16.06.13 MAINT 1.5", "16.06.13 MAINT 1.5.1", "16.06.13 MAINT 1.6.1", "16.06.13 MAINT 1.6.2"] {
+            assert_eq!(release_patch(old), None, "{old}");
+        }
+        assert_eq!(release_patch("irgendwas"), Some(known::MIN_PATCH));
     }
 
     #[test]
     fn a_slave_proof_counts_only_for_the_same_string_2() {
-        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.5".into(), source: "flash".into(), at: 7 };
+        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.5.2".into(), source: "flash".into(), at: 7 };
         let p = pack_patch_of(3, None, None, Some(&proof), Some("SYN-3")).unwrap();
         assert_eq!((p.source.as_str(), p.caps.write_gate), ("flash", true));
         assert_eq!(pack_patch_of(3, None, None, Some(&proof), Some("SYN-OTHER")), None);
@@ -845,7 +854,7 @@ mod tests {
 
     #[test]
     fn the_extended_off_goes_over_the_can_socket_only_with_the_proven_cutoff() {
-        let finding = |patch: [u8; 2], flag: bool| PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 3, base: [16, 6, 13], patch, build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: flag , reserved_flags: 0, patch_rev: 0, uart0: false }));
+        let finding = |patch: [u8; 2], flag: bool| PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: flag , reserved_flags: 0, patch_rev: if patch[1] == 5 { 2 } else { 3 }, uart0: false }));
         let with = pack_patch_of(3, None, Some(&finding([1, 6], true)), None, None);
         let rule = group0_rule(true, with.as_ref());
         assert_eq!(rule.keep & CUTOFF_BIT, 0, "bit 4 free with the proven cutoff");
@@ -867,7 +876,7 @@ mod tests {
 
     #[test]
     fn the_power_and_clock_release_needs_the_image_flag() {
-        let caps = known::caps_of(3, [1, 5]).unwrap();
+        let caps = known::PROOF_CAPS;
         assert_eq!(gates_of(caps, false, false, 0xFF).power, None);
         assert_eq!(gates_of(caps, true, false, 0xFF).power, Some(false), "bit 3 set: locked");
         assert_eq!(gates_of(caps, true, false, 0xF7).power, Some(true));
@@ -875,15 +884,15 @@ mod tests {
         assert_eq!(gates_of(caps, true, true, 0xFF).power, Some(true));
         assert_eq!(gates_of(caps, true, true, 0xF7).power, Some(false));
         // the pack's own 64/03 says it; a stored proof does not know
-        let flagged = PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false }));
+        let flagged = PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false }));
         assert_eq!(pack_patch_of(3, None, Some(&flagged), None, None).unwrap().caps.power_rtc, Some(true));
-        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.5".into(), source: "flash".into(), at: 7 };
+        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.5.2".into(), source: "flash".into(), at: 7 };
         assert_eq!(pack_patch_of(3, None, None, Some(&proof), Some("SYN-3")).unwrap().caps.power_rtc, None);
     }
 
     #[test]
     fn the_pack_cutoff_needs_patch_1_6_and_the_image_flag() {
-        let info = |patch: [u8; 2], flag: bool| MaintInfo { format: 3, base: [16, 6, 13], patch, build_id: [0x18, 0xDA, 0xF6, 0x1D, 0x8A, 0x93, 0x67, 0x1D], hard_stop: Some(false), power_rtc: true, pack_cutoff: flag , reserved_flags: 0, patch_rev: 0, uart0: false };
+        let info = |patch: [u8; 2], flag: bool| MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: [0x18, 0xDA, 0xF6, 0x1D, 0x8A, 0x93, 0x67, 0x1D], hard_stop: Some(false), power_rtc: true, pack_cutoff: flag , reserved_flags: 0, patch_rev: if patch[1] == 5 { 2 } else { 3 }, uart0: false };
         let finding = |i: MaintInfo| PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(i));
         // a slave's own 64/03: 1.6 with the flag; the same flag under 1.5 is not read that way; 1.6 without it neither
         assert_eq!(pack_patch_of(3, None, Some(&finding(info([1, 6], true))), None, None).unwrap().caps.pack_cutoff, Some(true));
@@ -894,7 +903,7 @@ mod tests {
         // the master through its profile; the measured build is listed
         let m = Master::Patched { patch: Patch::recognise(info([1, 6], true)).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }) };
         let p = pack_patch_of(0, Some(&profile(m, Bus::CanSocketBus)), None, None, None).unwrap();
-        assert_eq!((p.release.as_str(), p.caps.power_rtc, p.caps.pack_cutoff), ("16.06.13 MAINT 1.6", Some(true), Some(true)));
+        assert_eq!((p.release.as_str(), p.caps.power_rtc, p.caps.pack_cutoff), ("16.06.13 MAINT 1.6.3", Some(true), Some(true)));
         assert_eq!(view(1, &profile(m, Bus::CanSocketBus)).master.caps.unwrap().pack_cutoff, Some(true));
         // a stored proof knows no image flags
         let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "16.06.13 MAINT 1.6".into(), source: "flash".into(), at: 7 };
@@ -981,7 +990,7 @@ mod tests {
 
     #[test]
     fn a_format_3_master_keeps_no_observation_its_flag_shows() {
-        let info3 = MaintInfo { format: 3, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false };
+        let info3 = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 2, uart0: false };
         let m3 = Master::Patched { patch: Patch::recognise(info3).unwrap(), state: None };
         let p3 = profile(m3, Bus::CanSocketBus);
         assert!(hard_stop_reported(Some(&p3), None, 0));
@@ -1050,14 +1059,14 @@ mod tests {
 
     #[test]
     fn the_firmware_base_comes_from_the_identity_with_a_known_revision() {
-        let info = |base| MaintInfo { format: 3, base, patch: [1, 6], build_id: [0; 8], hard_stop: None, power_rtc: true, pack_cutoff: true , reserved_flags: 0, patch_rev: 0, uart0: false };
+        let info = |base| MaintInfo { format: 4, base, patch: [1, 6], build_id: [0; 8], hard_stop: None, power_rtc: true, pack_cutoff: true , reserved_flags: 0, patch_rev: 3, uart0: false };
         assert_eq!(base_of(&info([16, 6, 13])), Some([16, 6, 13]));
         assert_eq!(base_of(&info([16, 6, 0xFF])), None);
     }
 
     #[test]
     fn a_parameter_read_asks_again_only_after_silence_and_only_on_the_can_socket() {
-        let proven = live([1, 6], 3, Some(false));
+        let proven = live([1, 6], Some(false));
         assert!(ask_again(4, true, false, None));
         assert!(ask_again(4, true, false, Some(&PackFinding::Undecided)));
         assert!(!ask_again(4, true, true, Some(&proven)));
@@ -1067,32 +1076,34 @@ mod tests {
         assert!(!ask_again(0, true, false, Some(&PackFinding::Undecided)));
     }
 
-    fn live(patch: [u8; 2], format: u8, hard_stop: Option<bool>) -> PackFinding {
+    /// A format-4 identity (1.5 → 1.5.2, 1.6 → 1.6.3); `hard_stop` None: not reported
+    fn live(patch: [u8; 2], hard_stop: Option<bool>) -> PackFinding {
         use openbms_flash::maint::dialog::PackAnswer;
-        PackFinding::of(PackAnswer::Info(MaintInfo { format, base: [16, 6, 13], patch, build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev: 0, uart0: false }))
+        let patch_rev = if patch == [1, 6] { 3 } else { 2 };
+        PackFinding::of(PackAnswer::Info(MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: [0x29, 0x7F, 0x9F, 0x2A, 0xA8, 0x40, 0x2E, 0x9F], hard_stop, power_rtc: false, pack_cutoff: false , reserved_flags: 0, patch_rev, uart0: false }))
     }
 
     #[test]
     fn a_slaves_own_03_proves_it_live_and_a_negative_one_overrides_a_stored_proof() {
-        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "MAINT ≥ 1.5".into(), source: "user".into(), at: 7 };
+        let proof = PatchProof { address: 3, bms_serial: "SYN-3".into(), release: "MAINT ≥ 1.5.2".into(), source: "user".into(), at: 7 };
         // proven live: source live, role pack, the version it reports
-        let p = pack_patch_of(3, None, Some(&live([1, 5], 3, Some(false))), None, None).unwrap();
+        let p = pack_patch_of(3, None, Some(&live([1, 5], Some(false))), None, None).unwrap();
         assert_eq!((p.source.as_str(), p.role, p.caps.write_gate), ("live", "pack", true));
         // a live proof also without a stored one, and before it
-        assert_eq!(pack_patch_of(3, None, Some(&live([1, 5], 2, None)), Some(&proof), Some("SYN-3")).unwrap().source, "live");
+        assert_eq!(pack_patch_of(3, None, Some(&live([1, 5], None)), Some(&proof), Some("SYN-3")).unwrap().source, "live");
         // negative (patch 1.4, another MNT): no patch functions on this connection, over the stored proof
-        assert_eq!(pack_patch_of(3, None, Some(&live([1, 4], 3, None)), Some(&proof), Some("SYN-3")), None);
+        assert_eq!(pack_patch_of(3, None, Some(&live([1, 4], None)), Some(&proof), Some("SYN-3")), None);
         assert_eq!(pack_patch_of(3, None, Some(&PackFinding::Negative(None)), Some(&proof), Some("SYN-3")), None);
         // undecided (silence, an error): the stored proof holds
         assert_eq!(pack_patch_of(3, None, Some(&PackFinding::Undecided), Some(&proof), Some("SYN-3")).unwrap().source, "user");
         // the master never takes a slave's answer: address 0 keeps its profile path
-        assert_eq!(pack_patch_of(0, None, Some(&live([1, 5], 3, Some(true))), None, None), None);
+        assert_eq!(pack_patch_of(0, None, Some(&live([1, 5], Some(true))), None, None), None);
         assert_eq!(pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap().role, "master");
     }
 
     #[test]
     fn serial_numbers_go_binary_per_target_pack() {
-        let proven = live([1, 5], 3, None);
+        let proven = live([1, 5], None);
         assert!(binary_serials(true, 0, None, false, false));
         assert!(!binary_serials(false, 0, Some(&proven), true, true), "the master by its profile only");
         assert!(binary_serials(false, 4, Some(&proven), false, false), "a patched slave behind an original master");
@@ -1104,13 +1115,13 @@ mod tests {
 
     #[test]
     fn a_slaves_fresh_flag_wins_over_observations() {
-        assert!(hard_stop_reported(None, Some(&live([1, 5], 3, Some(false))), 4));
-        assert!(!hard_stop_reported(None, Some(&live([1, 5], 2, None)), 4), "MNT02: unknown, observations go on");
-        assert!(!hard_stop_reported(None, Some(&live([1, 4], 3, Some(true))), 4), "not a supported patch");
+        assert!(hard_stop_reported(None, Some(&live([1, 5], Some(false))), 4));
+        assert!(!hard_stop_reported(None, Some(&live([1, 5], None)), 4), "MNT02: unknown, observations go on");
+        assert!(!hard_stop_reported(None, Some(&live([1, 4], Some(true))), 4), "not a supported patch");
         assert!(!hard_stop_reported(None, Some(&PackFinding::Undecided), 4));
-        let v = probe_view(1, 4, &live([1, 5], 3, Some(false)));
-        // the measured slave-addressed build is listed
-        assert_eq!((v.state, v.hard_stop, v.build_id.as_deref(), v.listed.as_deref()), ("proven", Some(false), Some("297f9f2aa8402e9f"), Some("16.06.13 MAINT 1.5")));
+        let v = probe_view(1, 4, &live([1, 5], Some(false)));
+        // an unlisted build ID: proven, without a name
+        assert_eq!((v.state, v.hard_stop, v.build_id.as_deref(), v.listed.as_deref()), ("proven", Some(false), Some("297f9f2aa8402e9f"), None));
         assert_eq!(probe_view(1, 4, &PackFinding::Negative(None)).state, "negative");
         assert_eq!(probe_view(1, 4, &PackFinding::Undecided).hard_stop, None);
         // no sighting is kept for a slave with a fresh MNT03 flag
@@ -1125,13 +1136,13 @@ mod tests {
         let link = crate::link_now(&state);
         bank::begin(&state, link.gen, false, None);
         bank::can_master_read(&state, link.gen, true);
-        bank::set_live(&state, link.gen, 4, live([1, 5], 3, Some(false)));
+        bank::set_live(&state, link.gen, 4, live([1, 5], Some(false)));
         observe_hard_stop(&state, &link, 4, &status(0x02, 0x01));
         observe_hard_stop(&state, &link, 5, &status(0x02, 0x01));
         let seen = crate::maint::with_store(&state, |s| s.hard_stops(&inst.id)).unwrap();
         assert_eq!(seen.iter().map(|h| h.address).collect::<Vec<_>>(), vec![5]);
         // a finding of a connection that is no longer current is not kept (and so not told)
-        assert!(!bank::set_live(&state, link.gen + 1, 6, live([1, 5], 3, Some(true))));
+        assert!(!bank::set_live(&state, link.gen + 1, 6, live([1, 5], Some(true))));
         assert_eq!(bank::live(&state, link.gen, 6), None);
         // a flash of the pack: its live finding ends
         bank::clear_live(&state, link.gen, 4);
@@ -1140,11 +1151,11 @@ mod tests {
 
     #[test]
     fn a_refused_start_is_explained_from_the_fresh_block() {
-        let caps = known::caps_of(2, [1, 5]);
+        let caps = Some(known::PROOF_CAPS);
         assert_eq!(start_refusal(caps, Some(&block(0xFB, 0))), "start-not-allowed");
         assert_eq!(start_refusal(caps, Some(&block(0xFF, 0x20))), "auto-address");
         assert_eq!(start_refusal(caps, Some(&block(0xFF, 0))), "token-or-marker");
         assert_eq!(start_refusal(caps, None), "start-refused-unread");
-        assert_eq!(confirmed_release(), "MAINT ≥ 1.5");
+        assert_eq!(confirmed_release(), "MAINT ≥ 1.5.2");
     }
 }

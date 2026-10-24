@@ -49,11 +49,15 @@ pub(crate) fn flows(action: Action) -> &'static [Channel] {
         A::ReadTelemetry | A::ReadStatus | A::ReadInfo | A::ReadParameters | A::WriteParameters | A::ReadSerials | A::ReadClock => BOTH,
         A::SetClock | A::PowerOnOff | A::PackLockSet | A::PackLockRelease | A::Restart | A::ForceHeater | A::ClearHistory | A::SetRemaining
         | A::SetLearnedFull | A::Calibrate | A::SetCanProtocol => BOTH,
+        // the hard stop choice rides in the parameter write (Group0 bits 6/7)
+        A::HardStop => BOTH,
         // RS485-1/2 only: the name rides in the 169-byte ASCII A1, the serial strings and the history have their own
         // frames and checks there, the bootloader listens there
         A::WriteName | A::WriteSerials | A::ReadHistory | A::Flash => &[Channel::Uart0],
-        // RS485-1/2 with MAINT 1.5.1/1.6.1: „Wartungs-Marker“ (`marker.rs`) and „Platine flashen“ (`bench.rs`)
+        // RS485-1/2 with image flag bit 4: „Wartungs-Marker“ (`marker.rs`) and „Platine flashen“ (`bench.rs`)
         A::ReadIdentity | A::MaintStatus | A::MaintStop => BOTH,
+        // the memory diagnosis (`diagnosis.rs`)
+        A::ReadDiagnosis => BOTH,
         A::MaintStart | A::ReadSystem => &[Channel::Uart1],
         A::DisplayTunnel => &[],
     }
