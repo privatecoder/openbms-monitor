@@ -165,7 +165,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
       {/* bound to the port and board it reads: another one starts without a fresh value */}
-      {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} locked={inputsLocked}
+      {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} positive={!!image.positive} locked={inputsLocked}
         latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
     </div>
   );
@@ -305,7 +305,7 @@ function FlashCompare({ c, image }: { c: FlashComparison; image: FirmwareImage |
 
 /** Before flashing an image with the patch functions: the update way, and the target's release bits, which the flash
  *  takes over unchanged (a fresh read on the pack bus, else the last stored block with its age, not checked). */
-function PatchImageNotes({ inst, port, address, release, powerRtc, packCutoff, locked, latent }: { inst: string | null; port: string; address: number; release: string; powerRtc: boolean; packCutoff: boolean; locked: boolean; latent: boolean }) {
+function PatchImageNotes({ inst, port, address, release, powerRtc, packCutoff, positive, locked, latent }: { inst: string | null; port: string; address: number; release: string; powerRtc: boolean; packCutoff: boolean; positive: boolean; locked: boolean; latent: boolean }) {
   const { t, i18n } = useTranslation();
   const [fresh, setFresh] = useState<number | null | undefined>(undefined);
   const [snap, setSnap] = useState<{ g0: number; at: number } | null>(null);
@@ -325,7 +325,7 @@ function PatchImageNotes({ inst, port, address, release, powerRtc, packCutoff, l
     try { setFresh(await api.firmwareGroup0(port, address)); } catch { setFresh(null); } finally { setReading(false); }
   };
   const g0 = fresh ?? snap?.g0 ?? null;
-  const keys = g0 === null ? [] : flashGateKeys(g0, powerRtc, packCutoff);
+  const keys = g0 === null ? [] : flashGateKeys(g0, powerRtc, packCutoff, positive);
   return (
     <div className="space-y-1 rounded-md border border-line p-3 text-sm">
       <p className="flex items-center gap-1 font-medium">{t("fw.patch.title", { release })}<InfoIcon id="topic.patchGates" /></p>

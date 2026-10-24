@@ -245,7 +245,7 @@ export interface HealthReport { from: number; to: number; packs: PackReport[]; p
 export interface ExportStats { rows: number; files: string[] }
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
-export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean; pack_cutoff?: boolean }
+export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean; pack_cutoff?: boolean; positive?: boolean }
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the

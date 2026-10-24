@@ -32,6 +32,8 @@ pub struct ImageInfo {
     power_rtc: bool,
     /// a listed patched build with the stored pack cutoff (Group0 bit 4 extended off, bit 5 the lock, taken over unchanged)
     pack_cutoff: bool,
+    /// a listed patched build whose Group0 bit 3 at 1 allows power and clock (image flag bit 3: 1.5.3, 1.6.3)
+    positive: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -195,6 +197,7 @@ pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(eh
         sha256: image.code_sha256.clone(),
         power_rtc: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.power_rtc()),
         pack_cutoff: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.pack_cutoff()),
+        positive: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.info().positive()),
     };
     Ok((image, info))
 }

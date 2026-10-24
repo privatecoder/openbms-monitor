@@ -75,15 +75,17 @@ describe("release bits of Group0 in a parameter column", () => {
     expect(flashGateKeys(0xfe)).toEqual(["fw.patch.writeLocked"]);
     expect(flashGateKeys(0xfb)).toEqual(["fw.patch.startLocked"]);
     expect(flashGateKeys(0xfa)).toEqual(["fw.patch.bothLocked"]);
-    // an image with power and clock: FF keeps them locked (bit 3 on)
-    expect(flashGateKeys(0xff, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked"]);
-    expect(flashGateKeys(0xf7, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen"]);
-    // an image with the pack cutoff, read as 1.6.1: bit 3 at 1 allows, bit 4 at 1 switches the extended off on (FF:
+    // 1.5.3/1.6.3: bit 3 at 1 allows; TEMP(maint-1.6) the first 1.6 the other way round
+    expect(flashGateKeys(0xff, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen"]);
+    expect(flashGateKeys(0xf7, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked"]);
+    expect(flashGateKeys(0xff, true, true, false)).toEqual(["fw.patch.ok", "fw.patch.powerLocked", "fw.patch.cutoffOn"]);
+    expect(flashGateKeys(0xf7, true, true, false)).toEqual(["fw.patch.ok", "fw.patch.powerOpen", "fw.patch.cutoffOn"]);
+    // 1.6.3 with the pack cutoff: bit 3 at 1 allows, bit 4 at 1 switches the extended off on (FF:
     // both); bit 5 at 0 is kept as a lock (conservative)
     expect(flashGateKeys(0xff, true, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen", "fw.patch.cutoffOn"]);
     expect(flashGateKeys(0xe7, true, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked", "fw.patch.cutoffOff"]);
     expect(flashGateKeys(0xdf, true, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen", "fw.patch.cutoffOn", "fw.patch.lockKept"]);
-    expect(flashGateKeys(0xc7, true)).toEqual(["fw.patch.ok", "fw.patch.powerOpen"]);
+    expect(flashGateKeys(0xc7, true)).toEqual(["fw.patch.ok", "fw.patch.powerLocked"]);
     for (const lng of ["de", "en"]) for (const k of ["fw.patch.cutoffOff", "fw.patch.cutoffOn", "fw.patch.lockKept"]) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
     for (const lng of ["de", "en"]) for (const k of ["fw.patch.ok", "fw.patch.powerLocked", "fw.patch.powerOpen", "par.gatePowerUnknown", "par.gatePowerAbsent", "par.gatePowerFixed", "profile.gate.power", "fw.patch.writeLocked", "fw.patch.startLocked", "fw.patch.bothLocked", "uart1.write-locked", "uart1.start-bit", "pw.locked", "pw.multi.res.locked",
       "maint.err.start.start-not-allowed", "maint.err.start.auto-address", "maint.err.start.token-or-marker", "maint.err.start.start-refused-unread", "maint.err.refused.expected-slaves-needed",

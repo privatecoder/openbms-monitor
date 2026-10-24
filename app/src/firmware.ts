@@ -60,13 +60,13 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
 
 /** What the release bits of Group0 (`g0`) mean after a flash with the patch functions, which takes them over unchanged:
  *  writing over the CAN socket (bit 0) and the maintenance start (bit 2) locked, or both allowed; with an image with
- *  power and clock over the CAN socket (`powerRtc`) also that release (bit 3: at 0 in 1.5/1.5.1, at 1 in an image with
- *  the pack cutoff, read as 1.6.1); with the stored pack cutoff (`packCutoff`) the extended off (bit 4: 1 on, so FF
- *  switches it on) and a bit 5 at 0, which the image takes for a lock. */
-export function flashGateKeys(g0: number, powerRtc = false, packCutoff = false): string[] {
+ *  power and clock over the CAN socket (`powerRtc`) also that release (bit 3: at 1 allows in an image with the positive
+ *  flag, `positive`, 1.5.3/1.6.3; at 0 in TEMP(maint-1.6) the first 1.6); with the stored pack cutoff (`packCutoff`) the
+ *  extended off (bit 4: 1 on, so FF switches it on) and a bit 5 at 0, which the image takes for a lock. */
+export function flashGateKeys(g0: number, powerRtc = false, packCutoff = false, positive = true): string[] {
   const write = (g0 & 1) === 1, start = (g0 & 4) === 4;
   const keys = write && start ? ["fw.patch.ok"] : !write && !start ? ["fw.patch.bothLocked"] : [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
-  const powerFree = ((g0 & 8) === 8) === packCutoff;
+  const powerFree = ((g0 & 8) === 8) === positive;
   const power = powerRtc ? [powerFree ? "fw.patch.powerOpen" : "fw.patch.powerLocked"] : [];
   const cutoff = packCutoff ? [(g0 & 0x10) !== 0 ? "fw.patch.cutoffOn" : "fw.patch.cutoffOff", ...((g0 & 0x20) === 0 ? ["fw.patch.lockKept"] : [])] : [];
   return [...keys, ...power, ...cutoff];
@@ -106,7 +106,8 @@ export function compareLines(c: FlashComparison, image: FirmwareImage | null, t:
   const g0 = c.after.switches?.[0];
   if (g0 !== undefined && image && c.after.positive !== null && (image.power_rtc || image.pack_cutoff)) {
     out.push({ key: "fw.cmp.meaning", vars: { v: hex(g0) }, tone: "muted" });
-    for (const k of flashGateKeys(g0, image.power_rtc, image.pack_cutoff)) out.push({ key: k, tone: k === "fw.patch.lockKept" ? "warn" : "muted" });
+    // the bit-3 direction the pack reports after the flash, else the image's
+    for (const k of flashGateKeys(g0, image.power_rtc, image.pack_cutoff, c.after.positive ?? image.positive ?? true)) out.push({ key: k, tone: k === "fw.patch.lockKept" ? "warn" : "muted" });
   }
   if (c.before.positive !== null && c.after.positive !== null && c.before.positive !== c.after.positive) out.push({ key: "fw.cmp.polarity", tone: "warn" });
   return out;

@@ -130,9 +130,13 @@ describe("the comparison before/after a flash", () => {
   });
   it("reads the release bits under the image flashed and keeps a stored pack lock visible", () => {
     const img: FirmwareImage = { ...image, kind: "maintenance", power_rtc: true, pack_cutoff: true };
-    // 1.6.1: bit 3 set allows power/clock, bit 4 extended off on, bit 5 at 0 a stored lock
+    // 1.6.3: bit 3 set allows power/clock, bit 4 extended off on, bit 5 at 0 a stored lock
     const k = keys(cmp({ after: side({ positive: true, switches: [0x1d, 0, 0, 0, 0, 0, 0, 0] }) }), img);
     expect(k).toEqual(expect.arrayContaining(["fw.cmp.meaning", "fw.patch.powerOpen", "fw.patch.cutoffOn", "fw.patch.lockKept"]));
+    // TEMP(maint-1.6): the first 1.6 reports bit 3 the other way round: FF locks power/clock
+    expect(keys(cmp({ after: side({ positive: false, switches: [0xff, 0, 0, 0, 0, 0, 0, 0] }) }), img)).toContain("fw.patch.powerLocked");
+    // 1.5.3 (power, no cutoff): FF allows
+    expect(keys(cmp({ after: side({ positive: true, switches: [0xff, 0, 0, 0, 0, 0, 0, 0] }) }), { ...img, pack_cutoff: false })).toContain("fw.patch.powerOpen");
     // the original image: no meaning shown
     expect(keys(cmp({ after: side({ positive: null }) }), image)).not.toContain("fw.cmp.meaning");
   });
