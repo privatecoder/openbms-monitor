@@ -941,7 +941,7 @@ const resources = {
       },
       acc: {
         title: "Zugriffswege", closed: "welche Aktion über welchen UART geht", noPack: "Erst ein Pack wählen.", action: "Aktion", thisLink: "diese Verbindung",
-        intro: "Welche Aktion über welchen Anschluss möglich ist, für das gewählte Pack, wie diese Verbindung es kennt (Firmwarebeleg, zuletzt gelesene Schalter). Vorschau: Vor jedem Schreiben liest die App das Pack frisch und prüft erneut. Details im Tooltip.",
+        intro: "Welche Aktion über welchen Anschluss möglich ist, für das gewählte Pack, wie diese Verbindung es kennt (Firmwarebeleg, zuletzt gelesene Schalter). „ungeklärt“: Der Weg hängt an Schaltern, die über diese Verbindung noch nicht gelesen wurden; nach „Aus den Packs lesen“ steht dort „möglich“ oder „gesperrt“. Vorschau: Vor jedem Schreiben liest die App das Pack frisch und prüft erneut. Details im Tooltip.",
         channel: { uart0: "UART0 · RS485-1/2", uart1: "UART1 · CAN-Buchse", uart2: "UART2 · Display/Bluetooth" },
         state: { ready: "möglich", unknown: "ungeklärt", blocked: "gesperrt", "not-implemented": "nicht in der App" },
         act: { "read-telemetry": "Messwerte lesen", "read-status": "Status lesen", "read-info": "Geräteinfo lesen", "read-parameters": "Parameter lesen", "write-parameters": "Parameter und Schalter schreiben", "write-name": "Gerätename ändern",
@@ -2027,7 +2027,7 @@ const resources = {
       },
       acc: {
         title: "Access paths", closed: "which action goes over which UART", noPack: "Pick a pack first.", action: "Action", thisLink: "this connection",
-        intro: "Which action is possible over which port, for the chosen pack, as this connection knows it (firmware proof, switches last read). A preview: before every write the app reads the pack fresh and checks again. Details in the tooltip.",
+        intro: "Which action is possible over which port, for the chosen pack, as this connection knows it (firmware proof, switches last read). “unclear”: the way depends on switches this connection has not read yet; after “Read from packs” it shows “possible” or “locked”. A preview: before every write the app reads the pack fresh and checks again. Details in the tooltip.",
         channel: { uart0: "UART0 · RS485-1/2", uart1: "UART1 · CAN socket", uart2: "UART2 · display/Bluetooth" },
         state: { ready: "possible", unknown: "unclear", blocked: "locked", "not-implemented": "not in the app" },
         act: { "read-telemetry": "Read readings", "read-status": "Read status", "read-info": "Read device info", "read-parameters": "Read parameters", "write-parameters": "Write parameters and switches", "write-name": "Change device name",
