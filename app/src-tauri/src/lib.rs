@@ -567,7 +567,7 @@ async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<()
     state.connect_epoch.fetch_add(1, Ordering::SeqCst);
     let ops = state.ops.clone();
     // waiting blocks: off the async runtime
-    tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, Duration::from_secs(20))).await.map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || control::wait_packs_idle(&ops, openbms_transport::timing::DISCONNECT_WAIT)).await.map_err(|e| e.to_string())?;
     stop_monitor_as(&state, lost.unwrap_or(false))
 }
 
