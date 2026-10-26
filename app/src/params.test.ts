@@ -35,9 +35,11 @@ describe("BatteryMonitor export", () => {
     // like the 2024 export: from parameter 2 on every value sits one place off
     const shifted = { ...pack, parameters: pack.parameters.map((p, i) => ({ ...p, value: i < 2 ? p.value : VALUES[(i + 8) % VALUES.length] })) };
     expect(parseExport(toExport(shifted), "old.xml").suspectFrom).toBe(2);
-    // other names (another BatteryMonitor version) are flagged by name as well
+    // another BatteryMonitor version, language or locale: refused, a fresh export of this app is the way
     const renamed = toExport(pack).replace(BM_NAMES[40], "Something else");
-    expect(parseExport(renamed, "v2.xml").suspectFrom).toBe(40);
+    expect(parseExport(renamed, "v2.xml").error).toBe("foreign");
+    const comma = toExport(pack).replace("<Value>3.450</Value>", "<Value>3,450</Value>");
+    expect(parseExport(comma, "de.xml").error).toBe("foreign");
   });
 
   it("refuses files that are not a complete export", () => {

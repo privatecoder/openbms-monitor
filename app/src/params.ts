@@ -150,7 +150,10 @@ const plausible = (i: number, v: number) =>
 const norm = (s: string) => s.toLowerCase().replace(/[\s_-]+/g, " ").trim();
 const unescape = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 
-/** Parse a BatteryMonitor parameter export. Values count by position, like BatteryMonitor itself does. */
+/** Parse a parameter export in BatteryMonitor's XML format. Values count by position; only the format this app writes is
+ *  taken (`toExport`: its English names, decimal points). BatteryMonitor's own exports differ by version, language and
+ *  locale (other names, shifted values, decimal commas) and are partly wrong: such a file is refused as "foreign", the
+ *  user saves a fresh export with this app instead. */
 export function parseExport(text: string, label: string): Source {
   const id = `file-${label}-${text.length}`;
   const params = [...text.matchAll(/<parameter>\s*<Name>([\s\S]*?)<\/Name>\s*<Value>([\s\S]*?)<\/Value>/g)];
@@ -159,9 +162,11 @@ export function parseExport(text: string, label: string): Source {
     return { id, kind: "file", label, error: `${params.length}/${KEYS.length}, ${groups.length}/8` };
   const values = params.map((m) => Number(m[2].trim()));
   const switches = groups.map((m) => parseInt(m[2].trim(), 16));
-  if (values.some(Number.isNaN) || switches.some((s) => Number.isNaN(s) || s < 0 || s > 255))
+  if (KEYS.some((_, i) => norm(unescape(params[i][1])) !== norm(BM_NAMES[i])) || values.some(Number.isNaN))
+    return { id, kind: "file", label, error: "foreign" };
+  if (switches.some((s) => Number.isNaN(s) || s < 0 || s > 255))
     return { id, kind: "file", label, error: "value" };
-  const bad = KEYS.map((_, i) => i).filter((i) => norm(unescape(params[i][1])) !== norm(BM_NAMES[i]) || !plausible(i, values[i]));
+  const bad = KEYS.map((_, i) => i).filter((i) => !plausible(i, values[i]));
   return {
     id, kind: "file", label, values, switches, suspectFrom: bad.length ? bad[0] : null,
     device: unescape(text.match(/<modualName>([\s\S]*?)<\/modualName>/)?.[1] ?? "").trim(),
