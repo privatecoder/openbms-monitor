@@ -306,8 +306,14 @@ pub fn clear_at(link: &mut impl Link, clock: &impl Clock, address: u8, b: Budget
             Err(e) => return Err(e),
         }
     }
-    // the DIP count shows only with the next cycle
-    link.wait(ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)));
+    // released: a master with slaves polls them again at once and answers nothing more on this bus. Listen through its
+    // next cycle (the DIP count shows only then) instead of asking into its polling; only a quiet bus is asked
+    let window = ZERO_SLAVES_SETTLE.saturating_sub(clock.now().saturating_sub(since)).max(timing::BUS_LISTEN);
+    let heard = super::bus::listen(link, clock, window)?;
+    if !heard.quiet() {
+        link.forget_quiet();
+        return Ok((!heard.polled.is_empty()).then_some(heard.polled.len() as u8));
+    }
     Ok(status_read_at(link, clock, address, b).ok().and_then(|r| status_of(r).ok()).filter(|s| s.marker() == MarkerWord::Off).map(|s| s.effective_slaves))
 }
 
@@ -405,6 +411,21 @@ mod tests {
         assert!(t.now() >= ms(1100));
         let (mut link, t) = link_with(Master15::new(0, true, ms(500)));
         assert_eq!(clear_at(&mut link, &t, 0, Budgets::default()).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn after_a_clear_a_polling_master_is_heard_not_asked() {
+        // the same release twice: once the bus stays quiet (the status is read), once the master polls slaves 1 and 2
+        let (mut quiet, tq) = link_with(Master15::new(2, true, ms(100)));
+        clear_at(&mut quiet, &tq, 0, Budgets::default()).unwrap();
+        let (mut polled, t) = link_with(Master15::new(2, true, ms(100)));
+        for k in 0..20u64 {
+            let line: &[u8] = if k % 2 == 0 { b"~2001465A0000FD9D\r" } else { b"~2002465A0000FD9C\r" };
+            polled.inject(ms(200 + 100 * k), line);
+        }
+        assert_eq!(clear_at(&mut polled, &t, 0, Budgets::default()).unwrap(), Some(2));
+        // nothing asked into the polling: one request fewer than on the quiet bus
+        assert_eq!(polled.sent.len() + 1, quiet.sent.len());
     }
 
     #[test]

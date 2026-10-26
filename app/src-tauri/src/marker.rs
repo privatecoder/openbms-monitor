@@ -120,19 +120,37 @@ fn bound(state: &AppState, installation: Option<&str>, address: u8) -> Result<(L
 fn read(state: &AppState, link: &Link, address: u8, can: bool) -> Result<Found, String> {
     let clock = SystemClock::new();
     with_link(&state.conn, &state.flashing, &state.link, link, |c| {
-        let io = |e: openbms_flash::Error| openbms_transport::Error::Io(std::io::Error::other(e.to_string()));
+        let io = |e: openbms_flash::Error| match e {
+            // nothing sent: the bus rule's own error, never a silent board
+            openbms_flash::Error::Refused(k) => openbms_transport::Error::Refused(k),
+            e => openbms_transport::Error::Io(std::io::Error::other(e.to_string())),
+        };
         if can {
             return dialog::read(c, &clock, Budgets::default()).map(|m| of_master(&m)).map_err(io);
         }
-        Ok(rs485_found(c, &clock, address))
+        rs485_read(c, &clock, address).map_err(io)
     })
 }
 
 /// The identity and marker of the pack at `address` over RS485-1/2: a build with image flag bit 4 shows its state,
 /// anything else none (`trusted` false). Also „Platine flashen“.
 pub(crate) fn rs485_found(c: &mut openbms_transport::Connection, clock: &SystemClock, address: u8) -> Found {
+    rs485_read(c, clock, address).unwrap_or_else(|_| found_of(c, clock, address, PackAnswer::Undecided))
+}
+
+/// `rs485_found`, but a refusal of the bus rule (nothing sent) stays an error instead of an undecided board.
+pub(crate) fn rs485_read(c: &mut openbms_transport::Connection, clock: &SystemClock, address: u8) -> Result<Found, openbms_flash::Error> {
     let budget = crate::profile::identity_budget(c);
-    let (kind, info) = rs485_kind(dialog::probe_pack(c, clock, address, budget).unwrap_or(PackAnswer::Undecided));
+    let answer = match dialog::probe_pack(c, clock, address, budget) {
+        Ok(a) => a,
+        Err(e @ openbms_flash::Error::Refused(_)) => return Err(e),
+        Err(_) => PackAnswer::Undecided,
+    };
+    Ok(found_of(c, clock, address, answer))
+}
+
+fn found_of(c: &mut openbms_transport::Connection, clock: &SystemClock, address: u8, answer: PackAnswer) -> Found {
+    let (kind, info) = rs485_kind(answer);
     let state = if kind == "patched" { dialog::dialog_at(c, clock, address, Action::Status, Budgets::default()).ok() } else { None };
     // as the maintenance view keeps a master read: the identity, and the state where this bus shows it
     let master = Master::of(info.map(Probe::Info)).with_state(state);
@@ -227,6 +245,13 @@ pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: O
     // the state now: a fresh read (also after a failed change); a cleared marker confirmed but the board silent then
     // (a master polling again on RS485-1/2) keeps the confirmation
     let after = read(&state, &link, address, can).ok().filter(|f| f.state.is_some());
+    // released over RS485-1/2: unless the bus stayed quiet (no slaves), the master polls it again, and the monitor on
+    // this connection must not ask any more; it stops and the UI says so
+    if !can && !on && !matches!(r, Ok(Some(0))) {
+        if let Some(app) = state.app.get() {
+            let _ = crate::stop_monitor_and_tell(&state, app);
+        }
+    }
     let f = match (&r, after) {
         (_, Some(f)) => f,
         (Ok(n), None) => {

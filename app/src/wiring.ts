@@ -37,7 +37,9 @@ export function useWiring(scope: string | null) {
 /** Keeps the backend's bus rule on the installation shown (App, once). */
 export function useWiringSync(scope: string | null) {
   const w = useWiring(scope);
-  useEffect(() => { api.setWiring(w.inverter, w.paused).catch((e) => console.error("wiring:", e)); }, [w.inverter, w.paused]);
+  // the backend binds a connect to its installation's stored rule itself (`wiring::bind`); this keeps it current
+  // only once the installation's settings are loaded: an unloaded one would read as unset
+  useEffect(() => { if (w.loaded) api.setWiring(scope, w.inverter, w.paused).catch((e) => console.error("wiring:", e)); }, [scope, w.loaded, w.inverter, w.paused]);
 }
 
 const REFUSALS = ["wiring-unset", "bus-inverter", "bus-polled", "bus-traffic", "bus-unknown"] as const;

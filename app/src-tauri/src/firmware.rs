@@ -112,6 +112,8 @@ pub struct FlashSlot(Arc<AtomicBool>);
 impl Drop for FlashSlot {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
+        // a bus rule change given during the flash takes effect now (`wiring::settle`)
+        crate::wiring::settle();
     }
 }
 

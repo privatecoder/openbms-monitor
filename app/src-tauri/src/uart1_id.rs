@@ -47,8 +47,9 @@ impl Dev for Conn<'_> {
 }
 
 /// A broken link, as opposed to an answer that did not come or came as an error code.
+/// A broken link, or nothing sent at all (the bus rule refused): never a pack's answer, so never read as one.
 fn broken(e: &openbms_transport::Error) -> bool {
-    matches!(e, openbms_transport::Error::Io(_) | openbms_transport::Error::Serial(_) | openbms_transport::Error::Closed)
+    matches!(e, openbms_transport::Error::Io(_) | openbms_transport::Error::Serial(_) | openbms_transport::Error::Closed | openbms_transport::Error::Refused(_))
 }
 
 /// String 2, then String 1 of one pack as far as it offers them.
@@ -65,7 +66,7 @@ pub(crate) struct Serials {
 pub(crate) fn read_serials(dev: &mut impl Dev, address: u8) -> Result<Serials, String> {
     let raw = match dev.serial(address, uart1::CMD_STRING2) {
         Ok(raw) => raw,
-        Err(e) if broken(&e) => return Err(e.to_string()),
+        Err(e) if broken(&e) => return Err(crate::error_text(e)),
         Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0x81))) => {
             return Ok(Serials { bms: SerialValue::Unavailable, battery: SerialValue::Unavailable, canonical: None });
         }
@@ -74,7 +75,7 @@ pub(crate) fn read_serials(dev: &mut impl Dev, address: u8) -> Result<Serials, S
     let bms = serial::parse_ascii_serial(&raw).unwrap_or(SerialValue::NoAnswer);
     let battery = match dev.serial(address, uart1::CMD_STRING1) {
         Ok(b) => serial::parse_ascii_serial(&b).unwrap_or(SerialValue::NoAnswer),
-        Err(e) if broken(&e) => return Err(e.to_string()),
+        Err(e) if broken(&e) => return Err(crate::error_text(e)),
         Err(_) => SerialValue::NoAnswer,
     };
     Ok(Serials { bms, battery, canonical: serial::canonical(&raw) })
@@ -293,13 +294,13 @@ pub(crate) fn identity(dev: &mut impl Dev, inst: &str, address: u8, expected: Ex
     };
     match dev.master() {
         Ok(read) if crate::bms_memory::master_blocks(facts.master.as_deref(), &read) => return refuse(out, uart1_refusal("other-master")),
-        Err(e) if broken(&e) => return refuse(out, e.to_string()),
+        Err(e) if broken(&e) => return refuse(out, crate::error_text(e)),
         _ => {}
     }
     let raw = match dev.serial(address, uart1::CMD_STRING2) {
         Ok(raw) => raw,
         Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0x81))) => return refuse(out, uart1_refusal("no-identity")),
-        Err(e) if broken(&e) => return refuse(out, e.to_string()),
+        Err(e) if broken(&e) => return refuse(out, crate::error_text(e)),
         Err(_) => return refuse(out, uart1_refusal("no-answer")),
     };
     let Some(serial) = serial::canonical(&raw) else { return refuse(out, uart1_refusal("unchecked")) };
@@ -328,7 +329,7 @@ pub(crate) fn identity(dev: &mut impl Dev, inst: &str, address: u8, expected: Ex
                 Some(_) => out.gone.push(r.clone()),
                 None => return refuse(out, elsewhere(r)),
             },
-            Err(e) if broken(&e) => return refuse(out, e.to_string()),
+            Err(e) if broken(&e) => return refuse(out, crate::error_text(e)),
             // 0x81 or no answer: not checkable, the user decides
             Err(_) => return refuse(out, elsewhere(r)),
         }

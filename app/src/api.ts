@@ -646,7 +646,7 @@ const tauriApi = {
   notifyTest: (installation: string | null) => invoke<void>("notify_test", { installation }),
   notifyStatus: () => invoke<NotifyStatus>("notify_status"),
   /** the bus rule every request passes (`wiring.rs`): where the inverter polls, and whether the user paused it */
-  setWiring: (inverter: string | null, paused: boolean) => invoke<void>("set_wiring", { inverter, paused }),
+  setWiring: (installation: string | null, inverter: string | null, paused: boolean) => invoke<void>("set_wiring", { installation, inverter, paused }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
