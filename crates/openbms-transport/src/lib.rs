@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 pub mod capture;
 pub mod gate;
+pub mod heard;
 pub mod timing;
 
 use timing::Class;
@@ -348,23 +349,14 @@ impl Connection {
     /// is sent ("bus-polled" when it was a Seplos master polling its slaves, else "bus-traffic").
     fn listen_first(&mut self) -> Result<()> {
         let end = Instant::now() + timing::BUS_LISTEN;
-        let (mut heard, mut line, mut polled) = (0usize, Vec::new(), false);
+        let mut heard = heard::Heard::default();
         let mut buf = [0u8; 256];
         while Instant::now() < end {
             let n = self.read_raw(&mut buf)?;
-            heard += n;
-            for &b in &buf[..n] {
-                line.push(b);
-                if b == b'\r' {
-                    let start = line.iter().position(|c| *c == b'~').unwrap_or(line.len());
-                    polled |= openbms_proto::frame::parse(&line[start..]).is_ok_and(|f| f.rtn == 0x5A && f.info.is_empty());
-                    line.clear();
-                }
-            }
-            line.truncate(4096);
+            heard.feed(&buf[..n]);
         }
-        if heard > 0 {
-            return Err(Error::Refused(if polled { "bus-polled" } else { "bus-traffic" }.into()));
+        if !heard.quiet() {
+            return Err(Error::Refused(if heard.polled.is_empty() { "bus-traffic" } else { "bus-polled" }.into()));
         }
         self.listened = true;
         Ok(())
