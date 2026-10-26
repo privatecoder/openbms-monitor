@@ -312,9 +312,9 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     const base = rawsOf(c.read), baseSwitches = [...c.read.function_switches];
     // „Vorherigen Stand“: that block, with P65 as now (it changes only when unlocked)
     const raws = from ? rawsOf(from).map((r, i) => (i === SERIES_INDEX ? base[i] : r)) : [...base];
-    // the patch bits of Group0 that this path does not change stay as the pack has them now (also from „Vorherigen
-    // Stand“), the lock state (bit 5) always
-    const keep = keepMask(c.read.patch, c.path === "uart1", baseSwitches[0]);
+    // the patch bits of Group0 that this path does not change stay as the pack has them now, the lock state (bit 5)
+    // always; „Vorherigen Stand“ is a block of another time (perhaps another firmware): from it only bit 1, as from a file
+    const keep = from ? TAKE_OVER_KEEP : keepMask(c.read.patch, c.path === "uart1", baseSwitches[0]);
     const switches = (from ? [...from.function_switches] : [...baseSwitches]).map((v, g) => (g === 0 ? (v & ~keep) | (baseSwitches[0] & keep) : v));
     setEdit({ address: a, base, baseSwitches, raws, switches, text: {}, seriesUnlocked: false });
     editing.current = a;
