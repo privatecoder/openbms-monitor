@@ -3,26 +3,13 @@
 
 use super::Clock;
 use crate::{link::Link, session, Result};
-use openbms_proto::frame;
-use std::collections::BTreeSet;
 use std::io::Write;
 use openbms_transport::timing;
 use std::time::Duration;
 
-/// What a short listen on the pack bus saw. Sends nothing.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Traffic {
-    /// bytes received
-    pub bytes: usize,
-    /// addresses the master polled (CID2 0x5A, empty INFO)
-    pub polled: BTreeSet<u8>,
-}
-
-impl Traffic {
-    pub fn quiet(&self) -> bool {
-        self.bytes == 0
-    }
-}
+/// What a short listen on the pack bus saw (`openbms_transport::heard`, shared with the connection's own first listen).
+/// Sends nothing.
+pub type Traffic = openbms_transport::heard::Heard;
 
 /// Listen for `window` without sending. The master polls every slave once a second, so a window of a little
 /// more than a second sees every polled address.
@@ -30,24 +17,10 @@ pub fn listen(link: &mut impl Link, clock: &impl Clock, window: Duration) -> Res
     link.clear_input()?;
     let deadline = clock.now() + window;
     let mut seen = Traffic::default();
-    let mut pending = Vec::new();
     let mut buf = [0u8; 512];
     while clock.now() < deadline {
         let n = link.read_raw(&mut buf)?;
-        seen.bytes += n;
-        pending.extend_from_slice(&buf[..n]);
-        while let Some(end) = pending.iter().position(|b| *b == b'\r') {
-            let line: Vec<u8> = pending.drain(..=end).collect();
-            let Some(start) = line.iter().position(|b| *b == b'~') else { continue };
-            if let Ok(f) = frame::parse(&line[start..]) {
-                if f.rtn == 0x5A && f.info.is_empty() {
-                    seen.polled.insert(f.address);
-                }
-            }
-        }
-        if pending.len() > 4096 {
-            pending.clear();
-        }
+        seen.feed(&buf[..n]);
     }
     if seen.quiet() {
         link.heard_quiet();
