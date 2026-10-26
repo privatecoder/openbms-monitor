@@ -2627,6 +2627,7 @@ version = "0.1.0"
 dependencies = [
  "openbms-proto",
  "serde",
+ "serde_json",
  "serialport",
  "thiserror 2.0.21",
 ]

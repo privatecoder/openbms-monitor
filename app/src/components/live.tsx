@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
+import TIMING from "../generated/timing.json";
 
 /** Poll interval of the backend (see Sidebar startPolling). */
 export const POLL_MS = 2000;
 
-/** Without a successful answer for this long, the connection counts as lost (fixed, independent of the bus). */
-export const CONN_TIMEOUT_MS = 60_000;
+/** Without a successful answer for this long, the connection counts as lost (fixed, independent of the bus); from the
+ *  backend (`timing::CONN_LOST`), which keeps a polling round without answers well below it. */
+export const CONN_TIMEOUT_MS: number = TIMING.conn_lost_ms;
 /** While the connection is lost, try to reconnect this often. */
 export const RECONNECT_MS = 30_000;
 
