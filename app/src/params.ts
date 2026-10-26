@@ -1,6 +1,7 @@
 /** BMS parameters (0x47): order, grouping, BatteryMonitor XML import/export and the comparison between sources. */
 import type { PackPatch } from "./api";
 import CATALOG from "./generated/access.json";
+import PARAM_NAMES from "./generated/param_names.json";
 
 export interface Parameter { index: number; key: string; raw: number; value: number; unit: string }
 /** `bms_serial`: over the CAN socket the String 2 read with the block, when it identifies the board; a
@@ -16,7 +17,8 @@ export const KEYS: readonly string[] = CATALOG.params.map((p) => p.key);
 /** Display units, as the backend sends them. */
 export const UNITS: string[] = CATALOG.params.map((p) => p.unit);
 
-/** Names and units exactly as BatteryMonitor writes them (machine translation, typos included). */
+/** The names BatteryMonitor shows (machine translation, typos included), only as a hint in the parameter table for users
+ *  who know them from there; never written to or compared in a file. */
 export const BM_NAMES = [
   "Monomer high voltage alarm", "Monomer high pressure recovery", "Monomer low pressure alarm", "Monomer low pressure recovery",
   "Monomer overvoltage protection", "Monomer overvoltage recovery", "Monomer undervoltage protection", "Monomer undervoltage recovery",
@@ -43,8 +45,9 @@ export const BM_NAMES = [
   "Interval charge capacity", "Cycle cumulative capacity", "Connection fault impedance", "Compensation point 1 position",
   "Compensation point 1 impedance", "Ompensation point 2 position", "Compensation point 2 impedance",
 ];
-const BM_UNIT: Record<string, string> = { "°C": "℃", ms: "mS", s: "S", min: "Minutes", h: "When", "": "" };
-const bmUnit = (i: number) => (i === 65 || i === 83 || i === 85 ? "String" : i === 70 || i === 74 ? "times" : BM_UNIT[UNITS[i]] ?? UNITS[i]);
+/** The names in the app's parameter files: the English help titles (generated from `tools/param_help.py`), so a file
+ *  says what a parameter means. Identity in the file is the technical key, not the name. */
+export const FILE_NAMES: string[] = KEYS.map((k) => (PARAM_NAMES as Record<string, string>)[k]);
 
 /** Decimals as BatteryMonitor shows them; also the precision two sources are compared at. */
 export const decimals = (i: number) =>
@@ -121,22 +124,25 @@ const plausible = (i: number, v: number) =>
   i <= 9 || i === 62 || i === 63 ? v >= 0 && v <= 5 : i <= 19 ? v >= 5 && v <= 120 : i <= 49 ? v >= -50 && v <= 150
   : i <= 56 ? Math.abs(v) <= 1000 : i === 65 ? v >= 1 && v <= 32 : i >= 78 && i <= 81 ? v >= 0 && v <= 100 : true;
 
-const norm = (s: string) => s.toLowerCase().replace(/[\s_-]+/g, " ").trim();
 const unescape = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 
-/** Parse a parameter export in BatteryMonitor's XML format. Values count by position; only the format this app writes is
- *  taken (`toExport`: its English names, decimal points). BatteryMonitor's own exports differ by version, language and
- *  locale (other names, shifted values, decimal commas) and are partly wrong: such a file is refused as "foreign", the
- *  user saves a fresh export with this app instead. */
+/** Parse a parameter file of this app (`toExport`). Every parameter carries its technical key; the keys must be all 87 in
+ *  BMS order, so no value can land at another place. The names are only for reading and are not compared (a better
+ *  title later does not break older files). BatteryMonitor's own exports (no keys, names that differ by version and
+ *  language, decimal commas, partly wrong) are refused as "foreign": the user saves a fresh file with this app. */
 export function parseExport(text: string, label: string): Source {
   const id = `file-${label}-${text.length}`;
-  const params = [...text.matchAll(/<parameter>\s*<Name>([\s\S]*?)<\/Name>\s*<Value>([\s\S]*?)<\/Value>/g)];
-  const groups = [...text.matchAll(/<param_bit_group>\s*<Name>([\s\S]*?)<\/Name>\s*<Value>([\s\S]*?)<\/Value>/g)];
-  if (!/<paraGroup>/.test(text) || params.length !== KEYS.length || groups.length !== 8)
+  if (!/<paraGroup>/.test(text)) return { id, kind: "file", label, error: "structure" };
+  const params = [...text.matchAll(/<parameter>\s*<Name>[\s\S]*?<\/Name>\s*<Key>([\s\S]*?)<\/Key>\s*<Value>([\s\S]*?)<\/Value>/g)];
+  const groups = [...text.matchAll(/<param_bit_group>\s*<Name>[\s\S]*?<\/Name>\s*<Value>([\s\S]*?)<\/Value>/g)];
+  const anyParams = (text.match(/<parameter>/g) ?? []).length;
+  // parameters without keys (BatteryMonitor, files of earlier app versions): foreign, not merely incomplete
+  if (anyParams > 0 && params.length === 0) return { id, kind: "file", label, error: "foreign" };
+  if (params.length !== KEYS.length || anyParams !== KEYS.length || groups.length !== 8)
     return { id, kind: "file", label, error: `${params.length}/${KEYS.length}, ${groups.length}/8` };
   const values = params.map((m) => Number(m[2].trim()));
-  const switches = groups.map((m) => parseInt(m[2].trim(), 16));
-  if (KEYS.some((_, i) => norm(unescape(params[i][1])) !== norm(BM_NAMES[i])) || values.some(Number.isNaN))
+  const switches = groups.map((m) => parseInt(m[1].trim(), 16));
+  if (KEYS.some((k, i) => params[i][1].trim() !== k) || values.some((v, i) => Number.isNaN(v) || params[i][2].trim() === ""))
     return { id, kind: "file", label, error: "foreign" };
   if (switches.some((s) => Number.isNaN(s) || s < 0 || s > 255))
     return { id, kind: "file", label, error: "value" };
@@ -149,12 +155,13 @@ export function parseExport(text: string, label: string): Source {
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** BatteryMonitor XML (UTF-8 with BOM, CRLF), so the file can be opened there too. */
+/** The app's parameter file: BatteryMonitor's XML layout (UTF-8 with BOM, CRLF), but with the app's own names, the
+ *  technical key of every parameter and the app's units, so the file says what each value means (`parseExport`). */
 export function toExport(p: Parameters): string {
   const l = ['<?xml version="1.0" encoding="utf-8"?>', "<paraGroup>", "  <filetype>Parameter</filetype>",
     `  <modualName>${esc(p.device_name.padEnd(10, " "))}</modualName>`];
-  p.parameters.forEach((x, i) => l.push("  <parameter>", `    <Name>${BM_NAMES[i]}</Name>`, `    <Value>${fmtParam(i, x.value)}</Value>`, `    <Unit>${bmUnit(i)}</Unit>`, "  </parameter>"));
-  p.function_switches.forEach((b, g) => l.push("  <param_bit_group>", `    <Name>BitGroup${g}</Name>`, `    <Value>${b.toString(16).toUpperCase().padStart(2, "0")}</Value>`, "  </param_bit_group>"));
+  p.parameters.forEach((x, i) => l.push("  <parameter>", `    <Name>${esc(FILE_NAMES[i])}</Name>`, `    <Key>${KEYS[i]}</Key>`, `    <Value>${fmtParam(i, x.value)}</Value>`, `    <Unit>${esc(UNITS[i])}</Unit>`, "  </parameter>"));
+  p.function_switches.forEach((b, g) => l.push("  <param_bit_group>", `    <Name>Function switches ${g}</Name>`, `    <Value>${b.toString(16).toUpperCase().padStart(2, "0")}</Value>`, "  </param_bit_group>"));
   l.push("</paraGroup>");
   return "﻿" + l.join("\r\n");
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BM_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
+import { BM_NAMES, FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -12,17 +12,21 @@ const pack: Parameters = {
   parameters: VALUES.map((value, index) => ({ index, key: KEYS[index], raw: 0, value, unit: UNITS[index] })),
 };
 
-describe("BatteryMonitor export", () => {
-  it("writes the format BatteryMonitor reads and parses it back", () => {
+describe("parameter file", () => {
+  it("writes readable names, keys and units and parses its own file back", () => {
     const xml = toExport(pack);
-    expect(xml.startsWith("﻿<?xml")).toBe(true);
+    expect(xml.startsWith("\ufeff<?xml")).toBe(true);
     expect(xml).toContain("\r\n");
-    expect(xml).toContain("<Name>Monomer high voltage alarm</Name>\r\n    <Value>3.450</Value>\r\n    <Unit>V</Unit>");
-    expect(xml).toContain("<Value>-10.0</Value>\r\n    <Unit>℃</Unit>");
+    expect(xml).toContain("<Name>Cell high-voltage warning</Name>\r\n    <Key>cell_high_voltage_alarm</Key>\r\n    <Value>3.450</Value>\r\n    <Unit>V</Unit>");
+    expect(xml).toContain(`<Key>${KEYS[26]}</Key>\r\n    <Value>-10.0</Value>\r\n    <Unit>°C</Unit>`);
     expect(xml).toContain("<Value>-155.00</Value>");
-    expect(xml).toContain("<Value>2000</Value>\r\n    <Unit>mS</Unit>");
-    expect(xml).toContain("<Name>BitGroup1</Name>\r\n    <Value>DF</Value>");
+    expect(xml).toContain(`<Key>${KEYS[57]}</Key>\r\n    <Value>2000</Value>\r\n    <Unit>ms</Unit>`);
+    expect(xml).toContain("<Name>Function switches 1</Name>\r\n    <Value>DF</Value>");
     expect(xml).toContain("<modualName>1101-SP75 </modualName>");
+    // no BatteryMonitor machine translation is written any more
+    expect(xml).not.toContain("Monomer");
+    expect(FILE_NAMES.every((n) => typeof n === "string" && n.length > 0)).toBe(true);
+    expect(new Set(FILE_NAMES).size).toBe(KEYS.length);
     const s = parseExport(xml, "x.xml");
     expect(s.error).toBeUndefined();
     expect(s.values).toEqual(VALUES);
@@ -31,20 +35,30 @@ describe("BatteryMonitor export", () => {
     expect(s.device).toBe("1101-SP75");
   });
 
-  it("flags an export whose values are shifted against the known order", () => {
-    // like the 2024 export: from parameter 2 on every value sits one place off
-    const shifted = { ...pack, parameters: pack.parameters.map((p, i) => ({ ...p, value: i < 2 ? p.value : VALUES[(i + 8) % VALUES.length] })) };
-    expect(parseExport(toExport(shifted), "old.xml").suspectFrom).toBe(2);
-    // another BatteryMonitor version, language or locale: refused, a fresh export of this app is the way
-    const renamed = toExport(pack).replace(BM_NAMES[40], "Something else");
-    expect(parseExport(renamed, "v2.xml").error).toBe("foreign");
-    const comma = toExport(pack).replace("<Value>3.450</Value>", "<Value>3,450</Value>");
-    expect(parseExport(comma, "de.xml").error).toBe("foreign");
+  it("takes values by key order only; a renamed title does not matter, a moved key refuses", () => {
+    // a better title later: still the same parameter
+    expect(parseExport(toExport(pack).replace("<Name>Cell high-voltage warning</Name>", "<Name>Something clearer</Name>"), "t.xml").values).toEqual(VALUES);
+    // two keys swapped: refused, no value lands at another place
+    const swapped = toExport(pack).replace(`<Key>${KEYS[1]}</Key>`, "<Key>X</Key>").replace(`<Key>${KEYS[2]}</Key>`, `<Key>${KEYS[1]}</Key>`).replace("<Key>X</Key>", `<Key>${KEYS[2]}</Key>`);
+    expect(parseExport(swapped, "s.xml").error).toBe("foreign");
+    // a decimal comma: refused
+    expect(parseExport(toExport(pack).replace("<Value>3.450</Value>", "<Value>3,450</Value>"), "de.xml").error).toBe("foreign");
   });
 
-  it("refuses files that are not a complete export", () => {
+  it("refuses BatteryMonitor exports and files of earlier app versions (no keys)", () => {
+    const bm = toExport(pack).replace(/\s*<Key>[^<]*<\/Key>/g, "").replace("Cell high-voltage warning", BM_NAMES[0]);
+    expect(parseExport(bm, "bm.xml").error).toBe("foreign");
+  });
+
+  it("flags a file whose values are shifted against the known order", () => {
+    const shifted = { ...pack, parameters: pack.parameters.map((p, i) => ({ ...p, value: i < 2 ? p.value : VALUES[(i + 8) % VALUES.length] })) };
+    expect(parseExport(toExport(shifted), "old.xml").suspectFrom).toBe(2);
+  });
+
+  it("refuses files that are not complete", () => {
     expect(parseExport("<foo/>", "a.xml").error).toBeDefined();
     expect(parseExport(toExport(pack).replace(/<param_bit_group>[\s\S]*?<\/param_bit_group>/, ""), "b.xml").error).toBeDefined();
+    expect(parseExport(toExport(pack).replace(/<parameter>[\s\S]*?<\/parameter>/, ""), "c.xml").error).toBeDefined();
   });
 
   it("names saved files by pack and local time", () => {
