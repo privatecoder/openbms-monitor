@@ -1,3 +1,4 @@
+import { decode } from "./errors";
 /** Calibration (0xA0) and CAN inverter protocol (0xA6): pure helpers for the Parameters view. */
 
 /** What 0xA0 sends: sub 0 zero point, sub 1 current in 0.01 A, sub 2 mean cell voltage in mV. */
@@ -52,10 +53,8 @@ export function cellStats(cells: number[]): { mean: number; spread: number } | n
 
 /** A write the BMS refused (RTN 06) or did not know (RTN 04), from the backend's JSON error; null for any other error. */
 export function refusal(e: unknown): "refused" | "invalid" | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
-  const k = v && typeof v === "object" ? (v as { kind?: unknown }).kind : undefined;
-  return k === "refused" || k === "invalid" ? k : null;
+  const v = decode(e);
+  return v?.kind === "bms-refused" && (v.rtn === "refused" || v.rtn === "invalid") ? v.rtn : null;
 }
 
 /** Event 8 bit of the "… not calibrated" flag each calibration clears. */

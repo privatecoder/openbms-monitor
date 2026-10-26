@@ -76,6 +76,32 @@ pub(crate) fn reserve_pack(state: &AppState, address: u8, action: &'static str) 
     Ok(PackGuard { ops: state.ops.clone(), address })
 }
 
+/// One action on one pack, from its reservation to its last exchange. The pack is reserved first: no connect runs
+/// while a pack is reserved, so the link and bus taken right after stay that connection's for the whole action, and the
+/// bus rule holds meanwhile (`wiring::held`). Every exchange then goes through `with_link` on exactly this link.
+pub(crate) struct PackAction {
+    pub guard: PackGuard,
+    pub link: Link,
+    pub bus: Bus,
+}
+
+impl PackAction {
+    /// A write or control: the connection must belong to `installation`, the one the UI acts for (`bound_bus`).
+    pub fn write(state: &AppState, installation: Option<&str>, address: u8, name: &'static str) -> Result<Self, String> {
+        let guard = reserve_pack_wait(state, address, name)?;
+        let (link, bus) = bound_bus(state, installation)?;
+        Ok(PackAction { guard, link, bus })
+    }
+
+    /// A read on whatever connection is current.
+    pub fn read(state: &AppState, address: u8, name: &'static str) -> Result<Self, String> {
+        let guard = reserve_pack_wait(state, address, name)?;
+        let link = crate::link_now(state);
+        let bus = crate::bms_memory::bus_of(state, &link)?;
+        Ok(PackAction { guard, link, bus })
+    }
+}
+
 /// How long a user action or read waits for its pack before it reports „busy“: long enough for the reads every
 /// section starts on opening (serial numbers, parameters) and short writes, shorter than a history read or a restart.
 pub(crate) const PACK_WAIT: Duration = openbms_transport::timing::PACK_WAIT;
@@ -338,8 +364,7 @@ pub(crate) fn ascii_switch(dev: &mut impl SwitchDev, address: u8, on: bool, expe
 /// right-bank check and the frame (`ascii_frame`); CAN socket: the identity, the fresh switches against the catalog and
 /// the frame (`power::run`). `then` runs on the same link while the pack is still reserved (e.g. a read-back).
 pub(crate) fn act_frame<T>(state: &AppState, installation: Option<&str>, address: u8, name: &'static str, act: Act, then: impl FnOnce(&Link) -> T) -> Result<Written<T>, String> {
-    let _guard = reserve_pack_wait(state, address, name)?;
-    let (link, bus) = bound_bus(state, installation)?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(state, installation, address, name)?;
     let unchecked = match way(act.action(), bus)? {
         Way::Power => {
             crate::power::run(state, &link, address, act)?;
@@ -364,8 +389,7 @@ fn ascii_frame(state: &AppState, link: &Link, address: u8, f: impl FnOnce(&mut o
 #[tauri::command]
 pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation: Option<String>) -> Result<Written<RestartDone>, String> {
     // the pack first: no connect runs while it is reserved, so the bus taken with the link stays that link's
-    let guard = reserve_pack_wait(&state, address, "restart")?;
-    let (link, bus) = bound_bus(&state, installation.as_deref())?;
+    let PackAction { guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "restart")?;
     let (conn, flashing, links) = (state.conn.clone(), state.flashing.clone(), state.link.clone());
     let own = own_charge(bus, address);
     let charge = {
@@ -418,8 +442,7 @@ fn watch(sent: Instant, answered: impl FnMut() -> Result<bool, String>) -> Resta
 /// right before the frame (on RS485-1/2 required for every off). No retry: silence leaves open whether it switched.
 #[tauri::command]
 pub async fn pack_on_off(state: State<'_, AppState>, address: u8, installation: Option<String>, on: bool, expect: Option<bool>) -> Result<Written<()>, String> {
-    let _guard = reserve_pack_wait(&state, address, "on_off")?;
-    let (link, bus) = bound_bus(&state, installation.as_deref())?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "on_off")?;
     match way(Act::Switch { on, expect }.action(), bus)? {
         Way::Power => {
             crate::power::run(&state, &link, address, Act::Switch { on, expect })?;
@@ -540,7 +563,7 @@ mod tests {
         let silent = command::<()>(Err(openbms_transport::Error::Timeout(Duration::from_millis(1500)))).unwrap();
         assert_eq!(json(&silent.unwrap_err()), serde_json::json!({ "kind": "no-answer" }));
         let refused = command::<()>(Err(openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap();
-        assert_eq!(refused.unwrap_err(), r#"{"kind":"refused"}"#);
+        assert_eq!(refused.unwrap_err(), r#"{"kind":"bms-refused","rtn":"refused"}"#);
         assert!(command::<()>(Err(openbms_transport::Error::Closed)).is_err());
     }
 
@@ -553,7 +576,7 @@ mod tests {
             assert_eq!((json(&e)["kind"].as_str(), json(&e)["error"].as_str()), (Some("switch"), Some(error)));
         }
         assert_eq!(switch_command(Ok(()), false).unwrap(), Ok(()));
-        assert_eq!(switch_command(after(E::Proto(openbms_proto::Error::Rtn(0x06))), true).unwrap().unwrap_err(), r#"{"kind":"refused"}"#);
+        assert_eq!(switch_command(after(E::Proto(openbms_proto::Error::Rtn(0x06))), true).unwrap().unwrap_err(), r#"{"kind":"bms-refused","rtn":"refused"}"#);
         // silence: no-answer (open whether it switched), never a retry
         let silent = switch_command(after(E::Timeout(Duration::from_millis(1500))), false).unwrap().unwrap_err();
         assert_eq!(json(&silent), serde_json::json!({ "kind": "no-answer" }));

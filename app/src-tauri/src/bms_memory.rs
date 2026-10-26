@@ -9,7 +9,7 @@
 
 use crate::bank::{check_target, Written};
 use crate::history::{now_ms, SnapshotKind};
-use crate::control::reserve_pack_wait;
+use crate::control::PackAction;
 use crate::maint_store::Installation;
 use crate::{for_link, for_link_checked, link_now, with_conn, with_link, AppState, Link, PortSlot};
 use openbms_proto::access::{self, Action, Channel};
@@ -86,13 +86,6 @@ pub(crate) fn bound_bus(state: &AppState, installation: Option<&str>) -> Result<
     let link = bound(state, installation)?;
     let bus = bus_of(state, &link)?;
     Ok((link, bus))
-}
-
-/// `bound_bus` for `action`, refused where the app has no way for it on the link's bus (`on_bus`).
-pub(crate) fn bound_for(state: &AppState, installation: Option<&str>, action: Action) -> Result<Link, String> {
-    let (link, bus) = bound_bus(state, installation)?;
-    on_bus(action, bus)?;
-    Ok(link)
 }
 
 /// Writes to a pack belong to the connection's installation: none with „Nur ansehen“ (nothing would record the state
@@ -184,8 +177,7 @@ pub async fn bms_clock(state: State<'_, AppState>, address: u8) -> Result<BmsTim
 /// identity check and the lock bit first (`power::run`).
 #[tauri::command]
 pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation: Option<String>, time: BmsTime) -> Result<Written<BmsTime>, String> {
-    let _guard = reserve_pack_wait(&state, address, "clock")?;
-    let (link, bus) = bound_bus(&state, installation.as_deref())?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "clock")?;
     if crate::power::way(Action::SetClock, bus)? == crate::power::Way::Power {
         return match crate::power::run(&state, &link, address, crate::power::Act::SetClock(time))? {
             crate::power::Done::Clock(value) => Ok(Written { value, unchecked: false }),
@@ -201,9 +193,9 @@ pub async fn set_bms_clock(state: State<'_, AppState>, address: u8, installation
 }
 
 /// A write the BMS answered with RTN 06/04, as JSON for the UI (`refusal` in calibration.ts):
-/// `{"kind":"refused"}` or `{"kind":"invalid"}`. Every other error stays plain text.
+/// `{"kind":"bms-refused","rtn":"refused"}` (RTN 06), `"invalid"` (RTN 04) or `"locked"` (binary E3). Every other error stays plain text.
 pub(crate) fn refusal_error(r: Refusal) -> String {
-    serde_json::json!({ "kind": r }).to_string()
+    serde_json::json!({ "kind": "bms-refused", "rtn": r }).to_string()
 }
 
 /// Run a write; a refusal by the BMS comes back as `Err(Refusal)` instead of a plain error.
@@ -445,9 +437,8 @@ pub enum ParamWrite {
 #[allow(clippy::too_many_arguments)]
 pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool, serial: Option<String>) -> Result<Written<ParamWrite>, String> {
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
-    let _guard = reserve_pack_wait(&state, address, "params")?;
     // the path by the bus of this very link, so a reconnect meanwhile cannot send ASCII over the CAN socket
-    let (link, bus) = bound_bus(&state, installation.as_deref())?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "params")?;
     let r = match ParamPath::of(Some(bus)) {
         ParamPath::Ascii => (|| {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
@@ -485,8 +476,8 @@ pub enum NameWrite {
 /// replaced, read back.
 #[tauri::command]
 pub async fn write_name(state: State<'_, AppState>, address: u8, installation: Option<String>, expected: String, name: String) -> Result<Written<NameWrite>, String> {
-    let _guard = reserve_pack_wait(&state, address, "name")?;
-    let link = bound_for(&state, installation.as_deref(), Action::WriteName)?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "name")?;
+    on_bus(Action::WriteName, bus)?;
     let checked = check_target(&state, &link, address)?;
     let value = name_checked(&mut AsciiIo { state: &state, link: &link, address }, address, &expected, &name)?;
     Ok(Written { value, unchecked: checked.unchecked })
@@ -696,8 +687,8 @@ pub struct SerialSet {
 /// atomically; a crash in between shows as a bank mismatch, which „Seriennummer übernehmen“ resolves.
 #[tauri::command]
 pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: Option<String>, which: Which, text: String) -> Result<Written<SerialSet>, String> {
-    let _guard = reserve_pack_wait(&state, address, "serial")?;
-    let link = bound_for(&state, installation.as_deref(), Action::WriteSerials)?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "serial")?;
+    on_bus(Action::WriteSerials, bus)?;
     // the right bank first (a silent pack is refused there); its String 2 read is the value before the write
     let checked = check_target(&state, &link, address)?;
     let unchecked = checked.unchecked;
@@ -765,10 +756,10 @@ pub async fn set_serial(state: State<'_, AppState>, address: u8, installation: O
 pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8) -> Result<HistoryRead, String> {
     let busy = crate::reserve_port(&state.memory_busy).ok_or("a history read is already running")?;
     // clearing the same pack meanwhile would cut the read short
-    let pack = reserve_pack_wait(&state, address, "history")?;
     // records of another connection's pack must not continue this read
-    let (links, link) = (state.link.clone(), link_now(&state));
-    on_bus(Action::ReadHistory, bus_of(&state, &link)?)?;
+    let PackAction { guard: pack, link, bus } = PackAction::read(&state, address, "history")?;
+    let links = state.link.clone();
+    on_bus(Action::ReadHistory, bus)?;
     state.memory_cancel.store(false, Ordering::SeqCst);
     let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
     tauri::async_runtime::spawn_blocking(move || {
@@ -817,9 +808,9 @@ mod tests {
     fn refusals_become_json_other_errors_stay() {
         use openbms_transport::Error as E;
         let refused = refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x06)))).unwrap();
-        assert_eq!(refused.map_err(refusal_error), Err(r#"{"kind":"refused"}"#.to_string()));
+        assert_eq!(refused.map_err(refusal_error), Err(r#"{"kind":"bms-refused","rtn":"refused"}"#.to_string()));
         let invalid = refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x04)))).unwrap();
-        assert_eq!(invalid.map_err(refusal_error), Err(r#"{"kind":"invalid"}"#.to_string()));
+        assert_eq!(invalid.map_err(refusal_error), Err(r#"{"kind":"bms-refused","rtn":"invalid"}"#.to_string()));
         assert!(refusable::<()>(Err(E::Proto(openbms_proto::Error::Rtn(0x02)))).is_err());
         assert!(refusable::<()>(Err(E::Closed)).is_err());
         assert_eq!(refusable(Ok(5)).unwrap(), Ok(5));
@@ -1166,7 +1157,7 @@ mod tests {
         for a in [Action::PowerOnOff, Action::Restart, Action::ReadClock, Action::SetClock] {
             assert_eq!(crate::power::way(a, bus), Ok(crate::power::Way::Power), "ein/aus, restart and the clock go through power::run");
         }
-        assert_eq!(bound_for(&state, Some("A"), Action::ForceHeater).unwrap_err(), PACK_BUS_ONLY);
+        assert_eq!(on_bus(Action::ForceHeater, bus).unwrap_err(), PACK_BUS_ONLY);
         // a new connection whose profile is not set yet: nothing is decided for it
         crate::new_link(&state, Some("A".into()));
         assert_eq!(bound_bus(&state, Some("A")).unwrap_err(), "not connected");

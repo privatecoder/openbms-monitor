@@ -438,7 +438,7 @@ const tauriApi = {
   listPorts: () => invoke<string[]>("list_ports"),
   /** `installation` null: „Nur ansehen“ (nothing stored, no writes). `linked`: the endpoint was linked to it just now. */
   /** opens the port and checks that a pack answers (`addresses` first, then the rest of 0..15); no answer: error
-   *  JSON `{ code: "no-answer", noise, intra }`, the port is closed again */
+   *  JSON `{ kind: "no-answer", noise, intra, busy }`, the port is closed again */
   connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
     invoke<Connected>("connect", { endpoint, installation, addresses: addresses ?? null })
       .then((r) => { linkGen = r.gen; setProfile(r.profile); return r; }),
@@ -528,7 +528,7 @@ const tauriApi = {
   packLive: (address: number) => invoke<PackLive>("pack_live", { address }),
   /** The learned full capacity (0x42), on both buses. */
   packFullCapacity: (address: number) => invoke<number>("pack_full_capacity", { address }),
-  /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
+  /** RS485-1/2 only; a refusal by the BMS fails with `{"kind":"bms-refused","rtn":"refused"|"invalid"}` (see `refusal` in calibration.ts) */
   bmsCalibrate: (address: number, calibration: Calibration) => written(address, invoke<{ value: void; unchecked: boolean }>("bms_calibrate", { address, calibration, installation: chosen })),
   /** RS485-1/2 only, 1…6; once accepted, the device info read back or why that read failed */
   setCanProtocol: (address: number, protocol: number) => written(address, invoke<{ value: CanProtocolSet; unchecked: boolean }>("set_can_protocol", { address, protocol, installation: chosen })),

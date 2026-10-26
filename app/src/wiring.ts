@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Bus } from "./api";
 import { useSettings } from "./installData";
+import { decode, textOf } from "./errors";
 
 /** Where the inverter is connected (installation setting "wiring"; with „Nur ansehen“ this session's choice). The
  *  backend's bus rule (`wiring.rs`) keeps every request of the app off the bus the inverter polls; RS485-1/2 listens
@@ -42,9 +43,12 @@ export function useWiringSync(scope: string | null) {
 const REFUSALS = ["wiring-unset", "bus-inverter", "bus-polled", "bus-traffic", "bus-unknown"] as const;
 export type Refusal = (typeof REFUSALS)[number];
 
-/** A refusal of the bus rule in any error the backend gives: `{"code":…}` of a connect, or "send refused: …" inside the
- *  text of another action. */
+/** A refusal of the bus rule: `{"kind":"bus-refused","reason":…}`, or "send refused: …" inside the text of an action that
+ *  keeps transport errors as text. */
 export function refusalOf(e: unknown): Refusal | null {
-  const text = typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e ?? "");
-  return REFUSALS.find((r) => text.includes(`"${r}"`) || text.includes(`send refused: ${r}`)) ?? null;
+  const v = decode(e);
+  if (v?.kind === "bus-refused") return REFUSALS.find((r) => r === v.reason) ?? null;
+  // nested in the text of another error (e.g. a maintenance step's message)
+  const text = textOf(e);
+  return REFUSALS.find((r) => text.includes(`send refused: ${r}`) || (text.includes("bus-refused") && text.includes(r))) ?? null;
 }

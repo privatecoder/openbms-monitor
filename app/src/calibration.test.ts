@@ -50,8 +50,8 @@ describe("input and answers", () => {
   });
 
   it("recognises refusals", () => {
-    expect(refusal('{"kind":"refused"}')).toBe("refused");
-    expect(refusal('{"kind":"invalid"}')).toBe("invalid");
+    expect(refusal('{"kind":"bms-refused","rtn":"refused"}')).toBe("refused");
+    expect(refusal('{"kind":"bms-refused","rtn":"invalid"}')).toBe("invalid");
     expect(refusal('{"kind":"busy","action":null}')).toBeNull();
     expect(refusal("timeout after 1500 ms")).toBeNull();
   });

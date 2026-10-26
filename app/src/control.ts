@@ -3,6 +3,7 @@ import type { Charge, PackPatch, Status } from "./api";
 import { CUTOFF_BIT, LOCK_BIT } from "./profile";
 import { parseNumber } from "./calibration";
 import { refusalOf } from "./wiring";
+import { decode, kindOf } from "./errors";
 
 /** System status bit 5: switched off by command (0x45 type 4). */
 export const OFF_BIT = 0x20;
@@ -159,19 +160,13 @@ export function chargeLine(before: Charge | null, after: Charge | null, fmt: (v:
   });
 }
 
-const kindOf = (e: unknown): unknown => {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return undefined; } }
-  return v && typeof v === "object" ? (v as { kind?: unknown }).kind : undefined;
-};
 
 /** The pack did not answer a control command (typically a master polling its slaves). */
 export const noAnswer = (e: unknown) => kindOf(e) === "no-answer";
 /** An ein/aus whose request left without a definite answer, on either port: "silent" (no answer) or "link" (the gateway
  *  closed or an I/O error after sending); open whether the pack switched. null: refused or failed before sending. */
 export function switchUnclear(e: unknown): "silent" | "link" | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
   const o = v as { kind?: unknown; error?: unknown; link?: unknown };
   if (o.kind === "no-answer") return typeof o.link === "string" ? "link" : "silent";
@@ -184,8 +179,7 @@ export const linkChanged = (e: unknown) => kindOf(e) === "link-changed";
 
 /** Another action holds the pack, from the backend's JSON error; null for any other error. */
 export function packBusy(e: unknown): { address: number; action: string } | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
   const o = v as { kind?: unknown; address?: unknown; action?: unknown };
   return o.kind === "pack-busy" && typeof o.address === "number" && typeof o.action === "string" ? { address: o.address, action: o.action } : null;
@@ -195,8 +189,7 @@ export function packBusy(e: unknown): { address: number; action: string } | null
  *  (backend `bank.rs`); null for any other error. */
 export type BankRefusal = { state: "unconfirmed" | "failed"; address: number; why?: "new" | "moved" | "foreign" | "legacy" | "earlier"; installation?: { id: string; name: string } | null; error?: string };
 export function bankRefusal(e: unknown): BankRefusal | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
   const o = v as { kind?: unknown; state?: unknown; address?: unknown };
   return o.kind === "bank" && (o.state === "unconfirmed" || o.state === "failed") && typeof o.address === "number" ? (v as BankRefusal) : null;
@@ -221,8 +214,7 @@ export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-
   | "unsupported" | "bit-blocked" | "not-ready";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number; group?: number; bit?: number };
 export function uart1Error(e: unknown): Uart1Error | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
   const o = v as { kind?: unknown; error?: unknown; code?: unknown };
   return o.kind === "uart1" && typeof o.error === "string" ? (v as Uart1Error) : null;
@@ -230,8 +222,7 @@ export function uart1Error(e: unknown): Uart1Error | null {
 
 /** An ein/aus of RS485-1/2 refused before sending or failed at the cutoff store (backend `switch_refusal`). */
 export function switchError(e: unknown): { error: "cutoff-changed" | "cutoff-unread" | "cutoff-off-failed" | "cutoff-on-failed" } | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
   const o = v as { kind?: unknown; error?: unknown };
   return o.kind === "switch" && typeof o.error === "string" ? (v as { error: "cutoff-changed" }) : null;

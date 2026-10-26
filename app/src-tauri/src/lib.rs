@@ -238,7 +238,7 @@ fn poll_exchange<T>(conn: &Shared, flashing: &AtomicBool, hold: &AtomicUsize, f:
     if hold.load(Ordering::SeqCst) > 0 {
         return None;
     }
-    Some(guard.as_mut().ok_or_else(|| "not connected".to_string()).and_then(|c| f(c).map_err(|e| e.to_string())))
+    Some(guard.as_mut().ok_or_else(|| "not connected".to_string()).and_then(|c| f(c).map_err(error_text)))
 }
 
 fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
@@ -251,6 +251,15 @@ fn reserve_port(flag: &Arc<AtomicBool>) -> Option<PortSlot> {
 /// pressed during a scan waits for it instead of failing with "busy".
 pub(crate) const PORT_WAIT: Duration = openbms_transport::timing::PORT_WAIT;
 
+/// A transport error for the UI: a refusal of the bus rule as JSON (`{"kind":"bus-refused","reason":…}`, decoded by
+/// `errors.ts`), any other as its text.
+pub(crate) fn error_text(e: openbms_transport::Error) -> String {
+    match e {
+        openbms_transport::Error::Refused(reason) => refused_error(&reason),
+        e => e.to_string(),
+    }
+}
+
 /// Run one exchange on the monitor connection; refused during a flash, which owns the bus.
 fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connection) -> openbms_transport::Result<T>) -> Result<T, String> {
     if flashing.load(Ordering::SeqCst) {
@@ -258,7 +267,7 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
     }
     let mut guard = lock(conn)?;
     let c = guard.as_mut().ok_or("not connected")?;
-    f(c).map_err(|e| e.to_string())
+    f(c).map_err(error_text)
 }
 
 /// The order of one poll round: the packs that answered last time first, in address order, then the silent ones
@@ -320,7 +329,7 @@ pub(crate) fn with_link<T>(conn: &Shared, flashing: &AtomicBool, links: &Mutex<L
         return Err(LINK_CHANGED.into());
     }
     let c = guard.as_mut().ok_or("not connected")?;
-    f(c).map_err(|e| e.to_string())
+    f(c).map_err(error_text)
 }
 
 /// macOS ports that are never an RS485 adapter (debug console, Bluetooth, Wi-Fi debug); left out of every port list.
@@ -359,18 +368,23 @@ fn check_link(conn: &mut Connection, bus: Bus, first: &[u8], cancel: &AtomicBool
 }
 
 /// The error of a connect whose check found no pack: JSON, so the UI can explain it.
-const CONNECT_CANCELLED: &str = r#"{"code":"cancelled"}"#;
+const CONNECT_CANCELLED: &str = r#"{"kind":"cancelled"}"#;
 
 fn no_answer_error(p: &openbms_transport::Probe) -> String {
     match &p.refused {
         Some(k) => refused_error(k),
-        None => serde_json::json!({ "code": "no-answer", "noise": p.noise, "intra": p.intra, "busy": p.busy }).to_string(),
+        None => serde_json::json!({ "kind": "no-answer", "noise": p.noise, "intra": p.intra, "busy": p.busy }).to_string(),
     }
 }
 
-/// The bus rule sends nothing on this bus (`wiring.rs`): its key for the UI (`code`).
-fn refused_error(key: &str) -> String {
-    serde_json::json!({ "code": key }).to_string()
+/// Whether an error text is a refusal of the bus rule (`refused_error`).
+pub(crate) fn is_bus_refusal(e: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(e).is_ok_and(|v| v["kind"] == "bus-refused")
+}
+
+/// The bus rule sends nothing on this bus (`wiring.rs`): its key for the UI.
+pub(crate) fn refused_error(key: &str) -> String {
+    serde_json::json!({ "kind": "bus-refused", "reason": key }).to_string()
 }
 
 /// Open the monitor connection for an installation (None: „Nur ansehen“, nothing is stored). The endpoint is linked to
@@ -615,11 +629,9 @@ struct SerialRead {
 /// only a board known at this place is recorded as seen there; an unconfirmed one waits for `bank_confirm`.
 #[tauri::command]
 async fn serial_numbers(state: State<'_, AppState>, address: u8, binary: Option<bool>) -> Result<SerialRead, String> {
-    let bus = state.bus.lock().map_err(|e| e.to_string())?.ok_or("not connected")?;
     // read and `board_seen` together: between the 0xA5 of a serial write and its `board_written` a read would take
     // the new String 2 for another board
-    let _guard = control::reserve_pack_wait(&state, address, "serial_read")?;
-    let before = link_now(&state);
+    let control::PackAction { guard: _guard, link: before, bus } = control::PackAction::read(&state, address, "serial_read")?;
     // CAN socket: String 1/2 over the binary service when the connection's profile offers it, or asked for this pack
     if bus == Bus::CanSocketBus && (binary == Some(true) || uart1_serials_offered(&state, &before, address)) {
         let (serials, identity) = uart1_id::serial_numbers(&state, &before, bus, address)?;
