@@ -4,7 +4,7 @@ import { api, isDemo, type InstallationSettings, type LegacyLocal, type SettingK
 /** Settings an installation owns (cell type per place, groups, pairs, diagnosis, notifications, devices), kept by the backend per installation.
  *  With „Nur ansehen“ (scope null) and in the browser preview they live in memory for this session only. One cache for
  *  all components, so the dashboard, the pack detail and the editors show a change at once. */
-const EMPTY: InstallationSettings = { cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null };
+const EMPTY: InstallationSettings = { cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null, wiring: null };
 const cache = new Map<string, InstallationSettings>();
 const loading = new Set<string>();
 const subs = new Set<() => void>();

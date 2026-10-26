@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -179,6 +179,11 @@ fn snapshot_patch(db: &Connection) -> rusqlite::Result<()> {
         db.execute_batch("ALTER TABLE param_snapshots ADD COLUMN patch TEXT;")?;
     }
     Ok(())
+}
+
+/// 12: how the packs of an installation reach their inverter (JSON, `wiring.rs`): which RS485 bus the inverter polls.
+fn wiring_settings(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch("CREATE TABLE wiring(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -586,6 +591,7 @@ impl Store {
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM notifications WHERE installation = ?1",
                 "DELETE FROM devices WHERE installation = ?1",
+                "DELETE FROM wiring WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
@@ -894,6 +900,9 @@ pub struct Settings {
     /// absent in exports of earlier versions
     #[serde(default)]
     pub devices: Option<String>,
+    /// absent in exports of earlier versions
+    #[serde(default)]
+    pub wiring: Option<String>,
 }
 
 /// A stored parameter block and which board it belongs to: "current" (the newest board at the place), "previous"
@@ -1325,7 +1334,7 @@ impl Store {
     pub fn settings(&self, inst: &str) -> Result<Settings, String> {
         let (groups, pairs) = self.layout(inst)?;
         Ok(Settings { cell_types: self.cell_types(inst)?.into_iter().collect(), groups, pairs, diagnosis: self.diagnosis(inst)?, notifications: self.notifications(inst)?,
-            devices: self.devices(inst)?,
+            devices: self.devices(inst)?, wiring: self.wiring(inst)?,
         })
     }
 
@@ -1371,6 +1380,11 @@ impl Store {
             self.set_notifications(inst, add.notifications.as_deref())?;
         }
         kept.notifications = k;
+        let (take, k) = pick(&have.wiring, &add.wiring);
+        if take {
+            self.set_wiring(inst, add.wiring.as_deref())?;
+        }
+        kept.wiring = k;
         // devices by content, as `devices_conflict` sees them: a stored but empty value takes the source's
         match (devices_content(&have.devices), devices_content(&add.devices)) {
             (None, Some(_)) => self.set_devices(inst, add.devices.as_deref())?,
@@ -1500,6 +1514,7 @@ impl Store {
                 "DELETE FROM diagnosis WHERE installation = ?1",
                 "DELETE FROM notifications WHERE installation = ?1",
                 "DELETE FROM devices WHERE installation = ?1",
+                "DELETE FROM wiring WHERE installation = ?1",
                 // a version proof and a halted master's slave count belong to the source's places and master: not taken
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
@@ -1668,6 +1683,19 @@ impl Store {
         }
         .map_err(e)?;
         Ok(())
+    }
+
+    pub fn set_wiring(&self, inst: &str, data: Option<&str>) -> Result<(), String> {
+        match data {
+            Some(d) => self.db.execute("INSERT OR REPLACE INTO wiring(installation, data) VALUES (?1, ?2)", params![inst, d]),
+            None => self.db.execute("DELETE FROM wiring WHERE installation = ?1", [inst]),
+        }
+        .map(|_| ())
+        .map_err(e)
+    }
+
+    pub fn wiring(&self, inst: &str) -> Result<Option<String>, String> {
+        self.db.query_row("SELECT data FROM wiring WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
     }
 
     pub fn devices(&self, inst: &str) -> Result<Option<String>, String> {
@@ -2118,6 +2146,7 @@ mod tests {
                  INSERT INTO installation_links VALUES ('c', 'serial:/dev/cu.p'), ('c', 'tcp:192.0.2.52:4196');
                  -- of later migrations
                  DROP TABLE devices;
+                 DROP TABLE wiring;
                  ALTER TABLE bootloader_pending DROP COLUMN bms_serial;",
             )
             .unwrap();

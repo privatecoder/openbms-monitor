@@ -13,6 +13,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
+import { INVERTERS, pollsBus, refusalOf, useWiring } from "../wiring";
 import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
@@ -320,6 +321,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         return;
       }
       if (retry) await api.disconnect(true).catch(() => {});
+      // the bus rule sent nothing on this bus (`wiring.rs`): no other baud rate is tried either
+      const refused = refusalOf(e);
+      if (refused) { setFailed(true); setMsg(t(`wiring.refused.${refused}`)); return; }
       const n = noAnswer(e);
       if (n && !retry) {
         // nothing answered: the port is closed. A USB port is asked once more at the other baud rate
@@ -536,6 +540,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <option value="pack">{t("conn.busPack")}</option>
           </select>
         </label>
+        <WiringField scope={maint.installation} fixed={fixed} />
         {useStored ? (
           <div className="space-y-1">
             <div className="flex items-center gap-2 rounded-md bg-sunken px-3 py-2 text-sm" title={t("conn.storedHint")}>
@@ -706,6 +711,31 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
       </p>
       {recheckable(p) && (
         <button className="text-xs text-ink underline disabled:opacity-40" disabled={locked || checking} onClick={() => void recheck()}>{t("profile.recheck")}</button>
+      )}
+    </div>
+  );
+}
+
+/** Where the inverter is connected (`wiring.ts`): the app never sends on the bus it polls, unless the user said it is
+ *  paused for now. Fixed while connected, like the other connection fields. */
+function WiringField({ scope, fixed }: { scope: string | null; fixed: boolean }) {
+  const { t } = useTranslation();
+  const w = useWiring(scope);
+  const busy = pollsBus(w.inverter);
+  return (
+    <div className="space-y-1">
+      <span className="flex items-center gap-1.5 text-sm text-muted">{t("wiring.label")}<InfoIcon id="topic.wiring" /></span>
+      <select className={input} value={w.inverter ?? ""} disabled={fixed || !w.loaded} aria-label={t("wiring.label")}
+        onChange={(e) => { void w.setInverter(e.target.value as (typeof INVERTERS)[number]); }}>
+        {!w.inverter && <option value="">{t("wiring.choose")}</option>}
+        {INVERTERS.map((i) => <option key={i} value={i}>{t(`wiring.opt.${i}`)}</option>)}
+      </select>
+      <p className={cn("text-xs", w.inverter ? "text-muted" : "text-discharge")}>{w.inverter ? t(`wiring.note.${w.inverter}`) : t("wiring.unset")}</p>
+      {busy && (
+        <label className="flex items-start gap-2 text-xs text-muted" title={t("wiring.pausedHint")}>
+          <input type="checkbox" className="mt-0.5" checked={w.paused} onChange={(e) => w.setPaused(e.target.checked)} />
+          <span>{t("wiring.paused")}</span>
+        </label>
       )}
     </div>
   );

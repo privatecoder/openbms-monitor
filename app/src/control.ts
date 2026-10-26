@@ -2,6 +2,7 @@
 import type { Charge, PackPatch, Status } from "./api";
 import { CUTOFF_BIT, LOCK_BIT } from "./profile";
 import { parseNumber } from "./calibration";
+import { refusalOf } from "./wiring";
 
 /** System status bit 5: switched off by command (0x45 type 4). */
 export const OFF_BIT = 0x20;
@@ -247,6 +248,9 @@ export const writeError = (e: unknown, t: (k: string, o?: Record<string, unknown
 /** An error as text: „Pack 00 ist gerade mit … beschäftigt“ for a reserved pack, the texts for a silent pack, a
  *  changed connection and a bank refusal, else as it came. */
 export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>) => string): string {
+  // the bus rule sent nothing (`wiring.rs`), whatever action it stopped
+  const r = refusalOf(e);
+  if (r) return t(`wiring.refused.${r}`);
   const bank = bankRefusal(e);
   if (bank) return bankText(bank, t);
   const u = uart1Error(e);

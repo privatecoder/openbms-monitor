@@ -1,6 +1,7 @@
 import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, PackProbeView, Pending } from "./api";
 import { hardStopConfigurable } from "./access";
 import { patchName } from "./profile";
+import { refusalOf } from "./wiring";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
  *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
@@ -150,6 +151,9 @@ const KINDS = ["connection", "unsupported", "no-answer", "rejected", "start-refu
 
 /** Backend errors arrive as a MaintError object, as its JSON text, as a bare refusal key, or as plain text. */
 export function errorKey(e: unknown): { key: string; params?: Record<string, unknown> } {
+  // the bus rule sent nothing (`wiring.rs`), whatever action it stopped
+  const r = refusalOf(e);
+  if (r) return { key: `wiring.refused.${r}` };
   let v: unknown = e;
   if (typeof e === "string") {
     try { v = JSON.parse(e); } catch { v = /^[a-z0-9-]+$/.test(e) ? { kind: "refused", reason: e } : e; }
