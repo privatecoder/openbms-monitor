@@ -341,6 +341,18 @@ pub fn keep_master_read(state: &AppState, inst: &str, m: &Master) -> Result<(), 
     Ok(())
 }
 
+/// A release the master confirmed (its marker off) whose slave count could not be read after it (the master polls
+/// again and answers nothing more on RS485-1/2): the marker is kept off, the slave count unknown, the polling unverified.
+pub fn keep_master_released(state: &AppState, inst: &str, m: &Master) -> Result<(), MaintError> {
+    let link = crate::link_now(state);
+    if link.installation.as_deref() == Some(inst) && crate::bank::foreign(state, link.gen) {
+        return Ok(());
+    }
+    let v = MasterView { slaves: None, polling: Some("unverified"), ..master_view(m) };
+    let data = serde_json::to_string(&v).unwrap_or_default();
+    with_store(state, |s| s.set_master_read(inst, &data, false, crate::history::now_ms()))
+}
+
 /// What a master read says about the stored marker: only a valid `02` of a patched master sets (on) or clears (off) it.
 /// A master without 0x64 (RTN 04) proves only that its current image ignores the marker word, which stays in its own
 /// flash sector: a marker kept on stays, latent under that image. A missing or foreign state, or an unknown patch, leaves
@@ -1275,6 +1287,22 @@ mod tests {
         assert_eq!(s.all_pending().unwrap().len(), 1);
         assert!(s.patch_proof(&a.id, 0).unwrap().is_none());
         assert!(s.hard_stops(&a.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_release_with_its_slave_count_unread_clears_the_marker_and_keeps_no_count() {
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: None, power_rtc: false, pack_cutoff: false, reserved_flags: 0, patch_rev: 3, uart0: false };
+        let state = AppState::default();
+        *state.maint.lock().unwrap() = Some(store_at("released-unread"));
+        let a = with_store(&state, |s| s.create_installation("A", None, vec![])).unwrap();
+        with_store(&state, |s| s.set_master_read(&a.id, "{}", true, 1)).unwrap();
+        // the release over RS485-1/2 confirmed; the read after it found the master polling again
+        let m = Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: u32::MAX, effective_slaves: 0 }) };
+        keep_master_released(&state, &a.id, &m).unwrap();
+        assert!(!with_store(&state, |s| s.marker_last_on(&a.id)).unwrap(), "the marker is off: no stale lock for a later flash");
+        let (data, _) = with_store(&state, |s| s.master_read(&a.id)).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert_eq!((v["slaves"].clone(), v["polling"].as_str()), (serde_json::Value::Null, Some("unverified")));
     }
 
     #[test]
