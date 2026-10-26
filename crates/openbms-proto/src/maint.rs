@@ -169,7 +169,8 @@ pub fn supported_version(v: [u8; 3]) -> bool {
 
 /// TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF), the one build below the support boundary the app still supports,
 /// until the installation runs 1.6.3. Every exception for it asks here. To drop it: this module and its uses, its entry
-/// in `openbms_flash::known::PATCH_BUILDS`, the format-3 decoding and the tests marked TEMP(maint-1.6).
+/// in `openbms_flash::known::PATCH_BUILDS` and every place marked TEMP(maint-1.6) (tests, doc comments, the help texts in
+/// `tools/gen_help.py` and `tools/param_help.py`). The format-3 decoding stays: it shows older builds as unsupported.
 pub mod temp16 {
     use super::MaintInfo;
 
