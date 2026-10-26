@@ -88,12 +88,19 @@ pub fn settle() {
     }
 }
 
-/// Before a connect for `installation` takes the bus: the rule must be that installation's, not the one the UI showed
-/// before (its update may still be on its way). Another installation's rule is replaced by the stored setting of this
-/// one, without a pause; „Nur ansehen“ waits for the session's choice from the UI (unset meanwhile: nothing is sent).
+/// Right after a connect for `installation` reserved the bus (so no other action holds the rule), before its first
+/// request: the rule must be that installation's, not the one the UI showed before (its update may still be on its
+/// way). A waiting change of this installation is taken; another installation's rule is replaced by the stored setting
+/// of this one, without a pause; „Nur ansehen“ waits for the session's choice from the UI (unset meanwhile: nothing is
+/// sent). A connect refused for a busy bus never gets here, so it never changes a running action's rule.
 pub fn bind(state: &crate::AppState, installation: Option<&str>) {
-    settle();
     let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if pending.as_ref().is_some_and(|p| p.scope.as_deref() == installation) {
+        *now = pending.take().expect("checked");
+        return;
+    }
+    drop(pending);
     if now.scope.as_deref() == installation {
         return;
     }
