@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import type { MasterView, PackPatch, ProfileView } from "./api";
-import { cutoffBits, cutoffRowLabel, firmwareText, gateBits, gateRowLabel, hardStopLine, keepMask, lockChanged, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
+import { cutoffBits, cutoffRowLabel, firmwareText, gateBits, gateRowLabel, hardStopLine, keepMask, lockChanged, takeOverKeep, packLockActive, patchName, profileLine, recheckable, selfLock, switchOn, writeLocked } from "./profile";
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
@@ -119,6 +119,14 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
     expect(cutoffBits(live(null), true, 0xff).cutoffEditable).toBe(false);
     expect(cutoffBits(proof, true, 0xff).cutoffEditable).toBe(false);
     expect(cutoffBits(null, false, 0xff)).toEqual({ cutoff: null, cutoffEditable: false });
+  });
+  it("takes only Group0 bit 1 between a source and a pack of which only one proved a MAINT patch", () => {
+    // MAINT file to an original pack, original file to a MAINT pack: every bit but bit 1 stays as the target has it
+    expect(takeOverKeep(true, null, false, 0xff)).toBe(0xfd);
+    expect(takeOverKeep(false, live(true), false, 0xff)).toBe(0xfd);
+    // same kind on both sides: as before (`keepMask`)
+    expect(takeOverKeep(false, null, false, 0xff)).toBe(keepMask(null, false, 0xff));
+    expect(takeOverKeep(true, live(true), false, 0xff)).toBe(keepMask(live(true), false, 0xff));
   });
   it("never takes bit 5 or the hard stop choice (bits 6/7) from an edit, a file or an older state", () => {
     // RS485-1/2 without proof: the lock state and bits 6/7 are kept

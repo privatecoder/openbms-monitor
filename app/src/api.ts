@@ -782,7 +782,7 @@ function demoApi(): typeof tauriApi {
     setSerial: async (_address, _which, text) => ({ value: { kind: "set", value: text.trim(), truncated: false }, read_error: null, master_updated: [], master_unchecked: false, board_unchecked: false }),
     saveParameters: async (name, content) => {
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([content], { type: "application/xml" }));
+      a.href = URL.createObjectURL(new Blob([content], { type: "application/toml" }));
       a.download = name; a.click(); URL.revokeObjectURL(a.href);
       return name;
     },

@@ -8,8 +8,8 @@ PARAMS = {
  "Cell high-voltage warning", "Warning when a cell reaches this value. If all packs have a charge warning, the master lowers the charge limit to 10 A in total. Also the basis of the SOC's 100 % rule (cells × this value, limited to 3.45–3.50 V per cell)."),
 "param.cell_high_voltage_recovery": ("Zell-Hochspannungs-Warnung aus", "Die Warnung endet, wenn die höchste Zelle wieder unter diesen Wert fällt.",
  "Cell high-voltage warning off", "The warning ends when the highest cell falls below this value again."),
-"param.cell_low_voltage_alarm": ("Zell-Unterspannungs-Warnung", "Warnung, wenn eine Zelle diesen Wert erreicht. Setzt den SOC auf 10 %, wenn er noch höher steht; darüber hält der SOC beim Entladen bei 6 %.",
- "Cell low-voltage warning", "Warning when a cell reaches this value. Sets the SOC to 10 % if it is still higher; above it, the SOC holds at 6 % while discharging."),
+"param.cell_low_voltage_alarm": ("Zell-Unterspannungs-Warnung", "Warnung, wenn eine Zelle diesen Wert erreicht. Sie stellt auch den SOC nach (siehe unten).",
+ "Cell low-voltage warning", "Warning when a cell reaches this value. It also corrects the SOC (see below)."),
 "param.cell_low_voltage_recovery": ("Zell-Unterspannungs-Warnung aus", "Die Warnung endet, wenn die niedrigste Zelle wieder über diesen Wert steigt.",
  "Cell low-voltage warning off", "The warning ends when the lowest cell rises above this value again."),
 "param.cell_overvoltage_protection": ("Zell-Überspannungsschutz", "Erreicht eine Zelle diesen Wert, öffnet der Lade-MOSFET und der SOC springt auf 100 %. Liegt eine Zelle 30 mV darüber, meldet der Master Ladegrenze 0.",
@@ -184,8 +184,12 @@ SWITCHES = {
 "switch.0.2": ("Wartungsstart über die CAN-Buchse erlauben", "Patch-Firmware: 1 erlaubt „Master anhalten“ über die CAN-Buchse, 0 verweigert es; freigeben geht immer. Ändern nur über den RS485-1/2-Bus oder am Display.",
  "Allow maintenance start via the CAN socket", "Patched firmware: 1 allows “Halt master” via the CAN socket, 0 refuses it; releasing always works. Change only via the RS485-1/2 bus or on the display."),
 # TEMP(maint-1.6): the bit 3 texts name the first 1.6 (reversed polarity); drop that part with maint::temp16
-"switch.0.3": ("Sperre für Ein/Aus, Neustart und Uhr über die CAN-Buchse", "Nur das erste MAINT 1.6 (V1_6_CUTOFF, vorübergehend unterstützt): 1 (an) sperrt Ein/Aus, Neustart und Uhr stellen dort gemeinsam, 0 (aus) erlaubt sie; Uhr lesen geht immer. Ändern nur über den RS485-1/2-Bus oder am Display.",
- "Lock of on/off, restart and clock via the CAN socket", "Only the first MAINT 1.6 (V1_6_CUTOFF, supported for now): 1 (on) locks on/off, restart and setting the clock there together, 0 (off) allows them; reading the clock always works. Change only via the RS485-1/2 bus or on the display."),
+"switch.0.3": ("Ein/Aus, Neustart und Uhr über die CAN-Buchse erlauben", "Patch-Firmware ab MAINT 1.5.3/1.6.3: 1 (an) erlaubt Ein/Aus, Neustart und Uhr stellen dort gemeinsam, 0 (aus) sperrt sie; Uhr lesen geht immer. Ändern nur über den RS485-1/2-Bus oder am Display. Nur beim vorübergehend unterstützten ersten MAINT 1.6 ist es umgekehrt.",
+ "Allow on/off, restart and clock via the CAN socket", "Patched firmware from MAINT 1.5.3/1.6.3: 1 (on) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."),
+"switch.0.6": ("Hard-Stop bei Nachladepause", "Patch-Firmware MAINT 1.6.3: die Wahl des Hard-Stops, wenn Bit 7 auf 0 steht (1 an, 0 aus). Gesetzt nur über den eigenen Schalter unter Parameter, nie durch eine Bearbeitung oder Datei.",
+ "Hard stop at recharge pause", "Patched firmware MAINT 1.6.3: the hard stop choice while bit 7 is 0 (1 on, 0 off). Set only by its own switch under Parameters, never by an edit or a file."),
+"switch.0.7": ("Hard-Stop: Voreinstellung des Builds", "Patch-Firmware MAINT 1.6.3: 1 übernimmt die Voreinstellung des Images (wie beim Altwert FF), 0 gilt Bit 6.",
+ "Hard stop: the build's default", "Patched firmware MAINT 1.6.3: 1 takes the image's default (as with the old value FF), 0 applies bit 6."),
 "switch.0.4": ("Erweitertes Aus", "Patch-Firmware mit Packsperre (ab MAINT 1.6.3), gilt für gezieltes Aus über den RS485-1/2-Bus und die CAN-Buchse: 1 (an, wie beim Altwert FF) schaltet das erweiterte Aus ein: Gezieltes Ausschalten sperrt dann Lade- und Entladepfad einschließlich Strombegrenzer und Vorladung, und die Sperre bleibt über Neustarts erhalten. 0 (aus): ein gezieltes Aus bleibt das bisherige Soft-Aus. Einschaltbroadcasts des Masters und Parameterimporte lösen die Sperre nicht; zum Freigeben dieses Pack gezielt einschalten.",
  "Extended off", "Patched firmware with the pack cutoff (from MAINT 1.6.3), applies to a direct off via the RS485-1/2 bus and the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."),
 "switch.0.3p": ("Freigabe für Ein/Aus, Neustart und Uhr über die CAN-Buchse", "Patch-Firmware ab MAINT 1.5.3 und 1.6.3 mit Ein/Aus und Uhr über die CAN-Buchse: 1 (an, wie beim Altwert FF) erlaubt Ein/Aus, Neustart und Uhr stellen dort gemeinsam, 0 (aus) sperrt sie; Uhr lesen geht immer. Ändern nur über den RS485-1/2-Bus oder am Display.",
@@ -257,3 +261,206 @@ SWITCHES.update({
 "switch.7.7": ("Ladegrenze: Warnung − 10 A", "An: Ladegrenze je Pack = Lade-Überstrom-Warnung − 10 A. Aus: die Hälfte davon.",
  "Charge limit: warning − 10 A", "On: charge limit per pack = charge over-current warning − 10 A. Off: half of it."),
 })
+
+# Longer explanations (help page body and the comments in the app's parameter files): firmware effects that the short
+# text does not carry. id: (de, en). Plain text, may contain "\n" between sentences groups; no Markdown headings.
+PARAM_DETAILS = {
+# cell voltage
+"param.cell_high_voltage_alarm": (
+ "Meldung: Event 2 Bit 0 (Freigabe Funktionsschalter 1, Bit 0). Für die Ladegrenze fällt jeder warnende Pack aus der Summe; erst wenn keiner übrig ist, gilt 10 A gesamt.\nSOC: Oberhalb 98,2 % zählt der SOC beim Laden nur weiter, wenn eine Zelle diesen Wert erreicht. 100 % setzt die Firmware, wenn die Pack-Spannung 30 min lang mindestens Zellen × diesem Wert beträgt. Außerdem die Voll-Marke für das Lernen der Kapazität. Hysterese: Rückkehrwert „Zell-Hochspannungs-Warnung aus“.",
+ "Message: event 2 bit 0 (enable: function switch 1, bit 0). For the charge limit every warning pack drops out of the sum; only when none is left does 10 A in total apply.\nSOC: above 98.2 % the SOC only keeps counting up while charging if a cell reaches this value. The firmware sets 100 % when the pack voltage stays at or above cells × this value for 30 min. Also the full mark for capacity learning. Hysteresis: recovery value “Cell high-voltage warning off”."),
+"param.cell_high_voltage_recovery": (
+ "Außerdem: Im Standby driftet der SOC nicht, solange eine Zelle mindestens diesen Wert hat.",
+ "Also: in standby the SOC does not drift as long as a cell is at or above this value."),
+"param.cell_low_voltage_alarm": (
+ "Meldung: Event 2 Bit 2 (Freigabe Funktionsschalter 1, Bit 2). Der SOC springt auf (SOC-Warnung + SOC-Schutz) / 2, wenn eine Zelle diesen Wert erreicht und der SOC noch mindestens bei der SOC-Warnung steht. Solange alle Zellen darüber liegen, zählt der SOC beim Entladen nicht unter SOC-Schutz + 1 % (geprüft in ganzen Prozent).\nAußerdem die Leer-Marke für das Lernen der Kapazität. Als entladebezogene Warnung nimmt sie den Pack aus der Summe der Entladegrenze (DCL); warnen alle Packs, meldet der Master DCL = 0. Schutzstufe: Zell-Unterspannungsschutz.",
+ "Message: event 2 bit 2 (enable: function switch 1, bit 2). The SOC jumps to (SOC warning + SOC protection) / 2 when a cell reaches this value and the SOC is still at or above the SOC warning. As long as all cells are above it, the SOC does not count below SOC protection + 1 % while discharging (checked in whole percent).\nAlso the empty mark for capacity learning. As a discharge-related warning it removes the pack from the discharge limit (DCL) sum; if all packs warn, the master reports DCL = 0. Protection stage: cell under-voltage protection."),
+"param.cell_low_voltage_recovery": (
+ "Außerdem löscht die Firmware das Voll-Kennzeichen des SOC, wenn die höchste Zelle auf diesen Wert oder darunter fällt.",
+ "The firmware also clears the SOC's full flag when the highest cell falls to or below this value."),
+"param.cell_overvoltage_protection": (
+ "Meldung: Event 2 Bit 1 (Freigabe Funktionsschalter 1, Bit 1). Den SOC auf 100 % setzt der Schutz nur beim Laden. Rückkehr: „Zell-Überspannungsschutz aus“. Ist der Pack-Überspannungsschutz maskiert, ist dies der einzige Überladeschutz.",
+ "Message: event 2 bit 1 (enable: function switch 1, bit 1). The protection sets the SOC to 100 % only while charging. Recovery: “Cell over-voltage protection off”. If pack over-voltage protection is masked, this is the only overcharge protection."),
+"param.cell_undervoltage_protection": (
+ "Meldung: Event 2 Bit 3 (Freigabe Funktionsschalter 1, Bit 3). Rückkehr: „Zell-Unterspannungsschutz aus“. Danach kann die Ladeaktivierung (Dauer, Intervall, Versuche) den Schutz zeitweise aufheben, damit ein Ladegerät laden kann.",
+ "Message: event 2 bit 3 (enable: function switch 1, bit 3). Recovery: “Cell under-voltage protection off”. Afterwards charge activation (duration, interval, attempts) can lift the protection at times so a charger can charge."),
+"param.balancing_start_voltage": (
+ "Weitere Bedingungen: Die Spreizung muss über „Balancing ab Spreizung“ liegen, und die Zelle muss mindestens „Balancing bis Abstand“ über der niedrigsten liegen. Funktionsschalter 6 legt fest, ob und wann balanciert wird.",
+ "Further conditions: the spread must exceed “Balancing from spread”, and the cell must be at least “Balancing down to” above the lowest. Function switch 6 decides whether and when balancing runs."),
+"param.cell_low_voltage_charging_forbidden": (
+ "Meldung: Event 6 Bit 4 (Freigabe Funktionsschalter 5, Bit 4). Liegt eine Zelle auf oder unter diesem Wert, bricht auch die Ladeaktivierung ab.",
+ "Message: event 6 bit 4 (enable: function switch 5, bit 4). With a cell at or below this value, charge activation is aborted as well."),
+# pack voltage
+"param.pack_high_voltage_alarm": (
+ "Meldung: Event 2 Bit 4 (Freigabe Funktionsschalter 1, Bit 4). Für die Ladegrenze fällt jeder warnende Pack aus der Summe. Kein Einfluss auf den SOC: Die SOC-Regeln rechnen mit Zellen × Zell-Hochspannungs-Warnung, nicht mit diesem Wert.",
+ "Message: event 2 bit 4 (enable: function switch 1, bit 4). For the charge limit every warning pack drops out of the sum. No influence on the SOC: the SOC rules use cells × cell high-voltage warning, not this value."),
+"param.pack_low_voltage_alarm": (
+ "Meldung: Event 2 Bit 6 (Freigabe Funktionsschalter 1, Bit 6). Als entladebezogene Warnung nimmt sie den Pack aus der Summe der Entladegrenze (DCL). Schutzstufe: Pack-Unterspannungsschutz.",
+ "Message: event 2 bit 6 (enable: function switch 1, bit 6). As a discharge-related warning it removes the pack from the discharge limit (DCL) sum. Protection stage: pack under-voltage protection."),
+"param.pack_overvoltage_protection": (
+ "Als CVL gilt der Wert immer, auch wenn der Schutz maskiert ist. Als Schutz: Event 2 Bit 5; der Lade-MOSFET öffnet und der SOC springt auf 100 %. Ist Bit 5 aus, löst der Schutz nie aus und setzt den SOC auch nicht auf 100 %.",
+ "As CVL the value always applies, even with the protection masked. As a protection: event 2 bit 5; the charge MOSFET opens and the SOC jumps to 100 %. With bit 5 off, the protection never trips and does not set the SOC to 100 % either."),
+"param.pack_undervoltage_protection": (
+ "Meldung: Event 2 Bit 7 (Freigabe Funktionsschalter 1, Bit 7). Rückkehr: „Pack-Unterspannungsschutz aus“. Vgl. Zell-Unterspannungsschutz und Pack-Unterspannungs-Warnung.",
+ "Message: event 2 bit 7 (enable: function switch 1, bit 7). Recovery: “Pack under-voltage protection off”. Compare cell under-voltage protection and pack low-voltage warning."),
+"param.charger_overvoltage_protection": (
+ "Meldung: Event 6 Bit 0 (Freigabe Funktionsschalter 5, Bit 0). Gemessen wird die Spannung am Port P+/P−, nicht die Zellsumme.",
+ "Message: event 6 bit 0 (enable: function switch 5, bit 0). The voltage is measured at the P+/P− port, not the cell sum."),
+# cell temperature
+"param.charging_high_temperature_alarm": (
+ "Meldung: Event 3 Bit 0 (Freigabe Funktionsschalter 2, Bit 0), gemeldet nur beim Laden bzw. mit erkanntem Ladegerät. Für die Ladegrenze fällt jeder warnende Pack aus der Summe. Schutzstufe: Laden: Übertemperaturschutz.",
+ "Message: event 3 bit 0 (enable: function switch 2, bit 0), reported only while charging or with a detected charger. For the charge limit every warning pack drops out of the sum. Protection stage: charging over-temperature protection."),
+"param.charging_low_temperature_alarm": (
+ "Meldung: Event 3 Bit 2 (Freigabe Funktionsschalter 2, Bit 2), gemeldet nur beim Laden bzw. mit erkanntem Ladegerät. Für die Ladegrenze fällt jeder warnende Pack aus der Summe. Schutzstufe: Laden: Untertemperaturschutz.",
+ "Message: event 3 bit 2 (enable: function switch 2, bit 2), reported only while charging or with a detected charger. For the charge limit every warning pack drops out of the sum. Protection stage: charging under-temperature protection."),
+"param.charging_over_temperature_protection": (
+ "Meldung: Event 3 Bit 1 (Freigabe Funktionsschalter 2, Bit 1). Gemeldet wird der Schutz nur in Laderichtung; die Ladesperre prüft ab 16.06.11 aber das rohe Schutzbit unabhängig von der Stromrichtung, sperrt also auch während des Entladens.",
+ "Message: event 3 bit 1 (enable: function switch 2, bit 1). The protection is reported only in the charging direction; from 16.06.11 the charge lock tests the raw protection bit regardless of the current direction, so it also blocks while discharging."),
+"param.charging_under_temperature_protection": (
+ "Meldung: Event 3 Bit 3 (Freigabe Funktionsschalter 2, Bit 3). Gemeldet wird der Schutz nur in Laderichtung; die Ladesperre prüft ab 16.06.11 aber das rohe Schutzbit unabhängig von der Stromrichtung.\nLiFePO4-Zellen sind laut Datenblatt meist erst ab 0 °C zum Laden freigegeben; ein tieferer Wert verlässt sich auf Wechselrichter und Ladegrenze.",
+ "Message: event 3 bit 3 (enable: function switch 2, bit 3). The protection is reported only in the charging direction; from 16.06.11 the charge lock tests the raw protection bit regardless of the current direction.\nLiFePO4 cells are usually rated for charging only from 0 °C; a lower value relies on the inverter and the charge limit."),
+"param.discharging_high_temperature_alarm": (
+ "Meldung: Event 3 Bit 4 (Freigabe Funktionsschalter 2, Bit 4), gemeldet nur beim Entladen. Als entladebezogene Warnung nimmt sie den Pack aus der Summe der Entladegrenze (DCL). Schutzstufe: Entladen: Übertemperaturschutz.",
+ "Message: event 3 bit 4 (enable: function switch 2, bit 4), reported only while discharging. As a discharge-related warning it removes the pack from the discharge limit (DCL) sum. Protection stage: discharging over-temperature protection."),
+"param.discharging_low_temperature_alarm": (
+ "Meldung: Event 3 Bit 6 (Freigabe Funktionsschalter 2, Bit 6), gemeldet nur beim Entladen. Als entladebezogene Warnung nimmt sie den Pack aus der Summe der Entladegrenze (DCL). Schutzstufe: Entladen: Untertemperaturschutz.",
+ "Message: event 3 bit 6 (enable: function switch 2, bit 6), reported only while discharging. As a discharge-related warning it removes the pack from the discharge limit (DCL) sum. Protection stage: discharging under-temperature protection."),
+"param.discharging_over_temperature_protection": (
+ "Meldung: Event 3 Bit 5 (Freigabe Funktionsschalter 2, Bit 5). Der Entlade-MOSFET öffnet. Gemeldet wird der Schutz nur in Entladerichtung; die Entladesperre prüft ab 16.06.11 aber das rohe Schutzbit unabhängig von der Stromrichtung.",
+ "Message: event 3 bit 5 (enable: function switch 2, bit 5). The discharge MOSFET opens. The protection is reported only in the discharging direction; from 16.06.11 the discharge lock tests the raw protection bit regardless of the current direction."),
+"param.discharging_under_temperature_protection": (
+ "Meldung: Event 3 Bit 7 (Freigabe Funktionsschalter 2, Bit 7). Der Entlade-MOSFET öffnet. Gemeldet wird der Schutz nur in Entladerichtung; die Entladesperre prüft ab 16.06.11 aber das rohe Schutzbit unabhängig von der Stromrichtung.",
+ "Message: event 3 bit 7 (enable: function switch 2, bit 7). The discharge MOSFET opens. The protection is reported only in the discharging direction; from 16.06.11 the discharge lock tests the raw protection bit regardless of the current direction."),
+"param.cell_heating_on": (
+ "Anforderung: Event 4 Bit 6 (Freigabe Funktionsschalter 3, Bit 6). Der Heizausgang schaltet nur beim Laden bzw. mit erkanntem Ladegerät. Solange geheizt werden soll, meldet der Master mindestens Packs × 10 A als Ladegrenze, auch wenn sie sonst 0 wäre.",
+ "Request: event 4 bit 6 (enable: function switch 3, bit 6). The heating output switches only while charging or with a detected charger. While heating is requested, the master reports at least packs × 10 A as charge limit, even if it would otherwise be 0."),
+# ambient and power stage
+"param.ambient_high_temperature_alarm": (
+ "Meldung: Event 4 Bit 0 (Freigabe Funktionsschalter 3, Bit 0). Solange eine Umgebungs-Warnung oder ein Umgebungs-Schutz aktiv ist, verdoppeln sich die Stromschwellen, ab denen das BMS Laden bzw. Entladen erkennt, und mit Funktionsschalter 6, Bit 3 ist das Balancing gesperrt. Zählt für Lade- und Entladegrenze als Warnung (der Pack fällt aus der Summe).",
+ "Message: event 4 bit 0 (enable: function switch 3, bit 0). While an ambient warning or protection is active, the current thresholds at which the BMS detects charging or discharging double, and with function switch 6, bit 3 balancing is blocked. Counts as a warning for the charge and discharge limit (the pack drops out of the sum)."),
+"param.ambient_low_temperature_alarm": (
+ "Meldung: Event 4 Bit 2 (Freigabe Funktionsschalter 3, Bit 2). Wirkt wie die Umgebungs-Übertemperatur-Warnung: doppelte Erkennungsschwellen für Laden/Entladen, Balancing-Sperre mit Funktionsschalter 6, Bit 3, Pack fällt aus der Summe von Lade- und Entladegrenze.",
+ "Message: event 4 bit 2 (enable: function switch 3, bit 2). Works like the ambient high-temperature warning: doubled detection thresholds for charging/discharging, balancing block with function switch 6, bit 3, the pack drops out of the charge and discharge limit sums."),
+"param.ambient_over_temperature_protection": (
+ "Meldung: Event 4 Bit 1 (Freigabe Funktionsschalter 3, Bit 1). „Ambient“ und „Environmental“ im Export sind derselbe Fühler auf der BMS-Platine.",
+ "Message: event 4 bit 1 (enable: function switch 3, bit 1). “Ambient” and “Environmental” in the export are the same sensor on the BMS board."),
+"param.ambient_under_temperature_protection": (
+ "Meldung: Event 4 Bit 3 (Freigabe Funktionsschalter 3, Bit 3). „Ambient“ und „Environmental“ im Export sind derselbe Fühler auf der BMS-Platine.",
+ "Message: event 4 bit 3 (enable: function switch 3, bit 3). “Ambient” and “Environmental” in the export are the same sensor on the BMS board."),
+"param.power_high_temperature_alarm": (
+ "Meldung: Event 4 Bit 5 (Freigabe Funktionsschalter 3, Bit 5). Zählt für Lade- und Entladegrenze als Warnung (der Pack fällt aus der Summe). Schutzstufe: MOSFET-Übertemperaturschutz.",
+ "Message: event 4 bit 5 (enable: function switch 3, bit 5). Counts as a warning for the charge and discharge limit (the pack drops out of the sum). Protection stage: MOSFET over-temperature protection."),
+"param.power_over_temperature_protection": (
+ "Meldung: Event 4 Bit 4 (Freigabe Funktionsschalter 3, Bit 4).",
+ "Message: event 4 bit 4 (enable: function switch 3, bit 4)."),
+# current
+"param.charging_overcurrent_alarm": (
+ "Meldung: Event 5 Bit 0 (Freigabe Funktionsschalter 4, Bit 0). Die Ladegrenze des Masters ist dieser Anteil × ladefähige Packs ohne ladebezogene Warnung. Mit Funktionsschalter 6, Bit 7 schaltet die Warnung nach der halben Verzögerung des Lade-Überstromschutzes auf den Hardware-Strombegrenzer. Schutzstufe: Lade-Überstromschutz.",
+ "Message: event 5 bit 0 (enable: function switch 4, bit 0). The master's charge limit is this share × chargeable packs without a charge-related warning. With function switch 6, bit 7 the warning switches to the hardware current limiter after half the charge over-current protection delay. Protection stage: charge over-current protection."),
+"param.discharging_overcurrent_alarm": (
+ "Meldung: Event 5 Bit 2 (Freigabe Funktionsschalter 4, Bit 2). Der Wert ist negativ (Entladen). Abzug von 10 A nur bei Beträgen über 20 A. Die Entladegrenze des Masters ist dieser Anteil × entladefähige Packs ohne entladebezogene Warnung; warnen alle, ist sie 0. Schutzstufe: Entlade-Überstromschutz.",
+ "Message: event 5 bit 2 (enable: function switch 4, bit 2). The value is negative (discharging). The 10 A deduction applies only to amounts above 20 A. The master's discharge limit is this share × dischargeable packs without a discharge-related warning; if all warn, it is 0. Protection stage: discharge over-current protection."),
+"param.charging_overcurrent_protection": (
+ "Meldung: Event 5 Bit 1 (Freigabe Funktionsschalter 4, Bit 1). Wieder frei nach „Wiedereinschalten nach Überstrom“ oder sofort, wenn Entladestrom fließt.",
+ "Message: event 5 bit 1 (enable: function switch 4, bit 1). Released after “Restart after over-current” or at once when discharge current flows."),
+"param.discharging_overcurrent_protection": (
+ "Meldung: Event 5 Bit 3 (Freigabe Funktionsschalter 4, Bit 3). Wieder frei nach „Wiedereinschalten nach Überstrom“ oder sofort, wenn Ladestrom fließt.",
+ "Message: event 5 bit 3 (enable: function switch 4, bit 3). Released after “Restart after over-current” or at once when charge current flows."),
+"param.transient_overcurrent_protection": (
+ "Meldung: Event 5 Bit 4 (Freigabe Funktionsschalter 4, Bit 4). Wieder frei nach „Wiedereinschalten nach Überstrom“. Eine dauerhafte Sperre nach wiederholten Ereignissen gibt es nur mit Funktionsschalter 4, Bit 6.",
+ "Message: event 5 bit 4 (enable: function switch 4, bit 4). Released after “Restart after over-current”. A lasting lock after repeated events exists only with function switch 4, bit 6."),
+"param.output_soft_start_delay": (
+ "Die Vorladung endet früher, wenn die Ausgangsspannung nicht mehr steigt. Liegt der Ausgang danach unter der Hälfte des Sollwerts, meldet das BMS Kurzschluss (Event 5 Bit 5, nur mit Funktionsschalter 4, Bit 5).",
+ "Pre-charge ends earlier when the output voltage stops rising. If the output is then below half the target, the BMS reports a short circuit (event 5 bit 5, only with function switch 4, bit 5)."),
+"param.charging_overcurrent_delay": (
+ "Die verkürzte Zeit für den Strombegrenzer gilt nur mit Funktionsschalter 6, Bit 7 (passive Strombegrenzung).",
+ "The shorter time for the current limiter applies only with function switch 6, bit 7 (passive current limiting)."),
+"param.overcurrent_lock_events": (
+ "Gezählt werden Ereignisse ohne 301 s Pause dazwischen. Die Sperre meldet Event 5 Bit 6 (Kurzzeit-Überstrom) bzw. Bit 7 (Kurzschluss). Der normale Lade- und Entlade-Überstromschutz zählt nicht mit.",
+ "Events count when there is no 301 s pause between them. The lock reports event 5 bit 6 (transient over-current) or bit 7 (short circuit). Normal charge and discharge over-current protection does not count."),
+"param.charge_current_limit_duration": (
+ "Nur mit Funktionsschalter 6, Bit 7 (Event 7 Bit 7). Die Begrenzung beginnt, wenn die Lade-Überstrom-Warnung die halbe Verzögerung des Lade-Überstromschutzes ansteht, und endet auch nach 5 s ohne Laden. Mit Funktionsschalter 6, Bit 6 ist diese passive Begrenzung wirkungslos.",
+ "Only with function switch 6, bit 7 (event 7 bit 7). Limiting starts when the charge over-current warning lasts half the charge over-current protection delay, and also ends after 5 s without charging. With function switch 6, bit 6 this passive limiting has no effect."),
+# capacity and SOC
+"param.rated_capacity": (
+ "Wird in 0x42 als „Rated capacity“ gemeldet. Schreiben des ganzen Parameterblocks setzt die gelernte Vollkapazität auf diesen Wert, wenn beide um mindestens 10 Ah abweichen. Sind beim Start beide gespeicherten Kapazitätsdatensätze ungültig, gilt dieser Wert als Vollkapazität.",
+ "Reported in 0x42 as “Rated capacity”. Writing the whole parameter block sets the learned full capacity to this value if the two differ by at least 10 Ah. If both stored capacity records are invalid at start, this value serves as the full capacity."),
+"param.remaining_capacity_setting": (
+ "Angabe in Ah, keine Prozent. Beim Einzelschreiben setzt das BMS den laufenden Zähler auf den geschriebenen Wert, nur wenn er die Vollkapazität nicht übersteigt. Schreiben des ganzen Parameterblocks speichert nur das Feld. Sind beim Start beide gespeicherten Kapazitätsdatensätze ungültig, startet die Restkapazität mit diesem Wert.",
+ "Given in Ah, not percent. A single write sets the running counter to the written value, only if it does not exceed the full capacity. Writing the whole parameter block only stores the field. If both stored capacity records are invalid at start, the remaining capacity starts from this value."),
+"param.remaining_capacity_alarm": (
+ "Meldung: Event 6 Bit 2 (Freigabe Funktionsschalter 5, Bit 2). Teil der SOC-Regel bei Zell-Unterspannungs-Warnung ((SOC-Warnung + SOC-Schutz) / 2). Als entladebezogene Warnung nimmt sie den Pack aus der Summe der Entladegrenze; liegen alle Packs darunter, meldet der Master DCL = 0, der Wechselrichter hört also schon hier auf zu entladen.",
+ "Message: event 6 bit 2 (enable: function switch 5, bit 2). Part of the SOC rule at the cell low-voltage warning ((SOC warning + SOC protection) / 2). As a discharge-related warning it removes the pack from the discharge limit sum; if all packs are below it, the master reports DCL = 0, so the inverter already stops discharging here."),
+"param.remaining_capacity_protection": (
+ "Meldung: Event 6 Bit 3 (Freigabe Funktionsschalter 5, Bit 3). Verglichen wird mit dem auf ganze Prozent gerundeten SOC. Die Ladeaktivierung hebt den Schutz periodisch kurz auf.",
+ "Message: event 6 bit 3 (enable: function switch 5, bit 3). The comparison uses the SOC rounded to whole percent. Charge activation briefly lifts the protection at intervals."),
+"param.intermittent_recharge_below": (
+ "Meldung: Event 6 Bit 1 (Freigabe Funktionsschalter 5, Bit 1). Fordert ein Pack Heizung an, hebt das die Ladegrenze 0 auf den Heizungs-Mindeststrom. Über diesem Wert driftet der SOC im Standby zusätzlich um 0,2 A.\nOriginal-Firmware: Der wartende Pack selbst sperrt seinen Lade-MOSFET nicht, nur der Master senkt die Ladegrenze. Patch-Firmware mit Hard-Stop öffnet den Lade-MOSFET des wartenden Packs (bei MAINT 1.6.3 per Funktionsschalter 0, Bit 6/7 wählbar).",
+ "Message: event 6 bit 1 (enable: function switch 5, bit 1). If a pack requests heating, the charge limit 0 is raised to the heating minimum. Above this value the SOC additionally drifts by 0.2 A in standby.\nOriginal firmware: the waiting pack itself does not lock its charge MOSFET, only the master lowers the charge limit. Patched firmware with hard stop opens the waiting pack's charge MOSFET (selectable with function switch 0, bits 6/7 on MAINT 1.6.3)."),
+"param.cycle_cumulative_capacity": (
+ "Gezählt werden nur SOC-Rückgänge beim Entladen.",
+ "Only SOC decreases while discharging count."),
+# balancing and cell difference
+"param.cell_difference_fault": (
+ "Meldung: Event 1 Bit 4 (Fehler), nicht maskierbar: Die Firmware wertet sie immer aus. In der Original-Firmware hat Funktionsschalter 0, Bit 4 darauf keinen Einfluss; in MAINT 1.6.3 ist dieses Bit das erweiterte Aus und hat mit der Zelldifferenz ebenfalls nichts zu tun. Rückkehr: „Zelldifferenz-Fehler aus unter“.",
+ "Message: event 1 bit 4 (fault), not maskable: the firmware always evaluates it. In the original firmware function switch 0, bit 4 has no influence on it; in MAINT 1.6.3 that bit is the extended off and has nothing to do with the cell difference either. Recovery: “Cell difference fault off below”."),
+"param.static_balancing_time": (
+ "Der Zähler läuft, solange Balancing freigegeben ist und nicht geladen wird; Laden setzt ihn zurück. Die Sperre meldet Event 7 Bit 2.",
+ "The counter runs while balancing is enabled and the pack is not charging; charging resets it. The block reports event 7 bit 2."),
+# pack and activation
+"param.cells_in_series": (
+ "Zellzahl in 0x42/0x44 und Faktor aller Pack-Spannungsregeln des SOC (Zellen × 3,30/3,37/3,40 V bzw. × Zell-Hochspannungs-Warnung). Bei höchstens 8 Zellen übernehmen die Temperaturfühler 3/4 den Wert von Fühler 2.",
+ "Cell count in 0x42/0x44 and factor of all pack voltage rules of the SOC (cells × 3.30/3.37/3.40 V or × cell high-voltage warning). With 8 cells or fewer, temperature sensors 3/4 take the value of sensor 2."),
+"param.charge_activation_window": (
+ "In diesem Fenster löscht das BMS den Schutz jede Sekunde, damit die MOSFETs schließen (Event 7 Bit 4/5). Automatisch nur mit Funktionsschalter 6, Bit 4, einmal nach dem Einschalten mit Bit 5.",
+ "Within this window the BMS clears the protection every second so the MOSFETs close (event 7 bit 4/5). Automatically only with function switch 6, bit 4, once after switching on with bit 5."),
+"param.charge_activation_interval": (
+ "Wiederholt wird, solange Zell-Unterspannungsschutz, SOC 0 % oder SOC-Schutz besteht. Die Einheit „When“ im Export bedeutet Stunden.",
+ "It repeats as long as cell under-voltage protection, SOC 0 % or SOC protection persists. The unit “When” in the export means hours."),
+"param.charge_activation_attempts": (
+ "Der Zähler beginnt neu bei Laden mit mindestens 3 A für 5 s oder wenn die niedrigste Zelle über „Zell-Unterspannungsschutz aus“ steigt.",
+ "The counter restarts on charging with at least 3 A for 5 s or when the lowest cell rises above “Cell under-voltage protection off”."),
+"param.work_record_interval": (
+ "Die Historie liegt im EEPROM und ist mit 0x4B auslesbar. Zusätzlich schreibt das BMS sofort einen Eintrag bei jeder Änderung von Systemstatus oder Meldungen; der Zähler beginnt danach von vorn.",
+ "The history is kept in EEPROM and can be read with 0x4B. In addition the BMS writes an entry at once on every change of system status or messages; the counter then starts over."),
+"param.standby_shutdown_delay": (
+ "Bedingungen: durchgehend Standby ohne Fremdspannung am Port und höchste Zelle unter „Zell-Überspannungsschutz aus“. Dann 60 s Laden verboten, danach Aus, Zustand im internen Flash sichern und Versorgung abschalten (Letzteres wahrscheinlich). Ein Ladegerät (Port über „Pack-Überspannungsschutz aus“) oder der Taster brechen ab. Die Einheit „When“ bedeutet Stunden.",
+ "Conditions: continuous standby without external voltage at the port and the highest cell below “Cell over-voltage protection off”. Then 60 s charging forbidden, then off, state saved to internal flash and supply switched off (the latter probable). A charger (port above “Pack over-voltage protection off”) or the button aborts. The unit “When” means hours."),
+"param.connection_fault_impedance": (
+ "Der Ausgangs-Verbindungsfehler (Event 6 Bit 6) kommt von einem Hardware-Eingang (mindestens 5 s aktiv), nur mit Funktionsschalter 5, Bit 6.",
+ "The output connection fault (event 6 bit 6) comes from a hardware input (active for at least 5 s), only with function switch 5, bit 6."),
+"param.compensation_1_resistance": (
+ "Intern in 0,1 mΩ. Korrektur in mV = Strom [A] × Widerstand [mΩ], abgezogen von genau der eingestellten Zelle: Beim Laden wird sie kleiner, beim Entladen größer angezeigt.",
+ "Internally in 0.1 mΩ. Correction in mV = current [A] × resistance [mΩ], subtracted from exactly the set cell: it reads lower while charging and higher while discharging."),
+"param.compensation_2_resistance": (
+ "Wie Kompensation 1: Korrektur in mV = Strom [A] × Widerstand [mΩ], intern in 0,1 mΩ.",
+ "Like compensation 1: correction in mV = current [A] × resistance [mΩ], internally in 0.1 mΩ."),
+}
+
+# Per function switch group (0–7): what the group as a whole does. id "group.<n>": (de, en).
+GROUP_DETAILS = {
+"group.0": (
+ "Keine Freigabemaske. Original-Firmware: Nur Bit 1 wirkt (Prüfung der Temperaturfühler), die übrigen Bits werden nur gespeichert und gemeldet; Tasterereignis und Zelldifferenz-Fehler (Event 1) wertet die Firmware immer aus. Patch-Firmware: ab MAINT 1.5.3 sind Bit 0, 2 und 3 Freigaben für Schreiben, Wartung sowie Ein/Aus, Neustart und Uhr über die CAN-Buchse; ab MAINT 1.6.3 kommen Bit 4 (erweitertes Aus), Bit 5 (Status der Packsperre) und Bit 6/7 (Hard-Stop-Auswahl) hinzu.",
+ "Not an enable mask. Original firmware: only bit 1 has an effect (temperature sensor check), the other bits are only stored and reported; the button event and the cell difference fault (event 1) are always evaluated. Patched firmware: from MAINT 1.5.3 bits 0, 2 and 3 release writing, maintenance and on/off, restart and clock via the CAN socket; MAINT 1.6.3 adds bit 4 (extended off), bit 5 (pack cutoff status) and bits 6/7 (hard stop choice)."),
+"group.1": (
+ "Freigabemaske für Event 2 (Zell- und Pack-Spannung). Die Firmware verknüpft das Event direkt nach der Auswertung mit dieser Maske, bevor Ladesperre, Entladesperre, SOC, Ladegrenzen oder Protokolle es lesen; ein Bit auf 0 schaltet Meldung und Reaktion vollständig ab.",
+ "Enable mask for event 2 (cell and pack voltage). The firmware ANDs the event with this mask right after evaluating it, before the charge lock, discharge lock, SOC, limits or protocols read it; a bit at 0 switches message and reaction off completely."),
+"group.2": (
+ "Freigabemaske für Event 3 (Zelltemperatur beim Laden und Entladen, Warnung und Schutz). Ein Bit auf 0 schaltet Meldung und Reaktion vollständig ab.",
+ "Enable mask for event 3 (cell temperature while charging and discharging, warning and protection). A bit at 0 switches message and reaction off completely."),
+"group.3": (
+ "Freigabemaske für Event 4: Umgebungs- und MOSFET-Temperatur (Bit 0–5), dazu die Zellheizung (Bit 6) und die Schwerfehler-Meldung (Bit 7). Ein Bit auf 0 schaltet Meldung und Reaktion vollständig ab.",
+ "Enable mask for event 4: ambient and MOSFET temperature (bits 0–5), plus cell heating (bit 6) and the severe fault message (bit 7). A bit at 0 switches message and reaction off completely."),
+"group.4": (
+ "Freigabemaske für Event 5 (Strom): Lade- und Entlade-Überstrom, Kurzzeit-Überstrom, Kurzschluss-Erkennung sowie die Sperren nach wiederholten Kurzzeit- bzw. Kurzschluss-Ereignissen. Ein Bit auf 0 schaltet Meldung und Reaktion vollständig ab.",
+ "Enable mask for event 5 (current): charge and discharge over-current, transient over-current, short-circuit detection and the locks after repeated transient or short-circuit events. A bit at 0 switches message and reaction off completely."),
+"group.5": (
+ "Freigabemaske für Event 6 (Sonstiges): Ladegeräte-Überspannung, intermittierende Nachladung, SOC-Warnung und -Schutz, Ladesperre bei tiefer Zelle, Ausgangs-Verbindungsfehler, Rückmeldung des Strombegrenzers. Bit 5 (Verpolung) setzt kein Code. Ein Bit auf 0 schaltet Meldung und Reaktion vollständig ab.",
+ "Enable mask for event 6 (miscellaneous): charger over-voltage, intermittent recharge, SOC warning and protection, charge block for a deep cell, output connection fault, current limiter feedback. Bit 5 (reverse polarity) is set by no code. A bit at 0 switches message and reaction off completely."),
+"group.6": (
+ "Funktionsschalter, keine Maske: Balancing (Bit 0–3), Ladeaktivierung automatisch und manuell (Bit 4/5) sowie aktive und passive Strombegrenzung über den Hardware-Strombegrenzer (Bit 6/7).",
+ "Function switches, not a mask: balancing (bits 0–3), automatic and manual charge activation (bits 4/5) and active and passive limiting through the hardware current limiter (bits 6/7)."),
+"group.7": (
+ "Funktionsschalter, keine Maske: externer Ein/Aus-Schalter, Standby-Selbstabschaltung, Binärprotokoll an RS232/TTL und sein Format, automatische Adressvergabe samt Vermeidung von Adresse 0 (Bit 5/6) und der Modus der Ladegrenze (Bit 7). Bit 2 hat keine Funktion.",
+ "Function switches, not a mask: external on/off switch, standby shutdown, binary protocol on RS232/TTL and its format, automatic addressing including avoiding address 0 (bits 5/6) and the charge limit mode (bit 7). Bit 2 has no function."),
+}

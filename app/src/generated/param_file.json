@@ -1,0 +1,703 @@
+{
+ "params": {
+  "cell_high_voltage_alarm": {
+   "name": "Cell high-voltage warning",
+   "short": "Warning when a cell reaches this value. If all packs have a charge warning, the master lowers the charge limit to 10 A in total. Also the basis of the SOC's 100 % rule (cells × this value, limited to 3.45–3.50 V per cell).",
+   "detail": "Message: event 2 bit 0 (enable: function switch 1, bit 0). For the charge limit every warning pack drops out of the sum; only when none is left does 10 A in total apply.\nSOC: above 98.2 % the SOC only keeps counting up while charging if a cell reaches this value. The firmware sets 100 % when the pack voltage stays at or above cells × this value for 30 min. Also the full mark for capacity learning. Hysteresis: recovery value “Cell high-voltage warning off”."
+  },
+  "cell_high_voltage_recovery": {
+   "name": "Cell high-voltage warning off",
+   "short": "The warning ends when the highest cell falls below this value again.",
+   "detail": "Also: in standby the SOC does not drift as long as a cell is at or above this value."
+  },
+  "cell_low_voltage_alarm": {
+   "name": "Cell low-voltage warning",
+   "short": "Warning when a cell reaches this value. It also corrects the SOC (see below).",
+   "detail": "Message: event 2 bit 2 (enable: function switch 1, bit 2). The SOC jumps to (SOC warning + SOC protection) / 2 when a cell reaches this value and the SOC is still at or above the SOC warning. As long as all cells are above it, the SOC does not count below SOC protection + 1 % while discharging (checked in whole percent).\nAlso the empty mark for capacity learning. As a discharge-related warning it removes the pack from the discharge limit (DCL) sum; if all packs warn, the master reports DCL = 0. Protection stage: cell under-voltage protection."
+  },
+  "cell_low_voltage_recovery": {
+   "name": "Cell low-voltage warning off",
+   "short": "The warning ends when the lowest cell rises above this value again.",
+   "detail": "The firmware also clears the SOC's full flag when the highest cell falls to or below this value."
+  },
+  "cell_overvoltage_protection": {
+   "name": "Cell over-voltage protection",
+   "short": "When a cell reaches this value, the charge MOSFET opens and the SOC jumps to 100 %. With a cell 30 mV above it, the master reports a charge limit of 0.",
+   "detail": "Message: event 2 bit 1 (enable: function switch 1, bit 1). The protection sets the SOC to 100 % only while charging. Recovery: “Cell over-voltage protection off”. If pack over-voltage protection is masked, this is the only overcharge protection."
+  },
+  "cell_overvoltage_recovery": {
+   "name": "Cell over-voltage protection off",
+   "short": "Charging is allowed again when all cells are below this value. Discharging with more than 10 A for about 10 s releases the protection at once.",
+   "detail": ""
+  },
+  "cell_undervoltage_protection": {
+   "name": "Cell under-voltage protection",
+   "short": "When a cell reaches this value, the discharge MOSFET opens and the SOC jumps to 0 %.",
+   "detail": "Message: event 2 bit 3 (enable: function switch 1, bit 3). Recovery: “Cell under-voltage protection off”. Afterwards charge activation (duration, interval, attempts) can lift the protection at times so a charger can charge."
+  },
+  "cell_undervoltage_recovery": {
+   "name": "Cell under-voltage protection off",
+   "short": "Discharging is allowed again when all cells are above this value.",
+   "detail": ""
+  },
+  "balancing_start_voltage": {
+   "name": "Balancing from cell voltage",
+   "short": "A cell is only balanced when it has at least this voltage. With 3.40 V the BMS practically balances only at the end of a charge.",
+   "detail": "Further conditions: the spread must exceed “Balancing from spread”, and the cell must be at least “Balancing down to” above the lowest. Function switch 6 decides whether and when balancing runs."
+  },
+  "cell_low_voltage_charging_forbidden": {
+   "name": "Charging forbidden below (cell)",
+   "short": "With a cell below this value, charging is blocked. Only effective while automatic charge activation (function switch 6, bit 4) is off.",
+   "detail": "Message: event 6 bit 4 (enable: function switch 5, bit 4). With a cell at or below this value, charge activation is aborted as well."
+  },
+  "pack_high_voltage_alarm": {
+   "name": "Pack high-voltage warning",
+   "short": "Warning from this pack voltage. If all packs have a charge warning, the master lowers the charge limit to 10 A in total.",
+   "detail": "Message: event 2 bit 4 (enable: function switch 1, bit 4). For the charge limit every warning pack drops out of the sum. No influence on the SOC: the SOC rules use cells × cell high-voltage warning, not this value."
+  },
+  "pack_high_voltage_recovery": {
+   "name": "Pack high-voltage warning off",
+   "short": "The warning ends below this pack voltage.",
+   "detail": ""
+  },
+  "pack_low_voltage_alarm": {
+   "name": "Pack low-voltage warning",
+   "short": "Warning from this pack voltage. The master also reports this value to the inverter as discharge voltage limit (DVL).",
+   "detail": "Message: event 2 bit 6 (enable: function switch 1, bit 6). As a discharge-related warning it removes the pack from the discharge limit (DCL) sum. Protection stage: pack under-voltage protection."
+  },
+  "pack_low_voltage_recovery": {
+   "name": "Pack low-voltage warning off",
+   "short": "The warning ends above this pack voltage.",
+   "detail": ""
+  },
+  "pack_overvoltage_protection": {
+   "name": "Pack over-voltage protection",
+   "short": "The master reports this value to the inverter as charge voltage (CVL). As a protection it opens the charge MOSFET, provided function switch 1, bit 5 is on.",
+   "detail": "As CVL the value always applies, even with the protection masked. As a protection: event 2 bit 5; the charge MOSFET opens and the SOC jumps to 100 %. With bit 5 off, the protection never trips and does not set the SOC to 100 % either."
+  },
+  "pack_overvoltage_recovery": {
+   "name": "Pack over-voltage protection off",
+   "short": "Charging is allowed again below this pack voltage.",
+   "detail": ""
+  },
+  "pack_undervoltage_protection": {
+   "name": "Pack under-voltage protection",
+   "short": "From this pack voltage the discharge MOSFET opens and the SOC jumps to 0 %.",
+   "detail": "Message: event 2 bit 7 (enable: function switch 1, bit 7). Recovery: “Pack under-voltage protection off”. Compare cell under-voltage protection and pack low-voltage warning."
+  },
+  "pack_undervoltage_recovery": {
+   "name": "Pack under-voltage protection off",
+   "short": "Discharging is allowed again above this pack voltage.",
+   "detail": ""
+  },
+  "charger_overvoltage_protection": {
+   "name": "Charger over-voltage",
+   "short": "With at least this voltage at the output (P+/P−) for more than 5 s, charging is blocked.",
+   "detail": "Message: event 6 bit 0 (enable: function switch 5, bit 0). The voltage is measured at the P+/P− port, not the cell sum."
+  },
+  "charger_overvoltage_recovery": {
+   "name": "Charger over-voltage off",
+   "short": "The block ends below this voltage at the output.",
+   "detail": ""
+  },
+  "charging_high_temperature_alarm": {
+   "name": "Charging: high temperature warning",
+   "short": "Warning at a cell sensor, without blocking. If all packs have a charge warning, the master lowers the charge limit to 10 A in total.",
+   "detail": "Message: event 3 bit 0 (enable: function switch 2, bit 0), reported only while charging or with a detected charger. For the charge limit every warning pack drops out of the sum. Protection stage: charging over-temperature protection."
+  },
+  "charging_high_temperature_recovery": {
+   "name": "Charging: high temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "charging_low_temperature_alarm": {
+   "name": "Charging: low temperature warning",
+   "short": "Warning at a cell sensor, without blocking. If all packs have a charge warning, the master lowers the charge limit to 10 A in total.",
+   "detail": "Message: event 3 bit 2 (enable: function switch 2, bit 2), reported only while charging or with a detected charger. For the charge limit every warning pack drops out of the sum. Protection stage: charging under-temperature protection."
+  },
+  "charging_low_temperature_recovery": {
+   "name": "Charging: low temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "charging_over_temperature_protection": {
+   "name": "Charging: over-temperature protection",
+   "short": "Protection at a cell sensor: charging is blocked until the recovery value is reached.",
+   "detail": "Message: event 3 bit 1 (enable: function switch 2, bit 1). The protection is reported only in the charging direction; from 16.06.11 the charge lock tests the raw protection bit regardless of the current direction, so it also blocks while discharging."
+  },
+  "charging_over_temperature_recovery": {
+   "name": "Charging: over-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "charging_under_temperature_protection": {
+   "name": "Charging: under-temperature protection",
+   "short": "Protection at a cell sensor: charging is blocked until the recovery value is reached.",
+   "detail": "Message: event 3 bit 3 (enable: function switch 2, bit 3). The protection is reported only in the charging direction; from 16.06.11 the charge lock tests the raw protection bit regardless of the current direction.\nLiFePO4 cells are usually rated for charging only from 0 °C; a lower value relies on the inverter and the charge limit."
+  },
+  "charging_under_temperature_recovery": {
+   "name": "Charging: under-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "discharging_high_temperature_alarm": {
+   "name": "Discharging: high temperature warning",
+   "short": "Warning at a cell sensor, without blocking.",
+   "detail": "Message: event 3 bit 4 (enable: function switch 2, bit 4), reported only while discharging. As a discharge-related warning it removes the pack from the discharge limit (DCL) sum. Protection stage: discharging over-temperature protection."
+  },
+  "discharging_high_temperature_recovery": {
+   "name": "Discharging: high temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "discharging_low_temperature_alarm": {
+   "name": "Discharging: low temperature warning",
+   "short": "Warning at a cell sensor, without blocking.",
+   "detail": "Message: event 3 bit 6 (enable: function switch 2, bit 6), reported only while discharging. As a discharge-related warning it removes the pack from the discharge limit (DCL) sum. Protection stage: discharging under-temperature protection."
+  },
+  "discharging_low_temperature_recovery": {
+   "name": "Discharging: low temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "discharging_over_temperature_protection": {
+   "name": "Discharging: over-temperature protection",
+   "short": "Protection at a cell sensor: discharging is blocked until the recovery value is reached.",
+   "detail": "Message: event 3 bit 5 (enable: function switch 2, bit 5). The discharge MOSFET opens. The protection is reported only in the discharging direction; from 16.06.11 the discharge lock tests the raw protection bit regardless of the current direction."
+  },
+  "discharging_over_temperature_recovery": {
+   "name": "Discharging: over-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "discharging_under_temperature_protection": {
+   "name": "Discharging: under-temperature protection",
+   "short": "Protection at a cell sensor: discharging is blocked until the recovery value is reached.",
+   "detail": "Message: event 3 bit 7 (enable: function switch 2, bit 7). The discharge MOSFET opens. The protection is reported only in the discharging direction; from 16.06.11 the discharge lock tests the raw protection bit regardless of the current direction."
+  },
+  "discharging_under_temperature_recovery": {
+   "name": "Discharging: under-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "ambient_high_temperature_alarm": {
+   "name": "Ambient: high temperature warning",
+   "short": "Warning at the ambient sensor (BMS board), without blocking.",
+   "detail": "Message: event 4 bit 0 (enable: function switch 3, bit 0). While an ambient warning or protection is active, the current thresholds at which the BMS detects charging or discharging double, and with function switch 6, bit 3 balancing is blocked. Counts as a warning for the charge and discharge limit (the pack drops out of the sum)."
+  },
+  "ambient_high_temperature_recovery": {
+   "name": "Ambient: high temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "ambient_low_temperature_alarm": {
+   "name": "Ambient: low temperature warning",
+   "short": "Warning at the ambient sensor (BMS board), without blocking.",
+   "detail": "Message: event 4 bit 2 (enable: function switch 3, bit 2). Works like the ambient high-temperature warning: doubled detection thresholds for charging/discharging, balancing block with function switch 6, bit 3, the pack drops out of the charge and discharge limit sums."
+  },
+  "ambient_low_temperature_recovery": {
+   "name": "Ambient: low temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "ambient_over_temperature_protection": {
+   "name": "Ambient: over-temperature protection",
+   "short": "Protection at the ambient sensor (BMS board): charging and discharging are blocked until the recovery value is reached.",
+   "detail": "Message: event 4 bit 1 (enable: function switch 3, bit 1). “Ambient” and “Environmental” in the export are the same sensor on the BMS board."
+  },
+  "ambient_over_temperature_recovery": {
+   "name": "Ambient: over-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "ambient_under_temperature_protection": {
+   "name": "Ambient: under-temperature protection",
+   "short": "Protection at the ambient sensor (BMS board): charging and discharging are blocked until the recovery value is reached.",
+   "detail": "Message: event 4 bit 3 (enable: function switch 3, bit 3). “Ambient” and “Environmental” in the export are the same sensor on the BMS board."
+  },
+  "ambient_under_temperature_recovery": {
+   "name": "Ambient: under-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "power_high_temperature_alarm": {
+   "name": "MOSFET: high temperature warning",
+   "short": "Warning at the power stage (MOSFET), without blocking.",
+   "detail": "Message: event 4 bit 5 (enable: function switch 3, bit 5). Counts as a warning for the charge and discharge limit (the pack drops out of the sum). Protection stage: MOSFET over-temperature protection."
+  },
+  "power_high_temperature_recovery": {
+   "name": "MOSFET: high temperature warning off",
+   "short": "Recovery value: the warning ends when this value is reached again.",
+   "detail": ""
+  },
+  "power_over_temperature_protection": {
+   "name": "MOSFET: over-temperature protection",
+   "short": "Protection at the power stage (MOSFET): charging and discharging are blocked until the recovery value is reached.",
+   "detail": "Message: event 4 bit 4 (enable: function switch 3, bit 4)."
+  },
+  "power_over_temperature_recovery": {
+   "name": "MOSFET: over-temperature protection off",
+   "short": "Recovery value: the protection ends when this value is reached again.",
+   "detail": ""
+  },
+  "cell_heating_on": {
+   "name": "Cell heating on",
+   "short": "Heating switches on when the coldest cell reaches this value. Only with a heating pad and function switch 3, bit 6.",
+   "detail": "Request: event 4 bit 6 (enable: function switch 3, bit 6). The heating output switches only while charging or with a detected charger. While heating is requested, the master reports at least packs × 10 A as charge limit, even if it would otherwise be 0."
+  },
+  "cell_heating_off": {
+   "name": "Cell heating off",
+   "short": "Heating switches off when the coldest cell is above this value.",
+   "detail": ""
+  },
+  "charging_overcurrent_alarm": {
+   "name": "Charge over-current warning",
+   "short": "Basis of the charge current limit (CCL): half of this value per pack, or this value − 10 A with function switch 7, bit 7. Can activate the hardware current limiter.",
+   "detail": "Message: event 5 bit 0 (enable: function switch 4, bit 0). The master's charge limit is this share × chargeable packs without a charge-related warning. With function switch 6, bit 7 the warning switches to the hardware current limiter after half the charge over-current protection delay. Protection stage: charge over-current protection."
+  },
+  "charging_overcurrent_recovery": {
+   "name": "Charge over-current warning off",
+   "short": "The warning ends below this charge current.",
+   "detail": ""
+  },
+  "discharging_overcurrent_alarm": {
+   "name": "Discharge over-current warning",
+   "short": "Basis of the discharge current limit (DCL): this amount − 10 A per pack.",
+   "detail": "Message: event 5 bit 2 (enable: function switch 4, bit 2). The value is negative (discharging). The 10 A deduction applies only to amounts above 20 A. The master's discharge limit is this share × dischargeable packs without a discharge-related warning; if all warn, it is 0. Protection stage: discharge over-current protection."
+  },
+  "discharging_overcurrent_recovery": {
+   "name": "Discharge over-current warning off",
+   "short": "The warning ends below this discharge current.",
+   "detail": ""
+  },
+  "charging_overcurrent_protection": {
+   "name": "Charge over-current protection",
+   "short": "If this charge current flows longer than the set delay, the charge MOSFET opens.",
+   "detail": "Message: event 5 bit 1 (enable: function switch 4, bit 1). Released after “Restart after over-current” or at once when discharge current flows."
+  },
+  "discharging_overcurrent_protection": {
+   "name": "Discharge over-current protection",
+   "short": "If this discharge current flows longer than the set delay, the discharge MOSFET opens.",
+   "detail": "Message: event 5 bit 3 (enable: function switch 4, bit 3). Released after “Restart after over-current” or at once when charge current flows."
+  },
+  "transient_overcurrent_protection": {
+   "name": "Transient over-current protection",
+   "short": "Very high discharge current: the discharge MOSFET opens after the short delay in ms.",
+   "detail": "Message: event 5 bit 4 (enable: function switch 4, bit 4). Released after “Restart after over-current”. A lasting lock after repeated events exists only with function switch 4, bit 6."
+  },
+  "output_soft_start_delay": {
+   "name": "Output pre-charge",
+   "short": "When switching on, the BMS first charges through a pre-charge path, at most this long. Then it checks for a short circuit and switches the discharge MOSFET on.",
+   "detail": "Pre-charge ends earlier when the output voltage stops rising. If the output is then below half the target, the BMS reports a short circuit (event 5 bit 5, only with function switch 4, bit 5)."
+  },
+  "charging_overcurrent_delay": {
+   "name": "Charge over-current delay",
+   "short": "How long the charge over-current must last before the protection trips. The current limiter after a charge over-current warning engages after half this time.",
+   "detail": "The shorter time for the current limiter applies only with function switch 6, bit 7 (passive current limiting)."
+  },
+  "discharging_overcurrent_delay": {
+   "name": "Discharge over-current delay",
+   "short": "How long the discharge over-current must last before the protection trips.",
+   "detail": ""
+  },
+  "transient_overcurrent_delay": {
+   "name": "Transient over-current delay",
+   "short": "Delay of the transient over-current protection, checked in 5 ms steps.",
+   "detail": ""
+  },
+  "overcurrent_recovery_delay": {
+   "name": "Restart after over-current",
+   "short": "After this time the BMS clears over-current, transient and short-circuit protection by itself. Charging clears the discharge protections at once, discharging the charge protection.",
+   "detail": ""
+  },
+  "overcurrent_lock_events": {
+   "name": "Lock after events",
+   "short": "After this many transient over-current or short-circuit events without a pause, the discharge MOSFET stays off until the pack detects charging. Only with function switch 4, bit 6 or 7.",
+   "detail": "Events count when there is no 301 s pause between them. The lock reports event 5 bit 6 (transient over-current) or bit 7 (short circuit). Normal charge and discharge over-current protection does not count."
+  },
+  "charge_current_limit_duration": {
+   "name": "Current limiting duration",
+   "short": "How long the pack charges through the hardware current limiter instead of the charge MOSFET after a charge over-current warning.",
+   "detail": "Only with function switch 6, bit 7 (event 7 bit 7). Limiting starts when the charge over-current warning lasts half the charge over-current protection delay, and also ends after 5 s without charging. With function switch 6, bit 6 this passive limiting has no effect."
+  },
+  "rated_capacity": {
+   "name": "Rated capacity",
+   "short": "Reported as rated capacity. Changing it can reset the learned full capacity.",
+   "detail": "Reported in 0x42 as “Rated capacity”. Writing the whole parameter block sets the learned full capacity to this value if the two differ by at least 10 Ah. If both stored capacity records are invalid at start, this value serves as the full capacity."
+  },
+  "remaining_capacity_setting": {
+   "name": "Remaining capacity (set value)",
+   "short": "The last stored set value, not the current charge. Only writing it as a single parameter sets the counter to this value.",
+   "detail": "Given in Ah, not percent. A single write sets the running counter to the written value, only if it does not exceed the full capacity. Writing the whole parameter block only stores the field. If both stored capacity records are invalid at start, the remaining capacity starts from this value."
+  },
+  "remaining_capacity_alarm": {
+   "name": "SOC warning below",
+   "short": "Warning when the SOC falls below this value.",
+   "detail": "Message: event 6 bit 2 (enable: function switch 5, bit 2). Part of the SOC rule at the cell low-voltage warning ((SOC warning + SOC protection) / 2). As a discharge-related warning it removes the pack from the discharge limit sum; if all packs are below it, the master reports DCL = 0, so the inverter already stops discharging here."
+  },
+  "remaining_capacity_protection": {
+   "name": "SOC protection below",
+   "short": "Below this SOC the discharge MOSFET opens; charging stays allowed. While discharging, the SOC holds 1 % above it until a cell reaches the low-voltage warning.",
+   "detail": "Message: event 6 bit 3 (enable: function switch 5, bit 3). The comparison uses the SOC rounded to whole percent. Charge activation briefly lifts the protection at intervals."
+  },
+  "intermittent_recharge_below": {
+   "name": "Recharge only below",
+   "short": "After 100 % charging is blocked until the SOC falls to this value. When all packs are there, the master reports a charge limit of 0. Only with function switch 5, bit 1.",
+   "detail": "Message: event 6 bit 1 (enable: function switch 5, bit 1). If a pack requests heating, the charge limit 0 is raised to the heating minimum. Above this value the SOC additionally drifts by 0.2 A in standby.\nOriginal firmware: the waiting pack itself does not lock its charge MOSFET, only the master lowers the charge limit. Patched firmware with hard stop opens the waiting pack's charge MOSFET (selectable with function switch 0, bits 6/7 on MAINT 1.6.3)."
+  },
+  "cycle_cumulative_capacity": {
+   "name": "Cycle after discharge of",
+   "short": "A cycle counts once the sum of SOC decreases reaches this value.",
+   "detail": "Only SOC decreases while discharging count."
+  },
+  "cell_difference_fault": {
+   "name": "Cell difference fault from",
+   "short": "Fault when the highest and lowest cell are this far apart. Blocks balancing.",
+   "detail": "Message: event 1 bit 4 (fault), not maskable: the firmware always evaluates it. In the original firmware function switch 0, bit 4 has no influence on it; in MAINT 1.6.3 that bit is the extended off and has nothing to do with the cell difference either. Recovery: “Cell difference fault off below”."
+  },
+  "cell_difference_fault_recovery": {
+   "name": "Cell difference fault off below",
+   "short": "The fault ends below this difference.",
+   "detail": ""
+  },
+  "balancing_start_difference": {
+   "name": "Balancing from spread",
+   "short": "Balancing only starts when the highest and lowest cell are further apart than this.",
+   "detail": ""
+  },
+  "balancing_stop_difference": {
+   "name": "Balancing down to",
+   "short": "A cell is balanced as long as it is at least this far above the lowest.",
+   "detail": ""
+  },
+  "static_balancing_time": {
+   "name": "Balancing without charging at most",
+   "short": "With function switch 6, bit 2: after this many hours of balancing without charging, it is blocked until the next charge.",
+   "detail": "The counter runs while balancing is enabled and the pack is not charging; charging resets it. The block reports event 7 bit 2."
+  },
+  "cells_in_series": {
+   "name": "Cells in series",
+   "short": "Number of cells. Used in all pack voltage rules of the SOC.",
+   "detail": "Cell count in 0x42/0x44 and factor of all pack voltage rules of the SOC (cells × 3.30/3.37/3.40 V or × cell high-voltage warning). With 8 cells or fewer, temperature sensors 3/4 take the value of sensor 2."
+  },
+  "charge_activation_window": {
+   "name": "Charge activation: duration",
+   "short": "For this long after a shutdown for under-voltage or SOC, the BMS lifts the protection so a charger can charge.",
+   "detail": "Within this window the BMS clears the protection every second so the MOSFETs close (event 7 bit 4/5). Automatically only with function switch 6, bit 4, once after switching on with bit 5."
+  },
+  "charge_activation_interval": {
+   "name": "Charge activation: interval",
+   "short": "With function switch 6, bit 4 the BMS repeats charge activation at this interval.",
+   "detail": "It repeats as long as cell under-voltage protection, SOC 0 % or SOC protection persists. The unit “When” in the export means hours."
+  },
+  "charge_activation_attempts": {
+   "name": "Charge activation: attempts",
+   "short": "Maximum number of attempts; the counter restarts once charging happens.",
+   "detail": "The counter restarts on charging with at least 3 A for 5 s or when the lowest cell rises above “Cell under-voltage protection off”."
+  },
+  "work_record_interval": {
+   "name": "History while active every",
+   "short": "Interval of entries in the history memory (max. 500) while the pack charges or discharges.",
+   "detail": "The history is kept in EEPROM and can be read with 0x4B. In addition the BMS writes an entry at once on every change of system status or messages; the counter then starts over."
+  },
+  "standby_record_interval": {
+   "name": "History in standby every",
+   "short": "Interval of entries in the history memory in standby.",
+   "detail": ""
+  },
+  "standby_shutdown_delay": {
+   "name": "Shutdown after standby",
+   "short": "With function switch 7, bit 1: if the pack is in standby without voltage at the output this long, it switches off. Wake it with the button or a charger.",
+   "detail": "Conditions: continuous standby without external voltage at the port and the highest cell below “Cell over-voltage protection off”. Then 60 s charging forbidden, then off, state saved to internal flash and supply switched off (the latter probable). A charger (port above “Pack over-voltage protection off”) or the button aborts. The unit “When” means hours."
+  },
+  "connection_fault_impedance": {
+   "name": "Connection fault impedance",
+   "short": "No function: the firmware never reads this value.",
+   "detail": "The output connection fault (event 6 bit 6) comes from a hardware input (active for at least 5 s), only with function switch 5, bit 6."
+  },
+  "compensation_1_cell": {
+   "name": "Compensation 1: cell",
+   "short": "Number of the cell whose voltage is corrected by current × resistance, e.g. because a connector lies in its measurement.",
+   "detail": ""
+  },
+  "compensation_1_resistance": {
+   "name": "Compensation 1: resistance",
+   "short": "Resistance of the correction; 0 = no effect.",
+   "detail": "Internally in 0.1 mΩ. Correction in mV = current [A] × resistance [mΩ], subtracted from exactly the set cell: it reads lower while charging and higher while discharging."
+  },
+  "compensation_2_cell": {
+   "name": "Compensation 2: cell",
+   "short": "Like compensation 1, for a second cell.",
+   "detail": ""
+  },
+  "compensation_2_resistance": {
+   "name": "Compensation 2: resistance",
+   "short": "Resistance of the correction; 0 = no effect.",
+   "detail": "Like compensation 1: correction in mV = current [A] × resistance [mΩ], internally in 0.1 mΩ."
+  }
+ },
+ "groups": {
+  "0": "Not an enable mask. Original firmware: only bit 1 has an effect (temperature sensor check), the other bits are only stored and reported; the button event and the cell difference fault (event 1) are always evaluated. Patched firmware: from MAINT 1.5.3 bits 0, 2 and 3 release writing, maintenance and on/off, restart and clock via the CAN socket; MAINT 1.6.3 adds bit 4 (extended off), bit 5 (pack cutoff status) and bits 6/7 (hard stop choice).",
+  "1": "Enable mask for event 2 (cell and pack voltage). The firmware ANDs the event with this mask right after evaluating it, before the charge lock, discharge lock, SOC, limits or protocols read it; a bit at 0 switches message and reaction off completely.",
+  "2": "Enable mask for event 3 (cell temperature while charging and discharging, warning and protection). A bit at 0 switches message and reaction off completely.",
+  "3": "Enable mask for event 4: ambient and MOSFET temperature (bits 0–5), plus cell heating (bit 6) and the severe fault message (bit 7). A bit at 0 switches message and reaction off completely.",
+  "4": "Enable mask for event 5 (current): charge and discharge over-current, transient over-current, short-circuit detection and the locks after repeated transient or short-circuit events. A bit at 0 switches message and reaction off completely.",
+  "5": "Enable mask for event 6 (miscellaneous): charger over-voltage, intermittent recharge, SOC warning and protection, charge block for a deep cell, output connection fault, current limiter feedback. Bit 5 (reverse polarity) is set by no code. A bit at 0 switches message and reaction off completely.",
+  "6": "Function switches, not a mask: balancing (bits 0–3), automatic and manual charge activation (bits 4/5) and active and passive limiting through the hardware current limiter (bits 6/7).",
+  "7": "Function switches, not a mask: external on/off switch, standby shutdown, binary protocol on RS232/TTL and its format, automatic addressing including avoiding address 0 (bits 5/6) and the charge limit mode (bit 7). Bit 2 has no function."
+ },
+ "switches": {
+  "0.0": {
+   "name": "Allow writing via the CAN socket",
+   "short": "Patched firmware: 1 allows writing the parameters via the CAN socket, 0 locks it. Unlock only via the RS485-1/2 bus or on the display."
+  },
+  "0.2": {
+   "name": "Allow maintenance start via the CAN socket",
+   "short": "Patched firmware: 1 allows “Halt master” via the CAN socket, 0 refuses it; releasing always works. Change only via the RS485-1/2 bus or on the display."
+  },
+  "0.3": {
+   "name": "Allow on/off, restart and clock via the CAN socket",
+   "short": "Patched firmware from MAINT 1.5.3/1.6.3: 1 (on) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."
+  },
+  "0.6": {
+   "name": "Hard stop at recharge pause",
+   "short": "Patched firmware MAINT 1.6.3: the hard stop choice while bit 7 is 0 (1 on, 0 off). Set only by its own switch under Parameters, never by an edit or a file."
+  },
+  "0.7": {
+   "name": "Hard stop: the build's default",
+   "short": "Patched firmware MAINT 1.6.3: 1 takes the image's default (as with the old value FF), 0 applies bit 6."
+  },
+  "0.4": {
+   "name": "Extended off",
+   "short": "Patched firmware with the pack cutoff (from MAINT 1.6.3), applies to a direct off via the RS485-1/2 bus and the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."
+  },
+  "0.3p": {
+   "name": "Release of on/off, restart and clock via the CAN socket",
+   "short": "Patched firmware from MAINT 1.5.3 and 1.6.3 with on/off and the clock via the CAN socket: 1 (on, as with the old value FF) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display."
+  },
+  "0.5": {
+   "name": "No individual pack cutoff",
+   "short": "Patched firmware with the pack cutoff (MAINT 1.6.3), status only: 1 (on) while no stored lock exists; 0 (off) while the pack is locked, also with the extended off switched off. Never editable; switching this pack on directly releases the lock, parameter imports do not."
+  },
+  "0.1": {
+   "name": "Temperature sensor check",
+   "short": "Sensors below −45 °C, from 100 °C or 20 K apart report a sensor fault; heating then switches off."
+  },
+  "1.0": {
+   "name": "Cell high-voltage warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.1": {
+   "name": "Cell over-voltage protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.2": {
+   "name": "Cell low-voltage warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.3": {
+   "name": "Cell under-voltage protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.4": {
+   "name": "Pack high-voltage warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.5": {
+   "name": "Pack over-voltage protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.6": {
+   "name": "Pack low-voltage warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "1.7": {
+   "name": "Pack under-voltage protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.0": {
+   "name": "Charging: high temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.1": {
+   "name": "Charging: over-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.2": {
+   "name": "Charging: low temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.3": {
+   "name": "Charging: under-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.4": {
+   "name": "Discharging: high temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.5": {
+   "name": "Discharging: over-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.6": {
+   "name": "Discharging: low temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "2.7": {
+   "name": "Discharging: under-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.0": {
+   "name": "Ambient: high temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.1": {
+   "name": "Ambient: over-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.2": {
+   "name": "Ambient: low temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.3": {
+   "name": "Ambient: under-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.4": {
+   "name": "MOSFET: over-temperature protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.5": {
+   "name": "MOSFET: high temperature warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "4.0": {
+   "name": "Charge over-current warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "4.1": {
+   "name": "Charge over-current protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "4.2": {
+   "name": "Discharge over-current warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "4.3": {
+   "name": "Discharge over-current protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "4.4": {
+   "name": "Transient over-current",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "4.5": {
+   "name": "Short-circuit detection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "5.0": {
+   "name": "Charger over-voltage",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "5.2": {
+   "name": "SOC warning",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "5.3": {
+   "name": "SOC protection",
+   "short": "Enables this message. Off = no message and no reaction (no MOSFET switching, no effect on charge limit or SOC)."
+  },
+  "3.6": {
+   "name": "Cell heating",
+   "short": "Heating output in the cold, only while charging or with a detected charger. Also enables the minimum charge limit for heating."
+  },
+  "3.7": {
+   "name": "Severe fault message",
+   "short": "Reports severe faults (sensor fault, cell far beyond protection or below under-voltage) until restart; without heating it switches the relay output."
+  },
+  "4.6": {
+   "name": "Lock after transient over-currents",
+   "short": "After several transient over-current events the discharge MOSFET stays off until the pack detects charging."
+  },
+  "4.7": {
+   "name": "Lock after short circuits",
+   "short": "After several short-circuit events the discharge MOSFET stays off until the pack detects charging."
+  },
+  "5.1": {
+   "name": "Intermittent recharge",
+   "short": "After 100 %, charging resumes only when the SOC falls below the set value. When all packs are there, the master reports a charge limit of 0."
+  },
+  "5.4": {
+   "name": "No charging with a deep cell",
+   "short": "Charge block below the set cell voltage; only effective while automatic charge activation is off."
+  },
+  "5.6": {
+   "name": "Output connection fault",
+   "short": "Hardware input: if it is active for 5 s, the discharge MOSFET switches off."
+  },
+  "5.7": {
+   "name": "Current limiter feedback",
+   "short": "Internal feedback of the current limiter."
+  },
+  "6.0": {
+   "name": "Balancing",
+   "short": "Switches balancing on."
+  },
+  "6.1": {
+   "name": "Balancing also when idle",
+   "short": "Otherwise only while charging; never while discharging."
+  },
+  "6.2": {
+   "name": "Time limit for balancing without charging",
+   "short": "Limits balancing without charging to the set hours."
+  },
+  "6.3": {
+   "name": "No balancing with ambient message",
+   "short": "Blocks balancing during an ambient temperature warning or protection."
+  },
+  "6.4": {
+   "name": "Automatic charge activation",
+   "short": "After an under-voltage or SOC shutdown, lifts the protection at times so charging is possible. Disables the charge block for a deep cell."
+  },
+  "6.5": {
+   "name": "Manual charge activation",
+   "short": "One charge activation after switching on."
+  },
+  "6.6": {
+   "name": "Active current limiting",
+   "short": "Charging from 10 A goes through the hardware current limiter at once."
+  },
+  "6.7": {
+   "name": "Passive current limiting",
+   "short": "After a charge over-current warning the pack charges through the hardware current limiter for a while."
+  },
+  "7.0": {
+   "name": "External on/off switch",
+   "short": "Evaluates an external switch at the input. Without a switch connected, the idle level decides."
+  },
+  "7.1": {
+   "name": "Shutdown in standby",
+   "short": "Switches the pack off after the set standby time without voltage at the output."
+  },
+  "7.3": {
+   "name": "Display interface",
+   "short": "Binary protocol on RS232/TTL, probably for the LCD display."
+  },
+  "7.4": {
+   "name": "Extended display format",
+   "short": "Binary protocol in the extended format."
+  },
+  "7.5": {
+   "name": "Automatic addressing",
+   "short": "Ignores the DIP address and assigns addresses over a pulse chain."
+  },
+  "7.6": {
+   "name": "Avoid automatic address 0",
+   "short": "Only together with bit 5 (automatic addressing): if the pulse chain gives address 0, the pack takes 1, so it does not become master. Without bit 5 no effect. Code certain (0x9466, 16.06.13), the purpose is an interpretation."
+  },
+  "7.7": {
+   "name": "Charge limit: warning − 10 A",
+   "short": "On: charge limit per pack = charge over-current warning − 10 A. Off: half of it."
+  }
+ }
+}
