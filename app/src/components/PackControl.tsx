@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
+import { G0 } from "../access";
 import { chargeLine, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, learnedFullAllowed, learnedFullRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
@@ -243,8 +244,9 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
       ? { text: `${n.text} ${t("ctl.onOff.slaves")}${cutoff ? ` ${t("ctl.cutoff.master")} ${t("ctl.cutoff.ccl")}` : ""}`, tone: n.tone } : n);
     // RS485-1/2: bit 5 only means a lock if the pack has MAINT 1.6; named where bit 4 or 5 is 0
     const g = norm(f);
-    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && g !== undefined && (g & 0x30) !== 0x30
-      ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (g >> 5) & 1, state: t((g & 0x20) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
+    const both = G0.extendedOff | G0.lockState;
+    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && g !== undefined && (g & both) !== both
+      ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (g & G0.lockState) !== 0 ? 1 : 0, state: t((g & G0.lockState) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
     if (can && cut === "stillLocked") return slaves({ text: t("ctl.cutoff.stillLocked"), tone: "error" });
     // off: a stored lock (bit 5 at 0) or an unreadable Group0 never reads „Laden möglich“, on either way
     const offText = !on ? offCutoffText(cut, !can) : null;

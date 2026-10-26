@@ -100,12 +100,10 @@ export const withHardStop = (group0: number, enabled: boolean): number => (group
 const NEEDS_INSTALLATION = new Set(CATALOG.needs_installation);
 
 type V3 = [number, number, number];
-/** The first supported build of a patch line (1.5 → 1.5.3, 1.6 → 1.6.3) and the first one carrying an image flag. */
-const LINE_FROM: Record<string, V3> = { "1.5": [1, 5, 3], "1.6": [1, 6, 3] };
-const FLAG_FROM: Record<number, V3> = {
-  [CATALOG.flags.power]: [1, 5, 3], [CATALOG.flags.uart0]: [1, 5, 3], [CATALOG.flags.diagnosis]: [1, 5, 3], [CATALOG.flags.positive]: [1, 5, 3],
-  [CATALOG.flags.cutoff]: [1, 6, 3], [CATALOG.flags.checkpoint]: [1, 6, 3], [CATALOG.flags.hard_stop]: [1, 6, 3],
-};
+/** The first supported build of a patch line (1.5 → 1.5.3, 1.6 → 1.6.3) and the first one carrying an image flag, from
+ *  the catalog (`maint::SUPPORTED_15/16`, `access::FLAG_SINCE`). */
+const LINE_FROM = CATALOG.lines as unknown as Record<string, V3>;
+const FLAG_FROM = CATALOG.flag_since as unknown as Record<string, V3>;
 
 /** The firmware a way needs at least, for the matrix: the first supported MAINT build (`patch`), the OEM base (`base`).
  *  Null where the original firmware is enough. */

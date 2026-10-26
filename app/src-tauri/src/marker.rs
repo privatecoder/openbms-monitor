@@ -281,7 +281,7 @@ mod tests {
     fn info(format: u8, patch: [u8; 2], uart0: bool) -> MaintInfo {
         MaintInfo { format, base: [16, 6, 13], patch, patch_rev: if format == 4 { 3 } else { 0 },
             // TEMP(maint-1.6): format 3 as the first 1.6 (V1_6_CUTOFF, by its build ID)
-            build_id: if format == 3 { [0x18, 0xDA, 0xF6, 0x1D, 0x8A, 0x93, 0x67, 0x1D] } else { [1; 8] },
+            build_id: if format == 3 { openbms_proto::maint::temp16::BUILD_ID } else { [1; 8] },
             hard_stop: (format > 2).then_some(false), power_rtc: true, pack_cutoff: true, uart0, reserved_flags: 0 }
     }
 

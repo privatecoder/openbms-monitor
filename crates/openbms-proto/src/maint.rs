@@ -12,6 +12,7 @@
 //! ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout holds only once a format-2
 //! identity of a supported build was read on the same connection.
 
+use crate::access::{FLAG_CHECKPOINT, FLAG_CUTOFF, FLAG_DIAGNOSIS, FLAG_HARD_STOP, FLAG_HARD_STOP_ON, FLAG_POSITIVE, FLAG_POWER, FLAG_UART0};
 use crate::error::{Error, Result};
 use crate::frame::encode_request;
 use serde::Serialize;
@@ -156,12 +157,40 @@ impl MemoryDiagnosis {
     }
 }
 
-/// TEMP(maint-1.6): the build ID of the first MAINT 1.6 (V1_6_CUTOFF), supported until the installation runs 1.6.3.
-pub const TEMP_16_BUILD: &str = "18daf61d8a93671d";
-
 /// The lowest supported build of the 1.5 line and of the 1.6 line and later (major, minor, revision).
 pub const SUPPORTED_15: [u8; 3] = [1, 5, 3];
 pub const SUPPORTED_16: [u8; 3] = [1, 6, 3];
+
+/// Whether the app supports a patch version (major, minor, revision): from 1.5.3 in the 1.5 line, from 1.6.3 on. One
+/// rule for a live identity (`MaintInfo::supported`) and a stored proof's release name (`profile::release_patch`).
+pub fn supported_version(v: [u8; 3]) -> bool {
+    v >= SUPPORTED_16 || (SUPPORTED_15 <= v && v < [1, 6, 0])
+}
+
+/// TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF), the one build below the support boundary the app still supports,
+/// until the installation runs 1.6.3. Every exception for it asks here. To drop it: this module and its uses, its entry
+/// in `openbms_flash::known::PATCH_BUILDS`, the format-3 decoding and the tests marked TEMP(maint-1.6).
+pub mod temp16 {
+    use super::MaintInfo;
+
+    /// MNT format, patch version, build ID and image flags (06: power/clock and the pack cutoff; bit 3 at 0 allows power
+    /// and clock, unlike 1.5.3/1.6.3)
+    pub const FORMAT: u8 = 3;
+    pub const PATCH: [u8; 2] = [1, 6];
+    pub const BUILD: &str = "18daf61d8a93671d";
+    pub const BUILD_ID: [u8; 8] = [0x18, 0xDA, 0xF6, 0x1D, 0x8A, 0x93, 0x67, 0x1D];
+    pub const FLAGS: u8 = 0x06;
+
+    /// This build's live identity, by its build ID (no other format-3 1.6).
+    pub fn is(info: &MaintInfo) -> bool {
+        info.format == FORMAT && info.patch == PATCH && info.build_id == BUILD_ID
+    }
+
+    /// The version a stored proof's release names for it: exactly „1.6“ („… MAINT 1.6“), never „1.6 positive“ or „1.6.0“.
+    pub fn is_release_version(version: &str) -> bool {
+        version.trim() == "1.6"
+    }
+}
 
 /// Format-2, -3 or -4 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,21 +276,22 @@ impl MaintInfo {
         let flags = if info[3] == 2 { None } else { Some(info[id + 8]) };
         let bit = |b: u8| flags.is_some_and(|f| f & (1 << b) != 0);
         // bit 4 only in format 4; bit 3 and 5–7 kept as reported
-        let uart0 = info[3] == 4 && bit(4);
+        let uart0 = info[3] == 4 && bit(FLAG_UART0);
         // a configurable hard stop (format 4, bit 7) keeps bit 0 as its default, not as a compiled-in hard stop
-        let configurable = info[3] == 4 && bit(7);
+        let configurable = info[3] == 4 && bit(FLAG_HARD_STOP);
         let reserved_flags = flags.map_or(0, |f| f & if info[3] == 4 { 0xE8 | u8::from(configurable) } else { 0xF8 });
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[id..id + 8]);
         InfoAnswer::Known(Self {
             format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], patch_rev: rev, build_id,
-            hard_stop: flags.filter(|_| !configurable).map(|f| f & 0x01 != 0), power_rtc: bit(1), pack_cutoff: bit(2), uart0, reserved_flags,
+            hard_stop: flags.filter(|_| !configurable).map(|f| f & (1 << FLAG_HARD_STOP_ON) != 0), power_rtc: bit(FLAG_POWER), pack_cutoff: bit(FLAG_CUTOFF), uart0, reserved_flags,
         })
     }
 
     /// The image flag byte as reported (formats 3 and 4); a format-2 identity reports none: 0.
     pub fn image_flags(&self) -> u8 {
-        u8::from(self.hard_stop == Some(true)) | (u8::from(self.power_rtc) << 1) | (u8::from(self.pack_cutoff) << 2) | (u8::from(self.uart0) << 4)
+        (u8::from(self.hard_stop == Some(true)) << FLAG_HARD_STOP_ON) | (u8::from(self.power_rtc) << FLAG_POWER) | (u8::from(self.pack_cutoff) << FLAG_CUTOFF)
+            | (u8::from(self.uart0) << FLAG_UART0)
             | self.reserved_flags
     }
 
@@ -271,40 +301,35 @@ impl MaintInfo {
 
     /// Image flag bit 3: Group0 bits 3/4 positive (bit 3 at 1 allows power and clock, bit 4 at 1 the extended off).
     pub fn positive(&self) -> bool {
-        self.reserved_flags & 0x08 != 0
+        self.reserved_flags & (1 << FLAG_POSITIVE) != 0
     }
 
     /// Format 4, image flag bit 5: the memory diagnosis `0x64/04` over RS485-1/2 and the CAN socket (MAINT 1.5.3/1.6.3).
     pub fn diagnostics(&self) -> bool {
-        self.format4_flag(5)
+        self.format4_flag(FLAG_DIAGNOSIS)
     }
 
     /// Format 4, image flag bit 6: a planned restart (0x45/06) first saves the SOC record verified into both copies; a
     /// memory error answers RTN 08 and does not restart (MAINT 1.6.3).
     pub fn checkpoint(&self) -> bool {
-        self.format4_flag(6)
+        self.format4_flag(FLAG_CHECKPOINT)
     }
 
     /// Format 4, image flag bit 7: the hard stop at a recharge pause is chosen by Group0 bits 6/7 (MAINT 1.6.3).
     pub fn hard_stop_configurable(&self) -> bool {
-        self.format4_flag(7)
+        self.format4_flag(FLAG_HARD_STOP)
     }
 
     /// The default a configurable hard stop takes while Group0 bit 7 is 1 (image flag bit 0); None: not configurable.
     pub fn hard_stop_default(&self) -> Option<bool> {
-        self.hard_stop_configurable().then_some(self.reserved_flags & 0x01 != 0)
+        self.hard_stop_configurable().then_some(self.reserved_flags & (1 << FLAG_HARD_STOP_ON) != 0)
     }
 
     /// Whether the app supports this build's patch functions: MNT format 4 from MAINT 1.5.3 in the 1.5 line and from
     /// 1.6.3 on. Below, the patch is shown but treated like the original firmware.
     pub fn supported(&self) -> bool {
-        // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF: format 3, image flags 06, bit 3 at 0 allows power/RTC, unlike
-        // 1.5.3/1.6.3) stays supported until the installation runs 1.6.3; then remove this and the format-3 decoding
-        if self.format == 3 && self.patch == [1, 6] && self.build_id_hex() == TEMP_16_BUILD {
-            return true;
-        }
-        let v = [self.patch[0], self.patch[1], self.patch_rev];
-        self.format == 4 && (v >= SUPPORTED_16 || (SUPPORTED_15 <= v && v < [1, 6, 0]))
+        // TEMP(maint-1.6)
+        temp16::is(self) || (self.format == 4 && supported_version([self.patch[0], self.patch[1], self.patch_rev]))
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
