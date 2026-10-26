@@ -333,6 +333,12 @@ impl Connection {
         Ok(self.port.write_all(data)?)
     }
 
+    /// The caller listened a whole polling cycle on this connection and heard nothing (`openbms_flash::maint::bus::listen`):
+    /// the bus rule's first listen (`gate::Permit::ListenFirst`) is done.
+    pub fn heard_quiet(&mut self) {
+        self.listened = true;
+    }
+
     /// One polling cycle without sending (`timing::BUS_LISTEN`): a byte heard is another master on the bus, so nothing
     /// is sent ("bus-polled" when it was a Seplos master polling its slaves, else "bus-traffic").
     fn listen_first(&mut self) -> Result<()> {
