@@ -30,6 +30,7 @@ mod notify;
 mod power;
 mod profile;
 mod uart1_id;
+mod port;
 mod wiring;
 use history::{Format, Settings, SharedHistory};
 
@@ -396,7 +397,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     let epoch = state.connect_epoch.load(Ordering::SeqCst);
     let key = endpoint.key();
     let (ep, bus, control) = match endpoint {
-        EndpointArg::Serial { path, bus } => (Endpoint::Serial { path: path.clone(), baud: Bus::from(bus).baud() }, Bus::from(bus), maint_store::ControlEndpoint::Serial { path }),
+        EndpointArg::Serial { path, bus } => (port::serial(path.clone(), Bus::from(bus)), Bus::from(bus), maint_store::ControlEndpoint::Serial { path }),
         EndpointArg::Tcp { addr, bus } => (Endpoint::Tcp { addr: addr.clone() }, Bus::from(bus), maint_store::ControlEndpoint::Tcp { addr }),
     };
     // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
@@ -407,9 +408,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }
-    let mut conn = Connection::open(&ep).map_err(|e| e.to_string())?;
-    conn.set_label(capture::label(&ep, bus));
-    conn.set_bus(bus);
+    let mut conn = port::open(&ep, bus).map_err(|e| e.to_string())?;
     // nothing answers (wrong port, bus or baud rate, pack off or in the bootloader): the port is closed again,
     // nothing is linked or recorded
     let checked = check_link(&mut conn, bus, &addresses.unwrap_or_default(), &state.connect_cancel);
@@ -490,10 +489,7 @@ async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, 
     for b in [Bus::from(bus), other] {
         wiring::decide(wiring::now(), b).map_err(|k| refused_error(&k))?;
     }
-    let ep = Endpoint::Serial { path, baud: other.baud() };
-    let mut conn = Connection::open(&ep).map_err(|e| e.to_string())?;
-    conn.set_label(capture::label(&ep, other));
-    conn.set_bus(other);
+    let mut conn = port::open(&port::serial(path, other), other).map_err(|e| e.to_string())?;
     let checked = check_link(&mut conn, other, &addresses.unwrap_or_default(), &state.connect_cancel);
     if state.connect_cancel.swap(false, Ordering::SeqCst) {
         return Err(CONNECT_CANCELLED.into());
@@ -560,7 +556,7 @@ async fn disconnect(state: State<'_, AppState>, lost: Option<bool>) -> Result<()
 #[tauri::command]
 async fn scan(state: State<'_, AppState>, addresses: Option<Vec<u8>>, connecting: Option<bool>) -> Result<Vec<(u8, DeviceInfo)>, String> {
     // without addresses every DIP address 0..=15 is asked; with a fixed pack count only those
-    let addresses = addresses.unwrap_or_else(|| (0..=15).collect());
+    let addresses = addresses.unwrap_or_else(|| openbms_proto::address::DIP.collect());
     // only the search of a connect stops on its „Abbrechen“ (not e.g. the calibration's device query)
     let cancel = state.connect_cancel.clone();
     let connecting = connecting.unwrap_or(false);

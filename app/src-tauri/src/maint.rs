@@ -160,7 +160,7 @@ pub fn route_with(main: Option<&(String, Bus)>, control_key: &str, main_conn_pre
 
 fn control_endpoint(c: &ControlEndpoint) -> Endpoint {
     match c {
-        ControlEndpoint::Serial { path } => Endpoint::Serial { path: path.clone(), baud: Bus::CanSocketBus.baud() },
+        ControlEndpoint::Serial { path } => crate::port::serial(path.clone(), Bus::CanSocketBus),
         ControlEndpoint::Tcp { addr } => Endpoint::Tcp { addr: addr.clone() },
     }
 }
@@ -207,9 +207,7 @@ pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installati
     let mut guard = lock(&state.conn).map_err(|m| MaintError::Connection { message: m })?;
     let open = |f: &mut dyn FnMut(&mut Connection) -> Result<T, E>| -> Result<Result<T, E>, MaintError> {
         let ep = control_endpoint(control);
-        let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-        c.set_label(crate::capture::label(&ep, Bus::CanSocketBus));
-        c.set_bus(Bus::CanSocketBus);
+        let mut c = crate::port::open(&ep, Bus::CanSocketBus).map_err(|e| MaintError::Connection { message: e.to_string() })?;
         Ok(f(&mut c))
     };
     match route_with(main.as_ref(), &key, guard.is_some()) {
@@ -360,7 +358,6 @@ pub fn marker_update(m: &Master) -> Option<bool> {
 
 // --- pack bus ---
 
-const PACK_BUS_BAUD: u32 = 19_200;
 /// A little more than one polling cycle of the master (`timing::BUS_LISTEN`).
 pub const LISTEN: Duration = openbms_transport::timing::BUS_LISTEN;
 
@@ -375,12 +372,12 @@ pub fn pack_key(port: &str) -> Result<String, MaintError> {
     normalize_key(port).map_err(|_| refused("no-port"))
 }
 
-/// The transport endpoint of a pack bus key: a network gateway (its channel set to 19200 baud) or a USB port.
+/// The transport endpoint of a pack bus key: a network gateway (its channel set to the pack bus's baud rate) or a USB port.
 pub fn pack_endpoint(key: &str) -> Result<Endpoint, MaintError> {
     let key = pack_key(key)?;
     Ok(match key.split_once(':') {
         Some(("tcp", addr)) => Endpoint::Tcp { addr: addr.into() },
-        Some((_, path)) => Endpoint::Serial { path: path.into(), baud: PACK_BUS_BAUD },
+        Some((_, path)) => crate::port::serial(path, Bus::PackBus),
         None => return Err(refused("no-port")),
     })
 }
@@ -393,9 +390,7 @@ pub fn open_pack_for(state: &AppState, app: &AppHandle, key: &str) -> Result<Con
     if must_stop_monitor(main.as_ref(), &pack_key(key)?) {
         crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
     }
-    let mut c = Connection::open_on(&ep, Bus::PackBus).map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    c.set_label(crate::capture::label(&ep, Bus::PackBus));
-    Ok(c)
+    crate::port::open(&ep, Bus::PackBus).map_err(|e| MaintError::Connection { message: e.to_string() })
 }
 
 /// "quiet" (no byte), "polling" (the master polls slaves) or "traffic" (bytes, but no poll of the master).
@@ -723,7 +718,7 @@ pub struct PackScan {
 /// Addresses 0–15 until `cancel` is set: checked before each address, so a cancelled search ends after the one
 /// running (at most one 0x51 timeout).
 pub fn scan_addresses(cancel: &std::sync::atomic::AtomicBool) -> impl Iterator<Item = u8> + '_ {
-    (0..=15u8).take_while(move |_| !cancel.load(std::sync::atomic::Ordering::SeqCst))
+    openbms_proto::address::DIP.take_while(move |_| !cancel.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 /// One `0x51` scan of addresses 0–15 on the pack bus (when the bus became quiet, or the re-scan button); „Abbrechen“

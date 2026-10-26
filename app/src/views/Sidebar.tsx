@@ -14,6 +14,7 @@ import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, prese
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
 import { INVERTERS, pollsBus, refusalOf, useWiring } from "../wiring";
+import { DIP_MAX } from "../access";
 import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
@@ -594,12 +595,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             </select>
             {packSel.mode === "count" && (
               <select className={cn(input, "w-16")} value={packSel.n} disabled={fixed} aria-label={t("conn.packsCount")} onChange={(e) => setPackSel({ mode: "count", n: Number(e.target.value) })}>
-                {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
+                {Array.from({ length: DIP_MAX + 1 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             )}
             {packSel.mode === "address" && (
               <select className={cn(input, "w-16")} value={packSel.k} disabled={fixed} aria-label={t("conn.packsAddress")} onChange={(e) => setPackSel({ mode: "address", k: Number(e.target.value) })}>
-                {Array.from({ length: 16 }, (_, i) => i).map((k) => <option key={k} value={k}>{padAddress(k)}</option>)}
+                {Array.from({ length: DIP_MAX + 1 }, (_, i) => i).map((k) => <option key={k} value={k}>{padAddress(k)}</option>)}
               </select>
             )}
           </span>

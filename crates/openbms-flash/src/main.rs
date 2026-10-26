@@ -89,7 +89,7 @@ fn endpoint(cli: &Cli) -> Result<Endpoint> {
     match (&cli.serial, &cli.tcp) {
         (Some(path), None) => Ok(Endpoint::Serial {
             path: path.clone(),
-            baud: 19_200,
+            baud: openbms_transport::Bus::PackBus.baud(),
         }),
         (None, Some(addr)) => Ok(Endpoint::Tcp { addr: addr.clone() }),
         _ => Err(Error::Proto(
@@ -148,7 +148,7 @@ fn run(cli: Cli) -> Result<()> {
             address,
             allow_custom_firmware,
         } => {
-            if *address > 15 {
+            if !openbms_proto::address::is_dip(*address) {
                 return Err(Error::Address(*address));
             }
             let (image, release) = image(path, *allow_custom_firmware)?;
@@ -180,7 +180,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Command::Probe { address, log } => {
-            if *address > 15 {
+            if !openbms_proto::address::is_dip(*address) {
                 return Err(Error::Address(*address));
             }
             let mut link = Connection::open(&endpoint(&cli)?)?;
@@ -202,7 +202,7 @@ fn run(cli: Cli) -> Result<()> {
             log,
             allow_custom_firmware,
         } => {
-            if *address > 15 {
+            if !openbms_proto::address::is_dip(*address) {
                 return Err(Error::Address(*address));
             }
             let (image, release) = image(path, *allow_custom_firmware)?;
