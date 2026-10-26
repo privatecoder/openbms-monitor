@@ -9,6 +9,7 @@ import { cn } from "../lib/utils";
 import { errorKey, keyLabel, mergeSuggestion, nameCheck, packIsCanAdapter, packPortOf, storedPort, controlKey } from "../maint";
 import type { Maint } from "../maintStore";
 import { reloadSettings } from "../installData";
+import { INVERTERS, useWiring, type Inverter } from "../wiring";
 import { useCellDb } from "../cells/store";
 import { cellName } from "./CellAssign";
 import { DevicesPanel } from "./DevicesPanel";
@@ -182,6 +183,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
       {expanded && (
         <div className="space-y-3">
           <Ports inst={inst} maint={maint} />
+          <WiringSetting id={inst.id} live={live} />
           {view && <DevicesPanel installation={inst.id} places={view.places.map((p) => p.address)} />}
           {others.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -204,6 +206,25 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
       {done && <p className="text-sm text-ok">{done}</p>}
       {error && <p className="text-sm text-alarm">{error}</p>}
     </Panel>
+  );
+}
+
+/** „Wechselrichter angeschlossen über“: where the inverter polls (`wiring.ts`); the app never sends on that bus. Fixed
+ *  while connected with this installation: the rule is bound when connecting. */
+function WiringSetting({ id, live }: { id: string; live: boolean }) {
+  const { t } = useTranslation();
+  const w = useWiring(id);
+  return (
+    <div className="space-y-1 text-sm">
+      <span className="flex items-center gap-1.5 text-muted">{t("wiring.label")}<InfoIcon id="topic.wiring" /></span>
+      <select className={input} value={w.inverter ?? ""} disabled={live || !w.loaded} aria-label={t("wiring.label")}
+        onChange={(e) => { void w.setInverter(e.target.value as Inverter); }}>
+        {!w.inverter && <option value="">{t("wiring.choose")}</option>}
+        {INVERTERS.map((i) => <option key={i} value={i}>{t(`wiring.opt.${i}`)}</option>)}
+      </select>
+      <p className={cn("text-xs", w.inverter ? "text-muted" : "text-discharge")}>{w.inverter ? t(`wiring.note.${w.inverter}`) : t("wiring.unset")}</p>
+      {live && <p className="text-xs text-muted">{t("wiring.whileLive")}</p>}
+    </div>
   );
 }
 

@@ -3,17 +3,19 @@ import { api, type Bus } from "./api";
 import { useSettings } from "./installData";
 import { decode, textOf } from "./errors";
 
-/** Where the inverter is connected (installation setting "wiring"; with „Nur ansehen“ this session's choice). The
- *  backend's bus rule (`wiring.rs`) keeps every request of the app off the bus the inverter polls; RS485-1/2 listens
- *  first in any case, so a Seplos master polling its slaves is heard before anything is sent. */
-export const INVERTERS = ["can", "uart1-master", "uart0", "uart1-each", "none"] as const;
+/** Where the inverter is connected (installation setting "wiring"; none without an installation, where the connection
+ *  only listens briefly on the chosen port). The backend's bus rule (`wiring.rs`) keeps every request of the app off the
+ *  bus the inverter polls; RS485-1/2 listens first in any case, so a Seplos master polling its slaves is heard. */
+export const INVERTERS = ["can", "uart1", "uart0", "none"] as const;
 export type Inverter = (typeof INVERTERS)[number];
 
 /** The bus the inverter polls (`Inverter::polls`). */
-export const pollsBus = (i: Inverter | null): Bus | null => (i === "uart0" ? "pack" : i === "uart1-master" || i === "uart1-each" ? "can" : null);
+export const pollsBus = (i: Inverter | null): Bus | null => (i === "uart0" ? "pack" : i === "uart1" ? "can" : null);
 
-const inverterOf = (v: unknown): Inverter | null => {
-  const i = (v as { inverter?: unknown } | null)?.inverter;
+/** The stored value; the two earlier names of the CAN socket's RS485 pair read as that one value. */
+export const inverterOf = (v: unknown): Inverter | null => {
+  const raw = (v as { inverter?: unknown } | null)?.inverter;
+  const i = raw === "uart1-master" || raw === "uart1-each" ? "uart1" : raw;
   return INVERTERS.includes(i as Inverter) ? (i as Inverter) : null;
 };
 
