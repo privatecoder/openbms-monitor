@@ -1,4 +1,5 @@
 import type { BenchPack, BenchScan, FirmwareDone, FirmwareImage, FirmwareProgress, FlashComparison, FlashSide } from "./api";
+import { G0 } from "./access";
 
 /** Custom images get their own phrase, so consent to one kind never covers the other. */
 export const confirmationPhrase = (address: number, custom = false) => custom ? `FLASH CUSTOM ${address}` : `FLASH ${address}`;
@@ -64,11 +65,11 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
  *  flag, `positive`, 1.5.3/1.6.3; at 0 in TEMP(maint-1.6) the first 1.6); with the stored pack cutoff (`packCutoff`) the
  *  extended off (bit 4: 1 on, so FF switches it on) and a bit 5 at 0, which the image takes for a lock. */
 export function flashGateKeys(g0: number, powerRtc = false, packCutoff = false, positive = true): string[] {
-  const write = (g0 & 1) === 1, start = (g0 & 4) === 4;
+  const write = (g0 & G0.write) !== 0, start = (g0 & G0.start) !== 0;
   const keys = write && start ? ["fw.patch.ok"] : !write && !start ? ["fw.patch.bothLocked"] : [write ? "fw.patch.startLocked" : "fw.patch.writeLocked"];
-  const powerFree = ((g0 & 8) === 8) === positive;
+  const powerFree = ((g0 & G0.powerLock) !== 0) === positive;
   const power = powerRtc ? [powerFree ? "fw.patch.powerOpen" : "fw.patch.powerLocked"] : [];
-  const cutoff = packCutoff ? [(g0 & 0x10) !== 0 ? "fw.patch.cutoffOn" : "fw.patch.cutoffOff", ...((g0 & 0x20) === 0 ? ["fw.patch.lockKept"] : [])] : [];
+  const cutoff = packCutoff ? [(g0 & G0.extendedOff) !== 0 ? "fw.patch.cutoffOn" : "fw.patch.cutoffOff", ...((g0 & G0.lockState) === 0 ? ["fw.patch.lockKept"] : [])] : [];
   return [...keys, ...power, ...cutoff];
 }
 

@@ -138,12 +138,12 @@ pub fn caps_of_info(c: Caps, info: &openbms_proto::MaintInfo) -> CapsView {
 /// no supported build (1.5.1, 1.6.2 …; a release without a version, e.g. a user's proof, counts as the lowest supported).
 pub fn release_patch(release: &str) -> Option<[u8; 2]> {
     let Some((_, v)) = release.split_once("MAINT ") else { return Some(known::MIN_PATCH) };
-    // TEMP(maint-1.6): only the name of the first 1.6 („… MAINT 1.6“), never „MAINT 1.6 positive“ or another 1.6
-    let temp = v.trim() == "1.6";
+    // TEMP(maint-1.6)
+    let temp = openbms_proto::maint::temp16::is_release_version(v);
     let mut parts = v.split('.').map(|p| p.trim_start_matches(|c: char| !c.is_ascii_digit()).chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u8>().ok());
     let (major, minor) = (parts.next().flatten()?, parts.next().flatten()?);
     let v = [major, minor, parts.next().flatten().unwrap_or(0)];
-    (temp || v >= openbms_proto::maint::SUPPORTED_16 || (openbms_proto::maint::SUPPORTED_15 <= v && v < [1, 6, 0])).then_some([major, minor])
+    (temp || openbms_proto::maint::supported_version(v)).then_some([major, minor])
 }
 
 #[derive(Serialize, Clone, Debug)]
