@@ -359,17 +359,12 @@ pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expecte
     out
 }
 
-/// A parameter write over the CAN socket (`write_parameters`): an open interrupted update of this address refuses it;
-/// the store's facts first, then the port session with polling held, then what the store keeps.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expected: Option<&str>, base: Values, edited: Values, restore: bool) -> Result<bank::Written<ParamWrite>, String> {
+/// What every strict write over the CAN socket starts from (parameters, power and clock): the link's installation, no
+/// open interrupted update at the address (`uart1_pending`), and the store's facts for the identity check of the board
+/// `expected` there. Which String 2 is expected, the checks before it and the Group0 rule stay with the caller.
+pub(crate) fn prepare(state: &AppState, link: &Link, address: u8, expected: Option<&str>) -> Result<(String, Facts), String> {
     let inst = link.installation.clone().ok_or("view only: writing to a pack needs a connection with an installation")?;
     uart1_pending(state, link, address)?;
-    // a pack whose own 64/03 on this link shows a build the app does not support (an older patch): its binary service
-    // may still answer, but its rules are not the app's; written over RS485-1/2 only
-    if crate::profile::unsupported_here(state, link, address) {
-        return Err(uart1_refusal("unsupported"));
-    }
     let facts = crate::maint::with_store(state, |s| {
         Ok(Facts {
             refs: s.current_refs(&inst)?,
@@ -382,13 +377,33 @@ pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expect
         })
     })
     .map_err(|e| format!("{e:?}"))?;
+    Ok((inst, facts))
+}
+
+/// The port session of a strict CAN socket write (`prepare` first): host polling held, on exactly `link`, then what the
+/// store keeps of it (boards shown gone, the target's snapshots).
+pub(crate) fn run_session<T>(state: &AppState, link: &Link, address: u8, f: impl FnOnce(&mut openbms_transport::Connection) -> Session<T>) -> Result<Session<T>, String> {
+    let session = {
+        let _pause = crate::PollPause::hold(&state.params_pause);
+        with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(f(c)))?
+    };
+    keep(state, link, address, &session);
+    Ok(session)
+}
+
+/// A parameter write over the CAN socket (`write_parameters`): an open interrupted update of this address refuses it;
+/// the store's facts first, then the port session with polling held, then what the store keeps.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expected: Option<&str>, base: Values, edited: Values, restore: bool) -> Result<bank::Written<ParamWrite>, String> {
+    let (inst, facts) = prepare(state, link, address, expected)?;
+    // a pack whose own 64/03 on this link shows a build the app does not support (an older patch): its binary service
+    // may still answer, but its rules are not the app's; written over RS485-1/2 only
+    if crate::profile::unsupported_here(state, link, address) {
+        return Err(uart1_refusal("unsupported"));
+    }
     // the proof is bound to the expected String 2; the session writes only when the fresh one equals it
     let facts = Facts { group0: crate::profile::group0_rule(true, crate::profile::pack_patch(state, link, address, expected).as_ref()), ..facts };
-    let _pause = crate::PollPause::hold(&state.params_pause);
-    let session = with_link(&state.conn, &state.flashing, &state.link, link, |c| {
-        Ok(write_session(&mut Conn { c, bus }, &inst, address, expected, &facts, base, edited, restore))
-    })?;
-    keep(state, link, address, &session);
+    let session = run_session(state, link, address, |c| write_session(&mut Conn { c, bus }, &inst, address, expected, &facts, base, edited, restore))?;
     match session.result {
         Some(r) => r.map(|value| bank::Written { value, unchecked: false }).map_err(|e| with_gen(e, link.gen)),
         None => Err("no result".into()),
