@@ -505,7 +505,7 @@ async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, 
     // another baud rate on the same cable is no other physical bus: a bus the rule keeps silent is never tried under
     // the other name
     for b in [Bus::from(bus), other] {
-        wiring::decide(wiring::now(), b).map_err(|k| refused_error(&k))?;
+        wiring::permit(b).map_err(|k| refused_error(&k))?;
     }
     let mut conn = port::open(&port::serial(path, other), other).map_err(|e| e.to_string())?;
     let checked = check_link(&mut conn, other, &addresses.unwrap_or_default(), &state.connect_cancel);

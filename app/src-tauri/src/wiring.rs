@@ -1,11 +1,13 @@
-//! How the packs reach their inverter (installation setting "wiring", for „Nur ansehen“ the session's choice), and
-//! from it the bus rule every request of the app passes (`openbms_transport::gate`): one master per RS485 bus.
+//! How the packs reach their inverter (installation setting "wiring"), and from it the bus rule every request of the
+//! app passes (`openbms_transport::gate`): one master per RS485 bus.
 //!
 //! - The inverter polls RS485-1/2 (UART0) or the CAN socket's RS485 pair (UART1): the app sends nothing there, unless
 //!   the user said the inverter's communication is paused or cut for now (`paused`, this session only).
 //! - RS485-1/2 always listens for one polling cycle before a connection's first request: a Seplos master polling its
 //!   slaves (pack 0 with slaves, until its maintenance marker or DIP 5–8 halt it) or any other sender refuses there.
-//! - Not set: nothing is sent, the UI asks first (an existing installation is never taken for one without inverter).
+//! - An installation without the setting: nothing is sent, the UI asks for it (never taken for one without inverter).
+//! - No installation („Nur ansehen“, „Platine flashen“): the user chose a free port; the connection listens briefly on
+//!   that port before its first request, whichever bus it is.
 
 use openbms_transport::{gate::Permit, Bus};
 use serde::Deserialize;
@@ -17,14 +19,14 @@ use std::sync::Mutex;
 pub enum Inverter {
     /// none, or a computer that is the app itself
     None,
-    /// CAN (pins 4/5 of the CAN socket); with several packs pack 0 polls its slaves on RS485-1/2
+    /// CAN-H/L (pins 4/5 of the CAN socket); with several packs pack 0 polls its slaves on RS485-1/2
     Can,
-    /// RS485-1/2, the inverter polls every pack itself
+    /// RS485-1/2: the inverter polls the packs itself
     Uart0,
-    /// the CAN socket's RS485 pair at pack 0, system values (Modbus, 0x60–0x63); with several packs pack 0 polls too
-    Uart1Master,
-    /// the CAN socket's RS485 pair, the inverter polls every pack itself
-    Uart1Each,
+    /// the CAN socket's RS485 pair: system values at pack 0 or every pack itself (the same bus taken either way; a
+    /// master polling its slaves on RS485-1/2 is heard there by the first listen)
+    #[serde(alias = "uart1-master", alias = "uart1-each")]
+    Uart1,
 }
 
 impl Inverter {
@@ -32,7 +34,7 @@ impl Inverter {
     pub fn polls(self) -> Option<Bus> {
         match self {
             Inverter::Uart0 => Some(Bus::PackBus),
-            Inverter::Uart1Master | Inverter::Uart1Each => Some(Bus::CanSocketBus),
+            Inverter::Uart1 => Some(Bus::CanSocketBus),
             Inverter::None | Inverter::Can => None,
         }
     }
@@ -71,10 +73,14 @@ pub fn decide(w: Wiring, bus: Bus) -> Result<Permit, String> {
     Ok(if bus == Bus::PackBus { Permit::ListenFirst } else { Permit::Send })
 }
 
-/// The rule in force, after taking a waiting change while no action holds the bus.
-pub fn now() -> Wiring {
+/// The bus rule in force for `bus`: an installation's wiring (`decide`), or without one only the brief listen.
+pub fn permit(bus: Bus) -> Result<Permit, String> {
     settle();
-    NOW.lock().unwrap_or_else(|e| e.into_inner()).wiring
+    let now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    match now.scope {
+        Some(_) => decide(now.wiring, bus),
+        None => Ok(Permit::ListenFirst),
+    }
 }
 
 /// Take a waiting change unless an action holds the bus. Called where an action begins (before it holds the bus) and
@@ -91,8 +97,8 @@ pub fn settle() {
 /// Right after a connect for `installation` reserved the bus (so no other action holds the rule), before its first
 /// request: the rule must be that installation's, not the one the UI showed before (its update may still be on its
 /// way). A waiting change of this installation is taken; another installation's rule is replaced by the stored setting
-/// of this one, without a pause; „Nur ansehen“ waits for the session's choice from the UI (unset meanwhile: nothing is
-/// sent). A connect refused for a busy bus never gets here, so it never changes a running action's rule.
+/// of this one, without a pause; without an installation only the brief listen applies (`permit`). A connect refused
+/// for a busy bus never gets here, so it never changes a running action's rule.
 pub fn bind(state: &crate::AppState, installation: Option<&str>) {
     let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
@@ -119,11 +125,11 @@ pub fn install(state: &crate::AppState) {
         use std::sync::atomic::Ordering::SeqCst;
         flashing.load(SeqCst) || port.load(SeqCst) || crate::control::any_pack_action(&ops).is_some()
     }));
-    openbms_transport::gate::install(Box::new(|bus| decide(now(), bus)));
+    openbms_transport::gate::install(Box::new(permit));
 }
 
-/// The wiring of the installation the UI shows (or the session's choice), and whether the user said the inverter is
-/// paused. While an action holds the bus the change waits for its end (`PENDING`).
+/// The wiring of the installation the UI shows (None: no installation, the brief listen only), and whether the user
+/// said the inverter is paused. While an action holds the bus the change waits for its end (`PENDING`).
 #[tauri::command]
 pub fn set_wiring(installation: Option<String>, inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
     *PENDING.lock().map_err(|e| e.to_string())? = Some(Rule { scope: installation, wiring: Wiring { inverter, paused } });
@@ -141,7 +147,7 @@ mod tests {
 
     #[test]
     fn the_bus_the_inverter_polls_stays_silent_unless_paused() {
-        for (inv, busy) in [(Inverter::Uart0, Some(Bus::PackBus)), (Inverter::Uart1Master, Some(Bus::CanSocketBus)), (Inverter::Uart1Each, Some(Bus::CanSocketBus)), (Inverter::Can, None), (Inverter::None, None)] {
+        for (inv, busy) in [(Inverter::Uart0, Some(Bus::PackBus)), (Inverter::Uart1, Some(Bus::CanSocketBus)), (Inverter::Can, None), (Inverter::None, None)] {
             for bus in [Bus::PackBus, Bus::CanSocketBus] {
                 let blocked = busy == Some(bus);
                 assert_eq!(decide(w(inv, false), bus).is_err(), blocked, "{inv:?} {bus:?}");
@@ -153,9 +159,17 @@ mod tests {
     #[test]
     fn a_change_takes_effect_once_no_action_holds_the_bus() {
         // no action here (no hold installed): the change is the rule at once
-        set_wiring(Some("A".into()), Some(Inverter::Uart1Master), false).unwrap();
-        assert_eq!(now().inverter, Some(Inverter::Uart1Master));
+        set_wiring(Some("A".into()), Some(Inverter::Uart1), false).unwrap();
+        assert_eq!(NOW.lock().unwrap().wiring.inverter, Some(Inverter::Uart1));
         assert_eq!(NOW.lock().unwrap().scope.as_deref(), Some("A"));
+        assert_eq!(permit(Bus::CanSocketBus), Err("bus-inverter".into()));
+        // no installation: the brief listen on the chosen port, nothing else
+        set_wiring(None, None, false).unwrap();
+        assert_eq!((permit(Bus::CanSocketBus), permit(Bus::PackBus)), (Ok(Permit::ListenFirst), Ok(Permit::ListenFirst)));
+        // the two earlier names of the CAN socket's RS485 pair read as that one value
+        for old in ["uart1-master", "uart1-each"] {
+            assert_eq!(serde_json::from_value::<Inverter>(serde_json::json!(old)).unwrap(), Inverter::Uart1);
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
-import { INVERTERS, pollsBus, refusalOf, useWiring } from "../wiring";
+import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
 import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
@@ -552,7 +552,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <option value="pack">{t("conn.busPack")}</option>
           </select>
         </label>
-        <WiringField scope={maint.installation} fixed={fixed} />
+        {maint.installation && <WiringHint scope={maint.installation} onEdit={() => setView("installations")} />}
         {useStored ? (
           <div className="space-y-1">
             <div className="flex items-center gap-2 rounded-md bg-sunken px-3 py-2 text-sm" title={t("conn.storedHint")}>
@@ -728,27 +728,24 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
   );
 }
 
-/** Where the inverter is connected (`wiring.ts`): the app never sends on the bus it polls, unless the user said it is
- *  paused for now. Fixed while connected, like the other connection fields. */
-function WiringField({ scope, fixed }: { scope: string | null; fixed: boolean }) {
+/** The installation's inverter connection is set under „Anlagen“ (`wiring.ts`): here only a note while it is missing, and
+ *  the session's „Wechselrichter pausiert“ where the inverter polls one of the RS485 buses. */
+function WiringHint({ scope, onEdit }: { scope: string; onEdit: () => void }) {
   const { t } = useTranslation();
   const w = useWiring(scope);
-  const busy = pollsBus(w.inverter);
+  if (!w.loaded) return null;
+  if (!w.inverter) {
+    return (
+      <p className="text-xs text-discharge">
+        {t("wiring.unset")} <button className="underline hover:text-ink" onClick={onEdit}>{t("wiring.setUnder")}</button>
+      </p>
+    );
+  }
+  if (!pollsBus(w.inverter)) return null;
   return (
-    <div className="space-y-1">
-      <span className="flex items-center gap-1.5 text-sm text-muted">{t("wiring.label")}<InfoIcon id="topic.wiring" /></span>
-      <select className={input} value={w.inverter ?? ""} disabled={fixed || !w.loaded} aria-label={t("wiring.label")}
-        onChange={(e) => { void w.setInverter(e.target.value as (typeof INVERTERS)[number]); }}>
-        {!w.inverter && <option value="">{t("wiring.choose")}</option>}
-        {INVERTERS.map((i) => <option key={i} value={i}>{t(`wiring.opt.${i}`)}</option>)}
-      </select>
-      <p className={cn("text-xs", w.inverter ? "text-muted" : "text-discharge")}>{w.inverter ? t(`wiring.note.${w.inverter}`) : t("wiring.unset")}</p>
-      {busy && (
-        <label className="flex items-start gap-2 text-xs text-muted" title={t("wiring.pausedHint")}>
-          <input type="checkbox" className="mt-0.5" checked={w.paused} onChange={(e) => w.setPaused(e.target.checked)} />
-          <span>{t("wiring.paused")}</span>
-        </label>
-      )}
-    </div>
+    <label className="flex items-start gap-2 text-xs text-muted" title={t("wiring.pausedHint")}>
+      <input type="checkbox" className="mt-0.5" checked={w.paused} onChange={(e) => w.setPaused(e.target.checked)} />
+      <span>{t("wiring.paused")}</span>
+    </label>
   );
 }
