@@ -1,5 +1,6 @@
 /** BMS parameters (0x47): order, grouping, BatteryMonitor XML import/export and the comparison between sources. */
 import type { PackPatch } from "./api";
+import CATALOG from "./generated/access.json";
 
 export interface Parameter { index: number; key: string; raw: number; value: number; unit: string }
 /** `bms_serial`: over the CAN socket the String 2 read with the block, when it identifies the board; a
@@ -8,39 +9,12 @@ export interface Parameters { address: number; parameters: Parameter[]; function
   /** what proves the pack's patch version (the release bits of Group0 are named only then) */
   patch?: PackPatch | null }
 
-/** Parameter keys in BMS order (P0..P86), as in openbms-proto/src/params.rs. */
-export const KEYS = [
-  "cell_high_voltage_alarm", "cell_high_voltage_recovery", "cell_low_voltage_alarm", "cell_low_voltage_recovery",
-  "cell_overvoltage_protection", "cell_overvoltage_recovery", "cell_undervoltage_protection", "cell_undervoltage_recovery",
-  "balancing_start_voltage", "cell_low_voltage_charging_forbidden",
-  "pack_high_voltage_alarm", "pack_high_voltage_recovery", "pack_low_voltage_alarm", "pack_low_voltage_recovery",
-  "pack_overvoltage_protection", "pack_overvoltage_recovery", "pack_undervoltage_protection", "pack_undervoltage_recovery",
-  "charger_overvoltage_protection", "charger_overvoltage_recovery",
-  "charging_high_temperature_alarm", "charging_high_temperature_recovery", "charging_low_temperature_alarm", "charging_low_temperature_recovery",
-  "charging_over_temperature_protection", "charging_over_temperature_recovery", "charging_under_temperature_protection", "charging_under_temperature_recovery",
-  "discharging_high_temperature_alarm", "discharging_high_temperature_recovery", "discharging_low_temperature_alarm", "discharging_low_temperature_recovery",
-  "discharging_over_temperature_protection", "discharging_over_temperature_recovery", "discharging_under_temperature_protection", "discharging_under_temperature_recovery",
-  "cell_heating_on", "cell_heating_off",
-  "ambient_high_temperature_alarm", "ambient_high_temperature_recovery", "ambient_low_temperature_alarm", "ambient_low_temperature_recovery",
-  "ambient_over_temperature_protection", "ambient_over_temperature_recovery", "ambient_under_temperature_protection", "ambient_under_temperature_recovery",
-  "power_high_temperature_alarm", "power_high_temperature_recovery", "power_over_temperature_protection", "power_over_temperature_recovery",
-  "charging_overcurrent_alarm", "charging_overcurrent_recovery", "discharging_overcurrent_alarm", "discharging_overcurrent_recovery",
-  "charging_overcurrent_protection", "discharging_overcurrent_protection", "transient_overcurrent_protection", "output_soft_start_delay",
-  "rated_capacity", "remaining_capacity_setting",
-  "cell_difference_fault", "cell_difference_fault_recovery", "balancing_start_difference", "balancing_stop_difference",
-  "static_balancing_time", "cells_in_series", "charging_overcurrent_delay", "discharging_overcurrent_delay",
-  "transient_overcurrent_delay", "overcurrent_recovery_delay", "overcurrent_lock_events", "charge_current_limit_duration",
-  "charge_activation_window", "charge_activation_interval", "charge_activation_attempts", "work_record_interval",
-  "standby_record_interval", "standby_shutdown_delay", "remaining_capacity_alarm", "remaining_capacity_protection",
-  "intermittent_recharge_below", "cycle_cumulative_capacity", "connection_fault_impedance", "compensation_1_cell",
-  "compensation_1_resistance", "compensation_2_cell", "compensation_2_resistance",
-] as const;
+/** Parameter keys in BMS order (P0..P86) and their display units, from the generated catalog
+ *  (`openbms_proto::params::DEFINITIONS`). */
+export const KEYS: readonly string[] = CATALOG.params.map((p) => p.key);
 
 /** Display units, as the backend sends them. */
-export const UNITS: string[] = KEYS.map((_, i) =>
-  i <= 19 || (i >= 60 && i <= 63) ? "V" : i <= 49 ? "°C" : i <= 56 ? "A" : i === 57 || i === 68 ? "ms" : i <= 59 ? "Ah"
-  : i === 64 || i === 73 || i === 77 ? "h" : i === 66 || i === 67 || i === 69 ? "s" : i === 71 || i === 72 || i === 75 || i === 76 ? "min"
-  : i >= 78 && i <= 81 ? "%" : i === 82 || i === 84 || i === 86 ? "mΩ" : "");
+export const UNITS: string[] = CATALOG.params.map((p) => p.unit);
 
 /** Names and units exactly as BatteryMonitor writes them (machine translation, typos included). */
 export const BM_NAMES = [
@@ -207,7 +181,7 @@ export function deviating(values: (string | undefined)[]): Set<number> {
 /** Bits that have a function (help entry switch.<group>.<bit>); the rest are shown greyed out. */
 export const SWITCH_BITS: Record<number, number[]> = {
   0: [1], 1: [0, 1, 2, 3, 4, 5, 6, 7], 2: [0, 1, 2, 3, 4, 5, 6, 7], 3: [0, 1, 2, 3, 4, 5, 6, 7],
-  4: [0, 1, 2, 3, 4, 5, 6, 7], 5: [0, 1, 2, 3, 4, 6, 7], 6: [0, 1, 2, 3, 4, 5, 6, 7], 7: [0, 1, 3, 4, 5, 7],
+  4: [0, 1, 2, 3, 4, 5, 6, 7], 5: [0, 1, 2, 3, 4, 6, 7], 6: [0, 1, 2, 3, 4, 5, 6, 7], 7: [0, 1, 3, 4, 5, 6, 7],
 };
 
 /** A parameter history answer (last write, the block it replaced) asked for pack `address` on `link`: only that pack's

@@ -2,25 +2,20 @@
  *  the write button. Pure helpers for the Parameters view. */
 
 import { KEYS, type Parameters, type Source } from "./params";
+import CATALOG from "./generated/access.json";
 
 /** Raw values P0..P86 as numbers; currents (P50..P56) signed, everything else as stored. */
 export type Raws = number[];
 /** What a write sends and what the backend compares: raws as stored (u16, currents two's complement) and 8 switch bytes. */
 export interface Wire { raws: number[]; switches: number[] }
 
-/** Raw unit per index, as in openbms-proto/src/params.rs: value = (raw − offset) / scale. */
-const unit = (i: number): { scale: number; offset: number } =>
-  i <= 9 || i === 62 || i === 63 ? { scale: 1000, offset: 0 } // mV
-  : i <= 19 || i === 60 || i === 61 ? { scale: 100, offset: 0 } // 10 mV
-  : i <= 49 ? { scale: 10, offset: 2731 } // 0.1 K
-  : i <= 56 || i === 58 || i === 59 ? { scale: 100, offset: 0 } // 10 mA (signed), 10 mAh
-  : i === 82 || i === 84 || i === 86 ? { scale: 10, offset: 0 } // 0.1 mΩ
-  : { scale: 1, offset: 0 };
+/** Raw unit per index from the generated catalog (`openbms_proto::params::RawUnit`): value = (raw − offset) / scale. */
+const unit = (i: number): { scale: number; offset: number } => CATALOG.params[i];
 
-export const isSigned = (i: number) => i >= 50 && i <= 56;
+export const isSigned = (i: number) => CATALOG.params[i].signed;
 
 /** Raw range per index: u16 for P0..P59 (signed for currents), u8 from P60 on. */
-export const rawRange = (i: number): [number, number] => (isSigned(i) ? [-32768, 32767] : i < 60 ? [0, 0xffff] : [0, 0xff]);
+export const rawRange = (i: number): [number, number] => (isSigned(i) ? [-32768, 32767] : CATALOG.params[i].bytes === 2 ? [0, 0xffff] : [0, 0xff]);
 
 /** Display value → raw, rounded to the raw resolution. */
 export const toRaw = (i: number, v: number) => Math.round(v * unit(i).scale + unit(i).offset);
