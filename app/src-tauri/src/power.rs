@@ -12,8 +12,8 @@
 //! it (whatever bit 4). RTN 08 to ein/aus then means the lock could not be stored or verified (`switch_error`); the UI
 //! reads 0x47 and the status again after every ein/aus.
 
-use crate::bms_memory::{refusal_error, uart1_error, uart1_pending, uart1_refusal};
-use crate::uart1_id::{identity, keep, Conn, Dev, Expected, Facts, Session};
+use crate::bms_memory::{refusal_error, uart1_error, uart1_refusal};
+use crate::uart1_id::{identity, Conn, Dev, Expected, Facts, Session};
 use crate::{with_link, AppState, Link};
 use openbms_proto::access::{self, Action, Channel, Reason, State};
 use openbms_proto::{BmsTime, Refusal};
@@ -242,34 +242,17 @@ pub(crate) fn clock(state: &AppState, link: &Link, address: u8) -> Result<BmsTim
 /// Refused without the image flag, without a current board recorded at the address, or with an open interrupted update
 /// there; the store's facts first, then the port session with polling held, then what the store keeps.
 pub(crate) fn run(state: &AppState, link: &Link, address: u8, act: Act) -> Result<Done, String> {
-    let inst = link.installation.clone().ok_or("view only: writing to a pack needs a connection with an installation")?;
+    let inst = link.installation.as_deref().ok_or("view only: writing to a pack needs a connection with an installation")?;
     // the firmware this connection proved for exactly this pack (never a stored proof: it carries no image flags)
     let fw = crate::profile::access_facts(crate::profile::pack_patch(state, link, address, None).as_ref(), None, None, address);
     if let Some(e) = not_ready(act, &fw) {
         return Err(e);
     }
-    uart1_pending(state, link, address)?;
-    let (expected, facts) = crate::maint::with_store(state, |s| {
-        let expected = s.current_board(&inst, address)?.map(|b| b.bms_serial);
-        let facts = Facts {
-            refs: s.current_refs(&inst)?,
-            master: s.current_board(&inst, 0)?.and_then(|b| b.battery_serial),
-            places: match &expected {
-                Some(e) => s.serial_places(e)?,
-                None => vec![],
-            },
-            // no parameter block goes out here
-            group0: crate::profile::group0_rule(true, None),
-        };
-        Ok((expected, facts))
-    })
-    .map_err(|e| format!("{e:?}"))?;
+    // the installation's current board at the address is the one expected (no parameter block goes out here)
+    let expected = crate::maint::with_store(state, |s| Ok(s.current_board(inst, address)?.map(|b| b.bms_serial))).map_err(|e| format!("{e:?}"))?;
+    let (inst, facts) = crate::uart1_id::prepare(state, link, address, expected.as_deref())?;
     let expected = expected.ok_or_else(|| uart1_refusal("no-board"))?;
-    let session = {
-        let _pause = crate::PollPause::hold(&state.params_pause);
-        with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(session(&mut Conn { c, bus: Bus::CanSocketBus }, &inst, address, &expected, &facts, &fw, act)))?
-    };
-    keep(state, link, address, &session);
+    let session = crate::uart1_id::run_session(state, link, address, |c| session(&mut Conn { c, bus: Bus::CanSocketBus }, &inst, address, &expected, &facts, &fw, act))?;
     session.result.unwrap_or_else(|| Err("no result".into()))
 }
 
