@@ -10,28 +10,24 @@ pub struct Heard {
     pub bytes: usize,
     /// addresses the master polled
     pub polled: BTreeSet<u8>,
-    line: Vec<u8>,
+    lines: openbms_proto::frame::Lines,
 }
 
 impl Heard {
     /// Take the next bytes read.
     pub fn feed(&mut self, data: &[u8]) {
         self.bytes += data.len();
-        for &b in data {
-            self.line.push(b);
-            if b == b'\r' {
-                let start = self.line.iter().position(|c| *c == b'~').unwrap_or(self.line.len());
-                if let Ok(f) = openbms_proto::frame::parse(&self.line[start..]) {
-                    if f.rtn == 0x5A && f.info.is_empty() {
-                        self.polled.insert(f.address);
-                    }
+        self.lines.push(data);
+        while let Some(line) = self.lines.next_line() {
+            if let Ok(f) = openbms_proto::frame::parse(&line.text) {
+                if f.rtn == 0x5A && f.info.is_empty() {
+                    self.polled.insert(f.address);
                 }
-                self.line.clear();
             }
         }
         // garbage without a line end is no frame
-        if self.line.len() > 4096 {
-            self.line.clear();
+        if self.lines.unterminated() > 4096 {
+            self.lines.clear();
         }
     }
 

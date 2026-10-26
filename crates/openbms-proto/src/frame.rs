@@ -135,9 +135,59 @@ pub fn parse(raw: &[u8]) -> Result<Frame> {
     })
 }
 
+/// One received line (`Lines`): the bytes from its `~` up to and including the CR (the whole line if it has no `~`),
+/// and how many bytes the line took in all, garbage before the `~` included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    pub text: Vec<u8>,
+    pub len: usize,
+}
+
+/// ASCII frames as they come in, line by line across reads. One splitter for every receiver (the transport's answers,
+/// the maintenance dialog, the flasher's ASCII queries, passive listening); what a receiver accepts stays its own.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Lines {
+    pending: Vec<u8>,
+}
+
+impl Lines {
+    pub fn push(&mut self, data: &[u8]) {
+        self.pending.extend_from_slice(data);
+    }
+
+    /// The next complete line, None while no CR came.
+    pub fn next_line(&mut self) -> Option<Line> {
+        let end = self.pending.iter().position(|b| *b == b'\r')?;
+        let line: Vec<u8> = self.pending.drain(..=end).collect();
+        let start = line.iter().position(|b| *b == b'~').unwrap_or(0);
+        Some(Line { len: line.len(), text: line[start..].to_vec() })
+    }
+
+    /// Bytes waiting without a CR.
+    pub fn unterminated(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Drop what waits without a CR (garbage past a receiver's limit).
+    pub fn clear(&mut self) {
+        self.pending.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_split_across_reads_from_their_tilde() {
+        let mut l = Lines::default();
+        l.push(b"xx~2001465A00");
+        assert_eq!(l.next_line(), None);
+        l.push(b"00FD9D\rnoise\r~20");
+        assert_eq!(l.next_line(), Some(Line { text: b"~2001465A0000FD9D\r".to_vec(), len: 20 }));
+        assert_eq!(l.next_line().unwrap().text, b"noise\r".to_vec());
+        assert_eq!((l.next_line(), l.unterminated()), (None, 3));
+    }
 
     #[test]
     fn length_field_examples() {
