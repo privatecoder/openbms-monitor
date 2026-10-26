@@ -188,22 +188,19 @@ fn ascii_exchange(
     link.clear_input()?;
     send(link, log_file, request)?;
     let deadline = Instant::now() + timeout;
-    let mut pending = Vec::new();
+    let mut lines = frame::Lines::default();
     let mut buf = [0u8; 512];
     while Instant::now() < deadline {
         let n = receive(link, log_file, &mut buf)?;
-        pending.extend_from_slice(&buf[..n]);
-        while let Some(end) = pending.iter().position(|b| *b == b'\r') {
-            let line: Vec<u8> = pending.drain(..=end).collect();
-            if let Some(start) = line.iter().position(|b| *b == b'~') {
-                if let Ok(reply) = frame::parse(&line[start..]) {
-                    if reply.address == address && reply.rtn == 0 {
-                        return Ok(reply);
-                    }
+        lines.push(&buf[..n]);
+        while let Some(line) = lines.next_line() {
+            if let Ok(reply) = frame::parse(&line.text) {
+                if reply.address == address && reply.rtn == 0 {
+                    return Ok(reply);
                 }
             }
         }
-        if pending.len() > 4096 {
+        if lines.unterminated() > 4096 {
             return Err(Error::Proto("ASCII answer too long".into()));
         }
     }

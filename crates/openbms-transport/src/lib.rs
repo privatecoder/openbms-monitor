@@ -462,7 +462,7 @@ impl Connection {
     fn ascii_answer(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool, limit: Duration) -> Result<Frame> {
         let started = Instant::now();
         let deadline = started + limit;
-        let mut pending = Vec::new();
+        let mut lines = frame::Lines::default();
         // an answer of ours whose layout did not fit: returned only if no fitting one comes
         let mut misfit: Option<Frame> = None;
         let mut fitted = false;
@@ -470,16 +470,14 @@ impl Connection {
             if Instant::now() > deadline {
                 break misfit.take().ok_or(Error::Timeout(limit));
             }
-            if let Some(end) = pending.iter().position(|b| *b == b'\r') {
-                let line: Vec<u8> = pending.drain(..=end).collect();
-                let start = line.iter().position(|b| *b == b'~').unwrap_or(0);
+            if let Some(line) = lines.next_line() {
                 // an adapter or gateway that echoes what it sent: the request itself is no answer
-                if line[start..] == *request {
+                if line.text == *request {
                     // not counted as received data: an echo alone is no garbled answer either
-                    self.rx.bytes = self.rx.bytes.saturating_sub(line.len());
+                    self.rx.bytes = self.rx.bytes.saturating_sub(line.len);
                     continue;
                 }
-                let parsed = frame::parse(&line[start..]);
+                let parsed = frame::parse(&line.text);
                 if let Ok(f) = &parsed {
                     self.rx.frames += 1;
                     if f.rtn == 0x5A && request.get(7..9) != Some(b"5A") {
@@ -502,7 +500,7 @@ impl Connection {
                 }
             }
             match self.read_until(deadline, limit, |b| b.contains(&b'\r')) {
-                Ok(chunk) => pending.extend(chunk),
+                Ok(chunk) => lines.push(&chunk),
                 Err(Error::Timeout(_)) if misfit.is_some() => break Ok(misfit.take().unwrap()),
                 Err(e) => break Err(e),
             }

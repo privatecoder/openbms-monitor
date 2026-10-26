@@ -90,22 +90,20 @@ fn exchange(link: &mut impl Link, clock: &impl Clock, request: &[u8], bound: Bou
     link.clear_input()?;
     link.write_raw(request)?;
     let deadline = clock.now() + timeout;
-    let mut pending = Vec::new();
+    let mut lines = frame::Lines::default();
     let mut buf = [0u8; 256];
     while clock.now() < deadline {
         let n = link.read_raw(&mut buf)?;
-        pending.extend_from_slice(&buf[..n]);
-        while let Some(end) = pending.iter().position(|b| *b == b'\r') {
-            let line: Vec<u8> = pending.drain(..=end).collect();
-            let Some(start) = line.iter().position(|b| *b == b'~') else { continue };
-            if let Ok(f) = frame::parse(&line[start..]) {
+        lines.push(&buf[..n]);
+        while let Some(line) = lines.next_line() {
+            if let Ok(f) = frame::parse(&line.text) {
                 if bound.accepts(&f) {
                     return Ok(Some(f));
                 }
             }
         }
-        if pending.len() > 1024 {
-            pending.clear();
+        if lines.unterminated() > 1024 {
+            lines.clear();
         }
     }
     Ok(None)
