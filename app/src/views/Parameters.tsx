@@ -718,7 +718,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           {broken.map((c) => (
             <p key={c.id} className="flex items-start gap-2 rounded-md border border-alarm/40 bg-alarm/10 px-4 py-3 text-sm">
               <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-alarm" aria-hidden />
-              <span>{t("par.notExport", { file: c.label })}</span>
+              <span>{t(c.error === "foreign" ? "par.foreignExport" : "par.notExport", { file: c.label })}</span>
             </p>
           ))}
         </div>
