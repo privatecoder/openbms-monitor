@@ -22,7 +22,7 @@ pub const READ_LEN: usize = params::BLOCK_LEN - 1;
 /// DATA of a 0xA1 request: the read DATA without the ten name bytes
 pub const WRITE_LEN: usize = READ_LEN - 10;
 /// The firmware accepts addresses 0..=21 (DIP addresses 0..=15).
-pub const MAX_ADDRESS: u8 = 21;
+pub const MAX_ADDRESS: u8 = crate::address::SERVICE_MAX;
 /// String 1 (battery serial) and String 2 (BMS serial), 30 raw bytes each.
 pub const CMD_STRING1: u8 = 0xA2;
 pub const CMD_STRING2: u8 = 0xA4;

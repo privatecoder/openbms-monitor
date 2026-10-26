@@ -217,8 +217,8 @@ pub struct Probe {
 /// The addresses to check: the given ones first, then the rest of 0..=15.
 pub fn probe_order(first: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
-    for a in first.iter().copied().chain(0..=15) {
-        if a <= 15 && !out.contains(&a) {
+    for a in first.iter().copied().chain(openbms_proto::address::DIP) {
+        if openbms_proto::address::is_dip(a) && !out.contains(&a) {
             out.push(a);
         }
     }

@@ -38,7 +38,7 @@ fn control(address: u8, kind: u8, param: u8) -> Result<Vec<u8>> {
 }
 
 fn one_pack(address: u8) -> Result<()> {
-    if address > 15 {
+    if !crate::address::is_dip(address) {
         return Err(Error::Layout("pack control goes to one address 0..=15"));
     }
     Ok(())

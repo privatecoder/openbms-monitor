@@ -1,6 +1,7 @@
 import type { TFunction } from "i18next";
 import type { Bus, Installation, OtherBus } from "./api";
 import { storedPort } from "./maint";
+import { DIP_MAX } from "./access";
 
 /** what a connect's check heard when no pack answered */
 export type NoAnswer = { noise: boolean; intra: boolean; busy?: boolean };
@@ -125,7 +126,7 @@ export function parseSel(stored: string | null, legacyCount?: string | number | 
   if (m) {
     const v = Number(m[2]);
     if (m[1] === "count" && v >= 1 && v <= 16) return { mode: "count", n: v };
-    if (m[1] === "address" && v >= 0 && v <= 15) return { mode: "address", k: v };
+    if (m[1] === "address" && v >= 0 && v <= DIP_MAX) return { mode: "address", k: v };
   }
   if (stored === "search") return { mode: "search" };
   const n = Number(legacyCount ?? 0);

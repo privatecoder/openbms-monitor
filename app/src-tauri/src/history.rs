@@ -1340,7 +1340,7 @@ enum Reduce {
 /// Value rows of the site `?1` (its key, so the primary key serves the query).
 const IN_SITE: &str = "site = (SELECT id FROM sites WHERE site = ?1)";
 /// The highest pack address (DIP 0..=15); an imported line with another is skipped.
-const MAX_PACK_ADDRESS: u64 = 15;
+const MAX_PACK_ADDRESS: u64 = openbms_proto::address::DIP_MAX as u64;
 
 /// The data for the charts: every requested pack and the master on a common grid of at most `max_points`.
 pub fn series(db: &Connection, site: &str, from: i64, to: i64, packs: &[u8], cells_pack: Option<u8>, max_points: usize) -> Result<Series, String> {

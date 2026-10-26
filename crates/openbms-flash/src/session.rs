@@ -419,7 +419,7 @@ fn preflight(
     log_file: &mut impl Write,
     options: Options,
 ) -> Result<(DeviceInfo, Option<Parameters>)> {
-    if address > 15 {
+    if !openbms_proto::address::is_dip(address) {
         return Err(Error::Address(address));
     }
     quiet(link, log_file)?;

@@ -64,6 +64,8 @@ export interface Group0Plan { keep: number; refuse_change: number; need_set: num
 type State = AccessDecision["state"];
 
 export const ROUTES = CATALOG.routes as Route[];
+/** the highest DIP address (`openbms_proto::address::DIP_MAX`): packs 0..=DIP_MAX */
+export const DIP_MAX = CATALOG.dip_max;
 export const MAINT_MIN = CATALOG.maint_min as [number, number];
 export const CUTOFF_MIN = CATALOG.cutoff_min as [number, number];
 const B = CATALOG.bits;
