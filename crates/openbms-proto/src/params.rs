@@ -13,7 +13,7 @@ pub const CID2_WRITE: u8 = 0xA1;
 /// Length of the parameter block (INFO of the 0x47 answer and of 0xA1).
 pub const BLOCK_LEN: usize = 169;
 /// Parameters P60.. are single bytes.
-const FIRST_U8: usize = 60;
+pub const FIRST_U8: usize = 60;
 
 /// Raw unit of a parameter as stored in the BMS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -36,6 +36,22 @@ pub enum RawUnit {
 }
 
 impl RawUnit {
+    /// value = (raw − offset) / scale (`convert`), for the UI's own conversions (generated catalog `params`).
+    pub fn scale_offset(self) -> (u32, u32) {
+        match self {
+            RawUnit::MilliVolt => (1000, 0),
+            RawUnit::CentiVolt | RawUnit::CentiAmp | RawUnit::CentiAmpHour => (100, 0),
+            RawUnit::DeciKelvin => (10, 2731),
+            RawUnit::DeciMilliOhm => (10, 0),
+            RawUnit::Plain => (1, 0),
+        }
+    }
+
+    /// Whether the raw value is a signed 16-bit number.
+    pub fn signed(self) -> bool {
+        self == RawUnit::CentiAmp
+    }
+
     pub fn convert(self, raw: u16) -> f64 {
         match self {
             RawUnit::MilliVolt => f64::from(raw) / 1000.0,

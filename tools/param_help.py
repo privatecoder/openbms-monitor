@@ -252,6 +252,8 @@ SWITCHES.update({
 "switch.7.4": ("Erweitertes Display-Format", "Binärprotokoll im erweiterten Format.", "Extended display format", "Binary protocol in the extended format."),
 "switch.7.5": ("Automatische Adressvergabe", "Ignoriert die DIP-Adresse und vergibt Adressen über eine Puls-Kette.",
  "Automatic addressing", "Ignores the DIP address and assigns addresses over a pulse chain."),
+"switch.7.6": ("Automatische Adresse 0 vermeiden", "Nur zusammen mit Bit 5 (automatische Adressvergabe): Ergibt die Puls-Kette Adresse 0, nimmt das Pack 1; es wird so nicht Master. Ohne Bit 5 ohne Wirkung. Code sicher (0x9466, 16.06.13), der Zweck ist eine Deutung.",
+ "Avoid automatic address 0", "Only together with bit 5 (automatic addressing): if the pulse chain gives address 0, the pack takes 1, so it does not become master. Without bit 5 no effect. Code certain (0x9466, 16.06.13), the purpose is an interpretation."),
 "switch.7.7": ("Ladegrenze: Warnung − 10 A", "An: Ladegrenze je Pack = Lade-Überstrom-Warnung − 10 A. Aus: die Hälfte davon.",
  "Charge limit: warning − 10 A", "On: charge limit per pack = charge over-current warning − 10 A. Off: half of it."),
 })
