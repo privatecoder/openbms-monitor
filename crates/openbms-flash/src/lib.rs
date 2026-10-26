@@ -68,11 +68,17 @@ pub enum Error {
     Address(u8),
     #[error("cancelled")]
     Cancelled,
+    /// The bus rule of the application refused before anything left (`openbms_transport::gate`): its key.
+    #[error("send refused: {0}")]
+    Refused(String),
 }
 
 impl From<openbms_transport::Error> for Error {
     fn from(e: openbms_transport::Error) -> Self {
-        Error::Transport(e.to_string())
+        match e {
+            openbms_transport::Error::Refused(k) => Error::Refused(k),
+            e => Error::Transport(e.to_string()),
+        }
     }
 }
 
@@ -85,7 +91,7 @@ impl From<openbms_proto::Error> for Error {
 impl Error {
     /// The message in the user's language (Display is English, for logs).
     pub fn text(&self, lang: Lang) -> String {
-        if lang == Lang::En {
+        if lang == Lang::En && !matches!(self, Error::Refused(_)) {
             return self.to_string();
         }
         match self {
@@ -105,6 +111,8 @@ impl Error {
             Error::Timeout { what, after } => format!("Keine Antwort auf {what} innerhalb von {after:?}"),
             Error::Address(a) => format!("Adresse {a} ist kein einzelnes Pack (0–15)"),
             Error::Cancelled => "Abgebrochen".into(),
+            // the application explains its own refusal in its language (`{"kind":"bus-refused"}`)
+            Error::Refused(reason) => format!(r#"{{"kind":"bus-refused","reason":"{reason}"}}"#),
         }
     }
 }

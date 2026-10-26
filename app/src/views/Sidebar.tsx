@@ -331,8 +331,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         setFailed(true);
         if (kind === "serial") {
           setMsg(t("conn.check.probing", { baud: BAUD[otherBus(bus)] }));
-          const probe = await api.probeOtherBus(target, bus, fixedAddrs).catch(() => null);
+          const other = { refused: null as string | null };
+          const probe = await api.probeOtherBus(target, bus, fixedAddrs).catch((pe) => { other.refused = refusalOf(pe); return null; });
           if (cancelRef.current) { await api.disconnect().catch(() => {}); setFailed(false); setMsg(t("conn.connectCancelled")); return; }
+          // the bus rule kept the other bus silent: say so, not „nothing answered there“
+          if (other.refused) { setMsg(`${firstLine(bus, n, t)} ${t(`wiring.refused.${other.refused}`)}`); return; }
           if (probe) { const r = explain(bus, n, probe, t); setMsg(r.text); setOffer(r.offer); }
           else setMsg(`${firstLine(bus, n, t)} ${t("conn.check.hintSerial")}`);
         } else setMsg(explain(bus, n, null, t).text);

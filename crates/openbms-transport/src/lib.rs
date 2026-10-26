@@ -339,6 +339,11 @@ impl Connection {
         self.listened = true;
     }
 
+    /// The bus may have a master again (a released maintenance marker): the next request listens first once more.
+    pub fn forget_quiet(&mut self) {
+        self.listened = false;
+    }
+
     /// One polling cycle without sending (`timing::BUS_LISTEN`): a byte heard is another master on the bus, so nothing
     /// is sent ("bus-polled" when it was a Seplos master polling its slaves, else "bus-traffic").
     fn listen_first(&mut self) -> Result<()> {

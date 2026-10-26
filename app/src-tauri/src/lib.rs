@@ -198,6 +198,8 @@ pub(crate) struct PortSlot(Arc<AtomicBool>);
 impl Drop for PortSlot {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
+        // a bus rule change given meanwhile takes effect now (`wiring::settle`)
+        wiring::settle();
     }
 }
 
@@ -392,6 +394,8 @@ pub(crate) fn refused_error(key: &str) -> String {
 /// for this whole connection.
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation: Option<String>, addresses: Option<Vec<u8>>) -> Result<Connected, String> {
+    // the bus rule of exactly this installation, before anything takes the bus
+    wiring::bind(&state, installation.as_deref());
     // not while an action runs on a pack: it would continue on the new connection ("pack": the UI waits and retries)
     let _port_slot = control::reserve_bus(&state)
         .ok_or_else(|| port_busy_error(current_action(&state).or(control::any_pack_action(&state.ops).map(|_| "pack"))))?;

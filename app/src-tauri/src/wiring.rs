@@ -45,10 +45,17 @@ pub struct Wiring {
     pub paused: bool,
 }
 
-static NOW: Mutex<Wiring> = Mutex::new(Wiring { inverter: None, paused: false });
-/// A change given while an action holds the bus (`held`): it takes effect once no action holds it, so the rule never
-/// changes between the frames of one action (a flash erased halfway, a write without its read-back).
-static PENDING: Mutex<Option<Wiring>> = Mutex::new(None);
+/// The rule in force and the installation it is of (None: „Nur ansehen“).
+struct Rule {
+    scope: Option<String>,
+    wiring: Wiring,
+}
+
+static NOW: Mutex<Rule> = Mutex::new(Rule { scope: None, wiring: Wiring { inverter: None, paused: false } });
+/// A change given while an action holds the bus (`held`): it takes effect once no action holds it (`settle`, at every
+/// begin and end of an action), so the rule never changes between the frames of one action (a flash erased halfway, a
+/// write without its read-back).
+static PENDING: Mutex<Option<Rule>> = Mutex::new(None);
 static HELD: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>> = std::sync::OnceLock::new();
 
 fn held() -> bool {
@@ -64,15 +71,37 @@ pub fn decide(w: Wiring, bus: Bus) -> Result<Permit, String> {
     Ok(if bus == Bus::PackBus { Permit::ListenFirst } else { Permit::Send })
 }
 
-/// The rule in force: a waiting change once no action holds the bus.
+/// The rule in force, after taking a waiting change while no action holds the bus.
 pub fn now() -> Wiring {
-    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
-    if !held() {
-        if let Some(w) = PENDING.lock().ok().and_then(|mut p| p.take()) {
-            *now = w;
-        }
+    settle();
+    NOW.lock().unwrap_or_else(|e| e.into_inner()).wiring
+}
+
+/// Take a waiting change unless an action holds the bus. Called where an action begins (before it holds the bus) and
+/// ends, so a change never waits behind the next action.
+pub fn settle() {
+    if held() {
+        return;
     }
-    *now
+    if let Some(r) = PENDING.lock().ok().and_then(|mut p| p.take()) {
+        *NOW.lock().unwrap_or_else(|e| e.into_inner()) = r;
+    }
+}
+
+/// Before a connect for `installation` takes the bus: the rule must be that installation's, not the one the UI showed
+/// before (its update may still be on its way). Another installation's rule is replaced by the stored setting of this
+/// one, without a pause; „Nur ansehen“ waits for the session's choice from the UI (unset meanwhile: nothing is sent).
+pub fn bind(state: &crate::AppState, installation: Option<&str>) {
+    settle();
+    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    if now.scope.as_deref() == installation {
+        return;
+    }
+    let inverter = installation
+        .and_then(|id| crate::maint::with_store(state, |s| s.wiring(id)).ok().flatten())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| serde_json::from_value(v["inverter"].clone()).ok());
+    *now = Rule { scope: installation.map(String::from), wiring: Wiring { inverter, paused: false } };
 }
 
 /// The rule of this app, once at start-up: an action holds the bus while a flash runs, the port is reserved or a pack
@@ -89,9 +118,9 @@ pub fn install(state: &crate::AppState) {
 /// The wiring of the installation the UI shows (or the session's choice), and whether the user said the inverter is
 /// paused. While an action holds the bus the change waits for its end (`PENDING`).
 #[tauri::command]
-pub fn set_wiring(inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
-    *PENDING.lock().map_err(|e| e.to_string())? = Some(Wiring { inverter, paused });
-    now();
+pub fn set_wiring(installation: Option<String>, inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
+    *PENDING.lock().map_err(|e| e.to_string())? = Some(Rule { scope: installation, wiring: Wiring { inverter, paused } });
+    settle();
     Ok(())
 }
 
@@ -112,6 +141,14 @@ mod tests {
                 assert!(decide(w(inv, true), bus).is_ok(), "{inv:?} {bus:?} paused");
             }
         }
+    }
+
+    #[test]
+    fn a_change_takes_effect_once_no_action_holds_the_bus() {
+        // no action here (no hold installed): the change is the rule at once
+        set_wiring(Some("A".into()), Some(Inverter::Uart1Master), false).unwrap();
+        assert_eq!(now().inverter, Some(Inverter::Uart1Master));
+        assert_eq!(NOW.lock().unwrap().scope.as_deref(), Some("A"));
     }
 
     #[test]

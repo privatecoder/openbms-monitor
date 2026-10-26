@@ -15,6 +15,8 @@ pub trait Link {
     fn pause_capture(&mut self, _paused: bool) {}
     /// A whole listen heard nothing (`maint::bus::listen`): the connection's own first listen is not repeated.
     fn heard_quiet(&mut self) {}
+    /// The bus is polled again (a released marker): the connection listens again before its next request.
+    fn forget_quiet(&mut self) {}
 }
 
 impl Link for Connection {
@@ -32,5 +34,8 @@ impl Link for Connection {
     }
     fn heard_quiet(&mut self) {
         Connection::heard_quiet(self);
+    }
+    fn forget_quiet(&mut self) {
+        Connection::forget_quiet(self);
     }
 }

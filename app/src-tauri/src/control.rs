@@ -50,6 +50,8 @@ impl Drop for PackGuard {
         if let Ok(mut m) = self.ops.lock() {
             m.packs.remove(&self.address);
         }
+        // a bus rule change given meanwhile takes effect now (`wiring::settle`)
+        crate::wiring::settle();
     }
 }
 
@@ -62,6 +64,8 @@ fn pack_busy_error(address: u8, action: &str) -> String {
 /// Reserve `address` for `action`. Refused while another action holds it, or while an operation holds the bus (the
 /// action then names that operation: "live", "scan", "halt", "release", "flash", or "port").
 pub(crate) fn reserve_pack(state: &AppState, address: u8, action: &'static str) -> Result<PackGuard, String> {
+    // a bus rule change still waiting takes effect before this action holds the rule
+    crate::wiring::settle();
     let mut m = state.ops.lock().map_err(|e| e.to_string())?;
     if let Some(running) = m.packs.get(&address) {
         return Err(pack_busy_error(address, running));
@@ -136,6 +140,8 @@ pub(crate) fn any_pack_action(ops: &Ops) -> Option<&'static str> {
 /// The port for connect or an operation that closes or takes the pack bus: only while no pack is reserved, checked
 /// and taken under the same mutex as the pack reservations.
 pub(crate) fn reserve_bus(state: &AppState) -> Option<PortSlot> {
+    // a bus rule change still waiting takes effect before this operation holds the rule
+    crate::wiring::settle();
     let m = state.ops.lock().ok()?;
     if !m.packs.is_empty() {
         return None;
