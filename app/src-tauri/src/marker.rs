@@ -263,7 +263,9 @@ pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: O
         (Err(_), None) => before,
     };
     if let Some(i) = master_of {
-        if !unread {
+        if unread {
+            crate::maint::keep_master_released(&state, i, &f.master).map_err(text)?;
+        } else {
             keep_master_read(&state, i, &f.master).map_err(text)?;
         }
         if f.marker() == Some(MarkerWord::Off) {
