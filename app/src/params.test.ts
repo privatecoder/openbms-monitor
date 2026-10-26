@@ -17,7 +17,8 @@ describe("parameter file", () => {
 
   it("writes TOML with keys, comments from the help and hex switches, and reads its own file back", () => {
     const toml = toExport(pack);
-    expect(toml).toContain('format = "openbms-parameters"\nversion = 1\ndevice = "1101-SP75"\npatched = false');
+    expect(toml).toContain('format = "openbms-parameters"\nversion = 1\ndevice = "1101-SP75"\n');
+    expect(toml).not.toContain("\npatched =");
     expect(toml).toContain("# P0 · Cell high-voltage warning · V\n");
     expect(toml).toContain("\ncell_high_voltage_alarm = 3.450\n");
     expect(toml).toContain(`\n${KEYS[26]} = -10.0\n`);
@@ -32,8 +33,7 @@ describe("parameter file", () => {
     expect(s.switches).toEqual(SWITCHES);
     expect(s.suspectFrom).toBeNull();
     expect(s.device).toBe("1101-SP75");
-    expect(s.patched).toBe(false);
-    expect(parseExport(toExport({ ...pack, patch: patchProof }), "m.toml").patched).toBe(true);
+    expect(toExport({ ...pack, patch: patchProof })).toContain("# firmware: 16.06.13 MAINT 1.6.3\n");
   });
 
   it("reads by key: order and comments do not matter", () => {
