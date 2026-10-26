@@ -838,6 +838,10 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 // counts as silent for the order of the next round (`poll_order`)
                 let mute = telemetry.as_ref().is_err_and(|e| silent(e));
                 if mute { silent_packs.insert(address); waited_silent += took; } else { silent_packs.remove(&address); }
+                // the link works: the UI counts it now, not only after the status read that follows (`timing::CONN_LOST`)
+                if telemetry.is_ok() {
+                    let _ = app.emit("answer", ());
+                }
                 let status = if mute { Err(telemetry.as_ref().unwrap_err().clone()) }
                     else { let Some(s) = poll_exchange(&conn, &flashing, &hold, |c| c.status(address)) else { break }; s };
                 let error = telemetry.as_ref().err().or(status.as_ref().err()).cloned();

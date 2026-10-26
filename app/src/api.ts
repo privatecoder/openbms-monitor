@@ -481,6 +481,8 @@ const tauriApi = {
   serialNumbers: (address: number, binary = false) => invoke<SerialRead>("serial_numbers", { address, binary }),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
+  /** a valid answer in the poll loop, before its pack event (`timing::CONN_LOST`) */
+  onAnswer: (f: () => void) => listen("answer", () => f()),
   /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
   onLinkLost: (f: (err: string) => void) => listen<string>("link-lost", (e) => f(e.payload)),
   /** The pack bus panel or a flash stopped the monitor to use the pack port: not a lost link. */
@@ -722,6 +724,7 @@ function demoApi(): typeof tauriApi {
     },
     onPack: (f) => sub(packL, f),
     onSystem: (f) => sub(sysL, f),
+    onAnswer: async () => () => {},
     onLinkLost: async () => () => {},
     onMonitorStopped: async () => () => {},
     onBankUnconfirmed: async () => () => {},

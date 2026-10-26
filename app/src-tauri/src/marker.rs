@@ -252,6 +252,8 @@ pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: O
             let _ = crate::stop_monitor_and_tell(&state, app);
         }
     }
+    // a release confirmed while the slave count went unread (the master polls again): nothing about the slaves is stored
+    let unread = matches!((&r, &after), (Ok(None), None));
     let f = match (&r, after) {
         (_, Some(f)) => f,
         (Ok(n), None) => {
@@ -261,7 +263,9 @@ pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: O
         (Err(_), None) => before,
     };
     if let Some(i) = master_of {
-        keep_master_read(&state, i, &f.master).map_err(text)?;
+        if !unread {
+            keep_master_read(&state, i, &f.master).map_err(text)?;
+        }
         if f.marker() == Some(MarkerWord::Off) {
             with_store(&state, |s| s.clear_expected_slaves(i)).map_err(text)?;
         }

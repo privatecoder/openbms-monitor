@@ -383,11 +383,19 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // (otherwise the timeout below would never run).
   useEffect(() => { setSince(connected ? Date.now() : 0); }, [connected]);
 
+  // a valid answer of the poll loop counts before its pack event (which waits for the status read after it)
+  const answeredAt = useRef(0);
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    void api.onAnswer(() => { answeredAt.current = Date.now(); }).then((u) => { off = u; });
+    return () => off?.();
+  }, []);
+
   // Fixed timeout: no successful answer for CONN_TIMEOUT_MS (since connecting or since the last data) = disconnected.
   useEffect(() => {
     if (isDemo || busy || !connected) return;
     // a BMS history read pauses polling: that time is no lost connection
-    if (now - Math.max(lastUpdate, since || now, readMark()) < CONN_TIMEOUT_MS) return;
+    if (now - Math.max(lastUpdate, answeredAt.current, since || now, readMark()) < CONN_TIMEOUT_MS) return;
     markLost(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
