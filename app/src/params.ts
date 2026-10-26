@@ -88,8 +88,6 @@ export interface Source {
   values?: number[];
   switches?: number[];
   error?: string;
-  /** a file whose pack proved a MAINT patch (its Group0 patch bits mean something only to such a pack) */
-  patched?: boolean;
   /** first parameter index from which an export does not fit the known order */
   suspectFrom?: number | null;
   /** the parameters as read, for saving and as the base of an edit */
@@ -139,8 +137,7 @@ export const FILE_VERSION = 1;
  *  file: exactly the 87 parameters of `KEYS` and the eight groups `group0`…`group7`, nothing missing, nothing unknown.
  *  Parameters must be finite numbers, groups integers 0…255 (TOML's own hex `0xDF`). Comments are not data. Anything
  *  else, a BatteryMonitor export or a file of an earlier app version among it, is refused ("foreign", "structure",
- *  "value"): the user saves a fresh file with this app. `patched`: the file came from a pack with a proven MAINT patch;
- *  only then do its Group0 patch bits mean something to a patched pack (`takeOverSwitches`). */
+ *  "value"): the user saves a fresh file with this app. */
 export function parseExport(text: string, label: string): Source {
   const id = `file-${label}-${text.length}`;
   const fail = (error: string): Source => ({ id, kind: "file", label, error });
@@ -161,7 +158,7 @@ export function parseExport(text: string, label: string): Source {
   const bad = KEYS.map((_, i) => i).filter((i) => !plausible(i, values[i] as number));
   return {
     id, kind: "file", label, values: values as number[], switches: switches as number[], suspectFrom: bad.length ? bad[0] : null,
-    device: typeof doc.device === "string" ? doc.device.trim() : "", patched: doc.patched === true,
+    device: typeof doc.device === "string" ? doc.device.trim() : "",
   };
 }
 
@@ -186,16 +183,16 @@ const HEADER = [
   "OpenBMS Monitor parameter file: the parameters (0x47) and function switches of one pack.",
   "Values are read by their key; the order and every comment are ignored when the file is opened again. Units are fixed per parameter (shown in the comments). Numbers use a decimal point.",
   "Warning = reports and may change limits (e.g. the charge limit), but does not open a MOSFET by itself. Protection = the MOSFET opens.",
-  "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware MAINT 1.5.3/1.6.3 also uses bits 0 and 2-7 (releases, pack lock, hard stop). When a file is taken over between a pack with and one without MAINT, those bits stay as the target pack has them.",
+  "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware MAINT 1.5.3/1.6.3 also uses bits 0 and 2-7 (releases, pack lock, hard stop). Taking a file over sets only bit 1 of group 0; the other bits stay as the target pack has them, so a file fits original firmware and MAINT alike.",
 ];
 
-/** The app's parameter file (TOML, UTF-8, LF): head (format, version, device, whether the pack proved a MAINT patch), then
+/** The app's parameter file (TOML, UTF-8, LF): head (format, version, device; the proven firmware as a comment), then
  *  every parameter by its technical key with name, number, unit and explanation as comments, then the eight switch bytes
  *  with the meaning of each bit. `parseExport` reads it back. */
 export function toExport(p: Parameters): string {
   const l: string[] = [...comment(HEADER.join("\n")), "",
     `format = ${tomlString(FILE_FORMAT)}`, `version = ${FILE_VERSION}`, `device = ${tomlString(p.device_name.trim())}`,
-    `patched = ${p.patch ? "true" : "false"}`, ""];
+    ""];
   if (p.patch) l.splice(l.length - 1, 0, `# firmware: ${p.patch.release}`);
   l.push("[parameters]");
   p.parameters.forEach((x, i) => {
