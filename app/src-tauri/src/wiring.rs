@@ -46,6 +46,14 @@ pub struct Wiring {
 }
 
 static NOW: Mutex<Wiring> = Mutex::new(Wiring { inverter: None, paused: false });
+/// A change given while an action holds the bus (`held`): it takes effect once no action holds it, so the rule never
+/// changes between the frames of one action (a flash erased halfway, a write without its read-back).
+static PENDING: Mutex<Option<Wiring>> = Mutex::new(None);
+static HELD: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>> = std::sync::OnceLock::new();
+
+fn held() -> bool {
+    HELD.get().is_some_and(|h| h())
+}
 
 /// The bus rule for `bus` under `w`.
 pub fn decide(w: Wiring, bus: Bus) -> Result<Permit, String> {
@@ -56,23 +64,34 @@ pub fn decide(w: Wiring, bus: Bus) -> Result<Permit, String> {
     Ok(if bus == Bus::PackBus { Permit::ListenFirst } else { Permit::Send })
 }
 
+/// The rule in force: a waiting change once no action holds the bus.
 pub fn now() -> Wiring {
-    NOW.lock().map(|w| *w).unwrap_or_default()
+    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    if !held() {
+        if let Some(w) = PENDING.lock().ok().and_then(|mut p| p.take()) {
+            *now = w;
+        }
+    }
+    *now
 }
 
-/// The rule of this app, once at start-up.
-pub fn install() {
+/// The rule of this app, once at start-up: an action holds the bus while a flash runs, the port is reserved or a pack
+/// action runs.
+pub fn install(state: &crate::AppState) {
+    let (flashing, port, ops) = (state.flashing.clone(), state.port_busy.clone(), state.ops.clone());
+    let _ = HELD.set(Box::new(move || {
+        use std::sync::atomic::Ordering::SeqCst;
+        flashing.load(SeqCst) || port.load(SeqCst) || crate::control::any_pack_action(&ops).is_some()
+    }));
     openbms_transport::gate::install(Box::new(|bus| decide(now(), bus)));
 }
 
 /// The wiring of the installation the UI shows (or the session's choice), and whether the user said the inverter is
-/// paused. Not while a firmware update runs: a rule changed between its frames would stop it halfway.
+/// paused. While an action holds the bus the change waits for its end (`PENDING`).
 #[tauri::command]
-pub fn set_wiring(state: tauri::State<'_, crate::AppState>, inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
-    if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(crate::FLASHING.into());
-    }
-    *NOW.lock().map_err(|e| e.to_string())? = Wiring { inverter, paused };
+pub fn set_wiring(inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
+    *PENDING.lock().map_err(|e| e.to_string())? = Some(Wiring { inverter, paused });
+    now();
     Ok(())
 }
 

@@ -1129,10 +1129,10 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         .setup(|app| {
-            // every request of the app passes the bus rule (`wiring.rs`)
-            wiring::install();
             let path = app.path().app_data_dir()?.join("history.sqlite");
             let state = app.state::<AppState>();
+            // every request of the app passes the bus rule (`wiring.rs`)
+            wiring::install(&state);
             let _ = state.app.set(app.handle().clone());
             notifications::start(app.handle());
             // migrating a big file takes a while: off the setup thread, so the window opens meanwhile; the

@@ -49,6 +49,9 @@ pub fn listen(link: &mut impl Link, clock: &impl Clock, window: Duration) -> Res
             pending.clear();
         }
     }
+    if seen.quiet() {
+        link.heard_quiet();
+    }
     Ok(seen)
 }
 

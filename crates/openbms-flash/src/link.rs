@@ -13,6 +13,8 @@ pub trait Link {
     }
     /// Leave the bootloader traffic out of a frame capture (true) or take the link in again (false).
     fn pause_capture(&mut self, _paused: bool) {}
+    /// A whole listen heard nothing (`maint::bus::listen`): the connection's own first listen is not repeated.
+    fn heard_quiet(&mut self) {}
 }
 
 impl Link for Connection {
@@ -27,5 +29,8 @@ impl Link for Connection {
     }
     fn pause_capture(&mut self, paused: bool) {
         Connection::pause_capture(self, paused);
+    }
+    fn heard_quiet(&mut self) {
+        Connection::heard_quiet(self);
     }
 }
