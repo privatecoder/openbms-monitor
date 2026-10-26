@@ -16,6 +16,7 @@ import { HelpProvider, helpTitle } from "./help";
 import { useLiveData } from "./store";
 import { packFresh } from "./freshness";
 import { useMaint } from "./maintStore";
+import { useWiringSync } from "./wiring";
 import { api, isDemo, type Bus } from "./api";
 import { defaultName, type Monitor } from "./maint";
 import i18n from "./i18n";
@@ -39,6 +40,8 @@ export default function App() {
   const maint = useMaint();
   // the installation drives everything stored (null: „Nur ansehen“); it cannot change while connected
   const scope = maint.installation;
+  // the backend's bus rule follows the installation shown (`wiring.rs`)
+  useWiringSync(scope);
   const [connected, setConnected] = useState(false);
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");

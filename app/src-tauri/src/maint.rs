@@ -393,7 +393,7 @@ pub fn open_pack_for(state: &AppState, app: &AppHandle, key: &str) -> Result<Con
     if must_stop_monitor(main.as_ref(), &pack_key(key)?) {
         crate::stop_monitor_and_tell(state, app).map_err(|m| MaintError::Connection { message: m })?;
     }
-    let mut c = Connection::open(&ep).map_err(|e| MaintError::Connection { message: e.to_string() })?;
+    let mut c = Connection::open_on(&ep, Bus::PackBus).map_err(|e| MaintError::Connection { message: e.to_string() })?;
     c.set_label(crate::capture::label(&ep, Bus::PackBus));
     Ok(c)
 }

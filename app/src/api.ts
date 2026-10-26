@@ -287,8 +287,8 @@ export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; 
  *  text it was moved in from, „übernommen“) and `last_connect` are set by the backend. */
 export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean; legacy?: string | null; last_connect?: number | null }
 /** Settings an installation owns (JSON each, null: none). */
-export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown; devices: unknown }
-export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices";
+export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown; devices: unknown; wiring: unknown }
+export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices" | "wiring";
 /** One slice of the balancer timeline (ms per state; time without a row is in none). External balancer computed:
  *  active / inactive / unknown / unassigned. BMS as reported: bal (a minute row by its share) / idle / no_status;
  *  cells: most cells at once in a single answer; minutes: minute rows that balanced (only their share is known). */
@@ -645,6 +645,8 @@ const tauriApi = {
   notifyTexts: (texts: Record<string, unknown>) => invoke<void>("notify_texts", { texts }),
   notifyTest: (installation: string | null) => invoke<void>("notify_test", { installation }),
   notifyStatus: () => invoke<NotifyStatus>("notify_status"),
+  /** the bus rule every request passes (`wiring.rs`): where the inverter polls, and whether the user paused it */
+  setWiring: (inverter: string | null, paused: boolean) => invoke<void>("set_wiring", { inverter, paused }),
 };
 
 export const api = inTauri ? tauriApi : demoApi();
@@ -882,6 +884,7 @@ function demoApi(): typeof tauriApi {
     notifyTexts: async () => {},
     notifyTest: async () => { throw new Error("desktop app only"); },
     notifyStatus: async () => ({ installation: null, can_unchecked: false, can_no_serial: false, none_confirmed: false }),
+    setWiring: async () => {},
     firmwareCheckImage: async () => { throw new Error("desktop app only"); },
     benchScan: async () => { throw new Error("desktop app only"); },
     markerRead: async () => { throw new Error("desktop app only"); },
@@ -893,7 +896,7 @@ function demoApi(): typeof tauriApi {
     maintCreateInstallation: async () => { throw new Error("desktop app only"); },
     // preview: no installations, nothing stored
     installationsMigrate: async () => [],
-    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null }),
+    installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null, wiring: null }),
     setInstallationSetting: async () => {},
     setInstallationCellTypes: async () => {},
     installationOverview: async () => { throw new Error("desktop app only"); },

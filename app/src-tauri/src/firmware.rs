@@ -243,7 +243,7 @@ fn new_log(app: &AppHandle, state: &AppState, installation: Option<&str>, addres
 /// The pack bus port by its endpoint key (`maint::pack_key`): USB at 19200 baud or a network gateway.
 fn open_port(key: &str, l: Lang) -> Result<Connection, String> {
     let ep = maint::pack_endpoint(key).map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
-    let mut c = Connection::open(&ep).map_err(|e| openbms_flash::Error::from(e).text(l))?;
+    let mut c = Connection::open_on(&ep, openbms_transport::Bus::PackBus).map_err(|e| openbms_flash::Error::from(e).text(l))?;
     c.set_label(crate::capture::label(&ep, openbms_transport::Bus::PackBus));
     Ok(c)
 }
