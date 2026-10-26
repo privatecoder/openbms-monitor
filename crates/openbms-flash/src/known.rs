@@ -101,7 +101,8 @@ pub const PACK_CUTOFF_MIN: [u8; 2] = openbms_proto::access::CUTOFF_MIN;
 pub use openbms_proto::access::pack_cutoff_of;
 
 /// The `0x64/03` formats the app decodes; all carry the same identity fields (format 3 adds the image flags, format 4 a
-/// third patch byte). Only format 4 (and TEMP(maint-1.6) the positive 1.6 in format 3) can be supported.
+/// third patch byte). Only format 4 can be supported (TEMP(maint-1.6): and the first 1.6 in format 3, `maint::temp16`);
+/// formats 2 and 3 stay decoded after it, so older patch builds show as unsupported instead of unknown.
 pub const MNT_FORMATS: [u8; 3] = [2, 3, 4];
 
 /// The capabilities of a supported `0x64/03` identity (`MaintInfo::supported`): every supported build has them all;
@@ -330,8 +331,7 @@ mod tests {
         assert_eq!(caps_of(&info(4, [1, 6], 2, 0x7E)), None, "1.6.2");
         assert_eq!(caps_of(&info(3, [1, 5], 0, 0x02)), None, "1.5");
         assert_eq!(caps_of(&info(2, [1, 5], 0, 0)), None, "1.5 format 2");
-        // TEMP(maint-1.6): the positive 1.6 only
-        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF) by its build, not another format-3 1.6
+        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF) by its build, not another format-3 1.6 (not the positive one)
         assert_eq!(PATCH_BUILDS[2].caps(), Some(Caps { mnt_format: 3, ..PROOF_CAPS }));
         assert_eq!(caps_of(&info(3, [1, 6], 0, 0x06)), None);
         assert_eq!(caps_of(&info(3, [1, 6], 0, 0x0E)), None);
