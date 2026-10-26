@@ -7,14 +7,14 @@ const none = { answered: null, noise: false, intra: false, pack_at_9600: false }
 
 describe("connection check", () => {
   it("reads the backend's no-answer error and nothing else", () => {
-    expect(noAnswer('{"code":"no-answer","noise":true,"intra":false}')).toEqual({ noise: true, intra: false, busy: false });
-    expect(noAnswer(new Error('{"code":"no-answer","noise":false,"intra":true}'))).toEqual({ noise: false, intra: true, busy: false });
+    expect(noAnswer('{"kind":"no-answer","noise":true,"intra":false}')).toEqual({ noise: true, intra: false, busy: false });
+    expect(noAnswer(new Error('{"kind":"no-answer","noise":false,"intra":true}'))).toEqual({ noise: false, intra: true, busy: false });
     // a bus that never got quiet: nothing was sent, said apart from silence
-    const busy = noAnswer('{"code":"no-answer","noise":false,"intra":false,"busy":true}')!;
+    const busy = noAnswer('{"kind":"no-answer","noise":false,"intra":false,"busy":true}')!;
     expect(busy.busy).toBe(true);
     expect(firstLine("can", busy, t)).not.toBe(firstLine("can", { noise: false, intra: false }, t));
     expect(noAnswer("serial port: busy")).toBeNull();
-    expect(noAnswer('{"code":"installation-busy"}')).toBeNull();
+    expect(noAnswer('{"kind":"installation-busy"}')).toBeNull();
   });
 
   it("offers the CAN socket when a pack answers there", () => {

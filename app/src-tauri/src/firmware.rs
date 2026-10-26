@@ -2,7 +2,7 @@
 //! the vendor allowlist; other images only after an explicit opt-in and their own confirmation phrase.
 //! The flash runs on its own thread and reports progress as events.
 
-use crate::{flash_check, maint, reveal, stop_monitor, AppState};
+use crate::{flash_check, maint, reveal, stop_monitor_and_tell, AppState};
 use openbms_flash::maint::policy::{self, Master};
 use openbms_flash::maint::{bus, SystemClock};
 use openbms_flash::{ehex, known, session, session::Progress, Lang};
@@ -316,7 +316,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // the pack's live 64/03 finding of this connection no longer holds once its flash begins (the stored proof ends with
     // the pending record below); the next CAN connect confirms or replaces the provisional proof
     crate::bank::clear_live(&state, crate::link_now(&state).gen, address);
-    stop_monitor(&state)?;
+    // the UI is told, so it shows "not connected" instead of counting a lost connection
+    stop_monitor_and_tell(&state, &app)?;
     let mut link = open_port(&key, l)?;
     // `found_before`: the identity the board shows over RS485-1/2 before (MAINT 1.5.1/1.6.1), for the comparison and
     // the bench marker; read on a quiet bus only

@@ -2,6 +2,7 @@ import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveS
 import { hardStopConfigurable } from "./access";
 import { patchName } from "./profile";
 import { refusalOf } from "./wiring";
+import { decode } from "./errors";
 
 /** The monitor connection (sidebar): connected, paused by the app for a maintenance step (`monitor-stopped`),
  *  not connected (never, or closed by the user), or lost (link-lost or data timeout). */
@@ -154,10 +155,8 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
   // the bus rule sent nothing (`wiring.rs`), whatever action it stopped
   const r = refusalOf(e);
   if (r) return { key: `wiring.refused.${r}` };
-  let v: unknown = e;
-  if (typeof e === "string") {
-    try { v = JSON.parse(e); } catch { v = /^[a-z0-9-]+$/.test(e) ? { kind: "refused", reason: e } : e; }
-  }
+  // a bare key (`refused`) is a refusal of the store or a maintenance step
+  const v: unknown = decode(e) ?? (typeof e === "string" && /^[a-z0-9-]+$/.test(e) ? { kind: "refused", reason: e } : e);
   if (v && typeof v === "object" && "kind" in v && KINDS.includes(String((v as MaintError).kind))) {
     const m = v as MaintError;
     switch (m.kind) {
@@ -176,8 +175,7 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
 
 /** The serial number of an `other-bank` refusal (to offer „Seriennummer übernehmen“), else null. */
 export function otherBank(e: unknown): string | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   return v && typeof v === "object" && (v as MaintError).kind === "other-bank" ? (v as { serial: string }).serial : null;
 }
 
@@ -185,8 +183,7 @@ export function otherBank(e: unknown): string | null {
  *  running maintenance operation ("live", "scan", "halt", "release", "flash", "pack" for an action on a pack; null
  *  when it has none), and the refusal "installation-in-use" as "installation". Else null. */
 export function portBusy(e: unknown): { action: string | null } | null {
-  let v: unknown = e;
-  if (typeof e === "string") { try { v = JSON.parse(e); } catch { return null; } }
+  const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
   // a merge, delete, export or import of the installation: waited for like a busy port
   const r = v as { kind?: unknown; reason?: unknown };

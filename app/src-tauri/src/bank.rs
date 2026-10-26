@@ -562,7 +562,7 @@ pub(crate) fn check(state: &AppState, link: &Link, address: u8) -> Result<(Ident
     let (read, canonical) = match with_link(&state.conn, &state.flashing, &state.link, link, |c| c.bms_serial_canonical(address)) {
         Ok(v) => v,
         // the connection changed, a flash took it, or the bus rule sent nothing: that error, not a bank refusal
-        Err(e) if e == LINK_CHANGED || e == FLASHING || e.contains("send refused: ") => return Err(e),
+        Err(e) if e == LINK_CHANGED || e == FLASHING || crate::is_bus_refusal(&e) => return Err(e),
         Err(e) => {
             eprintln!("bank check {address}: {e}");
             return Err(failed(address, "connection"));

@@ -12,10 +12,10 @@ describe("wiring", () => {
   });
 
   it("finds the bus rule's refusal in a connect error and inside another action's text", () => {
-    expect(refusalOf('{"code":"bus-inverter"}')).toBe("bus-inverter");
+    expect(refusalOf('{"kind":"bus-refused","reason":"bus-inverter"}')).toBe("bus-inverter");
     expect(refusalOf('{"kind":"connection","message":"send refused: bus-polled"}')).toBe("bus-polled");
     expect(refusalOf(new Error("send refused: wiring-unset"))).toBe("wiring-unset");
-    expect(refusalOf('{"code":"no-answer","noise":false}')).toBeNull();
+    expect(refusalOf('{"kind":"no-answer","noise":false}')).toBeNull();
     expect(refusalOf("no answer within 1s")).toBeNull();
   });
 });

@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(err(&run(&mut d, Act::Switch { on: false, expect: None }))["code"], 5);
         // silence, RS485-1/2 refusals, a broken link
         assert_eq!(power_error(E::Timeout(std::time::Duration::from_millis(1500))), uart1_refusal("power-no-answer"));
-        assert_eq!(power_error(E::Proto(openbms_proto::Error::Rtn(0x04))), r#"{"kind":"invalid"}"#);
+        assert_eq!(power_error(E::Proto(openbms_proto::Error::Rtn(0x04))), r#"{"kind":"bms-refused","rtn":"invalid"}"#);
         assert_eq!(power_error(E::Closed), E::Closed.to_string());
     }
 

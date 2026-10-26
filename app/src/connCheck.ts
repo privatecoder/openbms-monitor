@@ -2,6 +2,7 @@ import type { TFunction } from "i18next";
 import type { Bus, Installation, OtherBus } from "./api";
 import { storedPort } from "./maint";
 import { DIP_MAX } from "./access";
+import { decode, kindOf } from "./errors";
 
 /** what a connect's check heard when no pack answered */
 export type NoAnswer = { noise: boolean; intra: boolean; busy?: boolean };
@@ -10,20 +11,14 @@ const BAUD: Record<Bus, number> = { pack: 19200, can: 9600 };
 const other = (b: Bus): Bus => (b === "pack" ? "can" : "pack");
 const pad = (a: number) => String(a).padStart(2, "0");
 
-/** the connect error `{ code: "no-answer", … }`, else null */
+/** the connect error `{ kind: "no-answer", noise, intra, busy }`, else null */
 export function noAnswer(e: unknown): NoAnswer | null {
-  try {
-    const v = JSON.parse(typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
-    return v?.code === "no-answer" ? { noise: !!v.noise, intra: !!v.intra, busy: !!v.busy } : null;
-  } catch { return null; }
+  const v = decode(e);
+  return v?.kind === "no-answer" ? { noise: !!v.noise, intra: !!v.intra, busy: !!v.busy } : null;
 }
 
 /** the backend stopped connecting on „Abbrechen“ */
-export function connectCancelled(e: unknown): boolean {
-  try {
-    return JSON.parse(typeof e === "string" ? e : e instanceof Error ? e.message : String(e))?.code === "cancelled";
-  } catch { return false; }
-}
+export const connectCancelled = (e: unknown): boolean => kindOf(e) === "cancelled";
 
 /** the first sentence: what was heard on the chosen bus */
 export function firstLine(bus: Bus, n: NoAnswer, t: TFunction): string {
