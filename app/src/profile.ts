@@ -139,6 +139,16 @@ export function keepMask(patch: PackPatch | null | undefined, uart1: boolean, gr
   return fixedOf(patch, uart1) | (uart1 && !writeReleased(group0) ? G0.extendedOff : 0) | G0.hardStop | G0.hardStopInherit;
 }
 
+/** Group0 bit 1, the one bit the original firmware uses (sensor plausibility check). */
+export const G0_OEM = 1 << 1;
+
+/** The Group0 bits a take-over keeps from the target pack: `keepMask`, and, when only one of source and target proved a
+ *  MAINT patch, every bit but bit 1 (the original firmware's): a file or pack with MAINT goes to an original one and back
+ *  with the patch bits (releases, extended off, hard stop) as the target has them. */
+export function takeOverKeep(sourcePatched: boolean, target: PackPatch | null | undefined, uart1: boolean, group0: number | undefined): number {
+  return keepMask(target, uart1, group0) | (sourcePatched !== !!target ? 0xff & ~G0_OEM : 0);
+}
+
 /** The label of the shared rows of bits 4 and 5: by their function only when every column with switches has a proof
  *  that may carry the cutoff (`pack_cutoff` true or not known); neutral „Bit 0.4/0.5“ when the columns differ (a 1.5
  *  pack, an original one); unnamed with no such column. */

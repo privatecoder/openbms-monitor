@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BM_NAMES, FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
+import { FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -13,56 +13,65 @@ const pack: Parameters = {
 };
 
 describe("parameter file", () => {
-  it("writes readable names, keys and units and parses its own file back", () => {
-    const xml = toExport(pack);
-    expect(xml.startsWith("\ufeff<?xml")).toBe(true);
-    expect(xml).toContain("\r\n");
-    expect(xml).toContain("<Name>Cell high-voltage warning</Name>\r\n    <Key>cell_high_voltage_alarm</Key>\r\n    <Value>3.450</Value>\r\n    <Unit>V</Unit>");
-    expect(xml).toContain(`<Key>${KEYS[26]}</Key>\r\n    <Value>-10.0</Value>\r\n    <Unit>°C</Unit>`);
-    expect(xml).toContain("<Value>-155.00</Value>");
-    expect(xml).toContain(`<Key>${KEYS[57]}</Key>\r\n    <Value>2000</Value>\r\n    <Unit>ms</Unit>`);
-    expect(xml).toContain("<Name>Function switches 1</Name>\r\n    <Value>DF</Value>");
-    expect(xml).toContain("<modualName>1101-SP75 </modualName>");
-    // no BatteryMonitor machine translation is written any more
-    expect(xml).not.toContain("Monomer");
-    expect(FILE_NAMES.every((n) => typeof n === "string" && n.length > 0)).toBe(true);
+  const patchProof = { source: "live", release: "16.06.13 MAINT 1.6.3", caps: {} as never, at: null } as Parameters["patch"];
+
+  it("writes TOML with keys, comments from the help and hex switches, and reads its own file back", () => {
+    const toml = toExport(pack);
+    expect(toml).toContain('format = "openbms-parameters"\nversion = 1\ndevice = "1101-SP75"\npatched = false');
+    expect(toml).toContain("# P0 · Cell high-voltage warning · V\n");
+    expect(toml).toContain("\ncell_high_voltage_alarm = 3.450\n");
+    expect(toml).toContain(`\n${KEYS[26]} = -10.0\n`);
+    expect(toml).toContain(`\n${KEYS[50]} = 150.00\n`);
+    expect(toml).toContain("\ngroup1 = 0xDF\n");
+    expect(toml).not.toContain("Monomer");
+    expect(toml).not.toContain("<");
     expect(new Set(FILE_NAMES).size).toBe(KEYS.length);
-    const s = parseExport(xml, "x.xml");
+    const s = parseExport(toml, "x.toml");
     expect(s.error).toBeUndefined();
     expect(s.values).toEqual(VALUES);
     expect(s.switches).toEqual(SWITCHES);
     expect(s.suspectFrom).toBeNull();
     expect(s.device).toBe("1101-SP75");
+    expect(s.patched).toBe(false);
+    expect(parseExport(toExport({ ...pack, patch: patchProof }), "m.toml").patched).toBe(true);
   });
 
-  it("takes values by key order only; a renamed title does not matter, a moved key refuses", () => {
-    // a better title later: still the same parameter
-    expect(parseExport(toExport(pack).replace("<Name>Cell high-voltage warning</Name>", "<Name>Something clearer</Name>"), "t.xml").values).toEqual(VALUES);
-    // two keys swapped: refused, no value lands at another place
-    const swapped = toExport(pack).replace(`<Key>${KEYS[1]}</Key>`, "<Key>X</Key>").replace(`<Key>${KEYS[2]}</Key>`, `<Key>${KEYS[1]}</Key>`).replace("<Key>X</Key>", `<Key>${KEYS[2]}</Key>`);
-    expect(parseExport(swapped, "s.xml").error).toBe("foreign");
-    // a decimal comma: refused
-    expect(parseExport(toExport(pack).replace("<Value>3.450</Value>", "<Value>3,450</Value>"), "de.xml").error).toBe("foreign");
+  it("reads by key: order and comments do not matter", () => {
+    const toml = toExport(pack);
+    const lines = toml.split("\n");
+    const a = lines.findIndex((l) => l.startsWith(`${KEYS[1]} =`)), b = lines.findIndex((l) => l.startsWith(`${KEYS[2]} =`));
+    [lines[a], lines[b]] = [lines[b], lines[a]];
+    expect(parseExport(lines.join("\n"), "o.toml").values).toEqual(VALUES);
+    // a group block moved: still group1 = DF, group7 = 1F
+    const g = toml.replace("group1 = 0xDF", "group1 = 0xDF # moved");
+    expect(parseExport(g, "g.toml").switches).toEqual(SWITCHES);
+    // a parameter only in a comment does not count
+    expect(parseExport(toml.replace("\ncell_high_voltage_alarm = 3.450", "\n# cell_high_voltage_alarm = 3.450"), "c.toml").error).toBe("structure");
   });
 
-  it("refuses BatteryMonitor exports and files of earlier app versions (no keys)", () => {
-    const bm = toExport(pack).replace(/\s*<Key>[^<]*<\/Key>/g, "").replace("Cell high-voltage warning", BM_NAMES[0]);
-    expect(parseExport(bm, "bm.xml").error).toBe("foreign");
+  it("refuses invalid, incomplete and unknown content", () => {
+    const toml = toExport(pack);
+    expect(parseExport(toml.replace("group1 = 0xDF", 'group1 = "0G"'), "h.toml").error).toBe("value");
+    expect(parseExport(toml.replace("group1 = 0xDF", "group1 = 0x1FF"), "o.toml").error).toBe("value");
+    expect(parseExport(toml.replace("cell_high_voltage_alarm = 3.450", "cell_high_voltage_alarm = nan"), "n.toml").error).toBe("value");
+    expect(parseExport(toml.replace("cell_high_voltage_alarm = 3.450", "cell_high_voltage_alarm = inf"), "i.toml").error).toBe("value");
+    expect(parseExport(toml.replace("cell_high_voltage_alarm = 3.450", 'cell_high_voltage_alarm = "3,450"'), "d.toml").error).toBe("value");
+    expect(parseExport(toml.replace("cell_high_voltage_alarm = 3.450", "cell_high_voltage_alarm = 3,450"), "d2.toml").error).toBe("foreign");
+    expect(parseExport(toml.replace("[function_switches]", "unknown_parameter = 1\n\n[function_switches]"), "u.toml").error).toBe("structure");
+    expect(parseExport(toml.replace(/\ngroup7 = 0x1F/, ""), "g.toml").error).toBe("structure");
+    expect(parseExport(toml.replace("cell_high_voltage_alarm = 3.450", "cell_high_voltage_alarm = 3.450\ncell_high_voltage_alarm = 3.5"), "dup.toml").error).toBe("foreign");
+    expect(parseExport(toml.replace("version = 1", "version = 2"), "v.toml").error).toBe("foreign");
+    // BatteryMonitor XML and the app's earlier XML files
+    expect(parseExport('<?xml version="1.0"?><paraGroup><parameter><Name>Monomer high voltage alarm</Name><Value>3.450</Value></parameter></paraGroup>', "bm.xml").error).toBe("foreign");
   });
 
   it("flags a file whose values are shifted against the known order", () => {
     const shifted = { ...pack, parameters: pack.parameters.map((p, i) => ({ ...p, value: i < 2 ? p.value : VALUES[(i + 8) % VALUES.length] })) };
-    expect(parseExport(toExport(shifted), "old.xml").suspectFrom).toBe(2);
-  });
-
-  it("refuses files that are not complete", () => {
-    expect(parseExport("<foo/>", "a.xml").error).toBeDefined();
-    expect(parseExport(toExport(pack).replace(/<param_bit_group>[\s\S]*?<\/param_bit_group>/, ""), "b.xml").error).toBeDefined();
-    expect(parseExport(toExport(pack).replace(/<parameter>[\s\S]*?<\/parameter>/, ""), "c.xml").error).toBeDefined();
+    expect(parseExport(toExport(shifted), "old.toml").suspectFrom).toBe(2);
   });
 
   it("names saved files by pack and local time", () => {
-    expect(exportName(3, new Date(2026, 9, 10, 18, 5))).toBe("Parameter_pack03_2026-10-10_18-05.xml");
+    expect(exportName(3, new Date(2026, 9, 10, 18, 5))).toBe("Parameter_pack03_2026-10-10_18-05.toml");
   });
 });
 

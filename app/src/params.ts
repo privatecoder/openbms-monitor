@@ -1,7 +1,8 @@
-/** BMS parameters (0x47): order, grouping, BatteryMonitor XML import/export and the comparison between sources. */
+/** BMS parameters (0x47): order, grouping, the parameter file (TOML) import/export and the comparison between sources. */
 import type { PackPatch } from "./api";
 import CATALOG from "./generated/access.json";
-import PARAM_NAMES from "./generated/param_names.json";
+import PARAM_FILE from "./generated/param_file.json";
+import { parse as parseToml } from "smol-toml";
 
 export interface Parameter { index: number; key: string; raw: number; value: number; unit: string }
 /** `bms_serial`: over the CAN socket the String 2 read with the block, when it identifies the board; a
@@ -45,9 +46,13 @@ export const BM_NAMES = [
   "Interval charge capacity", "Cycle cumulative capacity", "Connection fault impedance", "Compensation point 1 position",
   "Compensation point 1 impedance", "Ompensation point 2 position", "Compensation point 2 impedance",
 ];
-/** The names in the app's parameter files: the English help titles (generated from `tools/param_help.py`), so a file
- *  says what a parameter means. Identity in the file is the technical key, not the name. */
-export const FILE_NAMES: string[] = KEYS.map((k) => (PARAM_NAMES as Record<string, string>)[k]);
+/** What the app's parameter files say about each value, generated from `tools/param_help.py` with the help pages:
+ *  English title, short text and longer explanation per parameter, explanation per switch group, name per switch bit. */
+type FileText = { params: Record<string, { name: string; short: string; detail: string }>; groups: Record<string, string>;
+  switches: Record<string, { name: string; short: string }> };
+const TEXT = PARAM_FILE as FileText;
+/** The readable name of each parameter in a file (comments only; identity is the key). */
+export const FILE_NAMES: string[] = KEYS.map((k) => TEXT.params[k].name);
 
 /** Decimals as BatteryMonitor shows them; also the precision two sources are compared at. */
 export const decimals = (i: number) =>
@@ -83,6 +88,8 @@ export interface Source {
   values?: number[];
   switches?: number[];
   error?: string;
+  /** a file whose pack proved a MAINT patch (its Group0 patch bits mean something only to such a pack) */
+  patched?: boolean;
   /** first parameter index from which an export does not fit the known order */
   suspectFrom?: number | null;
   /** the parameters as read, for saving and as the base of an edit */
@@ -104,7 +111,7 @@ export interface Source {
   stored?: { at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null; unconfirmed?: boolean };
 }
 
-/** The stored state of a place as a column (compare, datasheet check and XML save; never edited). */
+/** The stored state of a place as a column (compare, datasheet check and file save; never edited). */
 /** A stored block as a column; a read keeps the patch it was taken under (`patch`), so its release bits read as then. */
 export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null; switches_unconfirmed?: boolean; patch?: PackPatch | null }): Source => ({
   id: `stored-${s.address}`, kind: "stored", address: s.address, label: String(s.address).padStart(2, "0"),
@@ -124,52 +131,92 @@ const plausible = (i: number, v: number) =>
   i <= 9 || i === 62 || i === 63 ? v >= 0 && v <= 5 : i <= 19 ? v >= 5 && v <= 120 : i <= 49 ? v >= -50 && v <= 150
   : i <= 56 ? Math.abs(v) <= 1000 : i === 65 ? v >= 1 && v <= 32 : i >= 78 && i <= 81 ? v >= 0 && v <= 100 : true;
 
-const unescape = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+/** The kind and version a parameter file names in its first data lines. */
+export const FILE_FORMAT = "openbms-parameters";
+export const FILE_VERSION = 1;
 
-/** Parse a parameter file of this app (`toExport`). Every parameter carries its technical key; the keys must be all 87 in
- *  BMS order, so no value can land at another place. The names are only for reading and are not compared (a better
- *  title later does not break older files). BatteryMonitor's own exports (no keys, names that differ by version and
- *  language, decimal commas, partly wrong) are refused as "foreign": the user saves a fresh file with this app. */
+/** Parse a parameter file of this app (`toExport`, TOML). Values go by their technical key, wherever they stand in the
+ *  file: exactly the 87 parameters of `KEYS` and the eight groups `group0`…`group7`, nothing missing, nothing unknown.
+ *  Parameters must be finite numbers, groups integers 0…255 (TOML's own hex `0xDF`). Comments are not data. Anything
+ *  else, a BatteryMonitor export or a file of an earlier app version among it, is refused ("foreign", "structure",
+ *  "value"): the user saves a fresh file with this app. `patched`: the file came from a pack with a proven MAINT patch;
+ *  only then do its Group0 patch bits mean something to a patched pack (`takeOverSwitches`). */
 export function parseExport(text: string, label: string): Source {
   const id = `file-${label}-${text.length}`;
-  if (!/<paraGroup>/.test(text)) return { id, kind: "file", label, error: "structure" };
-  const params = [...text.matchAll(/<parameter>\s*<Name>[\s\S]*?<\/Name>\s*<Key>([\s\S]*?)<\/Key>\s*<Value>([\s\S]*?)<\/Value>/g)];
-  const groups = [...text.matchAll(/<param_bit_group>\s*<Name>[\s\S]*?<\/Name>\s*<Value>([\s\S]*?)<\/Value>/g)];
-  const anyParams = (text.match(/<parameter>/g) ?? []).length;
-  // parameters without keys (BatteryMonitor, files of earlier app versions): foreign, not merely incomplete
-  if (anyParams > 0 && params.length === 0) return { id, kind: "file", label, error: "foreign" };
-  if (params.length !== KEYS.length || anyParams !== KEYS.length || groups.length !== 8)
-    return { id, kind: "file", label, error: `${params.length}/${KEYS.length}, ${groups.length}/8` };
-  const values = params.map((m) => Number(m[2].trim()));
-  const switches = groups.map((m) => parseInt(m[1].trim(), 16));
-  if (KEYS.some((k, i) => params[i][1].trim() !== k) || values.some((v, i) => Number.isNaN(v) || params[i][2].trim() === ""))
-    return { id, kind: "file", label, error: "foreign" };
-  if (switches.some((s) => Number.isNaN(s) || s < 0 || s > 255))
-    return { id, kind: "file", label, error: "value" };
-  const bad = KEYS.map((_, i) => i).filter((i) => !plausible(i, values[i]));
+  const fail = (error: string): Source => ({ id, kind: "file", label, error });
+  let doc: Record<string, unknown>;
+  try { doc = parseToml(text.replace(/^\uFEFF/, "")) as Record<string, unknown>; }
+  catch { return fail("foreign"); }
+  if (doc.format !== FILE_FORMAT || doc.version !== FILE_VERSION) return fail("foreign");
+  const params = doc.parameters, groups = doc.function_switches;
+  if (!params || typeof params !== "object" || !groups || typeof groups !== "object") return fail("structure");
+  const p = params as Record<string, unknown>, g = groups as Record<string, unknown>;
+  const groupKeys = Array.from({ length: 8 }, (_, n) => `group${n}`);
+  if (Object.keys(p).length !== KEYS.length || KEYS.some((k) => !(k in p))
+    || Object.keys(g).length !== 8 || groupKeys.some((k) => !(k in g))) return fail("structure");
+  const values = KEYS.map((k) => p[k]);
+  const switches = groupKeys.map((k) => g[k]);
+  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v))
+    || switches.some((v) => typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 255)) return fail("value");
+  const bad = KEYS.map((_, i) => i).filter((i) => !plausible(i, values[i] as number));
   return {
-    id, kind: "file", label, values, switches, suspectFrom: bad.length ? bad[0] : null,
-    device: unescape(text.match(/<modualName>([\s\S]*?)<\/modualName>/)?.[1] ?? "").trim(),
+    id, kind: "file", label, values: values as number[], switches: switches as number[], suspectFrom: bad.length ? bad[0] : null,
+    device: typeof doc.device === "string" ? doc.device.trim() : "", patched: doc.patched === true,
   };
 }
 
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** A TOML basic string. */
+const tomlString = (v: string) => JSON.stringify(v);
 
-/** The app's parameter file: BatteryMonitor's XML layout (UTF-8 with BOM, CRLF), but with the app's own names, the
- *  technical key of every parameter and the app's units, so the file says what each value means (`parseExport`). */
-export function toExport(p: Parameters): string {
-  const l = ['<?xml version="1.0" encoding="utf-8"?>', "<paraGroup>", "  <filetype>Parameter</filetype>",
-    `  <modualName>${esc(p.device_name.padEnd(10, " "))}</modualName>`];
-  p.parameters.forEach((x, i) => l.push("  <parameter>", `    <Name>${esc(FILE_NAMES[i])}</Name>`, `    <Key>${KEYS[i]}</Key>`, `    <Value>${fmtParam(i, x.value)}</Value>`, `    <Unit>${esc(UNITS[i])}</Unit>`, "  </parameter>"));
-  p.function_switches.forEach((b, g) => l.push("  <param_bit_group>", `    <Name>Function switches ${g}</Name>`, `    <Value>${b.toString(16).toUpperCase().padStart(2, "0")}</Value>`, "  </param_bit_group>"));
-  l.push("</paraGroup>");
-  return "﻿" + l.join("\r\n");
+/** Text as `#` comment lines of at most `width` characters. */
+function comment(text: string, indent = "", width = 110): string[] {
+  const out: string[] = [];
+  for (const para of text.split("\n").map((x) => x.trim()).filter(Boolean)) {
+    let line = "";
+    for (const word of para.split(/\s+/)) {
+      if (line && indent.length + 2 + line.length + 1 + word.length > width) { out.push(`${indent}# ${line}`); line = word; }
+      else line = line ? `${line} ${word}` : word;
+    }
+    if (line) out.push(`${indent}# ${line}`);
+  }
+  return out;
 }
 
-/** File name for a saved pack: Parameter_pack03_2026-10-10_18-05.xml (local time). */
+const HEADER = [
+  "OpenBMS Monitor parameter file: the parameters (0x47) and function switches of one pack.",
+  "Values are read by their key; the order and every comment are ignored when the file is opened again. Units are fixed per parameter (shown in the comments). Numbers use a decimal point.",
+  "Warning = reports and may change limits (e.g. the charge limit), but does not open a MOSFET by itself. Protection = the MOSFET opens.",
+  "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware MAINT 1.5.3/1.6.3 also uses bits 0 and 2-7 (releases, pack lock, hard stop). When a file is taken over between a pack with and one without MAINT, those bits stay as the target pack has them.",
+];
+
+/** The app's parameter file (TOML, UTF-8, LF): head (format, version, device, whether the pack proved a MAINT patch), then
+ *  every parameter by its technical key with name, number, unit and explanation as comments, then the eight switch bytes
+ *  with the meaning of each bit. `parseExport` reads it back. */
+export function toExport(p: Parameters): string {
+  const l: string[] = [...comment(HEADER.join("\n")), "",
+    `format = ${tomlString(FILE_FORMAT)}`, `version = ${FILE_VERSION}`, `device = ${tomlString(p.device_name.trim())}`,
+    `patched = ${p.patch ? "true" : "false"}`, ""];
+  if (p.patch) l.splice(l.length - 1, 0, `# firmware: ${p.patch.release}`);
+  l.push("[parameters]");
+  p.parameters.forEach((x, i) => {
+    const t = TEXT.params[KEYS[i]];
+    l.push("", `# P${i} · ${t.name}${UNITS[i] ? ` · ${UNITS[i]}` : ""}`, ...comment(t.short), ...comment(t.detail), `${KEYS[i]} = ${fmtParam(i, x.value)}`);
+  });
+  l.push("", "[function_switches]");
+  p.function_switches.forEach((b, g) => {
+    l.push("", `# Group ${g}`, ...comment(TEXT.groups[String(g)] ?? ""));
+    for (let bit = 0; bit < 8; bit++) {
+      const sw = TEXT.switches[`${g}.${bit}`];
+      l.push(`#   bit ${bit} = ${(b >> bit) & 1}: ${sw ? sw.name : "no function"}`);
+    }
+    l.push(`group${g} = 0x${b.toString(16).toUpperCase().padStart(2, "0")}`);
+  });
+  return l.join("\n") + "\n";
+}
+
 export const exportName = (address: number, now = new Date()) => {
   const z = (n: number) => String(n).padStart(2, "0");
-  return `Parameter_pack${z(address)}_${now.getFullYear()}-${z(now.getMonth() + 1)}-${z(now.getDate())}_${z(now.getHours())}-${z(now.getMinutes())}.xml`;
+  return `Parameter_pack${z(address)}_${now.getFullYear()}-${z(now.getMonth() + 1)}-${z(now.getDate())}_${z(now.getHours())}-${z(now.getMinutes())}.toml`;
 };
 
 /**
