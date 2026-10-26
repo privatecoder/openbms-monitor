@@ -312,7 +312,8 @@ pub fn clear_at(link: &mut impl Link, clock: &impl Clock, address: u8, b: Budget
     let heard = super::bus::listen(link, clock, window)?;
     if !heard.quiet() {
         link.forget_quiet();
-        return Ok((!heard.polled.is_empty()).then_some(heard.polled.len() as u8));
+        // polling again proves the release, not the slave count: one window may hold only part of a round
+        return Ok(None);
     }
     Ok(status_read_at(link, clock, address, b).ok().and_then(|r| status_of(r).ok()).filter(|s| s.marker() == MarkerWord::Off).map(|s| s.effective_slaves))
 }
@@ -423,7 +424,8 @@ mod tests {
             let line: &[u8] = if k % 2 == 0 { b"~2001465A0000FD9D\r" } else { b"~2002465A0000FD9C\r" };
             polled.inject(ms(200 + 100 * k), line);
         }
-        assert_eq!(clear_at(&mut polled, &t, 0, Budgets::default()).unwrap(), Some(2));
+        // released, polling again; the slave count is not read (part of a round is no count)
+        assert_eq!(clear_at(&mut polled, &t, 0, Budgets::default()).unwrap(), None);
         // nothing asked into the polling: one request fewer than on the quiet bus
         assert_eq!(polled.sent.len() + 1, quiet.sent.len());
     }
