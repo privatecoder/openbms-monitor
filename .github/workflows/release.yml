@@ -58,6 +58,14 @@ jobs:
           releaseBody: See the README for what this pre-release does and what is untested.
           releaseDraft: false
           prerelease: true
+      # tauri-action also uploads the macOS .app as .app.tar.gz (only useful for an updater); the DMG is the installer.
+      - name: Remove the .app.tar.gz asset
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' | grep '\.app\.tar\.gz$' |
+            while read -r asset; do gh release delete-asset "$GITHUB_REF_NAME" "$asset" -y; done
       - name: Build
         if: "!startsWith(github.ref, 'refs/tags/')"
         working-directory: app
