@@ -8,7 +8,7 @@ import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { CONN_TIMEOUT_MS, RECONNECT_MS, useNow } from "../components/live";
+import { CONN_TIMEOUT_MS, RECONNECT_TRIES, reconnectDelay, useNow, waitText } from "../components/live";
 import { packBusy } from "../control";
 import { busyMessage, busyWaitStep, errorKey, pickable, portBusy, portKey, preselect, refusalParams, saveOffer, storedPort, withPort, type PortKind } from "../maint";
 import { RecordingEntry, useHistoryStatus } from "./Recording";
@@ -88,10 +88,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // the last connect found no pack: the message is an error; `offer`: the other bus answered, one click switches
   const [failed, setFailed] = useState(false);
   const [offer, setOffer] = useState<Bus | null>(null);
-  // lost: no data for CONN_TIMEOUT_MS; then the connection is dropped and retried every RECONNECT_MS
+  // lost: no data for CONN_TIMEOUT_MS; then the connection is dropped and retried with growing pauses
+  // (`reconnectDelay`); `tries`: the automatic attempts since the loss
   const [lost, setLost] = useState(false);
   const [since, setSince] = useState(0);
   const [lastTry, setLastTry] = useState(0);
+  const [tries, setTries] = useState(0);
   const now = useNow();
   // a pack that answered leaves the gap for good; the note shows only while the monitor polls
   useEffect(() => { if (gap) { const g = pruneGap(gap, answering); if (g !== gap) setGap(g); } }, [gap, answering.join()]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -222,7 +224,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     forgetBank();
     if (!retry) connInst.current = inst !== undefined ? inst : maint.installation;
     const bus = useBus;
-    setBusy(true); setFailed(false); setOffer(null); setGap(null); if (!retry) { setMsg(null); setLost(false); }
+    setBusy(true); setFailed(false); setOffer(null); setGap(null); if (!retry) { setMsg(null); setLost(false); setTries(0); }
     setLastTry(Date.now());
     try {
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
@@ -374,7 +376,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     serialGen.current += 1; forgetBank(); linkOpen.current = false;
     setLost(true);
     setMsg(text); setGap(null);
-    setLastTry(Date.now());
+    setLastTry(Date.now()); setTries(0);
     onDisconnected(true);
     api.disconnect(true).catch(() => {});
   };
@@ -399,7 +401,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     markLost(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // The backend reports a dead link at once; reconnecting starts after RECONNECT_MS.
+  // The backend reports a dead link at once; reconnecting starts after `reconnectDelay(0)`.
   const onLinkLost = useRef((_: string) => {});
   onLinkLost.current = (err) => { if (connected && !busy) markLost(t("conn.dropped", { err })); };
   useEffect(() => {
@@ -454,10 +456,15 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     apply(fillFields(cur, b, maint.installation ? lastConn(maint.installation) : null, "bus"));
   };
 
-  // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port).
+  // While lost, reconnect automatically with the last settings (not while the firmware view is open: it needs the port),
+  // at most RECONNECT_TRIES times. The timer runs also with the window hidden (`backgroundThrottling` in tauri.conf.json).
+  const gaveUp = lost && tries >= RECONNECT_TRIES;
   useEffect(() => {
     // never for another installation than the connection's
-    if (lost && !busy && !connected && !locked && view !== "firmware" && maint.installation === connInst.current && now - lastTry >= RECONNECT_MS) connect(true);
+    if (lost && !gaveUp && !busy && !connected && !locked && view !== "firmware" && maint.installation === connInst.current && now - lastTry >= reconnectDelay(tries)) {
+      setTries(tries + 1);
+      connect(true);
+    }
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -678,7 +685,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           {bankError && <p className="text-sm text-alarm">{bankError}</p>}
           {/* from the backend's decision (it also learns from writes' checks and parameter reads) */}
           {connected && recStatus?.held && <p className="text-xs text-muted">{recStatus.held_reason === "confirm" ? t("bank.afterConfirm") : t("rec.held")}</p>}
-          {lost && !busy && <p className="text-sm text-muted">{t("conn.retryIn", { s: Math.max(0, Math.ceil((RECONNECT_MS - (now - lastTry)) / 1000)) })}</p>}
+          {lost && !busy && <p className="text-sm text-muted">{gaveUp ? t("conn.gaveUp", { n: tries }) : t("conn.retryIn", { time: waitText(reconnectDelay(tries) - (now - lastTry)), n: tries + 1, of: RECONNECT_TRIES })}</p>}
           {isDemo && <p className="text-sm text-discharge">{t("conn.demo")}</p>}
         </div>
       </div>

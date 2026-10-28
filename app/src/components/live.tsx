@@ -9,8 +9,17 @@ export const POLL_MS = 2000;
 /** Without a successful answer for this long, the connection counts as lost (fixed, independent of the bus); from the
  *  backend (`timing::CONN_LOST`), which keeps a polling round without answers well below it. */
 export const CONN_TIMEOUT_MS: number = TIMING.conn_lost_ms;
-/** While the connection is lost, try to reconnect this often. */
-export const RECONNECT_MS = 30_000;
+/** While the connection is lost, attempt n (0-based) follows this long after the loss or the previous attempt: 1, 2,
+ *  4, 8, 16 min, then every 30 min; after RECONNECT_TRIES attempts (about 3 h) the app gives up. */
+export const RECONNECT_TRIES = 10;
+export function reconnectDelay(attempt: number): number {
+  return Math.min(60_000 * 2 ** attempt, 30 * 60_000);
+}
+/** A wait as "45 s" up to two minutes, else in whole minutes ("29 min"); never negative. */
+export function waitText(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return s <= 120 ? `${s} s` : `${Math.ceil(s / 60)} min`;
+}
 
 /** Current time, re-rendered every second. */
 export function useNow(intervalMs = 1000) {

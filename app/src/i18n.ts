@@ -712,7 +712,7 @@ const resources = {
           "bus-unknown": "Nichts gesendet: interner Fehler, der Bus dieser Verbindung ist unbekannt.",
         },
       },
-      conn: { lostShort: "Verbindung verloren", lost: "Seit {{s}} s keine Daten.", dropped: "Verbindung getrennt: {{err}}", retryIn: "Nächster Versuch in {{s}} s.", retryFailed: "Neu verbinden fehlgeschlagen: {{err}}", 
+      conn: { lostShort: "Verbindung verloren", lost: "Seit {{s}} s keine Daten.", dropped: "Verbindung getrennt: {{err}}", retryIn: "Neuer Versuch {{n}} von {{of}} in {{time}}.", gaveUp: "Nach {{n}} Versuchen aufgegeben; bitte von Hand neu verbinden.", retryFailed: "Neu verbinden fehlgeschlagen: {{err}}", 
         title: "Verbindung", tcp: "Netzwerk", serial: "USB", host: "Gateway (Host:Port)",
         installation: "Anlage", storedHint: "Gespeicherter Anschluss der Anlage für diesen Bus", otherPort: "Anderer Anschluss", editPorts: "In Anlagen ändern", useStored: "Gespeicherten Anschluss verwenden", viewOnly: "Nur ansehen", viewOnlyHint: "Nur ansehen: nichts wird gespeichert, nichts in die Packs geschrieben.",
         pickHint: "Dieses Gateway gehört zu mehreren Anlagen: bitte die richtige wählen.", linked: "Anschluss wird Anlage „{{name}}“ zugeordnet.",
@@ -810,7 +810,7 @@ const resources = {
       sn: {
         battery: "Batterie-SN", bms: "BMS-SN", unknown: "unbekannt", first22: "(erste 22 Zeichen)", placeholder: "nicht gesetzt (Platzhalter)",
         empty: "leer", noAnswer: "keine Antwort", packBusOnly: "nur über den RS485-1/2-Bus lesbar", unsupported: "von der Firmware nicht unterstützt",
-        askBinary: "über CAN-Buchse lesen", askBinaryHint: "Fragt dieses Pack direkt nach seinen Seriennummern (nur mit Patch-Firmware auf dem Pack selbst).",
+        askBinary: "Seriennummern lesen", askBinaryHint: "Fragt dieses Pack direkt nach seinen Seriennummern (nur mit Patch-Firmware auf dem Pack selbst).",
         noBinary: "Das Pack bietet die Seriennummer über die CAN-Buchse nicht an (0x81).",
       },
       pw: {
@@ -1826,7 +1826,7 @@ const resources = {
           "bus-unknown": "Nothing sent: internal error, this connection's bus is unknown.",
         },
       },
-      conn: { lostShort: "Connection lost", lost: "No data for {{s}} s.", dropped: "Connection closed: {{err}}", retryIn: "Next attempt in {{s}} s.", retryFailed: "Reconnect failed: {{err}}", 
+      conn: { lostShort: "Connection lost", lost: "No data for {{s}} s.", dropped: "Connection closed: {{err}}", retryIn: "Attempt {{n}} of {{of}} in {{time}}.", gaveUp: "Gave up after {{n}} attempts; please connect again by hand.", retryFailed: "Reconnect failed: {{err}}", 
         title: "Connection", tcp: "Network", serial: "USB", host: "Gateway (host:port)",
         installation: "Installation", storedHint: "The installation's stored port for this bus", otherPort: "Other port", editPorts: "Change in Installations", useStored: "Use the stored port", viewOnly: "View only", viewOnlyHint: "View only: nothing is stored, nothing is written to the packs.",
         pickHint: "This gateway belongs to several installations: please choose the right one.", linked: "Endpoint is linked to installation “{{name}}”.",
@@ -1924,7 +1924,7 @@ const resources = {
       sn: {
         battery: "Battery SN", bms: "BMS SN", unknown: "unknown", first22: "(first 22 characters)", placeholder: "not set (placeholder)",
         empty: "empty", noAnswer: "no answer", packBusOnly: "readable on the RS485-1/2 bus only", unsupported: "not supported by the firmware",
-        askBinary: "read via CAN socket", askBinaryHint: "Asks this pack directly for its serial numbers (only with patched firmware on the pack itself).",
+        askBinary: "read serial numbers", askBinaryHint: "Asks this pack directly for its serial numbers (only with patched firmware on the pack itself).",
         noBinary: "The pack does not offer its serial number via the CAN socket (0x81).",
       },
       pw: {

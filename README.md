@@ -13,7 +13,7 @@ Status: **pre-release (0.1-beta)**. Monitoring of multi-pack banks is in daily u
 
 **Monitoring**
 - Connects via a USB-RS485 adapter or an RS485-to-Ethernet gateway (TCP), on either bus of the packs (see below). Finds packs at addresses 0–15 and polls them continuously. The desktop app sends nothing on the bus configured as the inverter's (see [Inverter connection](#inverter-connection)).
-- Connection watchdog: without data for 60 s the connection counts as lost and is retried every 30 s.
+- Connection watchdog: without data for 60 s the connection counts as lost and is retried after 1, 2, 4, 8 and 16 min, then every 30 min, ten times in all (about 3 h); this also runs while the window is hidden.
 - **Overview:** the master's system values (total current, SOC, charge and discharge limits with the per-cell voltage limits, bank-wide cell voltage and temperature extremes with their pack) and all packs with state, SOC, messages, balancing and cycles. Packs can be arranged in groups and towers.
 - **Pack detail:** cell voltages around that pack's median cell, temperatures, current, capacity, energy, active messages.
 - **Notifications** (system notifications, per installation): a protection or fault alarm starts, a pack stops answering, the rest cell spread stays above a threshold, or the connection is lost for the set minutes. Each fires once until its cause cleared, rate-limited per pack and trigger.

@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "OpenBMS Monitor", "width": 1280, "height": 820, "minWidth": 900, "minHeight": 600 }],
+    "windows": [{ "title": "OpenBMS Monitor", "width": 1280, "height": 820, "minWidth": 900, "minHeight": 600, "backgroundThrottling": "disabled" }],
     "security": { "csp": null }
   },
   "bundle": {
