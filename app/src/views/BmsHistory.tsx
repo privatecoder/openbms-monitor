@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, History as HistoryIcon, X } from "lucide-react";
-import { api, isDemo, linkNow, type Bus } from "../api";
-import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, noteProgress, sameInstallation, startHistoryRead, summary, type HistoryRun, type LastRead } from "../bmsMemory";
+import { api, isDemo, linkNow, type ArchivePack, type ArchivedRecord, type BmsHistoryRecord, type Bus } from "../api";
+import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, MAX_ROWS, noteProgress, sameInstallation, severalBoards, shownSource, startHistoryRead, summary, type HistoryRun, type LastRead } from "../bmsMemory";
 import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
 import { errorText } from "../control";
 import { factsOf, offerable } from "../access";
@@ -21,9 +21,21 @@ let keptAddress: number | null = null;
 
 /** The pack's internal history (0x4B), read on demand over RS485-1/2, and over the CAN socket from a pack whose own 64/03
  *  announces it (read-capability bit 0): table newest first, CSV export. */
-export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus: Bus | null; packs: number[] }) {
+export function BmsHistory({ connected, bus, packs: livePacks, installation }: { connected: boolean; bus: Bus | null; packs: number[]; installation: string | null }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
+  // the installation's archive: which packs have one (also without a connection), and the chosen pack's records
+  const [archived, setArchived] = useState<ArchivePack[]>([]);
+  const [archive, setArchive] = useState<{ key: string; records: ArchivedRecord[]; skipped: number } | { key: string; error: string } | null>(null);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    setArchived([]);
+    if (!installation) return;
+    let alive = true;
+    api.bmsArchivePacks(installation).then((p) => { if (alive) setArchived(p); }, () => {});
+    return () => { alive = false; };
+  }, [installation, reload]);
+  const packs = [...new Set([...livePacks, ...archived.map((p) => p.address)])].sort((a, b) => a - b);
   const [address, setAddressState] = useState<number | null>(currentRun()?.address ?? keptAddress ?? packs[0] ?? null);
   const setAddress = (a: number | null) => { keptAddress = a; setAddressState(a); };
   useEffect(() => { if (address === null || !packs.includes(address)) setAddress(packs[0] ?? null); }, [packs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -31,13 +43,22 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   // a result of another installation (same address, other bank) or of another pack than the chosen one is not this
   // one's history: not shown, not exported
   const result = tagged && sameInstallation(tagged.link, linkNow()) && tagged.read.address === address ? tagged.read : null;
+  const archiveKey = `${installation ?? ""}|${address ?? ""}`;
+  useEffect(() => {
+    setArchive(null);
+    if (!installation || address === null) return;
+    let alive = true;
+    api.bmsArchive(installation, address).then((a) => { if (alive) setArchive({ key: archiveKey, ...a }); }, (e) => { if (alive) setArchive({ key: archiveKey, error: String(e) }); });
+    return () => { alive = false; };
+  }, [archiveKey, reload]); // eslint-disable-line react-hooks/exhaustive-deps
+  const arch = archive && archive.key === archiveKey ? archive : null;
   const [progress, setProgress] = useState<number | null>(() => currentRun()?.n ?? null);
   const [saved, setSaved] = useState<{ name: string } | { error: string } | null>(null);
   // the history read exists where the catalog has the app's way for it: RS485-1/2, and the CAN socket with the pack's
   // read-capability bit 0 (from its own 64/03 on this link)
   const channel = channelOf(bus);
   const caps = useReadCaps(connected && bus === "can" && !isDemo ? address : null, null, linkNow());
-  const usable = connected && (isDemo || (!!channel && offerable("read-history", channel, factsOf({ caps }))));
+  const usable = connected && address !== null && livePacks.includes(address) && (isDemo || (!!channel && offerable("read-history", channel, factsOf({ caps }))));
   const canRead = bus === "can" && usable && !isDemo;
   const { read: clock } = useBmsClock(address, usable);
   const diff = readDiff(clock);
@@ -46,7 +67,12 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const alive = useRef(true);
   const attach = (r: HistoryRun) => {
     setProgress(r.n);
-    void r.promise.then((res) => { if (alive.current) { setResult({ link: r.link, read: res }); setProgress(null); } });
+    void r.promise.then((res) => {
+      if (!alive.current) return;
+      setResult({ link: r.link, read: res }); setProgress(null);
+      // the archive took records: show it with them
+      if (res.archived != null) setReload((n) => n + 1);
+    });
   };
   useEffect(() => {
     alive.current = true;
@@ -62,11 +88,13 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
     attach(startHistoryRead(address, linkNow(), api.bmsHistory));
   };
 
+  const source = shownSource(result, arch && "records" in arch ? arch.records : null);
+  const all: (BmsHistoryRecord | ArchivedRecord)[] = source === "fresh" ? result!.records : source === "archive" && arch && "records" in arch ? arch.records : [];
   const save = async () => {
-    if (!result) return;
+    if (!all.length || address === null) return;
     setSaved(null);
-    const content = historyCsv(result.address, result.records), name = csvName(result.address);
     try {
+      const content = historyCsv(address, all), name = csvName(address);
       if (isDemo) {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([content], { type: "text/csv" }));
@@ -89,7 +117,11 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
     : result.end === "empty" ? (count ? t("bmsh.end.emptyAfter", { count }) : t("bmsh.end.empty"))
     : result.end === "error" ? `${t("bmsh.end.error", { count, err: errorText(result.error ?? "", t) })}${result.error_kind === "eeprom" || result.error_kind === "silent" ? ` ${t(`bmsh.kind.${result.error_kind}`)}` : ""}`
     : t(`bmsh.end.${result.end}`, { count });
-  const rows = result ? [...result.records].reverse() : [];
+  const rows = [...all].reverse().slice(0, MAX_ROWS);
+  const boardCol = source === "archive" && severalBoards(all as ArchivedRecord[]);
+  const archNote = result && result.records.length > 0 && !reading
+    ? result.archived != null ? t("bmsh.arch.saved", { count: result.archived }) : result.archive_note ? t(`bmsh.arch.${result.archive_note}`) : null
+    : null;
 
   return (
     <div className="space-y-6">
@@ -104,7 +136,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
           )}
           <Button variant="primary" disabled={!usable || address === null || reading} onClick={start}><HistoryIcon className="h-4 w-4" />{t("bmsh.read")}</Button>
           {reading && <Button variant="ghost" onClick={() => void api.bmsHistoryCancel()}><X className="h-4 w-4" />{t("bmsh.cancel")}</Button>}
-          {count > 0 && !reading && <Button className="ml-auto" onClick={save}><Download className="h-4 w-4" />{t("bmsh.save")}</Button>}
+          {all.length > 0 && !reading && <Button className="ml-auto" onClick={save}><Download className="h-4 w-4" />{t("bmsh.save")}</Button>}
         </div>
         <p className={cn("text-sm", bus === "can" && connected && !isDemo && !canRead ? "text-discharge" : "text-muted")}>
           {reading ? t(canRead ? "bmsh.readingCan" : "bmsh.reading", { n: (progress ?? 0) + 1 })
@@ -121,11 +153,17 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
         )}
         {diff !== null && Math.abs(diff) > CLOCK_FAR_S && count > 0 && <p className="text-sm text-discharge">{t("bmsh.farOff")}</p>}
         {endText && !reading && <p className={cn("text-sm", result?.end === "error" || result?.end === "cap" ? "text-alarm" : "text-muted")}>{endText}</p>}
+        {archNote && <p className={cn("text-sm", result?.archived != null ? "text-ok" : "text-discharge")}>{archNote}</p>}
+        {installation && arch && ("error" in arch
+          ? <p className="text-sm text-alarm">{t("bmsh.arch.loadError", { err: arch.error })}</p>
+          : <p className="text-sm text-muted">{t(source === "fresh" ? "bmsh.arch.notShown" : "bmsh.arch.shown", { count: arch.records.length })}{arch.skipped ? ` ${t("bmsh.arch.skipped", { count: arch.skipped })}` : ""}</p>)}
+        {all.length > MAX_ROWS && <p className="text-sm text-muted">{t("bmsh.arch.limited", { shown: MAX_ROWS, count: all.length })}</p>}
+        {!installation && !isDemo && <p className="text-sm text-muted">{t("bmsh.arch.viewOnlyHint")}</p>}
         {saved && ("name" in saved ? <p className="text-sm text-ok">{t("bmsh.saved", { name: saved.name })}</p> : <p className="text-sm text-alarm">{t("bmsh.saveError", { err: saved.error })}</p>)}
       </Panel>
 
       {rows.length === 0 ? (
-        !reading && <p className="text-muted">{result ? "" : t("bmsh.empty")}</p>
+        !reading && <p className="text-muted">{result || arch ? "" : t("bmsh.empty")}</p>
       ) : (
         <Panel className="overflow-x-auto p-5">
           <table className="w-full text-sm tabular-nums">
@@ -139,7 +177,8 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
                 <th className="py-2 pr-4 text-right font-normal">{t("bmsh.col.max")}</th>
                 <th className="py-2 pr-4 text-right font-normal">{t("bmsh.col.spread")}</th>
                 <th className="py-2 pr-4 text-right font-normal">{t("bmsh.col.temp")}</th>
-                <th className="py-2 font-normal">{t("bmsh.col.alarms")}</th>
+                <th className="py-2 pr-4 font-normal">{t("bmsh.col.alarms")}</th>
+                {boardCol && <th className="py-2 font-normal">{t("bmsh.col.board")}</th>}
               </tr>
             </thead>
             <tbody>
@@ -162,6 +201,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
                         </ul>
                       )}
                     </td>
+                    {boardCol && <td className="whitespace-nowrap py-1.5 pl-4 text-muted">{(r as ArchivedRecord).bms_serial ?? "–"}</td>}
                   </tr>
                 );
               })}

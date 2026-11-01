@@ -14,6 +14,8 @@ pub const MANIFEST: &str = "manifest.json";
 pub const INSTALLATION: &str = "installation.json";
 pub const RECORDING: &str = "recording.jsonl";
 pub const EVENTS: &str = "events.jsonl";
+/// The archived history of the packs (`maint_store::BmsRecordData` per line): its own entry, it grows with every read.
+pub const BMS_HISTORY: &str = "bms-history.jsonl";
 
 /// Size limits of an unpacked bundle, counted while extracting.
 #[derive(Clone, Copy)]
@@ -60,7 +62,7 @@ pub fn safe_name(n: &str) -> bool {
 /// An entry name the bundle may contain.
 pub fn allowed_entry(name: &str) -> bool {
     match name {
-        MANIFEST | INSTALLATION | RECORDING | EVENTS => true,
+        MANIFEST | INSTALLATION | RECORDING | EVENTS | BMS_HISTORY => true,
         _ => name.strip_prefix("logs/").is_some_and(safe_name),
     }
 }

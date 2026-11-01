@@ -167,6 +167,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
               <li>{t("inst.goes.recording", { count: view.recorded })}</li>
               <li>{t("inst.goes.boards", { count: view.counts.boards })}</li>
               <li>{t("inst.goes.snapshots", { count: view.counts.snapshots })}</li>
+              {view.counts.bms_records > 0 && <li>{t("inst.goes.bmsRecords", { count: view.counts.bms_records })}</li>}
               <li>{t("inst.goes.cells", { count: view.counts.places })}</li>
               {view.counts.layout && <li>{t("inst.goes.layout")}</li>}
               {view.counts.diagnosis && <li>{t("inst.goes.diagnosis")}</li>}

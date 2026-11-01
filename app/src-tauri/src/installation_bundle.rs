@@ -3,9 +3,10 @@
 //! `<file>.part` and renamed when complete. Import: unpack and check (`inspect`), the user picks where it goes, then
 //! `apply` in three resumable steps (store, recording, log files) bound to the export id.
 
-use crate::bundle::{self, Manifest, Writer, EVENTS, INSTALLATION, MANIFEST, RECORDING};
+use crate::bundle::{self, Manifest, Writer, BMS_HISTORY, EVENTS, INSTALLATION, MANIFEST, RECORDING};
 use crate::history::{self, History};
-use crate::maint_store::{ImportInto, ImportRow, InstallationData, LogPlan, Store};
+use crate::maint_store::{BmsRecordData, ImportInto, ImportRow, InstallationData, LogPlan, Store};
+use std::io::{BufRead, Write};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,8 @@ pub struct Exported {
     pub logs: usize,
     pub logs_missing: usize,
     pub recording: bool,
+    /// archived history records in `bms-history.jsonl`
+    pub bms_records: usize,
     pub bytes: u64,
 }
 
@@ -50,8 +53,8 @@ pub fn export(store: &Shared<Option<Store>>, history_db: Option<&Path>, logs_dir
         l.missing = !bundle::safe_name(&l.file) || !logs_dir.join(&l.file).is_file();
     }
     let part = with_suffix(out, ".part");
-    let (rec, ev) = (with_suffix(out, ".rec.part"), with_suffix(out, ".ev.part"));
-    for p in [&part, &rec, &ev] {
+    let (rec, ev, bms) = (with_suffix(out, ".rec.part"), with_suffix(out, ".ev.part"), with_suffix(out, ".bms.part"));
+    for p in [&part, &rec, &ev, &bms] {
         bundle::no_symlink(p)?;
     }
     let result = (|| {
@@ -61,6 +64,21 @@ pub fn export(store: &Shared<Option<Store>>, history_db: Option<&Path>, logs_dir
         for l in data.logs.iter().filter(|l| !l.missing) {
             w.add(&format!("logs/{}", l.file), std::fs::File::open(logs_dir.join(&l.file)).map_err(|e| e.to_string())?)?;
             logs += 1;
+        }
+        // the archived history, streamed line by line into its own entry (it grows with every read)
+        let bms_records = {
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&bms).map_err(|e| e.to_string())?);
+            let n = store_do(store, |s| {
+                s.export_bms_records(inst, |r| {
+                    serde_json::to_writer(&mut f, &r).map_err(|e| e.to_string())?;
+                    f.write_all(b"\n").map_err(|e| e.to_string())
+                })
+            })?;
+            f.flush().map_err(|e| e.to_string())?;
+            n
+        };
+        if bms_records > 0 {
+            w.add(BMS_HISTORY, std::fs::File::open(&bms).map_err(|e| e.to_string())?)?;
         }
         let mut recording = false;
         if let (true, Some(db)) = (with_recording, history_db) {
@@ -74,15 +92,16 @@ pub fn export(store: &Shared<Option<Store>>, history_db: Option<&Path>, logs_dir
         }
         let export_id = new_export_id(now);
         w.finish(&format!("openbms-monitor {}", env!("CARGO_PKG_VERSION")), &export_id, now, inst)?;
-        Ok::<_, String>((export_id, logs, recording))
+        Ok::<_, String>((export_id, logs, recording, bms_records))
     })();
     let _ = std::fs::remove_file(&rec);
     let _ = std::fs::remove_file(&ev);
+    let _ = std::fs::remove_file(&bms);
     match result {
-        Ok((export_id, logs, recording)) => {
+        Ok((export_id, logs, recording, bms_records)) => {
             std::fs::rename(&part, out).map_err(|e| e.to_string())?;
             let bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
-            Ok(Exported { path: out.display().to_string(), export_id, logs, logs_missing: data.logs.iter().filter(|l| l.missing).count(), recording, bytes })
+            Ok(Exported { path: out.display().to_string(), export_id, logs, logs_missing: data.logs.iter().filter(|l| l.missing).count(), recording, bms_records, bytes })
         }
         Err(err) => {
             let _ = std::fs::remove_file(&part);
@@ -110,6 +129,8 @@ pub struct Preview {
     pub places: usize,
     pub boards: usize,
     pub snapshots: usize,
+    /// archived history records in the bundle
+    pub bms_records: usize,
     pub logs: usize,
     pub recording_bytes: Option<u64>,
     /// the export's id exists here: its name, and whether the stored master serial differs
@@ -124,6 +145,26 @@ pub struct Preview {
 
 fn read_data(dir: &Path) -> Result<InstallationData, String> {
     serde_json::from_slice(&std::fs::read(dir.join(INSTALLATION)).map_err(|e| e.to_string())?).map_err(|e| format!("bundle-manifest: {e}"))
+}
+
+/// The rows of `bms-history.jsonl` (none without the entry), each checked (`BmsRecordData::checked`): one bad row
+/// refuses them all, before anything is written.
+fn read_bms(dir: &Path, m: &Manifest) -> Result<Vec<(BmsRecordData, Vec<u8>)>, String> {
+    if !m.files.contains_key(BMS_HISTORY) {
+        return Ok(vec![]);
+    }
+    let f = std::io::BufReader::new(std::fs::File::open(dir.join(BMS_HISTORY)).map_err(|e| e.to_string())?);
+    let mut rows = vec![];
+    for (n, line) in f.lines().enumerate() {
+        let line = line.map_err(|e| e.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let r: BmsRecordData = serde_json::from_str(&line).map_err(|e| format!("bundle-manifest: {BMS_HISTORY} line {}: {e}", n + 1))?;
+        let raw = r.checked().map_err(|e| format!("bundle-manifest: {BMS_HISTORY} line {}: {e}", n + 1))?;
+        rows.push((r, raw));
+    }
+    Ok(rows)
 }
 
 fn manifest_sha(dir: &Path) -> Result<String, String> {
@@ -166,6 +207,14 @@ pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Res
             return Err(err);
         }
     };
+    // checked here already, so a bad archive row is refused before the dialog offers the import
+    let bms = match read_bms(&dir, &m) {
+        Ok(b) => b,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(err);
+        }
+    };
     // imported before: nothing to keep unpacked
     if row.as_ref().is_some_and(|r| r.completed.is_some()) {
         let _ = std::fs::remove_dir_all(&dir);
@@ -181,7 +230,8 @@ pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Res
             .as_ref()
             .filter(|r| r.completed.is_none() && r.state.maint)
             .map(|r| Named { id: r.installation.clone(), name: s.installation(&r.installation).map(|i| i.name).unwrap_or_default() });
-        let places: std::collections::BTreeSet<u8> = data.boards.iter().map(|b| b.address).chain(data.settings.cell_types.keys().copied()).chain(data.snapshots.iter().map(|x| x.address)).collect();
+        let places: std::collections::BTreeSet<u8> = data.boards.iter().map(|b| b.address).chain(data.settings.cell_types.keys().copied()).chain(data.snapshots.iter().map(|x| x.address))
+            .chain(bms.iter().map(|(r, _)| r.address)).collect();
         Ok(Preview {
             export_id: m.export_id.clone(),
             installation: data.id.clone(),
@@ -192,6 +242,7 @@ pub fn inspect(store: &Shared<Option<Store>>, imports: &Path, zip: &Path) -> Res
             places: places.len(),
             boards: data.boards.len(),
             snapshots: data.snapshots.len(),
+            bms_records: bms.len(),
             logs: data.logs.iter().filter(|l| !l.missing).count(),
             recording_bytes: m.files.get(RECORDING).map(|f| f.size + m.files.get(EVENTS).map_or(0, |e| e.size)),
             same: same.map(|i| Named { id: i.id, name: i.name }),
@@ -243,6 +294,8 @@ pub struct Applied {
     pub recording_rows: u64,
     pub recording_events: u64,
     pub logs_copied: usize,
+    /// archived history records new here
+    pub bms_records_added: usize,
     /// imported before: nothing done now
     pub already: bool,
 }
@@ -256,7 +309,7 @@ pub fn apply(store: &Shared<Option<Store>>, history: &Shared<History>, imports: 
                 let _ = std::fs::remove_dir_all(dir);
             }
             let target_name = store_do(store, |s| Ok(s.installation(&r.installation).map(|i| i.name).unwrap_or_default()))?;
-            return Ok(Applied { target: r.installation, target_name, report: r.state.report, recording_rows: 0, recording_events: 0, logs_copied: 0, already: true });
+            return Ok(Applied { target: r.installation, target_name, report: r.state.report, recording_rows: 0, recording_events: 0, logs_copied: 0, bms_records_added: 0, already: true });
         }
     }
     let dir = bundle::unpack_dir(imports, export_id)?;
@@ -271,6 +324,8 @@ pub fn apply(store: &Shared<Option<Store>>, history: &Shared<History>, imports: 
     }
     let sha = manifest_sha(&dir)?;
     let data = read_data(&dir)?;
+    // every archive row checked before the first write (store step, import status)
+    let bms = read_bms(&dir, &m)?;
     let bundle_hash: BTreeMap<String, String> = m.files.iter().filter_map(|(n, f)| Some((n.strip_prefix("logs/")?.to_string(), f.sha256.clone()))).collect();
     let disk = |n: &str| -> Option<String> {
         let p = logs_dir.join(n);
@@ -288,6 +343,10 @@ pub fn apply(store: &Shared<Option<Store>>, history: &Shared<History>, imports: 
         }
         state.recording = true;
         store_do(store, |s| s.set_import_state(export_id, &state))?;
+    }
+    let mut bms_added = 0;
+    if !state.bms_history {
+        bms_added = store_do(store, |s| s.import_bms_step(export_id, &mut state, &bms))?;
     }
     let mut copied = 0;
     if !state.logs {
@@ -314,7 +373,7 @@ pub fn apply(store: &Shared<Option<Store>>, history: &Shared<History>, imports: 
     store_do(store, |s| s.complete_import(export_id, history::now_ms()))?;
     let _ = std::fs::remove_dir_all(&dir);
     let target_name = store_do(store, |s| Ok(s.installation(&state.target).map(|i| i.name).unwrap_or_default()))?;
-    Ok(Applied { target: state.target, target_name, report: state.report, recording_rows: rows, recording_events: events, logs_copied: copied, already: false })
+    Ok(Applied { target: state.target, target_name, report: state.report, recording_rows: rows, recording_events: events, logs_copied: copied, bms_records_added: bms_added, already: false })
 }
 
 /// Unfinished imports with their target's name (the installations view offers „Fortsetzen“).
@@ -383,6 +442,97 @@ mod tests {
         let p2 = inspect(&b.store, &b.imports, &zip).unwrap();
         assert!(p2.completed.is_some());
         assert!(apply(&b.store, &b.history, &b.imports, &b.logs, &p2.export_id, &ImportInto::Same).unwrap().already);
+    }
+
+    /// Synthetic record bytes of a history record (format 01, year 2026, `minute` set, the rest zero).
+    fn rec(minute: u8) -> Vec<u8> {
+        let mut r = vec![0x01, 0x07, 0xEA, 3, 9, 7, minute, 0];
+        r.resize(openbms_proto::memory::RECORD_LEN, 0);
+        r
+    }
+
+    #[test]
+    fn the_archive_is_kept_once_per_board_and_follows_merge_and_delete() {
+        let a = env("ar");
+        let id = seeded(&a);
+        let (r1, r2) = (rec(1), rec(2));
+        store_do(&a.store, |s| {
+            assert_eq!(s.add_bms_records(&id, 3, Some("SYN-3"), &[&r1, &r2], 100)?, 2);
+            // the same records read again (also after the last flag changed): nothing new
+            assert_eq!(s.add_bms_records(&id, 3, Some("SYN-3"), &[&r1, &r2], 200)?, 0);
+            // another board at the place, and a pack without a serial: kept apart, and once each
+            assert_eq!(s.add_bms_records(&id, 3, Some("SYN-4"), &[&r1], 300)?, 1);
+            assert_eq!(s.add_bms_records(&id, 3, None, &[&r1], 300)?, 1);
+            assert_eq!(s.add_bms_records(&id, 3, None, &[&r1], 400)?, 0);
+            let packs = s.bms_archive_packs(&id)?;
+            assert_eq!((packs.len(), packs[0].address, packs[0].count, packs[0].newest_read_at), (1, 3, 4, 300));
+            assert_eq!(packs[0].serials.len(), 3);
+            assert_eq!(s.bms_archive(&id, 3)?.first().map(|r| r.2), Some(100), "read_at of the first read stays");
+            assert_eq!(s.overview(&id)?.counts.bms_records, 4);
+            // merged: a record both kept stays one row
+            let other = s.create_installation("Other", None, vec![])?.id;
+            s.add_bms_records(&other, 3, Some("SYN-3"), &[&r1, &rec(5)], 500)?;
+            s.merge(&other, &id, serde_json::Value::Null, 600)?;
+            assert_eq!(s.bms_archive(&id, 3)?.len(), 5);
+            s.delete_installation(&id)?;
+            assert!(s.bms_archive(&id, 3)?.is_empty());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_archive_travels_in_its_own_entry() {
+        let a = env("ab");
+        let id = seeded(&a);
+        store_do(&a.store, |s| s.add_bms_records(&id, 2, Some("SYN-2"), &[&rec(1), &rec(2)], 100).map(|_| ())).unwrap();
+        let zip = a.dir.join("out.zip");
+        let ex = export(&a.store, None, &a.logs, &id, &zip, false, 1000).unwrap();
+        assert_eq!(ex.bms_records, 2);
+        let b = env("bb");
+        let p = inspect(&b.store, &b.imports, &zip).unwrap();
+        assert_eq!(p.bms_records, 2);
+        let r = apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
+        assert_eq!((r.bms_records_added, r.report["bms_records_added"].as_u64()), (2, Some(2)));
+        assert_eq!(store_do(&b.store, |s| s.bms_archive(&id, 2)).unwrap().len(), 2);
+        // back into the first computer: nothing new
+        let zip2 = b.dir.join("back.zip");
+        export(&b.store, None, &b.logs, &id, &zip2, false, 2000).unwrap();
+        let p = inspect(&a.store, &a.imports, &zip2).unwrap();
+        assert_eq!(apply(&a.store, &a.history, &a.imports, &a.logs, &p.export_id, &ImportInto::Same).unwrap().bms_records_added, 0);
+        // without archived history there is no entry
+        let c = env("cb");
+        let idc = seeded(&c);
+        let zip3 = c.dir.join("none.zip");
+        assert_eq!(export(&c.store, None, &c.logs, &idc, &zip3, false, 3000).unwrap().bms_records, 0);
+        let names: Vec<String> = { let mut z = zip::ZipArchive::new(std::fs::File::open(&zip3).unwrap()).unwrap(); (0..z.len()).map(|i| z.by_index(i).unwrap().name().to_string()).collect() };
+        assert!(!names.contains(&BMS_HISTORY.to_string()));
+    }
+
+    #[test]
+    fn a_bad_archive_row_refuses_the_import_before_anything_is_written() {
+        let a = env("ba");
+        let id = seeded(&a);
+        let data = store_do(&a.store, |s| s.export_data(&id)).unwrap();
+        let mut bad = rec(1);
+        bad[0] = 0x02;
+        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let lines = format!("{}\n{}\n",
+            serde_json::to_string(&BmsRecordData { address: 1, bms_serial: None, record: hexs(&rec(1)), read_at: 1 }).unwrap(),
+            serde_json::to_string(&BmsRecordData { address: 1, bms_serial: None, record: hexs(&bad), read_at: 1 }).unwrap());
+        let zip = a.dir.join("bad.zip");
+        let mut w = Writer::create(&zip).unwrap();
+        w.add(INSTALLATION, &serde_json::to_vec_pretty(&data).unwrap()[..]).unwrap();
+        w.add(BMS_HISTORY, lines.as_bytes()).unwrap();
+        w.finish("test", "exp-bad-0001", 1, &id).unwrap();
+        let b = env("bab");
+        assert!(inspect(&b.store, &b.imports, &zip).unwrap_err().starts_with("bundle-manifest"));
+        assert!(store_do(&b.store, |s| s.installations()).unwrap().is_empty());
+        // an address beyond the bus is refused as well
+        assert!(BmsRecordData { address: 22, bms_serial: None, record: hexs(&rec(1)), read_at: 1 }.checked().is_err());
+        // a host time no date can show is refused too (the BMS clock inside the record may be anything)
+        assert!(BmsRecordData { address: 1, bms_serial: None, record: hexs(&rec(1)), read_at: i64::MAX }.checked().is_err());
+        assert!(BmsRecordData { address: 1, bms_serial: None, record: hexs(&rec(1)), read_at: -1 }.checked().is_err());
     }
 
     #[test]

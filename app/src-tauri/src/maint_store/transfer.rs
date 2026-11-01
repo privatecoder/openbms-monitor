@@ -45,6 +45,33 @@ pub struct SnapshotData {
     pub patch: Option<String>,
 }
 
+/// One archived history record of `bms-history.jsonl`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BmsRecordData {
+    pub address: u8,
+    pub bms_serial: Option<String>,
+    /// the record bytes (`memory::RECORD_LEN`) as hex
+    pub record: String,
+    pub read_at: i64,
+}
+
+impl BmsRecordData {
+    /// The record bytes when the row is one this app can read: a pack address 0–21 and a record that parses (its BMS
+    /// clock fields may be implausible; they are kept as they are).
+    pub fn checked(&self) -> Result<Vec<u8>, String> {
+        let raw = unhex(&self.record).ok_or("bms-history: record is not hex")?;
+        if self.address > 21 {
+            return Err("bms-history: address out of range".into());
+        }
+        // a host time in ms a date can show (0 … year 275 760, the range of a JavaScript Date)
+        if !(0..=8_640_000_000_000_000).contains(&self.read_at) {
+            return Err("bms-history: read_at out of range".into());
+        }
+        openbms_proto::memory::record_from_raw(&raw).map_err(|err| format!("bms-history: {err}"))?;
+        Ok(raw)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LogData {
     /// a plain file name (`bundle::safe_name`); the file is `logs/<file>` in the bundle unless `missing`
@@ -104,6 +131,9 @@ pub struct ImportState {
     pub maint: bool,
     pub recording: bool,
     pub logs: bool,
+    /// the archived history (`bms-history.jsonl`) is taken; false also in states of earlier versions
+    #[serde(default)]
+    pub bms_history: bool,
     /// bundle log name → name in `firmware-logs` (only those to copy)
     pub log_names: BTreeMap<String, String>,
     /// what was added and what was not taken (for the result line)
@@ -199,6 +229,52 @@ impl Store {
             snapshots,
             logs,
         })
+    }
+
+    /// The archived history of `inst` row by row, in the order kept, for its bundle entry.
+    pub fn export_bms_records(&self, inst: &str, mut f: impl FnMut(BmsRecordData) -> Result<(), String>) -> Result<usize, String> {
+        let mut stmt = self.db.prepare("SELECT address, bms_serial, record, read_at FROM bms_records WHERE installation = ?1 ORDER BY id").map_err(e)?;
+        let mut rows = stmt.query([inst]).map_err(e)?;
+        let mut n = 0;
+        while let Some(r) = rows.next().map_err(e)? {
+            f(BmsRecordData { address: r.get(0).map_err(e)?, bms_serial: r.get(1).map_err(e)?, record: hex(&r.get::<_, Vec<u8>>(2).map_err(e)?), read_at: r.get(3).map_err(e)? })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// The archive step of an import: the checked rows into `state.target` and the step marked done with its count in
+    /// `state`, both in one transaction (a crash leaves neither or both). Deduplicated like a read (same place, serial
+    /// and record): repeating it adds nothing. Returns how many were new.
+    pub fn import_bms_step(&self, export_id: &str, state: &mut ImportState, rows: &[(BmsRecordData, Vec<u8>)]) -> Result<usize, String> {
+        let mut next = state.clone();
+        let n = self.atomic(|s| {
+            let n = s.insert_bms_rows(&next.target, rows)?;
+            next.bms_history = true;
+            if let Some(o) = next.report.as_object_mut() {
+                o.insert("bms_records_added".into(), n.into());
+            }
+            s.set_import_state(export_id, &next)?;
+            Ok(n)
+        })?;
+        *state = next;
+        Ok(n)
+    }
+
+    fn insert_bms_rows(&self, target: &str, rows: &[(BmsRecordData, Vec<u8>)]) -> Result<usize, String> {
+        let s = self;
+        let mut n = 0;
+        for (x, raw) in rows {
+            n += s
+                .db
+                .execute(
+                    "INSERT INTO bms_records(installation, address, bms_serial, record, read_at) SELECT ?1, ?2, ?3, ?4, ?5
+                     WHERE NOT EXISTS(SELECT 1 FROM bms_records WHERE installation = ?1 AND address = ?2 AND bms_serial IS ?3 AND record = ?4)",
+                    params![target, x.address, x.bms_serial, raw, x.read_at],
+                )
+                .map_err(e)?;
+        }
+        Ok(n)
     }
 
     pub fn import_row(&self, export_id: &str) -> Result<Option<ImportRow>, String> {
@@ -452,7 +528,7 @@ impl Store {
                 "logs_added": log_names.len(), "logs_skipped": logs_skipped, "logs_missing": data.logs.iter().filter(|l| l.missing).count(),
                 "not_taken": kept, "master_serial_not_taken": master_not_taken,
             });
-            let state = ImportState { manifest_sha256: manifest_sha256.into(), target: target.clone(), maint: true, recording: false, logs: false, log_names, report: report.clone() };
+            let state = ImportState { manifest_sha256: manifest_sha256.into(), target: target.clone(), maint: true, recording: false, logs: false, bms_history: false, log_names, report: report.clone() };
             s.db.execute(
                 "INSERT OR REPLACE INTO import_status(export_id, installation, started, completed, state) VALUES (?1, ?2, ?3, NULL, ?4)",
                 params![export_id, target, now, serde_json::to_string(&state).map_err(|err| err.to_string())?],

@@ -34,6 +34,7 @@ export function importResult(r: ImportApplied, name: string, t: (k: string, o?: 
   const parts = [
     t("inst.imp.res.boards", { count: r.report.boards_added ?? 0 }),
     t("inst.imp.res.snapshots", { count: r.report.snapshots_added ?? 0 }),
+    ...(r.report.bms_records_added ? [t("inst.imp.res.bmsRecords", { count: r.report.bms_records_added })] : []),
     t("inst.imp.res.logs", { count: r.logs_copied }),
   ];
   if (r.recording_rows || r.recording_events) parts.push(t("inst.imp.res.recording", { rows: r.recording_rows, events: r.recording_events }));
@@ -99,6 +100,7 @@ export function ImportPanel({ onDone }: { onDone: () => Promise<void> }) {
           <p className="font-display text-lg font-semibold">{t("inst.imp.title", { name: preview.name })}</p>
           <p className="text-muted">
             {t("inst.imp.holds", { at: date(preview.created), places: preview.places, boards: preview.boards, snapshots: preview.snapshots, logs: preview.logs })}
+            {preview.bms_records > 0 && ` ${t("inst.imp.holdsBms", { count: preview.bms_records })}`}
             {" "}{preview.recording_bytes != null ? t("inst.imp.withRecording", { mb: mb(preview.recording_bytes) }) : t("inst.imp.noRecording")}
           </p>
           {preview.completed != null ? (
@@ -149,7 +151,7 @@ export function ExportRow({ inst, recorded }: { inst: Installation; recorded: nu
     try {
       const r = await api.installationExport(inst.id, path, recording);
       const file = r.path.split(/[\\/]/).pop() ?? r.path;
-      setMsg({ text: `${t("inst.exp.done", { file, mb: mb(r.bytes), logs: r.logs })} ${t(r.recording ? "inst.exp.withRecording" : "inst.exp.withoutRecording")}` + (r.logs_missing ? ` ${t("inst.exp.missing", { count: r.logs_missing })}` : ""), error: false });
+      setMsg({ text: `${t("inst.exp.done", { file, mb: mb(r.bytes), logs: r.logs })} ${t(r.recording ? "inst.exp.withRecording" : "inst.exp.withoutRecording")}` + (r.bms_records ? ` ${t("inst.exp.bmsRecords", { count: r.bms_records })}` : "") + (r.logs_missing ? ` ${t("inst.exp.missing", { count: r.logs_missing })}` : ""), error: false });
     } catch (e) { const k = errorKey(e); setMsg({ text: t(k.key, k.params), error: true }); }
     finally { setBusy(false); }
   };

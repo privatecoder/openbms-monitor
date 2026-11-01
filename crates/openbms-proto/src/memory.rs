@@ -103,6 +103,25 @@ pub struct HistoryRecord {
     /// %.
     pub soh: f64,
     pub port_voltage: f64,
+    /// The record bytes as the pack keeps them (`RECORD_LEN`): the 0x4B answer without INFO[1], the current last flag.
+    /// The same EEPROM record read again gives the same bytes; the key of the app's archive.
+    #[serde(skip)]
+    pub raw: Vec<u8>,
+}
+
+/// Length of `HistoryRecord::raw`: the 97-byte answer without its last flag.
+pub const RECORD_LEN: usize = HISTORY_LEN - 1;
+
+/// A record from its stored bytes (`HistoryRecord::raw`), parsed like an answer that is not the last one.
+pub fn record_from_raw(raw: &[u8]) -> Result<HistoryRecord> {
+    if raw.len() != RECORD_LEN {
+        return Err(Error::Layout("stored history record has the wrong length"));
+    }
+    let mut info = Vec::with_capacity(HISTORY_LEN);
+    info.push(raw[0]);
+    info.push(0);
+    info.extend_from_slice(&raw[1..]);
+    parse_history(&info)?.map(|(r, _)| r).ok_or(Error::Layout("stored history record is empty"))
 }
 
 /// Answer of 0x4B: `None` = the pack has no records; otherwise the record and whether it is the last one.
@@ -154,6 +173,7 @@ pub fn parse_history(info: &[u8]) -> Result<Option<(HistoryRecord, bool)>> {
         cycles,
         soh,
         port_voltage,
+        raw: [&info[..1], &info[2..HISTORY_LEN]].concat(),
     };
     Ok(Some((record, last)))
 }
@@ -248,6 +268,16 @@ mod tests {
         assert_eq!((r.current, r.pack_voltage, r.port_voltage), (-12.34, 52.81, 52.9));
         assert_eq!((r.remaining_capacity_ah, r.full_capacity_ah, r.rated_capacity_ah), (140.0, 280.0, 280.0));
         assert_eq!((r.soc, r.cycles, r.soh), (50.0, 123, 100.0));
+    }
+
+    #[test]
+    fn the_record_bytes_leave_out_the_last_flag() {
+        let (a, _) = parse_history(&history_info(true)).unwrap().unwrap();
+        let (b, _) = parse_history(&history_info(false)).unwrap().unwrap();
+        assert_eq!(a.raw.len(), RECORD_LEN);
+        assert_eq!(a.raw, b.raw, "the same record, read as last and later as not last");
+        assert_eq!(record_from_raw(&a.raw).unwrap(), b);
+        assert!(record_from_raw(&a.raw[1..]).is_err());
     }
 
     #[test]
