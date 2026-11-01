@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BmsHistoryRead, BmsHistoryRecord } from "./api";
-import { clockDiff, csvName, currentRun, lastRead, noteProgress, startHistoryRead, durationText, fmtBmsTime, fromBmsTime, historyCsv, readMark, sameInstallation, setHistoryReading, summary, toBmsTime, utcOffset, zoneLabel } from "./bmsMemory";
+import { clockDiff, csvName, severalBoards, shownSource, currentRun, lastRead, noteProgress, startHistoryRead, durationText, fmtBmsTime, fromBmsTime, historyCsv, readMark, sameInstallation, setHistoryReading, summary, toBmsTime, utcOffset, zoneLabel } from "./bmsMemory";
 
 const T = { year: 2026, month: 3, day: 9, hour: 7, minute: 5, second: 30 };
 
@@ -65,6 +65,36 @@ describe("history records", () => {
     expect(row[head.indexOf("alarms")]).toBe("cell_high_voltage_warning cell_overvoltage_protection");
     expect(row[head.indexOf("current_a")]).toBe("-12.34");
     expect(csv[2].split(",")[1]).toBe("2026-03-09 08:05:30");
+  });
+
+  it("archived rows add the board and the first read to the CSV", () => {
+    const at = Date.UTC(2026, 2, 9, 8);
+    const csv = historyCsv(3, [{ ...rec(), bms_serial: "SYN-1", read_at: at }]).trim().split("\n");
+    const head = csv[0].split(",");
+    expect(head.slice(-2)).toEqual(["bms_serial", "first_read"]);
+    expect(csv[1].split(",").slice(-2)).toEqual(["SYN-1", "2026-03-09T08:00:00.000Z"]);
+  });
+
+  it("a large archive and an unrepresentable first-read time still export", () => {
+    const many = Array.from({ length: 150_000 }, (_, i) => ({ ...rec(), bms_serial: "SYN-1", read_at: i }));
+    const csv = historyCsv(1, many);
+    expect(csv.split("\n").length).toBe(150_002);
+    const odd = historyCsv(1, [{ ...rec(), bms_serial: null, read_at: Number.MAX_SAFE_INTEGER }]).trim().split("\n");
+    expect(odd[1].split(",").at(-1)).toBe(String(Number.MAX_SAFE_INTEGER));
+  });
+
+  it("an unarchived fresh read is shown instead of the archive, never hidden behind it", () => {
+    const fresh = (archived: number | null) => ({ address: 1, records: [rec()], end: "last" as const, error: null, archived });
+    const archive = [{ ...rec(), bms_serial: "SYN-OLD", read_at: 1 }];
+    expect(shownSource(fresh(null), archive)).toBe("fresh");
+    expect(shownSource(fresh(1), archive)).toBe("archive");
+    expect(shownSource(fresh(0), archive)).toBe("archive");
+    expect(shownSource(null, archive)).toBe("archive");
+    // the archive could not be loaded: the fresh read stays
+    expect(shownSource(fresh(2), null)).toBe("fresh");
+    expect(shownSource(null, [])).toBeNull();
+    expect(severalBoards([...archive, { ...rec(), bms_serial: "SYN-NEW", read_at: 2 }])).toBe(true);
+    expect(severalBoards(archive)).toBe(false);
   });
 
   it("file name names the pack and the time", () => {

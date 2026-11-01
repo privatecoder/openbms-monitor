@@ -11,7 +11,7 @@ use crate::bank::{check_target, Written};
 use crate::history::{now_ms, SnapshotKind};
 use crate::control::PackAction;
 use crate::maint_store::Installation;
-use crate::{for_link, for_link_checked, link_now, with_conn, with_link, AppState, Link, PortSlot};
+use crate::{for_link, for_link_checked, link_now, with_conn, with_link, AppState, Link};
 use openbms_proto::access::{self, Action, Channel};
 use openbms_proto::serial::Which;
 use openbms_proto::{BmsTime, Calibration, DeviceInfo, HistoryRecord, Parameters, Refusal, SerialValue, Status, Telemetry, Values};
@@ -133,6 +133,10 @@ pub struct HistoryRead {
     /// RS485-1/2 the original firmware promises nothing), "silent" (no answer: the index may have moved on; never
     /// continued automatically) or "other"
     pub error_kind: Option<&'static str>,
+    /// how many of the records were new in the installation's archive; None: not archived (`archive_note` says why)
+    pub archived: Option<usize>,
+    /// "view-only", "unchecked" (the board was not proven for this read, or changed during it) or "error"
+    pub archive_note: Option<&'static str>,
 }
 
 /// The kind of a history read error (`HistoryRead::error_kind`), from the transport's text.
@@ -182,7 +186,7 @@ pub fn read_all(
         }
     };
     let error_kind = error.as_deref().map(error_kind);
-    HistoryRead { address, records, end, error, error_kind }
+    HistoryRead { address, records, end, error, error_kind, archived: None, archive_note: None }
 }
 
 /// The clock (0x4D); over the CAN socket only of a pack with the power and clock service (`power::clock`).
@@ -789,21 +793,114 @@ pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8
             return Err(HISTORY_NO_CAP.into());
         }
     }
+    // the board the records belong to, proven now under the pack's reservation (the parameter read's rule); without an
+    // installation nothing is archived anyway
+    let before = link.installation.is_some().then(|| archive_identity(&state, &link, bus, address));
     state.memory_cancel.store(false, Ordering::SeqCst);
     let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
-    tauri::async_runtime::spawn_blocking(move || {
-        let (_busy, _pack): (PortSlot, _) = (busy, pack);
-        read_all(
+    let read_link = link.clone();
+    // the reservations come back with the result: they stay held until the records are archived
+    let (mut read, _busy, _pack) = tauri::async_runtime::spawn_blocking(move || {
+        let r = read_all(
             address,
             &cancel,
-            |next| with_link(&conn, &flashing, &links, &link, |c| c.history_record(address, next)),
+            |next| with_link(&conn, &flashing, &links, &read_link, |c| c.history_record(address, next)),
             |n| {
                 let _ = app.emit("bms-history-progress", Progress { address, n });
             },
-        )
+        );
+        (r, busy, pack)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    if read.records.is_empty() {
+        return Ok(read);
+    }
+    let Some(before) = before else {
+        read.archive_note = Some("view-only");
+        return Ok(read);
+    };
+    // the same board after the read as before it (a swap during a long read is not archived under the old one)
+    let after = before.as_ref().and_then(|_| archive_identity(&state, &link, bus, address));
+    let Some(serial) = archive_serial(before, after) else {
+        read.archive_note = Some("unchecked");
+        return Ok(read);
+    };
+    let raws: Vec<&[u8]> = read.records.iter().map(|r| r.raw.as_slice()).collect();
+    match for_link_checked(&state, &link, "history archive", |s, inst| s.add_bms_records(inst, address, serial.as_deref(), &raws, now_ms())) {
+        Some(n) => read.archived = Some(n),
+        None => read.archive_note = Some(if link_now(&state).gen != link.gen { "unchecked" } else { "error" }),
+    }
+    Ok(read)
+}
+
+/// The serial a read is archived under: the identity proven before and after it, only when both agree (None: not
+/// archived). An inner None is a pack without a serial to compare (RS485-1/2).
+fn archive_serial(before: Option<Option<String>>, after: Option<Option<String>>) -> Option<Option<String>> {
+    match (before, after) {
+        (Some(b), Some(a)) if b == a => Some(b),
+        _ => None,
+    }
+}
+
+/// The board a history read of `address` may be archived for: Some(serial) for a board proven now, Some(None) for a
+/// pack on RS485-1/2 without a serial to compare (the parameter read keeps its snapshot then too), None otherwise
+/// (unconfirmed, another board, no answer). RS485-1/2: one 0xA4 (`bank::check`); CAN socket: the binary String 2 of
+/// a strictly known board (`uart1_id::known_serial`).
+fn archive_identity(state: &AppState, link: &Link, bus: Bus, address: u8) -> Option<Option<String>> {
+    match bus {
+        Bus::CanSocketBus => crate::uart1_id::known_serial(state, link, bus, address).map(Some),
+        Bus::PackBus => {
+            let checked = crate::bank::check(state, link, address);
+            crate::bank::snapshot_allowed(&checked).then(|| checked.ok().and_then(|(_, read)| crate::maint_store::real(&read).map(String::from)))
+        }
+    }
+}
+
+/// One archived record: the record, the String 2 it was kept for and when it was first read (host time, ms).
+#[derive(Serialize, Clone, Debug)]
+pub struct ArchivedRecord {
+    #[serde(flatten)]
+    pub record: HistoryRecord,
+    pub bms_serial: Option<String>,
+    pub read_at: i64,
+}
+
+/// The places of `installation` with archived history (no connection needed).
+#[tauri::command]
+pub async fn bms_archive_packs(state: State<'_, AppState>, installation: String) -> Result<Vec<crate::maint_store::ArchivePack>, String> {
+    crate::maint::with_store(&state, |s| s.bms_archive_packs(&installation)).map_err(|e| format!("{e:?}"))
+}
+
+/// The archived history of one place of `installation`, sorted by the BMS clock in the records (ties: as kept); a
+/// stored row that does not parse is left out (`skipped`), never the whole place.
+#[tauri::command]
+pub async fn bms_archive(state: State<'_, AppState>, installation: String, address: u8) -> Result<Archive, String> {
+    let rows = crate::maint::with_store(&state, |s| s.bms_archive(&installation, address)).map_err(|e| format!("{e:?}"))?;
+    Ok(archive_of(rows))
+}
+
+#[derive(Serialize, Debug)]
+pub struct Archive {
+    pub records: Vec<ArchivedRecord>,
+    pub skipped: usize,
+}
+
+fn archive_of(rows: Vec<crate::maint_store::ArchivedRow>) -> Archive {
+    let mut skipped = 0;
+    let mut records: Vec<ArchivedRecord> = rows
+        .into_iter()
+        .filter_map(|(bms_serial, raw, read_at)| match openbms_proto::memory::record_from_raw(&raw) {
+            Ok(record) => Some(ArchivedRecord { record, bms_serial, read_at }),
+            Err(_) => {
+                skipped += 1;
+                None
+            }
+        })
+        .collect();
+    // stable: equal clock fields keep the order kept
+    records.sort_by_key(|r| { let t = r.record.time; (t.year, t.month, t.day, t.hour, t.minute, t.second) });
+    Archive { records, skipped }
 }
 
 #[tauri::command]
@@ -831,6 +928,31 @@ mod tests {
         info.extend(2026u16.to_be_bytes());
         info.resize(memory::HISTORY_LEN, 0);
         memory::parse_history(&info).unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_read_is_archived_only_for_the_same_proven_board_before_and_after() {
+        let s = |v: &str| Some(Some(v.to_string()));
+        assert_eq!(archive_serial(s("SYN-1"), s("SYN-1")), s("SYN-1"));
+        assert_eq!(archive_serial(Some(None), Some(None)), Some(None), "no serial to compare, both times");
+        // swapped during the read, not proven before or after, unconfirmed: nothing kept
+        assert_eq!(archive_serial(s("SYN-1"), s("SYN-2")), None);
+        assert_eq!(archive_serial(None, s("SYN-1")), None);
+        assert_eq!(archive_serial(s("SYN-1"), None), None);
+        assert_eq!(archive_serial(Some(None), s("SYN-1")), None);
+    }
+
+    #[test]
+    fn the_archive_is_sorted_by_the_bms_clock_and_skips_unreadable_rows() {
+        let rec = |month: u8, minute: u8| {
+            let mut r = vec![0x01, 0x07, 0xEA, month, 9, 7, minute, 0];
+            r.resize(openbms_proto::memory::RECORD_LEN, 0);
+            r
+        };
+        let a = archive_of(vec![(None, rec(4, 0), 1), (Some("SYN-1".into()), rec(3, 5), 2), (None, vec![1, 2, 3], 3), (None, rec(3, 5), 4)]);
+        assert_eq!(a.skipped, 1);
+        let order: Vec<(u8, i64)> = a.records.iter().map(|r| (r.record.time.month, r.read_at)).collect();
+        assert_eq!(order, vec![(3, 2), (3, 4), (4, 1)], "ties keep the order kept");
     }
 
     #[test]

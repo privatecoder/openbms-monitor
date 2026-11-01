@@ -1,4 +1,4 @@
-import type { BmsHistoryRead, BmsHistoryRecord, BmsTime } from "./api";
+import type { ArchivedRecord, BmsHistoryRead, BmsHistoryRecord, BmsTime } from "./api";
 
 const p2 = (n: number) => String(n).padStart(2, "0");
 
@@ -65,23 +65,44 @@ export function summary(r: BmsHistoryRecord) {
 
 const csvCell = (v: string | number) => (typeof v === "number" ? String(v) : /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
 
-/** All fields of the records, oldest first, as CSV (comma, decimal point, alarms as keys). */
-export function historyCsv(address: number, records: BmsHistoryRecord[]): string {
-  const cells = Math.max(16, ...records.map((r) => r.cell_voltages.length));
-  const temps = Math.max(4, ...records.map((r) => r.cell_temperatures.length));
+/** A host time in ms as ISO text; one no Date can hold stays the raw number (never stops the export). */
+const isoOrRaw = (ms: number) => { const d = new Date(ms); return Number.isNaN(d.getTime()) ? String(ms) : d.toISOString(); };
+
+/** All fields of the records, oldest first, as CSV (comma, decimal point, alarms as keys); archived records add the
+ *  board (String 2) and when they were first read (ISO time of this PC). */
+export function historyCsv(address: number, records: (BmsHistoryRecord | ArchivedRecord)[]): string {
+  const archived = records.some((r) => "read_at" in r);
+  // a loop, not a spread: an archive can hold far more records than a call takes arguments
+  const cells = records.reduce((m, r) => Math.max(m, r.cell_voltages.length), 16);
+  const temps = records.reduce((m, r) => Math.max(m, r.cell_temperatures.length), 4);
   const head = ["pack", "bms_time", "system_status", ...Array.from({ length: 8 }, (_, i) => `event${i + 1}`), "alarms",
     ...Array.from({ length: cells }, (_, i) => `cell${i + 1}_v`), ...Array.from({ length: temps }, (_, i) => `cell_temp${i + 1}_c`),
     "ambient_temp_c", "power_temp_c", "current_a", "pack_voltage_v", "remaining_capacity_ah", "full_capacity_ah", "soc_pct",
-    "rated_capacity_ah", "cycles", "soh_pct", "port_voltage_v"];
+    "rated_capacity_ah", "cycles", "soh_pct", "port_voltage_v", ...(archived ? ["bms_serial", "first_read"] : [])];
   const iso = (t: BmsTime) => fmtBmsTime(t, "en");
   const rows = records.map((r) => [
     address, iso(r.time), r.system_status, ...r.events, r.alarms.map((a) => a.key).join(" "),
     ...Array.from({ length: cells }, (_, i) => r.cell_voltages[i] ?? ""), ...Array.from({ length: temps }, (_, i) => r.cell_temperatures[i] ?? ""),
     r.ambient_temperature, r.power_temperature, r.current, r.pack_voltage, r.remaining_capacity_ah, r.full_capacity_ah, r.soc,
     r.rated_capacity_ah, r.cycles, r.soh, r.port_voltage,
+    ...(archived ? ("read_at" in r ? [r.bms_serial ?? "", isoOrRaw(r.read_at)] : ["", ""]) : []),
   ]);
   return [head, ...rows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n";
 }
+
+/** The table shows at most this many rows (newest first); the CSV always holds all. */
+export const MAX_ROWS = 1000;
+
+/** What the table shows: the archive of the installation, except a fresh read that was not archived (view only, a
+ *  board not proven for it, a store error): that one stays visible and exportable, never hidden behind older rows. */
+export function shownSource(fresh: BmsHistoryRead | null, archive: ArchivedRecord[] | null): "fresh" | "archive" | null {
+  if (fresh && fresh.records.length > 0 && fresh.archived == null) return "fresh";
+  if (archive && archive.length > 0) return "archive";
+  return fresh && fresh.records.length > 0 ? "fresh" : null;
+}
+
+/** Whether the rows come from more than one board (then a column names it). */
+export const severalBoards = (rows: ArchivedRecord[]) => new Set(rows.map((r) => r.bms_serial ?? "")).size > 1;
 
 export const csvName = (address: number, d = new Date()) =>
   `bms-history-pack${p2(address)}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}.csv`;

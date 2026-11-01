@@ -6,7 +6,7 @@ import type { ImportPreview } from "./api";
 const t = i18n.getFixedT("de");
 const base: ImportPreview = {
   export_id: "exp-1", installation: "inst-1", name: "Bank", created: 0, master_serial: "SYN-M", archived: false,
-  places: 2, boards: 2, snapshots: 3, logs: 1, recording_bytes: null,
+  places: 2, boards: 2, snapshots: 3, bms_records: 0, logs: 1, recording_bytes: null,
   same: null, master_differs: false, master_matches: [], completed: null, open_into: null,
 };
 

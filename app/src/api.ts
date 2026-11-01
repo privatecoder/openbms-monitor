@@ -11,18 +11,18 @@ export type Bus = "pack" | "can";
 /** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
 export type OtherBus = { answered: number | null; noise: boolean; intra: boolean; busy?: boolean; pack_at_9600: boolean };
 
-export type Exported = { path: string; export_id: string; logs: number; logs_missing: number; recording: boolean; bytes: number };
+export type Exported = { path: string; export_id: string; logs: number; logs_missing: number; recording: boolean; bms_records: number; bytes: number };
 export type Named = { id: string; name: string };
 /** where an import goes (see the import dialog) */
 export type ImportInto = { kind: "same" } | { kind: "merge-anyway" } | { kind: "new"; copy: boolean } | { kind: "merge"; id: string };
 export type ImportPreview = {
   export_id: string; installation: string; name: string; created: number; master_serial: string | null; archived: boolean;
-  places: number; boards: number; snapshots: number; logs: number; recording_bytes: number | null;
+  places: number; boards: number; snapshots: number; bms_records: number; logs: number; recording_bytes: number | null;
   same: Named | null; master_differs: boolean; master_matches: Named[]; completed: number | null; open_into: Named | null;
 };
 export type ImportApplied = {
-  target: string; target_name: string; recording_rows: number; recording_events: number; logs_copied: number; already: boolean;
-  report: { boards_added?: number; snapshots_added?: number; logs_added?: number; logs_missing?: number;
+  target: string; target_name: string; recording_rows: number; recording_events: number; logs_copied: number; bms_records_added?: number; already: boolean;
+  report: { boards_added?: number; snapshots_added?: number; bms_records_added?: number; logs_added?: number; logs_missing?: number;
     not_taken?: { cell_types?: Record<string, string>; groups?: string | null; pairs?: string | null; diagnosis?: string | null; notifications?: string | null; devices?: string | null }; master_serial_not_taken?: string | null };
 };
 export type OpenImport = { export_id: string; installation: string; name: string; started: number };
@@ -131,8 +131,14 @@ export interface BmsHistoryRecord {
 /** A history read, oldest record first. end: last = the pack flagged its last record; empty = no (more) records;
  *  cap = 520 records without a last flag; error = stopped by `error` after the records read so far. */
 export interface BmsHistoryRead { address: number; records: BmsHistoryRecord[]; end: "last" | "empty" | "cancelled" | "cap" | "error"; error: string | null;
-  /** with an error: "eeprom" (the pack restored its read index; reading again from the oldest is safe), "silent" (the index may have moved on), "other" */
-  error_kind?: "eeprom" | "silent" | "other" | null }
+  /** with an error: "eeprom" (a memory error; via the CAN socket the pack restored its read index), "silent" (the index may have moved on), "other" */
+  error_kind?: "eeprom" | "silent" | "other" | null;
+  /** new records in the installation's archive; null: not archived, `archive_note` says why */
+  archived?: number | null; archive_note?: "view-only" | "unchecked" | "error" | null }
+/** An archived record: the String 2 it was kept for and when it was first read (host time, ms). */
+export type ArchivedRecord = BmsHistoryRecord & { bms_serial: string | null; read_at: number };
+export interface BmsArchive { records: ArchivedRecord[]; skipped: number }
+export interface ArchivePack { address: number; count: number; newest_read_at: number; serials: (string | null)[] }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 /** Telemetry and status of one pack, read on demand (calibration). */
@@ -331,7 +337,7 @@ export interface LogEntry { id: number; address: number | null; at: number; kind
 export interface PlaceView { address: number; boards: Board[]; cell_type: string | null; snapshot: StoredSnapshot | null; flash: LogEntry | null }
 export interface InstallationOverview {
   places: PlaceView[];
-  counts: { boards: number; places: number; snapshots: number; logs: number; layout: boolean; diagnosis: boolean };
+  counts: { boards: number; places: number; snapshots: number; bms_records: number; logs: number; layout: boolean; diagnosis: boolean };
   recorded: number; recorded_from: number | null; recorded_to: number | null; log_dir: string | null;
 }
 /** The newest stored parameter block of a place, parsed (null: not readable). */
@@ -591,6 +597,8 @@ const tauriApi = {
   packSetLearnedFull: (address: number, raw: number) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_set_learned_full", { address, raw, installation: chosen })),
   /** the whole internal history; polling pauses meanwhile; progress as "bms-history-progress" */
   bmsHistory: (address: number) => invoke<BmsHistoryRead>("bms_history", { address }),
+  bmsArchivePacks: (installation: string) => invoke<ArchivePack[]>("bms_archive_packs", { installation }),
+  bmsArchive: (installation: string, address: number) => invoke<BmsArchive>("bms_archive", { installation, address }),
   bmsHistoryCancel: () => invoke<void>("bms_history_cancel"),
   onBmsHistoryProgress: (f: (p: { address: number; n: number }) => void) => listen<{ address: number; n: number }>("bms-history-progress", (e) => f(e.payload)),
   /** the end of every history read, also of one this UI lost track of */
@@ -892,6 +900,8 @@ function demoApi(): typeof tauriApi {
       const full = raw / 100;
       demoControl.set(address, { ...p, telemetry: { ...p.telemetry, full_capacity_ah: full, soc: full > 0 ? Math.round((p.telemetry.remaining_capacity_ah / full) * 1000) / 10 : 0 } });
     },
+    bmsArchivePacks: async () => [],
+    bmsArchive: async () => ({ records: [], skipped: 0 }),
     bmsHistory: async (address) => {
       demoCancel = false;
       const records: BmsHistoryRecord[] = [];

@@ -200,7 +200,7 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
         ))}
       </div>
 
-      {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} />
+      {tab === "bms" ? <BmsHistory connected={connected} bus={bus} packs={livePacks} installation={isDemo ? null : installation?.id ?? null} />
         : tab === "report" ? (site && info ? <HealthReport site={site} name={installation?.name ?? site} siteFrom={info.from} pairs={reportPairs} />
           : sites && <Empty site={site} />) : <>
       <Panel className="space-y-4 p-5">

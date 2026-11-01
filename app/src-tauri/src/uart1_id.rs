@@ -165,6 +165,27 @@ fn verdict(inst: &str, address: u8, serial: &str, refs: &[BoardRef], places: &[S
     }
 }
 
+/// The String 2 of a strictly known board at `address` over the CAN socket, read now (the parameter read's rule for a
+/// kept snapshot): None for any other answer. A board not yet confirmed is noted for „Übernehmen“ as on every read.
+pub(crate) fn known_serial(state: &AppState, link: &Link, bus: Bus, address: u8) -> Option<String> {
+    let inst = link.installation.as_deref()?;
+    let s = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(read_serials(&mut Conn { c, bus }, address))).ok()?.ok()?;
+    bank::set_uart1(state, link.gen, address, offered(&s.bms));
+    let serial = s.canonical.clone()?;
+    let (refs, places) = crate::maint::with_store(state, |st| Ok((st.current_refs(inst)?, st.serial_places(&serial)?))).ok()?;
+    match verdict(inst, address, &serial, &refs, &places) {
+        Verdict::Known => {
+            bank::uart1_known(state, link, address);
+            Some(serial)
+        }
+        Verdict::Unconfirmed(why, other) => {
+            bank::uart1_unconfirmed(state, link, address, &serial, &s.battery, why, other);
+            None
+        }
+        Verdict::Elsewhere => None,
+    }
+}
+
 /// The serial numbers of a pack on the CAN socket whose master reports String 1/2, and what they say
 /// against the installation: a known board is recorded as seen (String 1 included), one that is not yet confirmed is
 /// noted for „Übernehmen“. Returns the values and the identity view (None: „Nur ansehen“, or nothing to say).

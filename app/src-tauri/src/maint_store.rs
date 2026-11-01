@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 mod transfer;
-pub use transfer::{ImportRow, InstallationData, Into as ImportInto, LogPlan};
+pub use transfer::{BmsRecordData, ImportRow, InstallationData, Into as ImportInto, LogPlan};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS installations(id TEXT PRIMARY KEY, name TEXT NOT NULL, control TEXT, created INTEGER NOT NULL);
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings, bms_records];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -184,6 +184,16 @@ fn snapshot_patch(db: &Connection) -> rusqlite::Result<()> {
 /// 12: how the packs of an installation reach their inverter (JSON, `wiring.rs`): which RS485 bus the inverter polls.
 fn wiring_settings(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE wiring(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
+}
+
+/// 13: the archive of the packs' own history (0x4B): the record bytes without the last flag, per installation, place
+/// and the String 2 checked for that read; `read_at` the host time of the read that first kept it.
+fn bms_records(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE bms_records(id INTEGER PRIMARY KEY, installation TEXT NOT NULL, address INTEGER NOT NULL, bms_serial TEXT,
+           record BLOB NOT NULL, read_at INTEGER NOT NULL);
+         CREATE INDEX bms_records_place ON bms_records(installation, address, id);",
+    )
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -593,6 +603,7 @@ impl Store {
                 "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM wiring WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
+                "DELETE FROM bms_records WHERE installation = ?1",
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
                 "DELETE FROM hard_stop_seen WHERE installation = ?1",
@@ -974,12 +985,27 @@ pub struct PlaceView {
     pub flash: Option<LogEntry>,
 }
 
+/// One archived row: the String 2 it was kept for, the record bytes, the first read (host ms).
+pub type ArchivedRow = (Option<String>, Vec<u8>, i64);
+
+/// One place with archived history (`bms_archive_packs`).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ArchivePack {
+    pub address: u8,
+    pub count: i64,
+    pub newest_read_at: i64,
+    /// the String 2 values kept (null: a pack without a serial to compare)
+    pub serials: Vec<Option<String>>,
+}
+
 /// What an installation owns in this database (the delete list and the overview).
 #[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub boards: i64,
     pub places: i64,
     pub snapshots: i64,
+    /// archived records of the packs' own history
+    pub bms_records: i64,
     pub logs: i64,
     pub layout: bool,
     pub diagnosis: bool,
@@ -1253,6 +1279,50 @@ impl Store {
         Ok(rows)
     }
 
+    /// Keep the records of one history read of a place, for the String 2 checked for that read (None: a pack without a
+    /// serial to compare), in one transaction. A record already kept for the same place and serial is not kept twice.
+    /// Returns how many were new.
+    pub fn add_bms_records(&self, inst: &str, address: u8, serial: Option<&str>, records: &[&[u8]], now: i64) -> Result<usize, String> {
+        self.atomic(|s| {
+            let mut n = 0;
+            for r in records {
+                n += s
+                    .db
+                    .execute(
+                        "INSERT INTO bms_records(installation, address, bms_serial, record, read_at) SELECT ?1, ?2, ?3, ?4, ?5
+                         WHERE NOT EXISTS(SELECT 1 FROM bms_records WHERE installation = ?1 AND address = ?2 AND bms_serial IS ?3 AND record = ?4)",
+                        params![inst, address, serial, r, now],
+                    )
+                    .map_err(e)?;
+            }
+            Ok(n)
+        })
+    }
+
+    /// The places with archived history: address, count, the serials kept and the newest read.
+    pub fn bms_archive_packs(&self, inst: &str) -> Result<Vec<ArchivePack>, String> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT address, COUNT(*), MAX(read_at), json_group_array(DISTINCT bms_serial) FROM bms_records WHERE installation = ?1 GROUP BY address ORDER BY address")
+            .map_err(e)?;
+        let rows = stmt
+            .query_map([inst], |r| Ok((r.get::<_, u8>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?)))
+            .map_err(e)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(e)?;
+        Ok(rows
+            .into_iter()
+            .map(|(address, count, newest_read_at, serials)| ArchivePack { address, count, newest_read_at, serials: serde_json::from_str(&serials).unwrap_or_default() })
+            .collect())
+    }
+
+    /// The archived records of one place in the order kept: (serial, record bytes, read_at).
+    pub fn bms_archive(&self, inst: &str, address: u8) -> Result<Vec<ArchivedRow>, String> {
+        let mut stmt = self.db.prepare("SELECT bms_serial, record, read_at FROM bms_records WHERE installation = ?1 AND address = ?2 ORDER BY id").map_err(e)?;
+        let rows = stmt.query_map(params![inst, address], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?.collect::<rusqlite::Result<Vec<_>>>().map_err(e);
+        rows
+    }
+
     /// Keep a parameter block of a place with exactly this String 2 (the CAN socket's checked identity of the block).
     pub fn add_param_snapshot_serial(&self, inst: &str, address: u8, serial: &str, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
         self.db
@@ -1478,6 +1548,18 @@ impl Store {
                 let n = s.db.execute(&format!("UPDATE {table} SET installation = ?2 WHERE installation = ?1"), params![source, target]).map_err(e)?;
                 moved.insert(table.into(), n.into());
             }
+            // archived history: a record both sides kept once (the same pack read under both) stays one row
+            let n = s
+                .db
+                .execute(
+                    "INSERT INTO bms_records(installation, address, bms_serial, record, read_at) SELECT ?2, address, bms_serial, record, read_at FROM bms_records r
+                     WHERE installation = ?1 AND NOT EXISTS(SELECT 1 FROM bms_records WHERE installation = ?2 AND address = r.address AND bms_serial IS r.bms_serial AND record = r.record)
+                     ORDER BY id",
+                    params![source, target],
+                )
+                .map_err(e)?;
+            s.db.execute("DELETE FROM bms_records WHERE installation = ?1", [source]).map_err(e)?;
+            moved.insert("bms_records".into(), n.into());
             s.db.execute("UPDATE legacy_sources SET installation = ?2 WHERE installation = ?1", params![source, target]).map_err(e)?;
             for ep in &src.endpoints {
                 s.db.execute("INSERT OR IGNORE INTO installation_links(installation, endpoint) VALUES (?1, ?2)", params![target, ep]).map_err(e)?;
@@ -1615,6 +1697,7 @@ impl Store {
             boards: count("SELECT COUNT(*) FROM boards WHERE installation = ?1")?,
             places: count("SELECT COUNT(*) FROM place WHERE installation = ?1")?,
             snapshots: count("SELECT COUNT(*) FROM param_snapshots WHERE installation = ?1")?,
+            bms_records: count("SELECT COUNT(*) FROM bms_records WHERE installation = ?1")?,
             logs: count("SELECT COUNT(*) FROM logs WHERE installation = ?1")?,
             layout: groups.is_some() || pairs.is_some(),
             diagnosis: self.diagnosis(inst)?.is_some(),
@@ -1623,7 +1706,8 @@ impl Store {
             .db
             .prepare(
                 "SELECT address FROM boards WHERE installation = ?1 UNION SELECT address FROM place WHERE installation = ?1
-                 UNION SELECT address FROM param_snapshots WHERE installation = ?1 UNION SELECT address FROM logs WHERE installation = ?1 AND address IS NOT NULL
+                 UNION SELECT address FROM param_snapshots WHERE installation = ?1 UNION SELECT address FROM bms_records WHERE installation = ?1
+                 UNION SELECT address FROM logs WHERE installation = ?1 AND address IS NOT NULL
                  ORDER BY 1",
             )
             .map_err(e)?;
@@ -2147,6 +2231,7 @@ mod tests {
                  -- of later migrations
                  DROP TABLE devices;
                  DROP TABLE wiring;
+                 DROP TABLE bms_records;
                  ALTER TABLE bootloader_pending DROP COLUMN bms_serial;",
             )
             .unwrap();
