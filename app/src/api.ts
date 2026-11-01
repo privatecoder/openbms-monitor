@@ -130,7 +130,9 @@ export interface BmsHistoryRecord {
 }
 /** A history read, oldest record first. end: last = the pack flagged its last record; empty = no (more) records;
  *  cap = 520 records without a last flag; error = stopped by `error` after the records read so far. */
-export interface BmsHistoryRead { address: number; records: BmsHistoryRecord[]; end: "last" | "empty" | "cancelled" | "cap" | "error"; error: string | null }
+export interface BmsHistoryRead { address: number; records: BmsHistoryRecord[]; end: "last" | "empty" | "cancelled" | "cap" | "error"; error: string | null;
+  /** with an error: "eeprom" (the pack restored its read index; reading again from the oldest is safe), "silent" (the index may have moved on), "other" */
+  error_kind?: "eeprom" | "silent" | "other" | null }
 export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 /** Telemetry and status of one pack, read on demand (calibration). */
@@ -193,7 +195,7 @@ export interface LinkTiming {
 /** The access matrix (`openbms_proto::access`): every way of every action over the three UARTs, evaluated for one pack. */
 export type Channel = "uart0" | "uart1" | "uart2";
 export type AccessReason =
-  | { id: "firmware"; need: { kind: "patch-from"; version: [number, number] } | { kind: "image-flag"; bit: number }; known: "yes" | "no" | "unknown" }
+  | { id: "firmware"; need: { kind: "patch-from"; version: [number, number] } | { kind: "image-flag"; bit: number } | { kind: "read-cap"; mask: number }; known: "yes" | "no" | "unknown" }
   | { id: "bit"; group: number; bit: number; want: boolean; known: boolean | null }
   | { id: "with-slaves"; known: number | null }
   | { id: "master-only" } | { id: "quiet-bus" } | { id: "local-board" } | { id: "not-implemented" } | { id: "view-only" }
@@ -346,7 +348,9 @@ export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: stri
  *  later, the stored pack cutoff (Group0 bit 4 extended off, bit 5 the lock state); false below 1.6, null: not known */
 export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
   /** the patch version reported (a stored proof: the one its release names) and the image flag byte (null: not known) */
-  version?: [number, number]; flags?: number | null }
+  version?: [number, number]; flags?: number | null;
+  /** the read-capability mask of MNT format 5 (0 before; null: not known, a stored proof) */
+  read_caps?: number | null }
 /** The master as read over the CAN socket bus (0x64/03, then for a supported patch 0x64/02). kind: "patched" (patch
  *  functions by its patch version; `listed`: the build's name, null when the build is not listed), "unknown-patch",
  *  "no-0x64" (firmware not proven), "unknown". `polling` after a release: "unverified" or "no-slaves". */
@@ -376,10 +380,30 @@ export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?
  *  pack lock stored in each parameter copy (null: unknown or not supported); `cache`: runtime cache flags. */
 export type DiagRecord = "empty" | "valid" | "invalid" | "unknown";
 export type DiagCompare = "not-comparable" | "same" | "different" | "unknown";
+/** The image flags and the read-capability mask of a pack's own 0x64/03 (`pack_image_flags`). */
+export interface ImageBits { flags: number; read_caps: number }
+/** 0x64/05 (read-capability bit 1): the active calibration and the stored copies. Gains are raw factors, zero bases raw
+ *  ADC counts (not amperes). A stored copy is decoded only when strictly valid; its raw bytes are always kept. */
+export type CalPage = "active" | "primary" | "backup";
+export interface Coefficients { cells: number[]; voltage: [number, number]; current_gain: [number, number]; zero: [number, number] }
+export type CalibrationPage =
+  | { kind: "active"; invalid_bits: number; cell_count: number; coefficients: Coefficients; reference: [number, number]; raw_sample: [number, number]; current_ma: [number, number] }
+  | { kind: "stored"; page: CalPage; class: "erased" | "valid" | "invalid" | "unknown"; crc_ok: boolean; declared_len: number; raw: string; coefficients: Coefficients | null; invalid_bits: number | null };
+export interface CalPageRead { page: CalPage; value: CalibrationPage | null; error: string | null }
+/** 0x64/06: the stored capacity records against the live values; `records` / `energy`: the read-capability bits 2 / 3
+ *  that vouch for each part; `checkpoint`: a planned restart saves first (image flag bit 6). */
+export interface SocRecord { remaining_ah: number; full_ah: number; charged_kwh: number; discharged_kwh: number; cycles: number; soc_reference: number; soc_decrease: number }
+export interface SocStore {
+  class: [DiagRecordClass, DiagRecordClass]; compare: DiagCompare; crc_ok: [boolean, boolean]; boot: "fallback" | "primary" | "backup" | "unknown";
+  live_p58_ah: number; live_p59_ah: number; live_charged_kwh: number; live_discharged_kwh: number; live_remaining_ah: number; live_full_ah: number; live_soc: number;
+  raw: [string, string]; records: [SocRecord | null, SocRecord | null];
+}
+export type DiagRecordClass = "erased" | "valid" | "invalid" | "unknown";
+export interface SocStoreRead { store: SocStore; records: boolean; energy: boolean; checkpoint: boolean }
 export interface MemoryDiagnosis { params: [DiagRecord, DiagRecord]; params_compare: DiagCompare; soc: [DiagRecord, DiagRecord]; soc_compare: DiagCompare; lock: [boolean | null, boolean | null]; cache: number }
 export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
   /** the patch version of its 64/03 (also a negative finding's) and, when proven, its image flag byte */
-  patch_version?: [number, number] | null; flags?: number | null }
+  patch_version?: [number, number] | null; flags?: number | null; read_caps?: number | null }
 /** `marker_read`/`marker_set`: the board's identity and marker on this connection. `kind` "no-uart0": RS485-1/2 with a
  *  build that shows its marker on the CAN socket only; "unknown" on RS485-1/2 also an older build or the original. */
 export interface MarkerView {
@@ -451,7 +475,10 @@ const tauriApi = {
   /** the hard-stop observations of the connection's installation for the boards now current */
   hardStops: () => invoke<HardStopSeen[]>("hard_stops"),
   packDiagnosis: (address: number) => invoke<MemoryDiagnosis>("pack_diagnosis", { address }),
-  packImageFlags: (address: number) => invoke<number | null>("pack_image_flags", { address }),
+  packImageFlags: (address: number) => invoke<ImageBits | null>("pack_image_flags", { address }),
+  packCalibration: (address: number) => invoke<CalPageRead[]>("pack_calibration", { address }),
+  packSocStore: (address: number) => invoke<SocStoreRead>("pack_soc_store", { address }),
+  firmwareSocStore: (port: string, address: number) => invoke<SocStoreRead | null>("firmware_soc_store", { port, address }),
   /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
   packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
   packProbes: () => invoke<PackProbeView[]>("pack_probes"),
@@ -689,6 +716,8 @@ function demoApi(): typeof tauriApi {
     hardStops: async () => [],
     packImageFlags: async () => null,
     packDiagnosis: async () => ({ params: ["valid", "valid"], params_compare: "same", soc: ["valid", "valid"], soc_compare: "same", lock: [false, false], cache: 6 }) as MemoryDiagnosis,
+    packCalibration: async () => { throw new Error("demo"); },
+    packSocStore: async () => { throw new Error("demo"); },
     packProbe: async () => { throw new Error("desktop app only"); },
     packProbes: async () => [],
     accessView: async () => ({ gen: 0, channel: null, decisions: [] }),
@@ -926,6 +955,7 @@ function demoApi(): typeof tauriApi {
     maintRelease: async () => { throw new Error("desktop app only"); },
     maintExpectedSlaves: async () => null,
     firmwareGroup0: async () => null,
+    firmwareSocStore: async () => null,
     onFirmwareProgress: async () => () => {},
     onFirmwareDone: async () => () => {},
     onFirmwareBusy: async () => () => {},

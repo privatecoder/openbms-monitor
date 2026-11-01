@@ -140,7 +140,7 @@ mod tests {
     use openbms_proto::{MaintInfo, MaintState};
 
     fn found(word: Option<u32>, trusted: bool) -> Found {
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 6], patch_rev: 1, build_id: [1; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0: true, reserved_flags: 0 };
+        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 6], patch_rev: 1, build_id: [1; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0: true, reserved_flags: 0 , read_caps: 0};
         Found { kind: if trusted { "patched" } else { "no-uart0" }, info: Some(info), state: word.map(|w| MaintState { marker_word: w, effective_slaves: 0 }), trusted, master: openbms_flash::maint::policy::Master::Unknown }
     }
 

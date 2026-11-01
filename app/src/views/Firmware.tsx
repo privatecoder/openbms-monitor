@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, Cpu, FolderOpen, TriangleAlert } from "lucide-react";
-import { api, isDemo, type BenchScan, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type FlashComparison } from "../api";
+import { api, isDemo, type BenchScan, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type FlashComparison, type SocStoreRead } from "../api";
+import { SocLines } from "../components/RemoteDiagnosis";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
@@ -167,6 +168,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       {/* bound to the port and board it reads: another one starts without a fresh value */}
       {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} positive={!!image.positive} locked={inputsLocked}
         latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
+      {/* the bench target; on the pack bus each pack row reads its own (`PackBusPanel`) */}
+      {image && tab === "bench" && <FlashSocNote key={`bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} port={bPort} address={address} locked={inputsLocked} />}
     </div>
   );
 
@@ -299,6 +302,30 @@ function FlashCompare({ c, image }: { c: FlashComparison; image: FirmwareImage |
           {c.charge && <p className="text-discharge">{t("ctl.charge.hint")}</p>}
         </>
       )}
+    </div>
+  );
+}
+
+/** Before a flash: the target's stored state against its live one (0x64/06, MNT format 5), read on demand on the flash
+ *  target itself (its port and address, quiet bus), bound to them by the key above. Only information: a flash restarts the
+ *  board, which starts from its stored state; nothing here is a condition for flashing. */
+function FlashSocNote({ port, address, locked }: { port: string; address: number; locked: boolean }) {
+  const { t } = useTranslation();
+  const [read, setRead] = useState<SocStoreRead | null | undefined>(undefined);
+  const [reading, setReading] = useState(false);
+  const readNow = async () => {
+    setReading(true);
+    try { setRead(await api.firmwareSocStore(port, address)); } catch { setRead(null); } finally { setReading(false); }
+  };
+  return (
+    <div className="space-y-1 rounded-md border border-line p-3 text-sm">
+      <p className="flex items-center gap-1 font-medium">{t("fw.soc.title")}<InfoIcon id="topic.remoteDiagnosis" /></p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="ghost" size="sm" disabled={locked || reading || !port} onClick={() => void readNow()}>{reading ? t("rdiag.reading") : t("fw.soc.read")}</Button>
+      </div>
+      {read === null && <p className="text-muted">{t("fw.soc.unavailable")}</p>}
+      {read && <SocLines read={read} />}
+      <p className="text-muted">{t("fw.soc.hint")}</p>
     </div>
   );
 }

@@ -4,7 +4,7 @@ Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor i
 
 ## Layout
 
-- `crates/openbms-proto`: frames, checksums, Seplos ASCII commands (telemetry 0x42, status 0x44, params 0x47 and writing them 0xA1, intra-pack 0x5A, serial numbers 0xA2/0xA4 and writing them 0xA3/0xA5, clock and history 0x4B/0x4D/0x4E, calibration 0xA0, CAN protocol 0xA6, pack control 0x45 and remaining capacity 0x49), Modbus RTU (master system values, battery serial number), parameter decoding.
+- `crates/openbms-proto`: frames, checksums, Seplos ASCII commands (telemetry 0x42, status 0x44, params 0x47 and writing them 0xA1, intra-pack 0x5A, serial numbers 0xA2/0xA4 and writing them 0xA3/0xA5, clock and history 0x4B/0x4D/0x4E, calibration 0xA0, CAN protocol 0xA6, pack control 0x45 and remaining capacity 0x49; the MAINT reads 0x64/03–06 in `maint.rs` and `remote.rs`), Modbus RTU (master system values, battery serial number), parameter decoding.
 - `crates/openbms-transport`: serial and TCP transport (5 s connect timeout, write timeout).
 - `crates/openbms-cli`: read-only command-line poller for debugging.
 - `crates/openbms-flash`: standalone EMU1101 updater (probe, `.ehex` validation and dry-run, confirmed flash); the app's firmware view uses it as a library (`app/src-tauri/src/firmware.rs`).

@@ -25,6 +25,8 @@ export function reasonText(t: TFunction, r: AccessReason): string {
   switch (r.id) {
     case "firmware": return r.need.kind === "patch-from"
       ? t(`acc.fw.patch.${r.known}`, { v: r.need.version.join(".") })
+      : r.need.kind === "read-cap"
+      ? t(`acc.fw.cap.${r.known}`, { name: t(`acc.fw.capName.m${r.need.mask}`, { defaultValue: t("acc.fw.flagName.other") }) })
       : t(`acc.fw.flag.${r.known}`, { bit: r.need.bit, name: t(`acc.fw.flagName.b${r.need.bit}`, { defaultValue: t("acc.fw.flagName.other") }) });
     case "bit": {
       const name = t(`acc.bitName.g${r.group}b${r.bit}`, { defaultValue: "" });
@@ -46,7 +48,7 @@ export const cellTitle = (t: TFunction, ds: AccessDecision[]) =>
 
 
 export type Tri = "yes" | "no" | "unknown";
-export type Firmware = { kind: "patch-from"; version: [number, number] } | { kind: "image-flag"; bit: number };
+export type Firmware = { kind: "patch-from"; version: [number, number] } | { kind: "image-flag"; bit: number } | { kind: "read-cap"; mask: number };
 export type Need =
   | { kind: "bit-set" | "bit-clear"; group: number; bit: number }
   | { kind: "master-only" | "quiet-bus" | "local-board" | "with-slaves" }
@@ -56,7 +58,7 @@ export interface Route { action: string; channel: Channel; wire: string; firmwar
 export type Marker = { kind: "off" | "on" } | { kind: "foreign"; word: number };
 export type Patch = { kind: "unknown" | "none" } | { kind: "version"; version: [number, number] };
 export interface Facts {
-  patch: Patch; flags: number | null; group0: number | null; group7: number | null; address: number; installation: boolean;
+  patch: Patch; flags: number | null; caps: number | null; group0: number | null; group7: number | null; address: number; installation: boolean;
   marker: Marker | null; base: [number, number, number] | null; slaves: number | null;
 }
 export interface Proof { write_gate: boolean; start_gate: boolean; power: Tri; cutoff: Tri }
@@ -104,6 +106,11 @@ type V3 = [number, number, number];
  *  the catalog (`maint::SUPPORTED_15/16`, `access::FLAG_SINCE`). */
 const LINE_FROM = CATALOG.lines as unknown as Record<string, V3>;
 const FLAG_FROM = CATALOG.flag_since as unknown as Record<string, V3>;
+const CAP_FROM = CATALOG.cap_since as unknown as Record<string, V3>;
+/** Read-capability bits of MNT format 5 (`maint::CAP_*`). */
+export const CAP = CATALOG.caps;
+/** The first build carrying any bit of a read-capability mask. */
+const capFrom = (mask: number): V3 | undefined => Object.entries(CAP_FROM).find(([bit]) => (mask & (1 << Number(bit))) !== 0)?.[1];
 
 /** The firmware a way needs at least, for the matrix: the first supported MAINT build (`patch`), the OEM base (`base`).
  *  Null where the original firmware is enough. */
@@ -111,7 +118,11 @@ export interface RouteNeed { patch: V3 | null; base: V3 | null }
 export function routeNeed(r: Pick<Route, "firmware" | "needs">): RouteNeed | null {
   let patch: V3 | null = null;
   const at = (v: V3) => { if (!patch || cmp3(v, patch) > 0) patch = v; };
-  for (const f of r.firmware) at(f.kind === "patch-from" ? LINE_FROM[f.version.join(".")] ?? [f.version[0], f.version[1], 0] : FLAG_FROM[f.bit] ?? LINE_FROM["1.5"]);
+  for (const f of r.firmware) {
+    at(f.kind === "patch-from" ? LINE_FROM[f.version.join(".")] ?? [f.version[0], f.version[1], 0]
+      : f.kind === "read-cap" ? capFrom(f.mask) ?? LINE_FROM["1.5"]
+      : FLAG_FROM[f.bit] ?? LINE_FROM["1.5"]);
+  }
   const base = r.needs.reduce<V3 | null>((b, n) => (n.kind === "base-from" && (!b || cmp3(n.base, b) > 0) ? n.base : b), null);
   return patch || base ? { patch, base } : null;
 }
@@ -135,6 +146,7 @@ const cmp2 = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1];
 export function firmwareKnown(need: Firmware, f: Facts): Tri {
   if (f.patch.kind === "none") return "no";
   if (need.kind === "patch-from") return f.patch.kind === "version" ? (cmp2(f.patch.version, need.version) >= 0 ? "yes" : "no") : "unknown";
+  if (need.kind === "read-cap") return f.caps === null ? "unknown" : (f.caps & need.mask) !== 0 ? "yes" : "no";
   return f.flags === null ? "unknown" : (f.flags & (1 << need.bit)) !== 0 ? "yes" : "no";
 }
 
@@ -203,7 +215,7 @@ export function group0Plan(channel: Channel, proof: Proof | null): Group0Plan {
 
 /** The facts of a pack with everything not given unknown. */
 export const factsOf = (f: Partial<Facts>): Facts => ({
-  patch: { kind: "unknown" }, flags: null, group0: null, group7: null, address: 0, installation: false, marker: null, base: null, slaves: null, ...f,
+  patch: { kind: "unknown" }, flags: null, caps: null, group0: null, group7: null, address: 0, installation: false, marker: null, base: null, slaves: null, ...f,
 });
 
 /** What a button offers: the app's way of `action` over `channel` is ready, or open only for a switch not read yet (the

@@ -12,7 +12,7 @@
 //! The catalog follows the firmware analysis (UART write matrix, 16.06.13 and the MAINT builds). Its rows are data;
 //! `decide` evaluates one row for one pack's facts. Unknown stays unknown: a stored proof carries no image flags.
 
-use crate::maint::{MarkerWord, SUPPORTED_15, SUPPORTED_16};
+use crate::maint::{MarkerWord, CAP_CALIBRATION, CAP_ENERGY, CAP_HISTORY, CAP_SOC_STORE, SUPPORTED_15, SUPPORTED_16};
 use serde::Serialize;
 
 /// The patch line every supported build belongs to or follows (major, minor); which builds of it are supported decides
@@ -76,6 +76,8 @@ pub enum Action {
     ReadHistory,
     ReadIdentity,
     ReadDiagnosis,
+    ReadCalibration,
+    ReadSocStore,
     MaintStatus,
     MaintStart,
     MaintStop,
@@ -86,12 +88,12 @@ pub enum Action {
 
 impl Action {
     /// In the order the UI lists them.
-    pub const ALL: [Action; 30] = [
+    pub const ALL: [Action; 32] = [
         Action::ReadTelemetry, Action::ReadStatus, Action::ReadInfo, Action::ReadParameters, Action::WriteParameters, Action::WriteName,
         Action::ReadSerials, Action::WriteSerials, Action::ReadClock, Action::SetClock, Action::PowerOnOff, Action::PackLockSet,
         Action::PackLockRelease, Action::Restart,
         Action::ForceHeater, Action::ClearHistory, Action::SetRemaining, Action::SetLearnedFull, Action::Calibrate, Action::SetCanProtocol,
-        Action::HardStop, Action::ReadHistory, Action::ReadIdentity, Action::ReadDiagnosis, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
+        Action::HardStop, Action::ReadHistory, Action::ReadIdentity, Action::ReadDiagnosis, Action::ReadCalibration, Action::ReadSocStore, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
         Action::DisplayTunnel, Action::Flash,
     ];
 
@@ -100,7 +102,8 @@ impl Action {
         !matches!(
             self,
             Action::ReadTelemetry | Action::ReadStatus | Action::ReadInfo | Action::ReadParameters | Action::ReadSerials | Action::ReadClock
-                | Action::ReadHistory | Action::ReadIdentity | Action::ReadDiagnosis | Action::MaintStatus | Action::ReadSystem
+                | Action::ReadHistory | Action::ReadIdentity | Action::ReadDiagnosis | Action::ReadCalibration | Action::ReadSocStore
+                | Action::MaintStatus | Action::ReadSystem
         )
     }
 
@@ -119,6 +122,8 @@ pub enum Firmware {
     PatchFrom { version: [u8; 2] },
     /// this image flag bit set in the pack's own 64/03 (format 3)
     ImageFlag { bit: u8 },
+    /// any bit of `mask` set in the read-capability mask of the pack's own 64/03 (format 5, `maint::CAP_*`)
+    ReadCap { mask: u16 },
 }
 
 /// Image flag bit 0: the hard stop at a recharge pause compiled in (with `FLAG_HARD_STOP`: only its default).
@@ -143,6 +148,9 @@ pub const FLAG_SINCE: [(u8, [u8; 3]); 7] = [
     (FLAG_POWER, SUPPORTED_15), (FLAG_UART0, SUPPORTED_15), (FLAG_DIAGNOSIS, SUPPORTED_15), (FLAG_POSITIVE, SUPPORTED_15),
     (FLAG_CUTOFF, SUPPORTED_16), (FLAG_CHECKPOINT, SUPPORTED_16), (FLAG_HARD_STOP, SUPPORTED_16),
 ];
+
+/// The first supported build that carries each read-capability bit (format 5), for the matrix's „ab MAINT …“.
+pub const CAP_SINCE: [(u8, [u8; 3]); 4] = [(CAP_HISTORY, [1, 5, 4]), (CAP_CALIBRATION, [1, 5, 4]), (CAP_SOC_STORE, [1, 5, 4]), (CAP_ENERGY, [1, 5, 4])];
 
 /// Whether an image flag byte announces the positive Group0 bits 3/4 (None: not known, read as not).
 pub fn positive_of(flags: Option<u8>) -> bool {
@@ -216,6 +224,10 @@ const UART0_MAINT: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_UART0 }];
 const DIAGNOSIS: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_DIAGNOSIS }];
 /// the configurable hard stop (image flag bit 7)
 const HARD_STOP: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_HARD_STOP }];
+/// format 5: the history over the CAN socket, the calibration pages, the 64/06 frame (stored SOC records or live energy)
+const CAP_HISTORY_FW: &[Firmware] = &[Firmware::ReadCap { mask: 1 << CAP_HISTORY }];
+const CAP_CALIBRATION_FW: &[Firmware] = &[Firmware::ReadCap { mask: 1 << CAP_CALIBRATION }];
+const CAP_SOC_FW: &[Firmware] = &[Firmware::ReadCap { mask: (1 << CAP_SOC_STORE) | (1 << CAP_ENERGY) }];
 const CUTOFF_POWER: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }, Firmware::ImageFlag { bit: FLAG_POWER }];
 
 const QUIET: &[Need] = &[Need::QuietBus];
@@ -280,10 +292,15 @@ pub const ROUTES: &[Route] = &[
     r(A::HardStop, U1, "binär A1 (Group0.Bit6/7)", HARD_STOP, WRITE_RELEASE, true),
     r(A::HardStop, U2, "binär A1 (Group0.Bit6/7)", HARD_STOP, LOCAL, false),
     r(A::ReadHistory, U0, "ASCII 4B", ANY, QUIET, true),
+    r(A::ReadHistory, U1, "ASCII 4B", CAP_HISTORY_FW, &[], true),
     r(A::ReadIdentity, U0, "ASCII 64/03 (Erkennung)", UART0_MAINT, QUIET, true),
     r(A::ReadIdentity, U1, "ASCII 64/03 (Erkennung)", ANY, &[], true),
     r(A::ReadDiagnosis, U0, "ASCII 64/04", DIAGNOSIS, QUIET, true),
     r(A::ReadDiagnosis, U1, "ASCII 64/04", DIAGNOSIS, &[], true),
+    r(A::ReadCalibration, U0, "ASCII 64/05", CAP_CALIBRATION_FW, QUIET, true),
+    r(A::ReadCalibration, U1, "ASCII 64/05", CAP_CALIBRATION_FW, &[], true),
+    r(A::ReadSocStore, U0, "ASCII 64/06", CAP_SOC_FW, QUIET, true),
+    r(A::ReadSocStore, U1, "ASCII 64/06", CAP_SOC_FW, &[], true),
     r(A::MaintStatus, U0, "ASCII 64/02", UART0_MAINT, QUIET, true),
     r(A::MaintStatus, U1, "ASCII 64/02", MAINT, MASTER, true),
     r(A::MaintStart, U1, "ASCII 64/01", MAINT, START, true),
@@ -344,6 +361,8 @@ pub struct Facts {
     pub patch: Patch,
     /// the image flag byte of its own 64/03; None: not known (a stored proof carries none)
     pub flags: Option<u8>,
+    /// the read-capability mask of its own 64/03 (0 before format 5); None: not known (a stored proof carries none)
+    pub caps: Option<u16>,
     pub group0: Option<u8>,
     pub group7: Option<u8>,
     pub address: u8,
@@ -364,6 +383,7 @@ impl Facts {
             (Firmware::PatchFrom { .. }, Patch::Unknown) => Tri::Unknown,
             (Firmware::PatchFrom { version }, Patch::Version(v)) => Tri::from(Some(v >= version)),
             (Firmware::ImageFlag { bit }, _) => Tri::from(self.flags.map(|f| f & (1 << bit) != 0)),
+            (Firmware::ReadCap { mask }, _) => Tri::from(self.caps.map(|c| c & mask != 0)),
         }
     }
 
@@ -603,7 +623,7 @@ mod tests {
             // every supported power build (1.5.3, 1.6.3) has the positive bit 3
             (p, c) => Some((u8::from(p == Tri::Yes) << FLAG_POWER) | (u8::from(c == Tri::Yes) << FLAG_CUTOFF) | (u8::from(p == Tri::Yes || c == Tri::Yes) << FLAG_POSITIVE)),
         };
-        Facts { patch, flags, group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]), slaves: None }
+        Facts { patch, flags, caps: flags.map(|_| 0), group0, group7: None, address, installation: true, marker: None, base: Some([16, 6, 13]), slaves: None }
     }
 
     #[test]
@@ -629,6 +649,8 @@ mod tests {
             .map(|i| Facts {
                 patch: [Patch::Unknown, Patch::None, Patch::Version([1, 4]), Patch::Version([1, 5]), Patch::Version([1, 6]), Patch::Version([1, 7])][i % 6],
                 flags: [None, Some(0x00), Some(0x02), Some(0x06), Some(0x0E), Some(0x3A), Some(0xFE)][(i / 6) % 7],
+                // flags 3A with caps 000F, and the reverse pairings (caps without flags, flags without caps)
+                caps: [None, Some(0x0000), Some(0x000F), Some(0x0001), Some(0x0008)][(i / 3) % 5],
                 group0: [None, Some(0x00), Some(0xFF), Some(0xF7), Some(0xEF), Some(0xDA)][(i * 7) % 6],
                 group7: [None, Some(0x00), Some(0x08), Some(0x18), Some(0x38)][(i * 5) % 5],
                 address: [0, 3][(i / 2) % 2],
@@ -669,6 +691,8 @@ mod tests {
             }).collect::<Vec<_>>(),
             "lines": { "1.5": SUPPORTED_15, "1.6": SUPPORTED_16 },
             "flag_since": FLAG_SINCE.iter().map(|(bit, v)| (bit.to_string(), *v)).collect::<std::collections::BTreeMap<_, _>>(),
+            "cap_since": CAP_SINCE.iter().map(|(bit, v)| (bit.to_string(), *v)).collect::<std::collections::BTreeMap<_, _>>(),
+            "caps": { "history": CAP_HISTORY, "calibration": CAP_CALIBRATION, "soc_store": CAP_SOC_STORE, "energy": CAP_ENERGY },
             "maint_min": MAINT_MIN,
             "cutoff_min": CUTOFF_MIN,
             "bits": {
@@ -691,6 +715,29 @@ mod tests {
             let now = std::fs::read_to_string(&path).unwrap_or_default();
             assert!(now == text, "app/src/generated/{name} is stale: UPDATE_ACCESS=1 cargo test -p openbms-proto");
         }
+    }
+
+    #[test]
+    fn the_new_reads_follow_their_own_capability_bits() {
+        let f = |flags: Option<u8>, caps: Option<u16>| Facts {
+            patch: Patch::Version([1, 5]), flags, caps, group0: None, group7: None, address: 3, installation: false, marker: None, base: None, slaves: None,
+        };
+        // 1.5.4: flags 3A, caps 000F; every new read is ready without an installation or a release bit
+        let light = f(Some(0x3A), Some(0x000F));
+        for a in [A::ReadHistory, A::ReadCalibration, A::ReadSocStore] {
+            assert!(ready(a, U1, &light), "{a:?}");
+        }
+        // the flags alone (1.5.3) give none of them; the CAN socket history needs bit 0, the RS485 one nothing
+        let old = f(Some(0x3A), Some(0));
+        assert!(!ready(A::ReadHistory, U1, &old) && ready(A::ReadHistory, U0, &old));
+        assert_eq!(decide(route(A::ReadCalibration, U1).unwrap(), &old).state, State::Blocked);
+        // a stored proof (caps not known): unknown, not blocked
+        assert_eq!(decide(route(A::ReadSocStore, U1).unwrap(), &f(None, None)).state, State::Unknown);
+        // 64/06 with only the energy bit, or only the SOC bit
+        assert!(ready(A::ReadSocStore, U1, &f(Some(0), Some(1 << CAP_ENERGY))));
+        assert!(ready(A::ReadSocStore, U1, &f(Some(0), Some(1 << CAP_SOC_STORE))));
+        assert!(!ready(A::ReadSocStore, U1, &f(Some(0xFF), Some(1 << CAP_HISTORY))));
+        assert!(!A::ReadCalibration.writes() && !A::ReadSocStore.writes());
     }
 
     #[test]
@@ -722,9 +769,12 @@ mod tests {
     #[test]
     fn the_matrix_rows_of_the_firmware_analysis() {
         // only RS485-1/2: heater, history clear, 49, calibration, serial number writes, CAN protocol (besides UART2)
-        for a in [A::ForceHeater, A::ClearHistory, A::SetRemaining, A::SetLearnedFull, A::Calibrate, A::WriteSerials, A::WriteName, A::ReadHistory, A::Flash] {
+        for a in [A::ForceHeater, A::ClearHistory, A::SetRemaining, A::SetLearnedFull, A::Calibrate, A::WriteSerials, A::WriteName, A::Flash] {
             assert_eq!(routes(a).map(|r| r.channel).collect::<Vec<_>>(), vec![U0], "{a:?}");
         }
+        // the history also over the CAN socket, there only with read-capability bit 0 (MNT format 5)
+        assert_eq!(routes(A::ReadHistory).map(|r| r.channel).collect::<Vec<_>>(), vec![U0, U1]);
+        assert_eq!(route(A::ReadHistory, U1).unwrap().firmware, &[Firmware::ReadCap { mask: 1 }]);
         assert_eq!(routes(A::SetCanProtocol).map(|r| r.channel).collect::<Vec<_>>(), vec![U0, U2]);
         // maintenance over the CAN socket at the master; start only there
         for a in [A::MaintStatus, A::MaintStart, A::MaintStop] {
@@ -750,7 +800,7 @@ mod tests {
     #[test]
     fn the_positive_build_reads_bits_3_and_4_the_other_way_round() {
         // 1.6.3: flags FE (power, cutoff, positive, UART0 marker, diagnosis, checkpoint, configurable hard stop)
-        let f = |g0: u8| Facts { patch: Patch::Version([1, 6]), flags: Some(0xFE), group0: Some(g0), group7: None, address: 2, installation: true, marker: None, base: None, slaves: None };
+        let f = |g0: u8| Facts { patch: Patch::Version([1, 6]), flags: Some(0xFE), caps: Some(0), group0: Some(g0), group7: None, address: 2, installation: true, marker: None, base: None, slaves: None };
         // TEMP(maint-1.6): the first 1.6 build (flags 06) keeps bit 3 at 0
         let first = |g0: u8| Facts { flags: Some(0x06), ..f(g0) };
         assert!(ready(A::PowerOnOff, U1, &first(0xF7)) && !ready(A::PowerOnOff, U1, &first(0xFF)));
@@ -774,7 +824,7 @@ mod tests {
     #[test]
     fn the_rs485_clear_needs_the_uart0_flag_and_the_marker_on_at_any_address() {
         let r = route(A::MaintStop, U0).unwrap();
-        let on = Facts { patch: Patch::Version([1, 6]), flags: Some(1 << FLAG_UART0), group0: None, group7: None, address: 5, installation: false, marker: Some(MarkerWord::On), base: None, slaves: None };
+        let on = Facts { patch: Patch::Version([1, 6]), flags: Some(1 << FLAG_UART0), caps: None, group0: None, group7: None, address: 5, installation: false, marker: Some(MarkerWord::On), base: None, slaves: None };
         assert_eq!(decide(r, &on).state, State::Ready);
         // 1.6 without the flag: blocked; behind a stored proof (flags unknown): unknown
         assert_eq!(decide(r, &Facts { flags: Some(0x06), ..on }).state, State::Blocked);

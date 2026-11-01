@@ -7,6 +7,7 @@ import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
 import { errorText } from "../control";
 import { factsOf, offerable } from "../access";
 import { channelOf } from "../power";
+import { useReadCaps } from "../imageFlags";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { SevIcon } from "../components/widgets";
@@ -18,7 +19,8 @@ const no = (a: number) => String(a).padStart(2, "0");
 // the chosen pack, kept while the app runs (the running read and the last result live in bmsMemory)
 let keptAddress: number | null = null;
 
-/** The pack's internal history (0x4B), read on demand over RS485-1/2: table newest first, CSV export. */
+/** The pack's internal history (0x4B), read on demand over RS485-1/2, and over the CAN socket from a pack whose own 64/03
+ *  announces it (read-capability bit 0): table newest first, CSV export. */
 export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus: Bus | null; packs: number[] }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
@@ -31,9 +33,12 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const result = tagged && sameInstallation(tagged.link, linkNow()) && tagged.read.address === address ? tagged.read : null;
   const [progress, setProgress] = useState<number | null>(() => currentRun()?.n ?? null);
   const [saved, setSaved] = useState<{ name: string } | { error: string } | null>(null);
-  // the history read exists only where the catalog has the app's way for it (RS485-1/2)
+  // the history read exists where the catalog has the app's way for it: RS485-1/2, and the CAN socket with the pack's
+  // read-capability bit 0 (from its own 64/03 on this link)
   const channel = channelOf(bus);
-  const usable = connected && (isDemo || (!!channel && offerable("read-history", channel, factsOf({}))));
+  const caps = useReadCaps(connected && bus === "can" && !isDemo ? address : null, null, linkNow());
+  const usable = connected && (isDemo || (!!channel && offerable("read-history", channel, factsOf({ caps }))));
+  const canRead = bus === "can" && usable && !isDemo;
   const { read: clock } = useBmsClock(address, usable);
   const diff = readDiff(clock);
 
@@ -82,7 +87,7 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
   const count = result?.records.length ?? 0;
   const endText = !result ? null
     : result.end === "empty" ? (count ? t("bmsh.end.emptyAfter", { count }) : t("bmsh.end.empty"))
-    : result.end === "error" ? t("bmsh.end.error", { count, err: errorText(result.error ?? "", t) })
+    : result.end === "error" ? `${t("bmsh.end.error", { count, err: errorText(result.error ?? "", t) })}${result.error_kind === "eeprom" || result.error_kind === "silent" ? ` ${t(`bmsh.kind.${result.error_kind}`)}` : ""}`
     : t(`bmsh.end.${result.end}`, { count });
   const rows = result ? [...result.records].reverse() : [];
 
@@ -101,10 +106,11 @@ export function BmsHistory({ connected, bus, packs }: { connected: boolean; bus:
           {reading && <Button variant="ghost" onClick={() => void api.bmsHistoryCancel()}><X className="h-4 w-4" />{t("bmsh.cancel")}</Button>}
           {count > 0 && !reading && <Button className="ml-auto" onClick={save}><Download className="h-4 w-4" />{t("bmsh.save")}</Button>}
         </div>
-        <p className={cn("text-sm", bus === "can" && connected && !isDemo ? "text-discharge" : "text-muted")}>
-          {reading ? t("bmsh.reading", { n: (progress ?? 0) + 1 })
+        <p className={cn("text-sm", bus === "can" && connected && !isDemo && !canRead ? "text-discharge" : "text-muted")}>
+          {reading ? t(canRead ? "bmsh.readingCan" : "bmsh.reading", { n: (progress ?? 0) + 1 })
             : !connected ? t("bmsh.needConnection")
-            : bus === "can" && !isDemo ? t("bmsh.canBus")
+            : canRead ? t("bmsh.canRead")
+            : bus === "can" && !isDemo ? t(caps === null ? "bmsh.canBusAsking" : "bmsh.canBus")
             : t("bmsh.packBus")}
         </p>
         {usable && clock && (

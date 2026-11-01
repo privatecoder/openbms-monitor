@@ -322,6 +322,7 @@ mod tests {
         access::Facts {
             patch: access::Patch::Version([1, 5]),
             flags: Some(1 << access::FLAG_POWER),
+            caps: Some(0),
             group0: None,
             group7: None,
             address: 1,
@@ -527,7 +528,7 @@ mod tests {
         assert_eq!(clock(&state, &link, 3).unwrap_err(), uart1_refusal("power-unsupported"));
         // a slave whose own 64/03 shows the flag passes this check (and fails later only for the missing store)
         let flagged = openbms_flash::maint::policy::PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(openbms_proto::MaintInfo {
-            format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0, patch_rev: 3, uart0: false,
+            format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0, patch_rev: 3, uart0: false, read_caps: 0,
         }));
         crate::bank::set_live(&state, link.gen, 3, flagged);
         assert!(crate::profile::power_rtc(&state, &link, 3));

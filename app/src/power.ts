@@ -14,17 +14,18 @@ export function packFirmware(address: number | null, profile: ProfileView | null
   if (address === null || profile?.bus !== "can") return UNKNOWN;
   if (address === 0) {
     const m = profile.master;
-    if (m.kind === "patched" && m.caps?.version) return { patch: { kind: "version", version: m.caps.version }, flags: m.caps.flags ?? null };
+    if (m.kind === "patched" && m.caps?.version) return { patch: { kind: "version", version: m.caps.version }, flags: m.caps.flags ?? null, caps: m.caps.read_caps ?? null };
     // another or an older MNT, or no 64/03 at all: no supported patch
     return m.kind === "unknown-patch" || m.kind === "no-0x64" ? NONE : UNKNOWN;
   }
   if (probe?.gen !== profile.gen) return UNKNOWN;
-  if (probe.state === "proven" && probe.patch_version) return { patch: { kind: "version", version: probe.patch_version }, flags: probe.flags ?? null };
+  if (probe.state === "proven" && probe.patch_version) return { patch: { kind: "version", version: probe.patch_version }, flags: probe.flags ?? null, caps: probe.read_caps ?? null };
   return probe.state === "negative" ? NONE : UNKNOWN;
 }
-export type Firmware = Pick<Facts, "patch" | "flags">;
-const UNKNOWN: Firmware = { patch: { kind: "unknown" }, flags: null };
-const NONE: Firmware = { patch: { kind: "none" }, flags: null };
+/** `caps` left out: not known (as `factsOf` fills it). */
+export type Firmware = Pick<Facts, "patch" | "flags"> & Partial<Pick<Facts, "caps">>;
+const UNKNOWN: Firmware = { patch: { kind: "unknown" }, flags: null, caps: null };
+const NONE: Firmware = { patch: { kind: "none" }, flags: null, caps: null };
 
 /** The image flag of `address` as this connection proved it (power and clock over the CAN socket). */
 export const powerRtc = (address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): boolean =>

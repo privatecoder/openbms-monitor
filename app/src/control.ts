@@ -252,6 +252,9 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   if (sw) return t(`uart1.${sw.error}`);
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
+  // the reads of MNT format 5 on a pack whose own 64/03 does not announce them (`diagnosis.rs`, `bms_memory.rs`)
+  if (typeof e === "string" && e.startsWith("history-no-cap:")) return t("bmsh.canBus");
+  if (typeof e === "string" && e.startsWith("no-cap:")) return t("rdiag.noCap");
   const b = packBusy(e);
   if (!b) return String(e);
   return t("ctl.busy", { pack: String(b.address).padStart(2, "0"), action: t(`ctl.action.${b.action}`) });

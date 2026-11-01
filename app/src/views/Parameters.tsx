@@ -23,6 +23,7 @@ import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { HardStopLine } from "../components/HardStopLine";
 import { DiagnosisLine } from "../components/DiagnosisLine";
+import { RemoteDiagnosis } from "../components/RemoteDiagnosis";
 import { withHardStop } from "../access";
 import { PackControlSection } from "../components/PackControl";
 import { MarkerSection } from "../components/MarkerControl";
@@ -642,6 +643,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined}
           connected={connected && !!installation && !isDemo} linkKey={link} locked={lockedBut("hs") || (edit !== null && edit.address === chosen)} onBusy={busyFor("hs")} write={writeHardStop} />
         <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={lockedBut()} />
+        <RemoteDiagnosis address={chosen} known={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} connected={connected && !isDemo} linkKey={link} locked={lockedBut()} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={offers("write-name")} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
@@ -649,7 +651,8 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} offers={offers} powerLocked={chosen !== null ? lockOf(chosen) : null}
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} positive={chosen !== null && posOf(chosen)} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
-          p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link} />
+          p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link}
+          readCaps={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} />
         <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={lockedBut("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
         {chosen !== null && controlHint(where) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>

@@ -12,6 +12,7 @@ import { CUTOFF_BIT, getProfile, inverseG0, positivePatch } from "../profile";
 import { cn } from "../lib/utils";
 import { useCurrent } from "./Calibration";
 import { SectionHead, StatusLine } from "./Section";
+import { SocStoreHint } from "./RemoteDiagnosis";
 import { Button } from "./ui/button";
 
 const input = "h-8 w-28 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge";
@@ -36,8 +37,10 @@ const RS485_ONLY = ["force-heater", "set-remaining", "set-learned-full", "clear-
 
 /** „Steuern“: restart, on/off, heater, remaining capacity and clearing history and counters of the chosen pack; over the
  *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
-export function PackControlSection({ address, usable, mode = "full", offers = () => true, powerLocked = null, cutoff = false, positive = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey }: {
+export function PackControlSection({ address, usable, mode = "full", offers = () => true, powerLocked = null, cutoff = false, positive = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey, readCaps }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
+  /** the read-capability mask as this connection knows it (MNT format 5): the restart dialog shows the stored state */
+  readCaps?: number | null;
   mode?: "full" | "power";
   /** whether the catalog offers an action for this pack over this connection (`power.ts` `controlOffers`) */
   offers?: (action: string) => boolean;
@@ -475,7 +478,10 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
               <p>{t("ctl.cutoff.offMore", { pack })}</p>
               {masterBroadcast(mode, address) && <p>{t("ctl.cutoff.master")} {t("ctl.cutoff.ccl")}</p>}
             </>
-          ) : <p>{t(ask.kind === "off" && masterBroadcast(mode, address) ? "ctl.off.masterText" : `ctl.${ask.kind}.text`, { pack })}</p>}
+          ) : <>
+            <p>{t(ask.kind === "off" && masterBroadcast(mode, address) ? "ctl.off.masterText" : `ctl.${ask.kind}.text`, { pack })}</p>
+            {ask.kind === "restart" && <SocStoreHint address={address} known={readCaps} linkKey={linkKey} />}
+          </>}
         </Confirm>
       )}
     </div>

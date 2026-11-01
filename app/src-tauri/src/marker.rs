@@ -288,7 +288,7 @@ mod tests {
         MaintInfo { format, base: [16, 6, 13], patch, patch_rev: if format == 4 { 3 } else { 0 },
             // TEMP(maint-1.6): format 3 as the first 1.6 (V1_6_CUTOFF, by its build ID)
             build_id: if format == 3 { openbms_proto::maint::temp16::BUILD_ID } else { [1; 8] },
-            hard_stop: (format > 2).then_some(false), power_rtc: true, pack_cutoff: true, uart0, reserved_flags: 0 }
+            hard_stop: (format > 2).then_some(false), power_rtc: true, pack_cutoff: true, uart0, reserved_flags: 0, read_caps: 0 }
     }
 
     #[test]

@@ -8,7 +8,8 @@
 //!
 //! `INFO=03` reads the identity ([`MaintInfo`], no runtime state; newer builds answer it at every pack's own address, the
 //! address only in the frame): format 2 with 17 bytes, format 3 with 18 bytes and
-//! an image flag byte (bit 0: the hard-stop patch is compiled in), or format 4 with 19 bytes (a third patch byte). `INFO=02` reads the state
+//! an image flag byte (bit 0: the hard-stop patch is compiled in), format 4 with 19 bytes (a third patch byte) or format 5 with
+//! 21 bytes (format 4 plus a big-endian read-capability mask, MAINT 1.5.4/1.6.4). `INFO=02` reads the state
 //! ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout holds only once a format-2
 //! identity of a supported build was read on the same connection.
 
@@ -193,7 +194,7 @@ pub mod temp16 {
     }
 }
 
-/// Format-2, -3 or -4 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
+/// Format-2, -3, -4 or -5 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintInfo {
     pub format: u8,
@@ -201,7 +202,7 @@ pub struct MaintInfo {
     pub base: [u8; 3],
     /// patch version major, minor
     pub patch: [u8; 2],
-    /// format 4: the third patch byte (MAINT 1.6.1 → 1); 0 with formats 2 and 3
+    /// formats 4 and 5: the third patch byte (MAINT 1.6.1 → 1); 0 with formats 2 and 3
     pub patch_rev: u8,
     /// identifies the build (not an authentication of the device)
     pub build_id: [u8; 8],
@@ -221,14 +222,26 @@ pub struct MaintInfo {
     /// the positive Group0 bits 3/4; format 4: bit 5 the 64/04 diagnosis, bit 6 the SOC checkpoint before a planned
     /// restart, bit 7 the configurable hard stop; read through the methods below); 0 with format 2
     pub reserved_flags: u8,
+    /// format 5: the read-capability mask (bit n = `CAP_*`), only known bits (`CAPS_KNOWN`); 0 with formats 2–4
+    pub read_caps: u16,
 }
+
+/// Read-capability bits of the format-5 mask: the history 0x4B over the CAN socket, the calibration pages 64/05, the
+/// stored SOC records in 64/06, the full-width live energy counters in 64/06.
+pub const CAP_HISTORY: u8 = 0;
+pub const CAP_CALIBRATION: u8 = 1;
+pub const CAP_SOC_STORE: u8 = 2;
+pub const CAP_ENERGY: u8 = 3;
+/// The bits this app knows; a mask with any other bit is a format it does not know (never guessed).
+pub const CAPS_KNOWN: u16 = 0x000F;
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoAnswer {
-    /// the 17-byte format-2, the 18-byte format-3 or the 19-byte format-4 identity
+    /// the 17-byte format-2, the 18-byte format-3, the 19-byte format-4 or the 21-byte format-5 identity
     Known(MaintInfo),
-    /// `MNT` with another format or length (e.g. the historic 22-byte format 1): a patch the app does not
+    /// `MNT` with another format or length (e.g. the historic 22-byte format 1), or a format-5 mask with unknown bits:
+    /// a patch the app does not
     /// know, never decoded
     OtherFormat,
     /// no `MNT` signature: not an identity
@@ -241,6 +254,7 @@ impl MaintInfo {
     pub const LEN: usize = 17;
     pub const LEN3: usize = 18;
     pub const LEN4: usize = 19;
+    pub const LEN5: usize = 21;
     /// the revision byte of an unknown OEM revision
     pub const REVISION_UNKNOWN: u8 = 0xFF;
 
@@ -256,11 +270,11 @@ impl MaintInfo {
         encode_request(address, 0x64, &[0x03])
     }
 
-    /// Exactly the 17-byte format 2, the 18-byte format 3 or the 19-byte format 4.
+    /// Exactly the 17-byte format 2, the 18-byte format 3, the 19-byte format 4 or the 21-byte format 5.
     pub fn parse(info: &[u8]) -> Result<Self> {
         match Self::classify(info) {
             InfoAnswer::Known(i) => Ok(i),
-            _ => Err(Error::Layout("0x64/03 answer is none of the MNT formats 2 (17 bytes), 3 (18) or 4 (19)")),
+            _ => Err(Error::Layout("0x64/03 answer is none of the MNT formats 2 (17 bytes), 3 (18), 4 (19) or 5 (21)")),
         }
     }
 
@@ -268,24 +282,30 @@ impl MaintInfo {
         if info.len() < 4 || &info[0..3] != SIGNATURE {
             return InfoAnswer::Broken;
         }
-        // format 4 has a third patch byte, so its build ID and flags sit one byte later
+        // format 4 has a third patch byte, so its build ID and flags sit one byte later; format 5 appends the mask
         let (rev, id) = match (info[3], info.len()) {
             (2, Self::LEN) | (3, Self::LEN3) => (0, 9),
-            (4, Self::LEN4) => (info[9], 10),
+            (4, Self::LEN4) | (5, Self::LEN5) => (info[9], 10),
             _ => return InfoAnswer::OtherFormat,
         };
+        let read_caps = if info[3] == 5 { u16::from_be_bytes([info[19], info[20]]) } else { 0 };
+        if read_caps & !CAPS_KNOWN != 0 {
+            return InfoAnswer::OtherFormat;
+        }
+        let f4 = info[3] >= 4;
         let flags = if info[3] == 2 { None } else { Some(info[id + 8]) };
         let bit = |b: u8| flags.is_some_and(|f| f & (1 << b) != 0);
-        // bit 4 only in format 4; bit 3 and 5–7 kept as reported
-        let uart0 = info[3] == 4 && bit(FLAG_UART0);
-        // a configurable hard stop (format 4, bit 7) keeps bit 0 as its default, not as a compiled-in hard stop
-        let configurable = info[3] == 4 && bit(FLAG_HARD_STOP);
-        let reserved_flags = flags.map_or(0, |f| f & if info[3] == 4 { 0xE8 | u8::from(configurable) } else { 0xF8 });
+        // bit 4 only from format 4; bit 3 and 5–7 kept as reported
+        let uart0 = f4 && bit(FLAG_UART0);
+        // a configurable hard stop (from format 4, bit 7) keeps bit 0 as its default, not as a compiled-in hard stop
+        let configurable = f4 && bit(FLAG_HARD_STOP);
+        let reserved_flags = flags.map_or(0, |f| f & if f4 { 0xE8 | u8::from(configurable) } else { 0xF8 });
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[id..id + 8]);
         InfoAnswer::Known(Self {
             format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], patch_rev: rev, build_id,
             hard_stop: flags.filter(|_| !configurable).map(|f| f & (1 << FLAG_HARD_STOP_ON) != 0), power_rtc: bit(FLAG_POWER), pack_cutoff: bit(FLAG_CUTOFF), uart0, reserved_flags,
+            read_caps,
         })
     }
 
@@ -297,7 +317,7 @@ impl MaintInfo {
     }
 
     fn format4_flag(&self, bit: u8) -> bool {
-        self.format == 4 && self.reserved_flags & (1 << bit) != 0
+        self.format >= 4 && self.reserved_flags & (1 << bit) != 0
     }
 
     /// Image flag bit 3: Group0 bits 3/4 positive (bit 3 at 1 allows power and clock, bit 4 at 1 the extended off).
@@ -326,11 +346,16 @@ impl MaintInfo {
         self.hard_stop_configurable().then_some(self.reserved_flags & (1 << FLAG_HARD_STOP_ON) != 0)
     }
 
-    /// Whether the app supports this build's patch functions: MNT format 4 from MAINT 1.5.3 in the 1.5 line and from
-    /// 1.6.3 on. Below, the patch is shown but treated like the original firmware.
+    /// Format 5, read-capability bit `bit` (`CAP_*`): the read is offered only with its own bit.
+    pub fn cap(&self, bit: u8) -> bool {
+        self.read_caps & (1 << bit) != 0
+    }
+
+    /// Whether the app supports this build's patch functions: MNT format 4 or 5 from MAINT 1.5.3 in the 1.5 line and
+    /// from 1.6.3 on. Below, the patch is shown but treated like the original firmware.
     pub fn supported(&self) -> bool {
         // TEMP(maint-1.6)
-        temp16::is(self) || (self.format == 4 && supported_version([self.patch[0], self.patch[1], self.patch_rev]))
+        temp16::is(self) || (matches!(self.format, 4 | 5) && supported_version([self.patch[0], self.patch[1], self.patch_rev]))
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -467,7 +492,28 @@ mod tests {
         assert!(MaintInfo::parse(&f4).is_err());
         let mut f5 = info4(1, 0x16);
         f5[3] = 5;
-        assert_eq!(MaintInfo::classify(&f5), InfoAnswer::OtherFormat);
+        assert_eq!(MaintInfo::classify(&f5), InfoAnswer::OtherFormat, "format 5 with 19 bytes");
+        assert_eq!(MaintInfo::classify(&[info4(1, 0x16), vec![0, 0]].concat()), InfoAnswer::OtherFormat, "format 4 with 21 bytes");
+    }
+
+    #[test]
+    fn format_5_appends_the_read_capabilities() {
+        // the 1.5.4 and 1.6.4 releases: the format-4 offsets, then mask 000F
+        let a = MaintInfo::parse(&hex("4D4E540510060D01050480112D861B8329C43A000F")).unwrap();
+        assert_eq!((a.format, a.patch_text(), a.build_id_hex(), a.image_flags(), a.read_caps), (5, "1.5.4".to_string(), "80112d861b8329c4".to_string(), 0x3A, 0x0F));
+        assert_eq!((a.diagnostics(), a.checkpoint(), a.positive(), a.uart0, a.hard_stop, a.supported()), (true, false, true, true, Some(false), true));
+        let b = MaintInfo::parse(&hex("4D4E540510060D010604A8676B52BAE281FFFE000F")).unwrap();
+        assert_eq!((b.patch_text(), b.image_flags(), b.hard_stop_default(), b.checkpoint(), b.supported()), ("1.6.4".to_string(), 0xFE, Some(false), true, true));
+        assert!([CAP_HISTORY, CAP_CALIBRATION, CAP_SOC_STORE, CAP_ENERGY].iter().all(|&c| b.cap(c)));
+        // a partial mask names only its bits
+        let only = MaintInfo::parse(&hex("4D4E540510060D010604A8676B52BAE281FFFE0005")).unwrap();
+        assert_eq!((only.cap(CAP_HISTORY), only.cap(CAP_CALIBRATION), only.cap(CAP_SOC_STORE), only.cap(CAP_ENERGY)), (true, false, true, false));
+        // an unknown bit: a format the app does not know, never partly read
+        assert_eq!(MaintInfo::classify(&hex("4D4E540510060D010604A8676B52BAE281FFFE001F")), InfoAnswer::OtherFormat);
+        assert_eq!(MaintInfo::classify(&hex("4D4E540510060D010604A8676B52BAE281FFFE800F")), InfoAnswer::OtherFormat);
+        // below the support boundary format 5 stays unsupported; format 4 has no capabilities
+        assert!(!MaintInfo::parse(&hex("4D4E540510060D010602A8676B52BAE281FFFE000F")).unwrap().supported());
+        assert_eq!(MaintInfo::parse(&hex("4D4E540410060D010603BAA01ECD5AF4EB28FE")).unwrap().read_caps, 0);
     }
 
     fn hex(s: &str) -> Vec<u8> {
