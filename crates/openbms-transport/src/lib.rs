@@ -676,11 +676,28 @@ impl Connection {
         }
     }
 
-    /// One record of the internal history (0x4B; RS485-1/2 only): the oldest with `next = false`, else the one
-    /// after the last read. `None`: no records; the flag marks the last record.
+    /// One record of the internal history (0x4B; RS485-1/2, and the CAN socket of a build with read-capability bit 0):
+    /// the oldest with `next = false`, else the one after the last read. `None`: no records; the flag marks the last
+    /// record. Never asked twice: an unanswered „next“ may already have moved the pack's read index.
     pub fn history_record(&mut self, address: u8, next: bool) -> Result<Option<(HistoryRecord, bool)>> {
-        let f = self.ascii(&memory::history_request(address, next)?, address)?;
+        let f = self.ascii_as(&memory::history_request(address, next)?, address, |i| memory::parse_history(i).is_ok())?;
         Ok(memory::parse_history(&f.info)?)
+    }
+
+    /// Calibration page `page` of the pack at `address` (0x64/05, read-capability bit 1; changes nothing). The answer
+    /// must name the page asked for: primary and backup have the same length, a late one must not pass as the other.
+    pub fn calibration_page(&mut self, address: u8, page: openbms_proto::CalPage) -> Result<openbms_proto::CalibrationPage> {
+        use openbms_proto::remote;
+        let f = self.ascii_as(&remote::calibration_request(address, page)?, address, |i| remote::parse_calibration(i, page).is_ok())?;
+        Ok(remote::parse_calibration(&f.info, page)?)
+    }
+
+    /// The stored capacity records and live energy of the pack at `address` (0x64/06, read-capability bit 2 or 3;
+    /// changes nothing).
+    pub fn soc_store(&mut self, address: u8) -> Result<openbms_proto::SocStore> {
+        use openbms_proto::remote;
+        let f = self.ascii_as(&remote::soc_store_request(address)?, address, |i| remote::parse_soc_store(i).is_ok())?;
+        Ok(remote::parse_soc_store(&f.info)?)
     }
 
     /// Modbus FC03/04 read (master only, CAN socket bus).

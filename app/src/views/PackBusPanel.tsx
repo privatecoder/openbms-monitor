@@ -7,6 +7,7 @@ import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
+import { RowSocNote } from "../components/RemoteDiagnosis";
 
 const select = "h-9 rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-charge disabled:opacity-50";
 const toneClass: Record<Tone, string> = { ok: "text-ok", warn: "text-discharge", muted: "text-muted", alarm: "text-alarm" };
@@ -243,6 +244,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
                     {/* one button in a fixed place: the backend checks quiet bus, target and installation, then flashes */}
                     {d && <ActButton variant="secondary" size="sm" className="ml-auto" spinning={(action === "flash" || running) && target === a} disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => flash(a, version)}>{t("maint.packs.flash")}</ActButton>}
                   </div>
+                  {d && image && <RowSocNote port={port} address={a} disabled={busy || running} />}
                   {pending && <p className="text-alarm">{t("maint.packs.pending", { pack: a })}</p>}
                   {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                 </li>

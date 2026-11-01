@@ -101,9 +101,10 @@ pub const PACK_CUTOFF_MIN: [u8; 2] = openbms_proto::access::CUTOFF_MIN;
 pub use openbms_proto::access::pack_cutoff_of;
 
 /// The `0x64/03` formats the app decodes; all carry the same identity fields (format 3 adds the image flags, format 4 a
-/// third patch byte). Only format 4 can be supported (TEMP(maint-1.6): and the first 1.6 in format 3, `maint::temp16`);
-/// formats 2 and 3 stay decoded after it, so older patch builds show as unsupported instead of unknown.
-pub const MNT_FORMATS: [u8; 3] = [2, 3, 4];
+/// third patch byte, format 5 the read-capability mask). Only formats 4 and 5 can be supported (TEMP(maint-1.6): and the
+/// first 1.6 in format 3, `maint::temp16`); formats 2 and 3 stay decoded after it, so older patch builds show as
+/// unsupported instead of unknown.
+pub const MNT_FORMATS: [u8; 4] = [2, 3, 4, 5];
 
 /// The capabilities of a supported `0x64/03` identity (`MaintInfo::supported`): every supported build has them all;
 /// None for another or an older build (its patch functions are not used).
@@ -130,6 +131,8 @@ pub struct PatchBuild {
     pub mnt_format: u8,
     /// the image flag byte of its `0x64/03`
     pub flags: u8,
+    /// format 5: the read-capability mask of its `0x64/03`; 0 before
+    pub read_caps: u16,
     /// the build ID of `0x64/03`, 16 lower-case hex digits
     pub build_id: &'static str,
     /// SHA-256 of the decoded application code (`ehex::Image::code_sha256`)
@@ -145,12 +148,15 @@ impl PatchBuild {
         v.push(self.mnt_format);
         v.extend_from_slice(&self.base);
         v.extend_from_slice(&self.patch);
-        if self.mnt_format == 4 {
+        if self.mnt_format >= 4 {
             v.push(self.patch_rev);
         }
         v.extend((0..8).map(|i| u8::from_str_radix(&self.build_id[2 * i..2 * i + 2], 16).unwrap_or(0)));
         if self.mnt_format != 2 {
             v.push(self.flags);
+        }
+        if self.mnt_format == 5 {
+            v.extend_from_slice(&self.read_caps.to_be_bytes());
         }
         MaintInfo::parse(&v).expect("a listed build has a valid identity")
     }
@@ -181,6 +187,7 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[
         patch_rev: 3,
         mnt_format: 4,
         flags: 0x3A,
+        read_caps: 0,
         build_id: "2b89286ed6c14604",
         code_sha256: "27be05dc5f9ab0f648861e2d8e9feaffc4685ce98d59c02cccb7a3d114a38cd0",
         ehex_sha256: "dee768334ad4227999b41efd0c4232c0b5c9f323c973cd392b5651a1b5f29325",
@@ -194,6 +201,7 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[
         patch_rev: 3,
         mnt_format: 4,
         flags: 0xFE,
+        read_caps: 0,
         build_id: "baa01ecd5af4eb28",
         code_sha256: "fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f",
         ehex_sha256: "99ea2cc5496358ec127300b55a4ca718acb1c4f6ee16f13edbe346f7aa4db062",
@@ -208,9 +216,37 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[
         patch_rev: 0,
         mnt_format: openbms_proto::maint::temp16::FORMAT,
         flags: openbms_proto::maint::temp16::FLAGS,
+        read_caps: 0,
         build_id: openbms_proto::maint::temp16::BUILD,
         code_sha256: "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
         ehex_sha256: "32f27f3f128a591759bd2e205579b2dfdccf50c3717e50c7092c1e30f44d146f",
+    },
+    // MAINT 1.5.4 DIAGNOSTICS_POSITIVE: 1.5.3 plus MNT format 5 with the read capabilities 000F (history over the CAN
+    // socket, calibration pages, stored SOC records, full-width energy; 57304 app bytes, 225 update blocks)
+    PatchBuild {
+        name: "16.06.13 MAINT 1.5.4",
+        base: [16, 6, 13],
+        patch: [1, 5],
+        patch_rev: 4,
+        mnt_format: 5,
+        flags: 0x3A,
+        read_caps: 0x000F,
+        build_id: "80112d861b8329c4",
+        code_sha256: "0e10295aac3f3c88ea5f77f1deaf431a67f6f720c7e82a7e805bf4e1ecb34ef3",
+        ehex_sha256: "bc1442ed075d94f10fcd08d2ce322c9e1eb23748ee0459894f1bf74cb3b18382",
+    },
+    // MAINT 1.6.4 CUTOFF_POSITIVE: 1.6.3 plus MNT format 5 with the read capabilities 000F (59236 app bytes, 233 blocks)
+    PatchBuild {
+        name: "16.06.13 MAINT 1.6.4",
+        base: [16, 6, 13],
+        patch: [1, 6],
+        patch_rev: 4,
+        mnt_format: 5,
+        flags: 0xFE,
+        read_caps: 0x000F,
+        build_id: "a8676b52bae281ff",
+        code_sha256: "cd4ce64e20bf04c37e81da37daa170be53cf9380a589dd3d76c12972374d2f14",
+        ehex_sha256: "3a5ebf37197320ef6ba0ef5aba85daa981fe829ef312d9d84fc5ac0062c6bf3f",
     },
 ];
 
@@ -307,6 +343,14 @@ mod tests {
         assert_eq!(patch_image(b.code_sha256), Some("16.06.13 MAINT 1.6.3"));
         // every listed build is supported
         assert!(PATCH_BUILDS.iter().all(|b| b.caps().is_some()));
+        // the format-5 builds answer exactly their release identity
+        let hex = |s: &str| (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        for (name, info_hex) in [("16.06.13 MAINT 1.5.4", "4D4E540510060D01050480112D861B8329C43A000F"), ("16.06.13 MAINT 1.6.4", "4D4E540510060D010604A8676B52BAE281FFFE000F")] {
+            let b = PATCH_BUILDS.iter().find(|b| b.name == name).unwrap();
+            assert_eq!(b.info(), MaintInfo::parse(&hex(info_hex)).unwrap(), "{name}");
+            assert_eq!(patch_image(b.code_sha256), Some(name));
+            assert_eq!(b.caps(), Some(Caps { mnt_format: 5, ..PROOF_CAPS }));
+        }
     }
 
     #[test]

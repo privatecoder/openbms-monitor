@@ -153,7 +153,7 @@ mod tests {
     /// A format-4 identity; 1.5 and 1.6 as their supported revisions 1.5.3 and 1.6.3, any other version with revision 0.
     fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
         let patch_rev = match patch { [1, 5] => 3, [1, 6] => 3, _ => 0 };
-        MaintInfo { format: 4, base, patch, build_id, hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0x20, patch_rev, uart0: true }
+        MaintInfo { format: 4, base, patch, build_id, hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0x20, read_caps: 0, patch_rev, uart0: true }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })
@@ -188,8 +188,8 @@ mod tests {
     #[test]
     fn a_second_listed_entry_is_configured_like_the_first() {
         static TABLE: [PatchBuild; 2] = [
-            PatchBuild { name: "16.06.13 MAINT 1.6.3", base: [16, 6, 13], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, build_id: "baa01ecd5af4eb28", code_sha256: "a", ehex_sha256: "b" },
-            PatchBuild { name: "16.06.14 MAINT 1.6.3", base: [16, 6, 14], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
+            PatchBuild { name: "16.06.13 MAINT 1.6.3", base: [16, 6, 13], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, read_caps: 0, build_id: "baa01ecd5af4eb28", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "16.06.14 MAINT 1.6.3", base: [16, 6, 14], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, read_caps: 0, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
         ];
         let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 6], LISTED)))).with_state(state(0, 0));
         let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));

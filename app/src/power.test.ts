@@ -23,7 +23,7 @@ const probe = (p: Partial<PackProbeView>): PackProbeView => {
   return v.state === "proven" ? { patch_version: r.version, flags: r.flags, ...v } : v;
 };
 /** The firmware behind a proven (or not) power and clock flag. */
-const fw = (power: boolean) => ({ patch: { kind: "version" as const, version: [1, 5] as [number, number] }, flags: power ? 2 : 0 });
+const fw = (power: boolean) => ({ patch: { kind: "version" as const, version: [1, 5] as [number, number] }, flags: power ? 2 : 0, caps: 0 });
 const where = { connected: true, bus: "can" as const, demo: false, installation: true };
 
 describe("power and clock over the CAN socket", () => {

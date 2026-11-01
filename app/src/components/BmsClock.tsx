@@ -65,7 +65,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
   const lang = i18n.language;
   const now = useNow();
   const can = bus === "can" && !isDemo;
-  const fwOf = (a: number | null): Firmware => (a !== null && firmware?.(a)) || { patch: { kind: "unknown" }, flags: null };
+  const fwOf = (a: number | null): Firmware => (a !== null && firmware?.(a)) || { patch: { kind: "unknown" }, flags: null, caps: null };
   const accessOf = (a: number | null, lock: boolean | null) => clockAccess({ connected, bus, demo: isDemo, installation, fw: fwOf(a), locked: lock });
   const access = accessOf(address, address !== null ? powerLock?.(address) ?? null : null);
   const usable = access.read;

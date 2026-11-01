@@ -67,10 +67,15 @@ describe("the firmware a way needs", () => {
     expect(need("pack-lock-set", "uart1")).toBe("ab MAINT 1.6.3");
     expect(need("hard-stop", "uart1")).toBe("ab MAINT 1.6.3");
     expect(need("read-system", "uart1")).toBe("ab OEM 16.06.04");
+    // the reads of MNT format 5 by their read-capability bits
+    expect(need("read-history", "uart1")).toBe("ab MAINT 1.5.4");
+    expect(need("read-calibration", "uart0")).toBe("ab MAINT 1.5.4");
+    expect(need("read-soc-store", "uart1")).toBe("ab MAINT 1.5.4");
+    expect(need("read-history", "uart0")).toBe("");
     // the original firmware is enough
     expect(need("read-telemetry", "uart0")).toBe("");
     // every way with a firmware condition gets a text
-    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab MAINT 1\.[56]\.[23]/);
+    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab MAINT 1\.[56]\.[234]/);
   });
 });
 

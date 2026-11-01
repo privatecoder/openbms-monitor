@@ -28,6 +28,8 @@ pub const MAX_RECORDS: usize = 520;
 pub const PRE_READ: &str = "pre-read: String 2 could not be read before the write; nothing was written";
 
 pub(crate) const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
+/// The refusal of a history read over the CAN socket of a build without read-capability bit 0 (the UI names it).
+pub const HISTORY_NO_CAP: &str = "history-no-cap: over the CAN socket only with MAINT 1.5.4/1.6.4 or later; RS485-1/2 reads every pack";
 const CAN_SOCKET_ONLY: &str = "this command exists only on the CAN socket";
 
 /// The UART a bus reaches the packs on.
@@ -53,11 +55,15 @@ pub(crate) fn flows(action: Action) -> &'static [Channel] {
         A::HardStop => BOTH,
         // RS485-1/2 only: the name rides in the 169-byte ASCII A1, the serial strings and the history have their own
         // frames and checks there, the bootloader listens there
-        A::WriteName | A::WriteSerials | A::ReadHistory | A::Flash => &[Channel::Uart0],
+        A::WriteName | A::WriteSerials | A::Flash => &[Channel::Uart0],
+        // the history: RS485-1/2, and the CAN socket of a build with read-capability bit 0 (MNT format 5)
+        A::ReadHistory => BOTH,
         // RS485-1/2 with image flag bit 4: „Wartungs-Marker“ (`marker.rs`) and „Platine flashen“ (`bench.rs`)
         A::ReadIdentity | A::MaintStatus | A::MaintStop => BOTH,
         // the memory diagnosis (`diagnosis.rs`)
         A::ReadDiagnosis => BOTH,
+        // the calibration pages and the stored SOC records / live energy (`diagnosis.rs`, MNT format 5)
+        A::ReadCalibration | A::ReadSocStore => BOTH,
         A::MaintStart | A::ReadSystem => &[Channel::Uart1],
         A::DisplayTunnel => &[],
     }
@@ -123,6 +129,21 @@ pub struct HistoryRead {
     pub records: Vec<HistoryRecord>,
     pub end: End,
     pub error: Option<String>,
+    /// with an error: "eeprom" (RTN 08: a memory error; over the CAN socket the pack restored its read index, over
+    /// RS485-1/2 the original firmware promises nothing), "silent" (no answer: the index may have moved on; never
+    /// continued automatically) or "other"
+    pub error_kind: Option<&'static str>,
+}
+
+/// The kind of a history read error (`HistoryRead::error_kind`), from the transport's text.
+fn error_kind(e: &str) -> &'static str {
+    if e.contains("RTN 0x08") {
+        "eeprom"
+    } else if e.contains("no answer within") {
+        "silent"
+    } else {
+        "other"
+    }
 }
 
 /// Progress event "bms-history-progress": `n` records read so far.
@@ -160,7 +181,8 @@ pub fn read_all(
             Err(e) => break (End::Error, Some(e)),
         }
     };
-    HistoryRead { address, records, end, error }
+    let error_kind = error.as_deref().map(error_kind);
+    HistoryRead { address, records, end, error, error_kind }
 }
 
 /// The clock (0x4D); over the CAN socket only of a pack with the power and clock service (`power::clock`).
@@ -760,6 +782,13 @@ pub async fn bms_history(app: AppHandle, state: State<'_, AppState>, address: u8
     let PackAction { guard: pack, link, bus } = PackAction::read(&state, address, "history")?;
     let links = state.link.clone();
     on_bus(Action::ReadHistory, bus)?;
+    // over the CAN socket only a build that announces it in its own 64/03 (read-capability bit 0)
+    if bus == Bus::CanSocketBus {
+        let caps = with_link(&state.conn, &state.flashing, &state.link, &link, |c| Ok(c.maint_info(address).ok().filter(|i| i.supported()).map_or(0, |i| i.read_caps)))?;
+        if caps & (1 << openbms_proto::maint::CAP_HISTORY) == 0 {
+            return Err(HISTORY_NO_CAP.into());
+        }
+    }
     state.memory_cancel.store(false, Ordering::SeqCst);
     let (conn, flashing, cancel) = (state.conn.clone(), state.flashing.clone(), state.memory_cancel.clone());
     tauri::async_runtime::spawn_blocking(move || {
@@ -1128,7 +1157,11 @@ mod tests {
         *state.bus.lock().unwrap() = Some(Bus::CanSocketBus);
         // not refused for the bus: it fails here only for the missing connection
         assert_eq!(full_capacity(&state, 2).unwrap_err(), "not connected");
-        assert_eq!(on_bus(Action::ReadHistory, Bus::CanSocketBus).unwrap_err(), PACK_BUS_ONLY);
+        // the history has a CAN socket way now (read-capability bit 0, checked by `bms_history` from the pack's 64/03)
+        assert_eq!(on_bus(Action::ReadHistory, Bus::CanSocketBus), Ok(Channel::Uart1));
+        for a in [Action::ReadCalibration, Action::ReadSocStore] {
+            assert_eq!((on_bus(a, Bus::CanSocketBus), on_bus(a, Bus::PackBus)), (Ok(Channel::Uart1), Ok(Channel::Uart0)), "{a:?}");
+        }
         assert_eq!(on_bus(Action::MaintStart, Bus::PackBus).unwrap_err(), CAN_SOCKET_ONLY);
         for a in [Action::ForceHeater, Action::ClearHistory, Action::SetRemaining, Action::SetLearnedFull, Action::Calibrate, Action::SetCanProtocol, Action::WriteSerials, Action::WriteName] {
             assert_eq!(on_bus(a, Bus::CanSocketBus).unwrap_err(), PACK_BUS_ONLY, "{a:?}");
@@ -1210,7 +1243,14 @@ mod tests {
 
         let mut n = 0;
         let r = read_all(1, &AtomicBool::new(false), |_| { n += 1; if n < 3 { Ok(Some(record(false))) } else { Err("timeout".into()) } }, |_| {});
-        assert_eq!((r.end, r.records.len(), r.error.as_deref()), (End::Error, 2, Some("timeout")));
+        assert_eq!((r.end, r.records.len(), r.error.as_deref(), r.error_kind), (End::Error, 2, Some("timeout"), Some("other")));
+        // the pack's EEPROM error (its read index restored) and silence (the index may have moved) are told apart; the
+        // loop stops at the first error and never asks again
+        let mut asked = 0;
+        let r = read_all(1, &AtomicBool::new(false), |_| { asked += 1; Err("protocol: BMS returned RTN 0x08".into()) }, |_| {});
+        assert_eq!((r.error_kind, asked), (Some("eeprom"), 1));
+        let r = read_all(1, &AtomicBool::new(false), |_| Err("no answer within 1.5s".into()), |_| {});
+        assert_eq!(r.error_kind, Some("silent"));
 
         let cancel = AtomicBool::new(false);
         let r = read_all(1, &cancel, |_| Ok(Some(record(false))), |n| if n == 4 { cancel.store(true, Ordering::SeqCst) });
