@@ -45,6 +45,17 @@ jobs:
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
+      # the release text: the version's section of CHANGELOG.md plus the download notes (fails without a section)
+      - name: Release notes
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          {
+            echo 'body<<NOTES_END'
+            tools/release_notes.sh "$(node -p "require('./app/package.json').version")"
+            echo 'NOTES_END'
+          } >> "$GITHUB_OUTPUT"
       - name: Build and publish
         if: startsWith(github.ref, 'refs/tags/')
         uses: tauri-apps/tauri-action@v0
@@ -55,7 +66,7 @@ jobs:
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           tagName: ${{ github.ref_name }}
           releaseName: OpenBMS Monitor ${{ github.ref_name }}
-          releaseBody: See CHANGELOG.md for the changes and the README for what this pre-release does and what is untested.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: true
       # tauri-action also uploads the macOS .app as .app.tar.gz (only useful for an updater); the DMG is the installer.

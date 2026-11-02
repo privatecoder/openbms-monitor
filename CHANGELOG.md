@@ -2,13 +2,13 @@
 
 All notable changes of OpenBMS Monitor. Newest first; the app shows this file in its About view.
 
-## Unreleased
+## 0.2.0-beta — 2026-11-02
 
 - About view: version, links to the repository, releases, protocol docs and license, the data folder, and this changelog.
 - BMS history archive: every history read is stored per installation and board (checked before and after the read), deduplicated, shown without a connection, exported as CSV and carried in the installation export (`bms-history.jsonl`).
 - MAINT 1.5.4/1.6.4: the firmware identity reports read capabilities (format MNT05); the BMS history is read via the CAN socket where reported; remote diagnosis reads the calibration (active and both stored copies), the stored capacity and SOC against the live values, and the full-width energy counters.
 - Reconnect also runs while the window is hidden, with growing pauses (1, 2, 4, 8, 16 min, then every 30 min, ten attempts).
-- Release workflow: the temporary `.app.tar.gz` is removed after the upload.
+- Release workflow: release notes come from this changelog; the temporary `.app.tar.gz` is removed after the upload.
 
 ## 0.1.0-beta — 2026-10-28
 
