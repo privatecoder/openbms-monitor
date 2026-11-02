@@ -12,6 +12,7 @@ import { Diagnosis } from "./views/Diagnosis";
 import { ParametersView, showStoredParameters } from "./views/Parameters";
 import { History } from "./views/History";
 import { Installations } from "./views/Installations";
+import { About } from "./views/About";
 import { HelpProvider, helpTitle } from "./help";
 import { useLiveData } from "./store";
 import { packFresh } from "./freshness";
@@ -113,6 +114,8 @@ export default function App() {
           ) : view === "installations" ? (
             <Installations maint={maint} connected={connected}
               onParameters={(id) => { showStoredParameters(); void maint.switchTo(id).then(() => { enableMaintenance(); setView("params"); }); }} />
+          ) : view === "about" ? (
+            <About />
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (

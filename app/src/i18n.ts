@@ -5,7 +5,14 @@ const resources = {
   de: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Übersicht", diag: "Diagnose", history: "Verlauf", params: "Parameter", cells: "Zellen", installations: "Anlagen", firmware: "Firmware", help: "Hilfe" },
+      nav: { dashboard: "Übersicht", diag: "Diagnose", history: "Verlauf", params: "Parameter", cells: "Zellen", installations: "Anlagen", firmware: "Firmware", help: "Hilfe", about: "Über" },
+      about: {
+        version: "Version {{version}}", prerelease: "Vorabversion",
+        intro: "Plattformübergreifender Monitor für das Seplos BMS V2.0 (Platinen 10C/10E, Modul EMU1101), als Ersatz für den Windows-BatteryMonitor des Herstellers. Freie Software unter MIT-Lizenz, ohne Verbindung zum Hersteller.",
+        link: { repo: "Quellcode", repoHint: "Repository auf GitHub", releases: "Versionen", releasesHint: "Downloads aller Versionen auf GitHub", docs: "Protokoll-Doku", docsHint: "Firmware- und Protokollanalyse des EMU1101 (englisch)", issues: "Fehler melden", issuesHint: "Fehler und Wünsche auf GitHub", license: "Lizenz (MIT)", licenseHint: "Lizenztext auf GitHub", changelog: "Auf GitHub" },
+        data: "Datenordner", dataHint: "Hier liegen Aufzeichnung, Anlagen, Parameterstände, Exporte und Firmware-Protokolle. Alles bleibt beim Beenden der App erhalten.", showData: "Im Dateimanager zeigen",
+        changelog: "Änderungen", changelogLang: "Das Änderungsprotokoll ist englisch.",
+      },
       hist: {
         tab: { app: "App-Aufzeichnung", report: "Bericht", bms: "Aus dem BMS" },
         title: "Verlauf", intro: "Aufgezeichnete Werte über die Zeit: Strom, SOC, Spannungen und Temperaturen je Pack, die Werte des Masters, die Zellen eines Packs und die Meldungen.",
@@ -1177,7 +1184,14 @@ const resources = {
   en: {
     translation: {
       app: "OpenBMS Monitor",
-      nav: { dashboard: "Overview", diag: "Diagnosis", history: "History", params: "Parameters", cells: "Cells", installations: "Installations", firmware: "Firmware", help: "Help" },
+      nav: { dashboard: "Overview", diag: "Diagnosis", history: "History", params: "Parameters", cells: "Cells", installations: "Installations", firmware: "Firmware", help: "Help", about: "About" },
+      about: {
+        version: "Version {{version}}", prerelease: "pre-release",
+        intro: "Cross-platform monitor for the Seplos BMS V2.0 (boards 10C/10E, module EMU1101), as a replacement for the vendor's Windows-only BatteryMonitor. Free software under the MIT license, not affiliated with the vendor.",
+        link: { repo: "Source code", repoHint: "Repository on GitHub", releases: "Releases", releasesHint: "Downloads of all versions on GitHub", docs: "Protocol docs", docsHint: "Firmware and protocol analysis of the EMU1101", issues: "Report a problem", issuesHint: "Bugs and requests on GitHub", license: "License (MIT)", licenseHint: "License text on GitHub", changelog: "On GitHub" },
+        data: "Data folder", dataHint: "Recording, installations, parameter states, exports and firmware logs live here. Everything is kept when the app is closed.", showData: "Show in file manager",
+        changelog: "Changes", changelogLang: "",
+      },
       hist: {
         tab: { app: "App recording", report: "Report", bms: "From the BMS" },
         title: "History", intro: "Recorded values over time: current, SOC, voltages and temperatures per pack, the master's values, the cells of one pack and the messages.",
