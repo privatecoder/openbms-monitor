@@ -55,7 +55,7 @@ jobs:
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           tagName: ${{ github.ref_name }}
           releaseName: OpenBMS Monitor ${{ github.ref_name }}
-          releaseBody: See the README for what this pre-release does and what is untested.
+          releaseBody: See CHANGELOG.md for the changes and the README for what this pre-release does and what is untested.
           releaseDraft: false
           prerelease: true
       # tauri-action also uploads the macOS .app as .app.tar.gz (only useful for an updater); the DMG is the installer.

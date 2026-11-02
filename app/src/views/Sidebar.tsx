@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Wrench } from "lucide-react";
+import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Info, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
 import { patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
@@ -514,7 +514,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       {/* navigation scrolls if it ever gets long; connection and settings stay fixed at the bottom */}
       <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 pb-4">
         {[["dashboard", LayoutDashboard], ["history", ChartLine], ["cells", Database], ["installations", Building2],
-          ...(maintenance ? [["diag", Gauge], ["params", SlidersHorizontal], ["firmware", Cpu]] : [])].map(([id, Icon]) => {
+          ...(maintenance ? [["diag", Gauge], ["params", SlidersHorizontal], ["firmware", Cpu]] : []), ["about", Info]].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
             <button key={id as string} onClick={() => setView(id as string)} disabled={locked}

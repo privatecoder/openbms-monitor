@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import pkg from "../package.json";
 import { KEYS, UNITS, type Parameters } from "./params";
 import { CAN_PROTOCOLS, type Calibration } from "./calibration";
 import type { RestartResult } from "./control";
@@ -251,6 +252,10 @@ export interface PairReport { plus: number; minus: number; days: PairDay[] }
 /** `spread_from`: first row with spread data in the period; `raw_from`: first raw row (pair figures start there). */
 export interface HealthReport { from: number; to: number; packs: PackReport[]; pairs: PairReport[]; spread_from: number | null; raw_from: number | null }
 export interface ExportStats { rows: number; files: string[] }
+/** About view: the app's version and its data folder (databases, exports, logs) */
+export interface AppInfo { version: string; data_dir: string }
+/** the fixed pages the About view opens in the browser */
+export type AboutLink = "repo" | "releases" | "changelog" | "issues" | "license" | "docs";
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
 export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean; pack_cutoff?: boolean; positive?: boolean }
@@ -554,6 +559,8 @@ const tauriApi = {
   /** Saves into the app's parameters folder and returns the full path. */
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
+  appInfo: () => invoke<AppInfo>("app_info"),
+  openLink: (which: AboutLink) => invoke<void>("open_link", { which }),
   /** RS485-1/2, and over the CAN socket a pack with the power and clock service (`power.ts`) */
   bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
   /** sets the clock to `time` and returns the clock read back; over the CAN socket after the identity check and the lock
@@ -789,6 +796,8 @@ function demoApi(): typeof tauriApi {
     historyClear: async () => {},
     historyDirs: async () => ["", ""],
     revealHistory: async () => {},
+    appInfo: async () => ({ version: pkg.version, data_dir: "" }),
+    openLink: async () => {},
     parameters: async (address) => {
       await new Promise((r) => setTimeout(r, 250));
       if (address === 0) throw new Error("timeout after 1000 ms");

@@ -1100,6 +1100,47 @@ fn reveal_parameters(app: AppHandle, path: Option<String>) -> Result<(), String>
     reveal(&parameters_dir(&app)?, path)
 }
 
+/// Version and data folder for the About view.
+#[derive(Serialize)]
+struct AppInfo {
+    version: String,
+    data_dir: String,
+}
+
+#[tauri::command]
+fn app_info(app: AppHandle) -> Result<AppInfo, String> {
+    Ok(AppInfo {
+        version: app.package_info().version.to_string(),
+        data_dir: app.path().app_data_dir().map_err(|e| e.to_string())?.display().to_string(),
+    })
+}
+
+/// The fixed web pages of the About view; the UI names one, never passes a URL.
+fn link_url(which: &str) -> Option<&'static str> {
+    Some(match which {
+        "repo" => "https://github.com/privatecoder/openbms-monitor",
+        "releases" => "https://github.com/privatecoder/openbms-monitor/releases",
+        "changelog" => "https://github.com/privatecoder/openbms-monitor/blob/main/CHANGELOG.md",
+        "issues" => "https://github.com/privatecoder/openbms-monitor/issues",
+        "license" => "https://github.com/privatecoder/openbms-monitor/blob/main/LICENSE",
+        "docs" => "https://github.com/privatecoder/seplos-emu1101-docs",
+        _ => return None,
+    })
+}
+
+/// Open one of the About view's pages in the default browser.
+#[tauri::command]
+fn open_link(which: String) -> Result<(), String> {
+    let url = link_url(&which).ok_or_else(|| format!("unknown link: {which}"))?;
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("explorer").arg(url).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// The standard macOS menu, except Quit: the predefined item sends `terminate:`, which ends the app without
 /// an ExitRequested event, so a flash could be cut off. Our own item goes through `app.exit`, which can be refused.
 #[cfg(target_os = "macos")]
@@ -1180,7 +1221,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![diagnosis::pack_diagnosis, diagnosis::pack_image_flags, diagnosis::pack_calibration, diagnosis::pack_soc_store, diagnosis::firmware_soc_store, list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::write_name, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::bms_archive_packs, bms_memory::bms_archive, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, control::pack_set_learned_full, marker::marker_read, marker::marker_set, firmware::firmware_check_image, bench::bench_scan, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::access_view, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status, wiring::set_wiring])
+        .invoke_handler(tauri::generate_handler![diagnosis::pack_diagnosis, diagnosis::pack_image_flags, diagnosis::pack_calibration, diagnosis::pack_soc_store, diagnosis::firmware_soc_store, list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_clear, history_dirs, reveal_history, app_info, open_link, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::write_name, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::bms_archive_packs, bms_memory::bms_archive, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, control::pack_set_learned_full, marker::marker_read, marker::marker_set, firmware::firmware_check_image, bench::bench_scan, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::access_view, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status, wiring::set_wiring])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

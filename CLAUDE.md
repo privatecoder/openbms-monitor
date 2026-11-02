@@ -44,6 +44,7 @@ python3 tools/gen_help.py      # regenerate help/ after editing the help tables
 - Match the surrounding code: short comments that explain why, compact components, Tailwind tokens from `index.css` (`text-muted`, `bg-sunken`, `text-alarm`, …).
 - Everything stored about a bank belongs to an installation id: the connection carries it (`connect(endpoint, installation)`), answers are stored only while that connection is current (`for_link`). „Nur ansehen“ stores nothing and writes nothing to a pack; the demo stays storage-free.
 - Checks that compare packs wait until every found pack has answered, so a partial picture right after connecting does not raise false warnings.
+- Every user-visible change gets a line under `## Unreleased` in `CHANGELOG.md` (English, generic); a release renames that section to `## <version> — <date>` (version as in `Cargo.toml`, checked by `about.test.ts`).
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Pushing to `main` is routine.
 
 ## Open roadmap
