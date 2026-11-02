@@ -255,6 +255,9 @@ export interface ExportStats { rows: number; files: string[] }
 /** About view: the app's version and its data folder (databases, exports, logs) */
 export interface AppInfo { version: string; data_dir: string }
 /** the fixed pages the About view opens in the browser */
+/** a newer version from the GitHub releases (`updater.rs`); notes: the release notes (Markdown) */
+export interface UpdateInfo { version: string; current: string; notes: string | null; date: string | null }
+export interface UpdateProgress { done: number; total: number | null }
 export type AboutLink = "repo" | "releases" | "changelog" | "issues" | "license" | "docs";
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
@@ -561,6 +564,11 @@ const tauriApi = {
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
   appInfo: () => invoke<AppInfo>("app_info"),
   openLink: (which: AboutLink) => invoke<void>("open_link", { which }),
+  /** null: this version is current */
+  updateCheck: () => invoke<UpdateInfo | null>("update_check"),
+  /** downloads, verifies and installs the checked update, then the app restarts; errors `busy:<why>`, `no-update` */
+  updateInstall: () => invoke<void>("update_install"),
+  onUpdateProgress: (f: (p: UpdateProgress) => void) => listen<UpdateProgress>("update-progress", (e) => f(e.payload)),
   /** RS485-1/2, and over the CAN socket a pack with the power and clock service (`power.ts`) */
   bmsClock: (address: number) => invoke<BmsTime>("bms_clock", { address }),
   /** sets the clock to `time` and returns the clock read back; over the CAN socket after the identity check and the lock
@@ -798,6 +806,9 @@ function demoApi(): typeof tauriApi {
     revealHistory: async () => {},
     appInfo: async () => ({ version: pkg.version, data_dir: "" }),
     openLink: async () => {},
+    updateCheck: async () => null,
+    updateInstall: async () => { throw new Error("preview"); },
+    onUpdateProgress: async () => () => {},
     parameters: async (address) => {
       await new Promise((r) => setTimeout(r, 250));
       if (address === 0) throw new Error("timeout after 1000 ms");

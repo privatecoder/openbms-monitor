@@ -137,6 +137,11 @@ pub(crate) fn any_pack_action(ops: &Ops) -> Option<&'static str> {
     ops.lock().ok().and_then(|m| m.packs.values().next().copied())
 }
 
+/// A structural operation on an installation runs (merge, import, delete).
+pub(crate) fn any_installation_operation(ops: &Ops) -> bool {
+    ops.lock().map(|m| !m.installations.is_empty()).unwrap_or(true)
+}
+
 /// The port for connect or an operation that closes or takes the pack bus: only while no pack is reserved, checked
 /// and taken under the same mutex as the pack reservations.
 pub(crate) fn reserve_bus(state: &AppState) -> Option<PortSlot> {

@@ -45,6 +45,7 @@ python3 tools/gen_help.py      # regenerate help/ after editing the help tables
 - Everything stored about a bank belongs to an installation id: the connection carries it (`connect(endpoint, installation)`), answers are stored only while that connection is current (`for_link`). „Nur ansehen“ stores nothing and writes nothing to a pack; the demo stays storage-free.
 - Checks that compare packs wait until every found pack has answered, so a partial picture right after connecting does not raise false warnings.
 - Every user-visible change gets a line under `## Unreleased` in `CHANGELOG.md` (English, generic); a release renames that section to `## <version> — <date>` (version as in `Cargo.toml`, checked by `about.test.ts`); the release workflow takes that section as the release notes (`tools/release_notes.sh`).
+- Updates: the release workflow signs the update packages with the updater key (secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, public key in `tauri.conf.json`, `tauri.release.conf.json` switches the packages on) and writes `latest.json` in its own job; the app finds the newest release with one through the GitHub API (`updater.rs`). Without the private key, installed apps cannot be updated any more: never rotate it casually.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Pushing to `main` is routine.
 
 ## Open roadmap

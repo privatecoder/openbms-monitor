@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Info, Wrench } from "lucide-react";
+import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Download, Info, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
 import { patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
@@ -15,6 +15,7 @@ import { RecordingEntry, useHistoryStatus } from "./Recording";
 import { readMark } from "../bmsMemory";
 import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
+import { useUpdate } from "../update";
 import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
@@ -61,6 +62,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   setMaintenance: (v: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const update = useUpdate();
   const [kind, setKind] = useState<"tcp" | "serial">(() => (localStorage.getItem("conn.kind") as "tcp" | "serial") ?? "tcp");
   // network address and USB port are kept apart, so switching the kind does not overwrite the other entry
   // (conn.target is the single field of earlier versions and seeds whichever kind was in use)
@@ -523,6 +525,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             </button>
           );
         })}
+        {update.phase === "available" && update.info && view !== "about" && (
+          <button onClick={() => setView("about")} disabled={locked} className="mt-2 flex w-full items-center gap-2 rounded-md border border-charge/50 px-3 py-2 text-sm text-charge hover:bg-sunken/60 disabled:opacity-50">
+            <Download className="h-4 w-4" />{t("about.update.sidebar", { version: update.info.version })}
+          </button>
+        )}
       </nav>
       <div className="shrink-0 space-y-3 border-t border-line px-5 py-5">
         <div className="flex items-center justify-between text-sm">

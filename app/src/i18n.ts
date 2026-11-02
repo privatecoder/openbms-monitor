@@ -12,6 +12,15 @@ const resources = {
         link: { repo: "Quellcode", repoHint: "Repository auf GitHub", releases: "Versionen", releasesHint: "Downloads aller Versionen auf GitHub", docs: "Protokoll-Doku", docsHint: "Firmware- und Protokollanalyse des EMU1101 (englisch)", issues: "Fehler melden", issuesHint: "Fehler und Wünsche auf GitHub", license: "Lizenz (MIT)", licenseHint: "Lizenztext auf GitHub", changelog: "Auf GitHub" },
         data: "Datenordner", dataHint: "Hier liegen Aufzeichnung, Anlagen, Parameterstände, Exporte und Firmware-Protokolle. Alles bleibt beim Beenden der App erhalten.", showData: "Im Dateimanager zeigen",
         changelog: "Änderungen", changelogLang: "Das Änderungsprotokoll ist englisch.",
+        update: {
+          title: "Updates", hint: "Sucht auf GitHub nach einer neueren Version.", check: "Nach Updates suchen", checking: "Suche …",
+          current: "Diese Version ist aktuell.", available: "Version {{version}} ist verfügbar.", checkFailed: "Die Suche ist fehlgeschlagen.",
+          install: "Herunterladen und installieren", installHint: "Die App lädt das Update, prüft seine Signatur, installiert es und startet neu. Aufzeichnung und alle gespeicherten Daten bleiben erhalten. Unter Windows fragt das Installationsprogramm nach Administratorrechten.",
+          starting: "Starte Download …", progress: "Lade herunter … {{pct}} %", progressMb: "Lade herunter … {{mb}} MB",
+          notes: "Was ist neu in {{version}}", auto: "Automatisch suchen (beim Start und alle 12 Stunden)",
+          failed: "Das Update konnte nicht abgeschlossen werden.", sidebar: "Update {{version}}",
+          busy: { flash: "Erst nach dem laufenden Firmware-Update möglich.", maintenance: "Erst möglich, wenn die laufende Wartungsaktion beendet ist.", history: "Erst nach dem Lesen der BMS-Historie möglich.", write: "Erst nach dem laufenden Schreiben der Parameter möglich.", pack: "Erst möglich, wenn die laufende Aktion an einem Pack beendet ist.", installations: "Erst möglich, wenn das laufende Zusammenführen, Importieren oder Löschen einer Anlage beendet ist." },
+        },
       },
       hist: {
         tab: { app: "App-Aufzeichnung", report: "Bericht", bms: "Aus dem BMS" },
@@ -1191,6 +1200,15 @@ const resources = {
         link: { repo: "Source code", repoHint: "Repository on GitHub", releases: "Releases", releasesHint: "Downloads of all versions on GitHub", docs: "Protocol docs", docsHint: "Firmware and protocol analysis of the EMU1101", issues: "Report a problem", issuesHint: "Bugs and requests on GitHub", license: "License (MIT)", licenseHint: "License text on GitHub", changelog: "On GitHub" },
         data: "Data folder", dataHint: "Recording, installations, parameter states, exports and firmware logs live here. Everything is kept when the app is closed.", showData: "Show in file manager",
         changelog: "Changes", changelogLang: "",
+        update: {
+          title: "Updates", hint: "Looks for a newer version on GitHub.", check: "Check for updates", checking: "Checking …",
+          current: "This version is up to date.", available: "Version {{version}} is available.", checkFailed: "The check failed.",
+          install: "Download and install", installHint: "The app downloads the update, checks its signature, installs it and restarts. The recording and all stored data are kept. On Windows the installer asks for administrator rights.",
+          starting: "Starting download …", progress: "Downloading … {{pct}} %", progressMb: "Downloading … {{mb}} MB",
+          notes: "What's new in {{version}}", auto: "Check automatically (at start and every 12 hours)",
+          failed: "The update could not be completed.", sidebar: "Update {{version}}",
+          busy: { flash: "Possible once the running firmware update is done.", maintenance: "Possible once the running maintenance action is done.", history: "Possible once the BMS history read is done.", write: "Possible once the running parameter write is done.", pack: "Possible once the running pack action is done.", installations: "Possible once the running merge, import or delete of an installation is done." },
+        },
       },
       hist: {
         tab: { app: "App recording", report: "Report", bms: "From the BMS" },
