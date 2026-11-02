@@ -17,6 +17,10 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    "windows": { "nsis": { "installMode": "perMachine" } }
+    "windows": { "nsis": { "installMode": "perMachine" } },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": { "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5OEUyNkRGODU3NEMwRTUKUldUbHdIU0YzeWFPK1pud0k4YW5LQnlTMU5SSktxSnpXMU90bHJPeGJwRVNuWU5zUEhvcDJIVmwK", "endpoints": [], "windows": { "installMode": "passive" } }
   }
 }

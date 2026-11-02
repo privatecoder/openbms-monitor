@@ -22,6 +22,7 @@ import { api, isDemo, type Bus } from "./api";
 import { defaultName, type Monitor } from "./maint";
 import i18n from "./i18n";
 import { notifyTexts } from "./notifications";
+import { startUpdateChecks } from "./update";
 
 const demoPack = isDemo ? new URLSearchParams(location.search).get("pack") : null;
 const demoView = isDemo ? new URLSearchParams(location.search).get("view") : null;
@@ -46,6 +47,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
+  useEffect(() => { startUpdateChecks(); }, []);
   const [flashing, setFlashing] = useState(false);
   const [boards, setBoards] = useState<BoardNotice[]>([]);
   // counts actions the user starts in the firmware view or the pack bus panel: the sidebar's wait for a busy port stops
