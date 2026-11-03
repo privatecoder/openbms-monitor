@@ -17,16 +17,26 @@ export function useDark() {
 
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-/** Axis labels by the visible span: seconds below 10 min, dates from 2 days. */
+/** Axis labels by the visible span: seconds below 10 min, dates from 2 days (the date alone at midnight). */
 function timeLabels(lang: string) {
   const hm = new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit" });
   const hms = new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const dm = new Intl.DateTimeFormat(lang, { day: "2-digit", month: "2-digit" });
   const dhm = new Intl.DateTimeFormat(lang, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   return (u: uPlot, splits: number[]) => {
     const span = (u.scales.x.max ?? 0) - (u.scales.x.min ?? 0);
-    const f = span < 600 ? hms : span > 2 * 86400 ? dhm : hm;
-    return splits.map((s) => f.format(s * 1000));
+    return splits.map((s) => {
+      const d = new Date(s * 1000);
+      if (span < 600) return hms.format(d);
+      if (span <= 2 * 86400) return hm.format(d);
+      return d.getHours() === 0 && d.getMinutes() === 0 ? dm.format(d) : dhm.format(d);
+    });
   };
+}
+
+/** Room per x label in px, so uPlot picks fewer ticks where the labels are wider (dates with time). */
+export function timeSpace(span: number): number {
+  return span < 600 ? 72 : span <= 2 * 86400 ? 56 : 100;
 }
 
 /**
@@ -65,7 +75,8 @@ export function Chart({ x, lines, unit, decimals, lang, timeLabel, syncKey, onZo
         })),
       ],
       axes: [
-        { stroke: ink, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 }, values: timeLabels(lang), font: "12px Barlow, sans-serif" },
+        { stroke: ink, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 }, values: timeLabels(lang), font: "12px Barlow, sans-serif",
+          space: (_u, _axis, min, max) => timeSpace(max - min) },
         { stroke: ink, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 }, size: 56, font: "12px Barlow, sans-serif",
           values: (_u, splits) => splits.map((s) => nf.format(s)) },
       ],
