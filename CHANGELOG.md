@@ -4,7 +4,9 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
-- Updater: the app looks for a newer release on GitHub (at start and every 12 hours, can be switched off, or by hand in the About view), shows its notes and on a click downloads the matching build, checks its signature, installs it and restarts. Refused while a firmware update, a maintenance action, a BMS history read or a parameter write runs. The first version with the updater has to be installed by hand once.
+## 0.3.0-beta — 2026-11-03
+
+- Updater: the app looks for a newer release on GitHub (at start and every 12 hours, can be switched off, or by hand in the About view), shows its notes and on a click downloads the matching build, checks its signature, installs it and restarts. Waits while a firmware update, a pack or maintenance action, a BMS history read, a parameter write or an installation import, merge or delete runs. The first version with the updater has to be installed by hand once.
 
 ## 0.2.0-beta — 2026-11-02
 
