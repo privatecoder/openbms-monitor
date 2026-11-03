@@ -26,7 +26,7 @@ describe("updates", () => {
     expect(u.updateNow()).toMatchObject({ phase: "current", info: null });
     calls.check.mockRejectedValueOnce("offline");
     await u.checkUpdate();
-    expect(u.updateNow()).toMatchObject({ phase: "error", error: "offline" });
+    expect(u.updateNow()).toMatchObject({ phase: "error", error: "offline", failed: "check" });
   });
 
   it("a refused install keeps the update, a failed one needs a new check", async () => {
@@ -36,12 +36,12 @@ describe("updates", () => {
     await u.checkUpdate();
     calls.install.mockRejectedValueOnce("busy:flash");
     await u.installUpdate();
-    expect(u.updateNow()).toMatchObject({ phase: "available", info, error: "busy:flash" });
+    expect(u.updateNow()).toMatchObject({ phase: "available", info, error: "busy:flash", failed: "install" });
     // state is read through the hook's snapshot function; use a fresh install attempt to observe phases
     calls.install.mockImplementationOnce(async () => { seen.push("installing"); throw "signature mismatch"; });
     await u.installUpdate();
     expect(seen).toEqual(["installing"]);
-    expect(u.updateNow()).toMatchObject({ phase: "error", info: null });
+    expect(u.updateNow()).toMatchObject({ phase: "error", info: null, failed: "install" });
     // after a failed (not refused) install nothing is pending: a second call does not reach the backend
     await u.installUpdate();
     expect(calls.install).toHaveBeenCalledTimes(2);
