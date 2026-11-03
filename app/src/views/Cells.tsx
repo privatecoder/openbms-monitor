@@ -143,15 +143,18 @@ function Detail({ entry, ready, onEdit, onDuplicate, onRestore, onDelete }: { en
         {missing.length > 0 && <p className="mt-2 text-discharge">{t("cells.missing", { list: missing.join(", ") })}</p>}
       </Panel>
 
-      <div className="grid gap-5 md:grid-cols-2">
-        {FIELDS.map((g) => (
-          <Panel key={g.group} className="p-4">
-            <h3 className="mb-2 font-display text-lg font-semibold">{t(`cells.g.${g.group}`)}</h3>
-            <dl className="space-y-1.5 text-sm">
-              {g.fields.map((f) => <ValueRow key={f.path} cell={c} path={f.path} unit={f.unit} />)}
-            </dl>
-          </Panel>
-        ))}
+      {/* two columns only when the detail column itself is wide enough (the list beside it takes 20rem) */}
+      <div className="@container">
+        <div className="grid gap-5 @xl:grid-cols-2">
+          {FIELDS.map((g) => (
+            <Panel key={g.group} className="p-4">
+              <h3 className="mb-2 font-display text-lg font-semibold">{t(`cells.g.${g.group}`)}</h3>
+              <dl className="space-y-1.5 text-sm">
+                {g.fields.map((f) => <ValueRow key={f.path} cell={c} path={f.path} unit={f.unit} />)}
+              </dl>
+            </Panel>
+          ))}
+        </div>
       </div>
 
       <Panel className="p-4">
