@@ -254,6 +254,17 @@ export interface HealthReport { from: number; to: number; packs: PackReport[]; p
 export interface ExportStats { rows: number; files: string[] }
 /** About view: the app's version and its data folder (databases, exports, logs) */
 export interface AppInfo { version: string; data_dir: string }
+/** what the data folder holds (`storage.rs`); sizes in bytes */
+export type StorageKey = "recording" | "installations" | "firmware_logs" | "parameters" | "exports" | "backups" | "imports" | "other";
+export interface StorageCategory { key: StorageKey; bytes: number; files: number }
+export interface InstallationData { id: string; name: string; has_data: boolean; recording_rows: number }
+export interface StorageOverview {
+  dir: string; total: number; free: number | null; categories: StorageCategory[];
+  recording_rows: number; recording_span: [number, number] | null;
+  /** deleted, but the file is not yet smaller */
+  reclaimable: number; bms_records: number; open_imports: number; installations: InstallationData[];
+  empty_pending: boolean; empty_error: string | null;
+}
 /** the fixed pages the About view opens in the browser */
 /** a newer version from the GitHub releases (`updater.rs`); notes: the release notes (Markdown) */
 export interface UpdateInfo { version: string; current: string; notes: string | null; date: string | null }
@@ -562,6 +573,13 @@ const tauriApi = {
   saveParameters: (name: string, content: string) => invoke<string>("save_parameters", { name, content }),
   revealParameters: (path: string | null) => invoke<void>("reveal_parameters", { path }),
   appInfo: () => invoke<AppInfo>("app_info"),
+  storageOverview: () => invoke<StorageOverview>("storage_overview"),
+  /** one installation, or all with null; errors `busy:<why>` */
+  storageClearRecording: (installation: string | null) => invoke<{ compacted: boolean }>("storage_clear_recording", { installation }),
+  /** the bytes freed */
+  storageDeleteBackups: () => invoke<number>("storage_delete_backups"),
+  /** empties the data folder at the next start and restarts now; errors `busy:<why>` */
+  storageEmpty: () => invoke<void>("storage_empty"),
   openLink: (which: AboutLink) => invoke<void>("open_link", { which }),
   /** null: this version is current */
   updateCheck: () => invoke<UpdateInfo | null>("update_check"),
@@ -803,6 +821,22 @@ function demoApi(): typeof tauriApi {
     historyDirs: async () => ["", ""],
     revealHistory: async () => {},
     appInfo: async () => ({ version: pkg.version, data_dir: "" }),
+    storageOverview: async () => ({
+      dir: "", total: 92_400_000, free: 180_000_000_000,
+      categories: [
+        { key: "recording", bytes: 89_900_000, files: 3 }, { key: "installations", bytes: 330_000, files: 1 },
+        { key: "firmware_logs", bytes: 2_500_000, files: 14 }, { key: "parameters", bytes: 60_000, files: 9 },
+        { key: "exports", bytes: 8_000, files: 1 }, { key: "backups", bytes: 1_100_000, files: 4 },
+        { key: "imports", bytes: 0, files: 0 }, { key: "other", bytes: 0, files: 0 },
+      ],
+      recording_rows: 1_480_000, recording_span: [Date.now() - 24 * 86_400_000, Date.now()],
+      reclaimable: 0, bms_records: 1_820, open_imports: 0,
+      installations: [{ id: "demo", name: "Demo", has_data: true, recording_rows: 1_480_000 }],
+      empty_pending: false, empty_error: null,
+    }),
+    storageClearRecording: async () => { throw new Error("preview"); },
+    storageDeleteBackups: async () => { throw new Error("preview"); },
+    storageEmpty: async () => { throw new Error("preview"); },
     openLink: async () => {},
     updateCheck: async () => null,
     updateInstall: async () => { throw new Error("preview"); },

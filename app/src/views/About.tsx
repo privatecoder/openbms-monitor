@@ -1,12 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
-import { BatteryCharging, BookOpen, Bug, Download, ExternalLink, FolderOpen, GitBranch, Package, RefreshCw, Scale, ScrollText } from "lucide-react";
+import { BatteryCharging, BookOpen, Bug, Download, ExternalLink, GitBranch, Package, RefreshCw, Scale, ScrollText } from "lucide-react";
 import { api, type AboutLink, type AppInfo } from "../api";
 import { Panel } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { checkUpdate, installUpdate, setAutoCheck, updateErrorKey, useUpdate } from "../update";
 import changelog from "../../../CHANGELOG.md?raw";
+import { StoragePanel } from "./Storage";
 
 /** The changelog without its title and intro: from the first version heading on. */
 export const changelogBody = (raw: string) => {
@@ -96,16 +97,7 @@ export function About() {
 
       <UpdatePanel />
 
-      <Panel className="flex flex-wrap items-center justify-between gap-3 p-4">
-        <div className="min-w-0">
-          <div className="font-medium">{t("about.data")}</div>
-          <p className="text-sm text-muted">{t("about.dataHint")}</p>
-          {info?.data_dir && <code className="mt-1 block break-all rounded bg-sunken px-1.5 py-0.5 text-xs">{info.data_dir}</code>}
-        </div>
-        <Button size="sm" variant="ghost" onClick={() => api.revealHistory(null).catch((e) => setError(String(e)))}>
-          <FolderOpen className="h-4 w-4" />{t("about.showData")}
-        </Button>
-      </Panel>
+      <StoragePanel />
 
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">

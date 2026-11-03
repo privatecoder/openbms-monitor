@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChartLine, FolderOpen } from "lucide-react";
+import { ChartLine, FolderOpen, HardDrive } from "lucide-react";
 import { api, isDemo, type HistorySettings, type HistoryStatus, type NotifyStatus } from "../api";
 import { Sheet, SheetContent } from "../components/ui/sheet";
 import { Button } from "../components/ui/button";
@@ -47,8 +47,8 @@ export function RecDot({ active, className }: { active: boolean; className?: str
 }
 
 /** Sidebar entry: opens the recording settings and shows at a glance whether the app records. */
-export function RecordingEntry({ scope, packs, systemAvailable, connected, onOpenHistory }: {
-  scope: string | null; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void;
+export function RecordingEntry({ scope, packs, systemAvailable, connected, onOpenHistory, onOpenStorage }: {
+  scope: string | null; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void; onOpenStorage: () => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -64,14 +64,14 @@ export function RecordingEntry({ scope, packs, systemAvailable, connected, onOpe
         <RecDot active={!!s?.active} />
       </Button>
       <RecordingSheet open={open} onOpenChange={setOpen} rec={rec} scope={scope} packs={packs} systemAvailable={systemAvailable} connected={connected}
-        onOpenHistory={() => { setOpen(false); onOpenHistory(); }} />
+        onOpenHistory={() => { setOpen(false); onOpenHistory(); }} onOpenStorage={() => { setOpen(false); onOpenStorage(); }} />
     </>
   );
 }
 
-function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable, connected, onOpenHistory }: {
+function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable, connected, onOpenHistory, onOpenStorage }: {
   open: boolean; onOpenChange: (o: boolean) => void; rec: ReturnType<typeof useHistoryStatus>;
-  scope: string | null; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void;
+  scope: string | null; packs: number[]; systemAvailable: boolean; connected: boolean; onOpenHistory: () => void; onOpenStorage: () => void;
 }) {
   const { t } = useTranslation();
   const { groups } = useGroups(scope);
@@ -129,6 +129,7 @@ function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable
             <div className="mt-4 flex flex-wrap gap-2">
               <Button variant="secondary" onClick={onOpenHistory}><ChartLine className="h-4 w-4" />{t("rec.openHistory")}</Button>
               {!isDemo && <Button variant="ghost" onClick={() => api.revealHistory(s.path)}><FolderOpen className="h-4 w-4" />{t("rec.reveal")}</Button>}
+              <Button variant="ghost" onClick={onOpenStorage}><HardDrive className="h-4 w-4" />{t("rec.storage")}</Button>
             </div>
             {opts.enabled && !connected && <p className="mt-2 text-sm text-muted">{t("rec.needConnection")}</p>}
             {opts.enabled && scope === null && !isDemo && <p className="mt-2 text-sm text-discharge">{t("rec.viewOnly")}</p>}

@@ -704,7 +704,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         <Button variant="ghost" size="icon" onClick={() => setDark(!dark)} aria-label="Theme">
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>
-        <RecordingEntry scope={maint.installation} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} />
+        <RecordingEntry scope={maint.installation} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} onOpenStorage={() => setView("about")} />
         {/* maintenance functions: an icon toggle, highlighted while on; the label is the tooltip */}
         <Button variant="ghost" size="icon" onClick={() => setMaintenance(!maintenance)} disabled={locked}
           aria-pressed={maintenance} aria-label={t("maintToggle")} title={t("maintToggle")}

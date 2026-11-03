@@ -4,6 +4,7 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- About view, Data & storage: shows what the data folder holds (recording, installation data with the BMS archive, firmware logs, parameter files, exports, migration backups) and the free space; clears the recording of one installation or all, deletes the migration backups, or empties the data folder at the next start (installations, the BMS archive and the packs' safety states stay). Before a delete the data can be backed up as installation ZIPs; if a backup fails, nothing is deleted. A backup can be restored again after its recording was cleared. The Recording sheet links here.
 - About view: a failed update check shows only its cause below "The check failed", no longer "The update could not be completed".
 
 ## 0.3.1-beta — 2026-11-03
