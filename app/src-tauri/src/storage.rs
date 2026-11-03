@@ -26,6 +26,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::{history, maint_store::Store, AppState};
 
 const JOB: &str = "pending-empty.json";
+/// A job that could not even be marked `running`: renamed out of the way, so no later start runs it on its own.
+const BLOCKED: &str = "pending-empty.blocked.json";
 /// The file steps of an emptying in order, then the database steps.
 const FILE_STEPS: [&str; 6] = ["recording", "backups", "firmware-logs", "parameters", "exports", "recordings"];
 const STORE_STEPS: [&str; 2] = ["store", "imports"];
@@ -189,7 +191,14 @@ fn remove_path(p: &Path) -> Result<(), String> {
 pub fn read_job(dir: &Path) -> Option<Job> {
     let text = match std::fs::read(dir.join(JOB)) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // a blocked job counts as failed: it waits for the user
+            let b = std::fs::read(dir.join(BLOCKED)).ok()?;
+            let mut job: Job = serde_json::from_slice(&b).unwrap_or(Job { state: JobState::Failed, done: vec![], error: None });
+            job.state = JobState::Failed;
+            job.error.get_or_insert_with(|| "the emptying could not be started".into());
+            return Some(job);
+        }
         Err(e) => return Some(Job { state: JobState::Failed, done: vec![], error: Some(format!("{JOB}: {e}")) }),
     };
     Some(serde_json::from_slice(&text).unwrap_or_else(|e| Job { state: JobState::Failed, done: vec![], error: Some(format!("{JOB}: {e}")) }))
@@ -248,6 +257,11 @@ pub fn apply_pending_empty(dir: &Path) -> Option<Job> {
     job.state = JobState::Running;
     job.error = None;
     if let Err(e) = write_job(dir, &job) {
+        // not marked: move the job out of the way, so a later start does not run it on its own (and delete what is
+        // recorded meanwhile); if even that fails the folder itself is not writable (a known limit, see the tests)
+        if let Err(r) = std::fs::rename(dir.join(JOB), dir.join(BLOCKED)) {
+            eprintln!("storage: {JOB}: {r}");
+        }
         job.state = JobState::Failed;
         job.error = Some(format!("{JOB}: {e}"));
         return Some(job);
@@ -526,6 +540,7 @@ pub fn storage_empty_retry(app: AppHandle, state: State<AppState>) -> Result<(),
     let slot = crate::updater::install_slot(&state).map_err(|why| format!("busy:{why}"))?;
     store_check(&state, None)?;
     write_job(&dir, &job)?;
+    let _ = remove_path(&dir.join(BLOCKED));
     std::mem::forget(slot);
     app.restart()
 }
@@ -533,7 +548,9 @@ pub fn storage_empty_retry(app: AppHandle, state: State<AppState>) -> Result<(),
 /// A failed emptying: drop it; what was deleted stays deleted, nothing more goes.
 #[tauri::command]
 pub fn storage_empty_drop(app: AppHandle) -> Result<(), String> {
-    remove_path(&data_dir(&app)?.join(JOB))
+    let dir = data_dir(&app)?;
+    remove_path(&dir.join(JOB))?;
+    remove_path(&dir.join(BLOCKED))
 }
 
 #[cfg(test)]
@@ -716,8 +733,27 @@ mod tests {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(job.as_ref().map(|j| j.state), Some(JobState::Failed));
         assert!(d.join("parameters/p.xml").exists());
-        // the job on disk is still only requested: nothing was started
+        // a folder not writable at all can take neither a mark nor a rename: the job stays requested (a known limit:
+        // a later start with the folder writable again runs it)
         assert_eq!(read_job(&d).unwrap().state, JobState::Requested);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_job_whose_mark_fails_on_the_temp_file_is_moved_aside() {
+        let d = temp("tmpblock");
+        put(&d, "parameters/p.xml", 3);
+        requested(&d);
+        // only the temp file of the atomic write cannot be made (a directory in its place)
+        std::fs::create_dir_all(d.join(format!("{JOB}.tmp/x"))).unwrap();
+        let job = apply_pending_empty(&d);
+        assert_eq!(job.as_ref().map(|j| j.state), Some(JobState::Failed));
+        assert!(!d.join(JOB).exists() && d.join(BLOCKED).exists());
+        std::fs::remove_dir_all(d.join(format!("{JOB}.tmp"))).unwrap();
+        let (store, _) = seeded_store(&d);
+        let job = apply_pending_empty(&d);
+        finish_pending_empty(&store, &d, job);
+        assert!(d.join("parameters/p.xml").exists());
     }
 
     #[test]
