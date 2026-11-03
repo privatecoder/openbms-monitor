@@ -458,20 +458,26 @@ pub fn storage_delete_backups(app: AppHandle, state: State<AppState>) -> Result<
 /// Empty the data folder at the next start (see the module doc), after a backup into `backup` if given, and restart.
 /// Holds the bus and every installation until the process ends.
 #[tauri::command]
-pub fn storage_empty(app: AppHandle, state: State<AppState>, backup: Option<String>) -> Result<(), String> {
-    refusal(&state, None)?;
-    let dir = data_dir(&app)?;
-    let folder = backup.as_deref().map(|b| backup_folder(&dir, b)).transpose()?;
-    let slot = crate::updater::install_slot(&state).map_err(|why| format!("busy:{why}"))?;
-    let paused = Paused::new(&state)?;
-    if let Some(f) = &folder {
-        back_up(&state, &crate::firmware::logs_dir(&app)?, f, None)?;
-    }
-    write_job(&dir, &Job { state: JobState::Requested, done: vec![], error: None })?;
-    // slot and pause live until the process ends
-    std::mem::forget(paused);
-    std::mem::forget(slot);
-    app.restart()
+pub async fn storage_empty(app: AppHandle, backup: Option<String>) -> Result<(), String> {
+    // the backup may take a while: off the main thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        refusal(&state, None)?;
+        let dir = data_dir(&app)?;
+        let folder = backup.as_deref().map(|b| backup_folder(&dir, b)).transpose()?;
+        let slot = crate::updater::install_slot(&state).map_err(|why| format!("busy:{why}"))?;
+        let paused = Paused::new(&state)?;
+        if let Some(f) = &folder {
+            back_up(&state, &crate::firmware::logs_dir(&app)?, f, None)?;
+        }
+        write_job(&dir, &Job { state: JobState::Requested, done: vec![], error: None })?;
+        // slot and pause live until the process ends
+        std::mem::forget(paused);
+        std::mem::forget(slot);
+        app.restart()
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// A failed emptying: try the remaining steps again at a restart now.
