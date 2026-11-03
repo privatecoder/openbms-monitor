@@ -515,6 +515,35 @@ impl Store {
     }
 
     /// Archive (or bring back) an installation; everything it owns stays.
+    /// Per installation: its firmware logs and BMS archive records (`storage.rs`: which ones a backup takes).
+    pub fn data_counts(&self) -> Result<Vec<(String, u64, u64)>, String> {
+        let mut st = self
+            .db
+            .prepare(
+                "SELECT i.id, (SELECT COUNT(*) FROM logs l WHERE l.installation = i.id), (SELECT COUNT(*) FROM bms_records b WHERE b.installation = i.id)
+                 FROM installations i",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)?.max(0) as u64, r.get::<_, i64>(2)?.max(0) as u64))).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    /// Emptying the data folder (`storage.rs`), the database part in one transaction: the collected data goes, the
+    /// installations, their boards, places, layout, wiring, notifications, devices, the BMS archive and every pack's
+    /// safety state stay; open imports stay.
+    pub fn empty_data(&self) -> Result<(), String> {
+        let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(
+            "DELETE FROM param_snapshots;
+             DELETE FROM logs;
+             DELETE FROM import_status WHERE completed IS NOT NULL;
+             DELETE FROM legacy_sources;
+             DELETE FROM moves;",
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     /// Forget the completed imports of an installation (all with None), so its backups can be restored again after
     /// its recording was cleared. Open (resumable) imports stay.
     pub fn forget_completed_imports(&self, installation: Option<&str>) -> Result<(), String> {
