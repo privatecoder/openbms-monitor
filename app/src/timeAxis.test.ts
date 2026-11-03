@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisTicks, covered, endLabel, sharePct, tickLabel } from "./timeAxis";
+import { axisTicks, covered, endLabel, overlapping, sharePct, tickLabel } from "./timeAxis";
 
 const at = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();
 
@@ -38,5 +38,13 @@ describe("time axis", () => {
   it("covers the slices with values", () => {
     expect(covered([1, null, 0, null], 0, 400)).toBe(200);
     expect(covered([], 0, 400)).toBe(0);
+  });
+
+  it("hides ticks whose labels would touch an end label or each other", () => {
+    // end labels at 0–80 and 420–500; ticks 70–110 (touches the start), 150–190, 185–225 (touches the one before),
+    // 300–340, 400–440 (touches the end)
+    const hide = overlapping([0, 80], [420, 500], [[70, 110], [150, 190], [185, 225], [300, 340], [400, 440]]);
+    expect([...hide].sort()).toEqual([0, 2, 4]);
+    expect(overlapping([0, 80], [420, 500], [[150, 190], [300, 340]]).size).toBe(0);
   });
 });
