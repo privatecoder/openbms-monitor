@@ -226,6 +226,8 @@ pub struct History {
     /// recorded (see `bank.rs`)
     held: bool,
     held_reason: Option<&'static str>,
+    /// paused while a backup and a clear run (`storage.rs`): rows meanwhile are dropped, so nothing unsaved is deleted
+    paused: bool,
     /// the file is being created or migrated (`prepare`), not open yet
     preparing: bool,
     last: HashMap<u8, i64>,
@@ -344,7 +346,7 @@ impl History {
         });
         Status {
             settings: self.settings.clone(),
-            active: self.settings.enabled && self.link.is_some() && self.db.is_some() && !self.held,
+            active: self.settings.enabled && self.link.is_some() && self.db.is_some() && !self.held && !self.paused,
             path: self.path.as_ref().map(|p| p.display().to_string()),
             bytes,
             rows: self.rows,
@@ -390,6 +392,15 @@ impl History {
         self.held
     }
 
+    /// Pause recording for a backup and clear (`storage.rs`), independent of the bank's hold: a new connection does not
+    /// resume it. Pausing ends the running session.
+    pub fn pause(&mut self, on: bool) {
+        if on && !self.paused {
+            self.end_session(now_ms());
+        }
+        self.paused = on;
+    }
+
     /// `hold` with its reason for the UI (None: record).
     pub fn hold_for(&mut self, reason: Option<&'static str>) {
         self.hold(reason.is_some());
@@ -416,7 +427,7 @@ impl History {
 
     /// The session rows go to and its site key, if recording; created with the first row.
     fn session(&mut self) -> Option<(i64, i64)> {
-        if !self.settings.enabled || self.held {
+        if !self.settings.enabled || self.held || self.paused {
             return None;
         }
         if self.session.is_none() {
@@ -1247,6 +1258,23 @@ pub fn empty_file(path: &Path) -> Result<(), String> {
     db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e2s)
 }
 
+/// Per installation key in the recording: its value rows and its events (an installation with events only still has
+/// a recording to back up).
+pub fn recording_counts(db: &Connection) -> Result<Vec<(String, u64, u64)>, String> {
+    let mut st = db.prepare("SELECT DISTINCT site FROM sessions UNION SELECT site FROM sites").map_err(e2s)?;
+    let sites: Vec<String> = st.query_map([], |r| r.get(0)).map_err(e2s)?.collect::<Result<_, _>>().map_err(e2s)?;
+    sites
+        .into_iter()
+        .map(|site| {
+            let (rows, _, _) = site_summary(db, &site)?;
+            let events: i64 = db
+                .query_row("SELECT COUNT(*) FROM events WHERE session IN (SELECT id FROM sessions WHERE site = ?1)", [&site], |r| r.get(0))
+                .map_err(e2s)?;
+            Ok((site, rows.max(0) as u64, events.max(0) as u64))
+        })
+        .collect()
+}
+
 /// Space inside the file that deleted rows left (free pages): given back to the disk only by a VACUUM.
 pub fn reclaimable(db: &Connection) -> Result<u64, String> {
     let pages: i64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0)).map_err(e2s)?;
@@ -1982,6 +2010,35 @@ mod tests {
         assert_eq!((count("SELECT COUNT(*) FROM pack"), count("SELECT COUNT(*) FROM events")), (0, 0));
         assert!(h.clear(None).unwrap().compacted);
         assert_eq!(count("SELECT COUNT(*) FROM site_packs"), packs);
+    }
+
+    #[test]
+    fn an_installation_with_events_only_counts_as_recorded() {
+        let (path, mut h) = temp_db("events-only");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("inst-e", "can");
+        h.pack(1000, 1, &json!({ "address": 1, "status": { "alarms": [{ "id": "cell_low", "key": "cell_low", "severity": "warning" }] } }));
+        let counts = recording_counts(&reader(&path).unwrap()).unwrap();
+        let (_, rows, events) = counts.iter().find(|(s, _, _)| s == "inst-e").cloned().unwrap();
+        assert_eq!(rows, 0);
+        assert!(events > 0);
+    }
+
+    #[test]
+    fn a_paused_recording_drops_rows_and_a_new_connection_does_not_resume_it() {
+        let (path, mut h) = temp_db("paused");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("inst-p", "can");
+        h.pause(true);
+        h.pack(1000, 1, &pack_update(1, 1.0, &[3.3], &[]));
+        h.connected("inst-p", "can");
+        h.pack(2000, 1, &pack_update(1, 1.0, &[3.3], &[]));
+        let n: i64 = reader(&path).unwrap().query_row("SELECT COUNT(*) FROM pack", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        h.pause(false);
+        h.pack(3000, 1, &pack_update(1, 1.0, &[3.3], &[]));
+        let n: i64 = reader(&path).unwrap().query_row("SELECT COUNT(*) FROM pack", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]
