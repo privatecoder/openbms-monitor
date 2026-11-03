@@ -20,7 +20,7 @@ $section
 - **macOS (Apple silicon):** \`.dmg\`, drag the app into Applications.
 - **Windows 10/11:** \`x64-setup.exe\` or \`arm64-setup.exe\`.
 
-The builds are not signed. macOS: open the app once via right-click → Open (or System Settings → Privacy & Security → Open Anyway). Windows: SmartScreen → More info → Run anyway.
+The builds are not signed by Apple or Microsoft. macOS: start the app once, close the warning, then System Settings → Privacy & Security → Open Anyway (or in Terminal: \`xattr -dr com.apple.quarantine "/Applications/OpenBMS Monitor.app"\`). Windows: SmartScreen → More info → Run anyway.
 
 Updating keeps all data (recording, installations, parameter states): it lives in the app's data folder, not in the app. See the [README](https://github.com/privatecoder/openbms-monitor#readme) for what this pre-release does and what is untested, and [CHANGELOG.md](https://github.com/privatecoder/openbms-monitor/blob/main/CHANGELOG.md) for all versions.
 EOF
