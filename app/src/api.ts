@@ -259,7 +259,7 @@ export type StorageKey = "recording" | "installations" | "firmware_logs" | "para
 export interface StorageCategory { key: StorageKey; bytes: number; files: number }
 export interface InstallationData { id: string; name: string; has_data: boolean; recording_rows: number; recording_events: number }
 /** an emptying that waits for the next start or failed (`storage.rs`) */
-export interface EmptyJob { state: "requested" | "failed"; done: string[]; error: string | null }
+export interface EmptyJob { state: "requested" | "running" | "failed"; done: string[]; error: string | null }
 export interface StorageOverview {
   dir: string; total: number; free: number | null; categories: StorageCategory[];
   recording_rows: number; recording_span: [number, number] | null;

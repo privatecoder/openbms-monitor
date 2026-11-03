@@ -77,7 +77,7 @@ export function StoragePanel() {
           </dl>
           {o.reclaimable > 0 && <p className="text-sm text-discharge">{t("about.storage.reclaimable", { size: size(o.reclaimable) })}</p>}
           {o.job?.state === "requested" && <p className="text-sm text-discharge">{t("about.storage.pending")}</p>}
-          {o.job?.state === "failed" && (
+          {o.job && o.job.state !== "requested" && (
             <div className="space-y-2 text-sm text-alarm">
               <p>{t("about.storage.emptyError")} <span className="block text-xs text-muted">{o.job.error}</span></p>
               <div className="flex flex-wrap gap-2">

@@ -37,6 +37,9 @@ const KEYS: [&str; 8] = ["recording", "installations", "firmware_logs", "paramet
 pub enum JobState {
     /// waits for the next start
     Requested,
+    /// started at a start: found like this at a later start, it was interrupted or its progress could not be saved,
+    /// and it waits for the user like a failed one
+    Running,
     /// a step failed; waits for the user (try again / drop)
     Failed,
 }
@@ -199,48 +202,73 @@ pub fn write_job(dir: &Path, job: &Job) -> Result<(), String> {
     std::fs::rename(&tmp, dir.join(JOB)).map_err(|e| e.to_string())
 }
 
-fn run_steps(job: &mut Job, steps: &[&str], mut step: impl FnMut(&str) -> Result<(), String>) {
+/// Run the steps not done yet, saving the progress after each; the first failing step (or a failing save) stops.
+/// False if it stopped.
+fn run_steps(dir: &Path, job: &mut Job, steps: &[&str], mut step: impl FnMut(&str) -> Result<(), String>) -> bool {
     for s in steps {
         if job.done.iter().any(|d| d == s) {
             continue;
         }
-        match step(s) {
-            Ok(()) => job.done.push(s.to_string()),
-            Err(e) => {
-                job.state = JobState::Failed;
-                job.error = Some(format!("{s}: {e}"));
-                return;
-            }
+        if let Err(e) = step(s) {
+            job.state = JobState::Failed;
+            job.error = Some(format!("{s}: {e}"));
+            // best effort: if this save fails too, the job stays `running` on disk, which a later start treats as
+            // failed as well
+            let _ = write_job(dir, job);
+            return false;
+        }
+        job.done.push(s.to_string());
+        if let Err(e) = write_job(dir, job) {
+            job.state = JobState::Failed;
+            job.error = Some(format!("{JOB}: {e}"));
+            return false;
         }
     }
+    true
 }
 
-/// First half of a requested emptying, before any database is open: the recording and the files. Returns the job as
-/// it stands (None: nothing to do). Never fails the start.
+/// First half of a requested emptying, before any database is open: the recording and the files. Returns the job
+/// (None: nothing to do); only a job returned `running` goes on in `finish_pending_empty`. Never fails the start.
+///
+/// The job is marked `running` on disk before the first delete, so a start that finds it `running` (an interrupted
+/// run, a progress that could not be saved) deletes nothing more without the user's "try again". If marking fails,
+/// nothing is deleted.
 pub fn apply_pending_empty(dir: &Path) -> Option<Job> {
     let mut job = read_job(dir)?;
-    if job.state != JobState::Requested {
+    match job.state {
+        JobState::Requested => {}
+        JobState::Running => {
+            job.state = JobState::Failed;
+            job.error.get_or_insert_with(|| "interrupted".into());
+            let _ = write_job(dir, &job);
+            return Some(job);
+        }
+        JobState::Failed => return Some(job),
+    }
+    job.state = JobState::Running;
+    job.error = None;
+    if let Err(e) = write_job(dir, &job) {
+        job.state = JobState::Failed;
+        job.error = Some(format!("{JOB}: {e}"));
         return Some(job);
     }
-    run_steps(&mut job, &FILE_STEPS, |s| match s {
+    run_steps(dir, &mut job, &FILE_STEPS, |s| match s {
         "recording" => history::empty_file(&dir.join("history.sqlite")),
         "backups" => delete_backups(dir).map(|_| ()),
         d => remove_path(&dir.join(d)),
     });
-    if let Err(e) = write_job(dir, &job) {
-        eprintln!("storage: {JOB}: {e}");
-    }
     Some(job)
 }
 
 /// Second half, once the maintenance store is open: its rows and the import leftovers (the open imports are asked
-/// from the store now). The job file goes once every step is done.
+/// from the store now). The job file goes once every step is done; if removing it fails, it stays `running` and the
+/// next start shows it as failed instead of running it again.
 pub fn finish_pending_empty(store: &Store, dir: &Path, job: Option<Job>) {
     let Some(mut job) = job else { return };
-    if job.state != JobState::Requested {
+    if job.state != JobState::Running {
         return;
     }
-    run_steps(&mut job, &STORE_STEPS, |s| match s {
+    let done = run_steps(dir, &mut job, &STORE_STEPS, |s| match s {
         "store" => store.empty_data(),
         _ => {
             let open: Vec<String> = store.open_imports()?.into_iter().map(|r| r.export_id).collect();
@@ -252,13 +280,10 @@ pub fn finish_pending_empty(store: &Store, dir: &Path, job: Option<Job>) {
             Ok(())
         }
     });
-    let result = if job.state == JobState::Requested && FILE_STEPS.iter().chain(&STORE_STEPS).all(|s| job.done.iter().any(|d| d == s)) {
-        std::fs::remove_file(dir.join(JOB)).map_err(|e| e.to_string())
-    } else {
-        write_job(dir, &job)
-    };
-    if let Err(e) = result {
-        eprintln!("storage: {JOB}: {e}");
+    if done {
+        if let Err(e) = std::fs::remove_file(dir.join(JOB)) {
+            eprintln!("storage: {JOB}: {e}");
+        }
     }
 }
 
@@ -336,12 +361,17 @@ fn installations(state: &AppState) -> Result<Vec<InstallationData>, String> {
         .collect())
 }
 
-/// Refused while something else runs, without the maintenance database, or while an import is open (all, or for one
-/// installation).
-fn refusal(state: &AppState, only: Option<&str>) -> Result<(), String> {
-    if let Some(b) = crate::updater::busy(state) {
-        return Err(format!("busy:{b}"));
+/// Refused while something else runs (before taking the reservation, which counts as "something" itself).
+fn busy(state: &AppState) -> Result<(), String> {
+    match crate::updater::busy(state) {
+        Some(b) => Err(format!("busy:{b}")),
+        None => Ok(()),
     }
+}
+
+/// Refused without the maintenance database (no proof which imports are open) or while an import is open (all, or
+/// for one installation). Asked again once the reservation is held, so an import that opened meanwhile counts.
+fn store_check(state: &AppState, only: Option<&str>) -> Result<(), String> {
     let m = state.maint.lock().map_err(|e| e.to_string())?;
     let s = m.as_ref().ok_or("maint-missing")?;
     if s.open_imports()?.iter().any(|r| only.is_none_or(|o| o == r.installation)) {
@@ -417,11 +447,13 @@ pub async fn storage_overview(app: AppHandle, state: State<'_, AppState>) -> Res
 /// Installations, boards, parameter states and the BMS archive stay; the backup can be restored again afterwards.
 #[tauri::command]
 pub async fn storage_clear(app: AppHandle, state: State<'_, AppState>, installation: Option<String>, backup: Option<String>) -> Result<Done, String> {
-    refusal(&state, installation.as_deref())?;
+    busy(&state)?;
+    store_check(&state, installation.as_deref())?;
     let dir = data_dir(&app)?;
     let folder = backup.as_deref().map(|b| backup_folder(&dir, b)).transpose()?;
     let id = installation.clone().unwrap_or_else(|| crate::control::ALL.to_string());
     let held = crate::control::reserve_installations(&state.ops, &[id.as_str()], "clear").map_err(|_| "busy:installations".to_string())?;
+    store_check(&state, installation.as_deref())?;
     let logs = crate::firmware::logs_dir(&app)?;
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -462,10 +494,12 @@ pub async fn storage_empty(app: AppHandle, backup: Option<String>) -> Result<(),
     // the backup may take a while: off the main thread
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        refusal(&state, None)?;
+        busy(&state)?;
+        store_check(&state, None)?;
         let dir = data_dir(&app)?;
         let folder = backup.as_deref().map(|b| backup_folder(&dir, b)).transpose()?;
         let slot = crate::updater::install_slot(&state).map_err(|why| format!("busy:{why}"))?;
+        store_check(&state, None)?;
         let paused = Paused::new(&state)?;
         if let Some(f) = &folder {
             back_up(&state, &crate::firmware::logs_dir(&app)?, f, None)?;
@@ -483,12 +517,14 @@ pub async fn storage_empty(app: AppHandle, backup: Option<String>) -> Result<(),
 /// A failed emptying: try the remaining steps again at a restart now.
 #[tauri::command]
 pub fn storage_empty_retry(app: AppHandle, state: State<AppState>) -> Result<(), String> {
-    refusal(&state, None)?;
+    busy(&state)?;
+    store_check(&state, None)?;
     let dir = data_dir(&app)?;
     let mut job = read_job(&dir).ok_or("no-job")?;
     job.state = JobState::Requested;
     job.error = None;
     let slot = crate::updater::install_slot(&state).map_err(|why| format!("busy:{why}"))?;
+    store_check(&state, None)?;
     write_job(&dir, &job)?;
     std::mem::forget(slot);
     app.restart()
@@ -653,6 +689,35 @@ mod tests {
         assert!(read_job(&d).is_none());
         assert!(d.join("firmware-logs/new.log").exists() && !d.join("parameters").exists());
         assert_eq!(snaps(), 0);
+    }
+
+    #[test]
+    fn a_job_found_running_was_interrupted_and_deletes_nothing_more() {
+        let d = temp("running");
+        put(&d, "parameters/p.xml", 3);
+        write_job(&d, &Job { state: JobState::Running, done: vec!["recording".into()], error: None }).unwrap();
+        let (store, _) = seeded_store(&d);
+        let job = apply_pending_empty(&d);
+        assert_eq!(job.as_ref().map(|j| j.state), Some(JobState::Failed));
+        finish_pending_empty(&store, &d, job);
+        assert!(d.join("parameters/p.xml").exists());
+        assert_eq!(read_job(&d).unwrap().state, JobState::Failed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_job_that_cannot_be_marked_running_deletes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = temp("nomark");
+        put(&d, "parameters/p.xml", 3);
+        requested(&d);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let job = apply_pending_empty(&d);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(job.as_ref().map(|j| j.state), Some(JobState::Failed));
+        assert!(d.join("parameters/p.xml").exists());
+        // the job on disk is still only requested: nothing was started
+        assert_eq!(read_job(&d).unwrap().state, JobState::Requested);
     }
 
     #[test]
