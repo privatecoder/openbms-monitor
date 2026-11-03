@@ -4,8 +4,9 @@
 const HOUR = 3_600_000, DAY = 24 * HOUR;
 
 /** Tick times inside (from, to): every 6 h up to a day and a half, every local midnight up to 8 days, else every
- *  Monday at midnight. Ticks closer than 4 % of the span to an end are left out (the end labels sit there). */
-export function axisTicks(from: number, to: number): number[] {
+ *  Monday at midnight. Ticks closer than `margin` (a share of the span) to an end are left out: the end labels sit
+ *  there; the axis also hides a tick whose label would touch an end label on a narrow chart (`overlapping`). */
+export function axisTicks(from: number, to: number, margin = 0.04): number[] {
   const span = to - from;
   if (span <= 0) return [];
   const out: number[] = [];
@@ -21,8 +22,20 @@ export function axisTicks(from: number, to: number): number[] {
     if (weekly) d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
     for (; d.getTime() < to; d.setDate(d.getDate() + (weekly ? 7 : 1))) out.push(d.getTime());
   }
-  const margin = span * 0.04;
-  return out.filter((t) => t > from + margin && t < to - margin);
+  const m = span * margin;
+  return out.filter((t) => t > from + m && t < to - m);
+}
+
+/** The ticks (by index) to hide so no label touches another: end labels first, then ticks from left to right, each
+ *  kept only if it stays `gap` px clear of the end labels and of the last tick kept. Boxes are [left, right] in px. */
+export function overlapping(start: [number, number], end: [number, number], ticks: [number, number][], gap = 6): Set<number> {
+  const hide = new Set<number>();
+  let last = start[1];
+  ticks.forEach(([l, r], i) => {
+    if (l < last + gap || r > end[0] - gap) hide.add(i);
+    else last = r;
+  });
+  return hide;
 }
 
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString();
