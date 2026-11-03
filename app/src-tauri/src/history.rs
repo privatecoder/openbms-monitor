@@ -513,10 +513,18 @@ impl History {
     /// Delete all data of one installation, or everything (site None). The deletes run in one transaction, so a
     /// failure (e.g. a full disk) leaves the recording as it was; checkpoint and VACUUM follow on their own: they only
     /// give the space back, and a failure there loses nothing (the next clear or start tries again).
-    pub fn clear(&mut self, site: Option<&str>) -> Result<(), String> {
+    pub fn clear(&mut self, site: Option<&str>) -> Result<Cleared, String> {
         self.end_session(now_ms());
         let db = self.db.as_ref().ok_or("history database not open")?;
         clear_then_compact(db, site, |db| db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"))
+    }
+
+    /// An installation goes for good: its recording (`clear`) and its pack list.
+    pub fn delete_site(&mut self, site: &str) -> Result<Cleared, String> {
+        let done = self.clear(Some(site))?;
+        let db = self.db.as_ref().ok_or("history database not open")?;
+        db.execute("DELETE FROM site_packs WHERE site = ?1", [site]).map_err(e2s)?;
+        Ok(done)
     }
 
     /// Give a site's recording, pack list and parameter snapshots another key (e.g. an installation id) in one
@@ -689,14 +697,25 @@ fn e2s(e: rusqlite::Error) -> String {
     e.to_string()
 }
 
+/// What a clear did: the rows are gone in any case; `compacted` false means the file did not shrink (e.g. a full
+/// disk), the space is reused by later rows and the next clear or start tries again.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Cleared {
+    pub compacted: bool,
+}
+
 /// The deletes, then giving the space back (`compact`). Only the deletes decide: once they are committed the recording
-/// is gone, so a failing compaction is logged, not reported as a failed delete.
-fn clear_then_compact(db: &Connection, site: Option<&str>, compact: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> Result<(), String> {
+/// is gone, so a failing compaction is said in the result, not reported as a failed delete.
+fn clear_then_compact(db: &Connection, site: Option<&str>, compact: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> Result<Cleared, String> {
     clear_rows(db, site).map_err(e2s)?;
-    if let Err(e) = compact(db) {
-        eprintln!("history: space not given back after the delete: {e}");
-    }
-    Ok(())
+    let compacted = match compact(db) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("history: space not given back after the delete: {e}");
+            false
+        }
+    };
+    Ok(Cleared { compacted })
 }
 
 /// The deletes of `History::clear` in one transaction.
@@ -708,14 +727,15 @@ fn clear_rows(db: &Connection, site: Option<&str>) -> rusqlite::Result<()> {
                 tx.execute(&format!("DELETE FROM {table} WHERE site = (SELECT id FROM sites WHERE site = ?1)"), [s])?;
             }
             tx.execute("DELETE FROM events WHERE session IN (SELECT id FROM sessions WHERE site = ?1)", [s])?;
-            for table in ["site_packs", "sessions", "sites"] {
+            // the pack list (`site_packs`) and the parameter states stay: only the recorded values go
+            for table in ["sessions", "sites"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE site = ?1"), [s])?;
             }
             // a deleted installation's bundles can be imported again (a restore)
             tx.execute("DELETE FROM meta WHERE key LIKE 'import:%' AND value = ?1", [s])?;
         }
         None => tx.execute_batch(
-            "DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM site_packs; DELETE FROM sessions; DELETE FROM sites; DELETE FROM meta WHERE key LIKE 'import:%';",
+            "DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM sessions; DELETE FROM sites; DELETE FROM meta WHERE key LIKE 'import:%';",
         )?,
     }
     tx.commit()
@@ -1915,6 +1935,25 @@ mod tests {
         Connection::open(&path).unwrap().execute_batch("DROP TRIGGER no_delete;").unwrap();
         h.clear(Some("inst-a")).unwrap();
         assert_eq!((count("pack"), count("system"), count("events"), count("sessions")), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn clearing_keeps_the_pack_list_and_the_parameter_states() {
+        let (path, mut h) = temp_db("clear-keeps");
+        h.set_settings(Settings { enabled: true, packs: vec![1], ..Settings::default() }).unwrap();
+        h.connected("inst-a", "can");
+        h.pack(1000, 1, &pack_update(1, 1.0, &[3.3], &["cell_low"]));
+        let db = Connection::open(&path).unwrap();
+        db.execute("INSERT OR IGNORE INTO site_packs(site, pack) VALUES('inst-a', 1)", []).unwrap();
+        db.execute("INSERT INTO param_snapshots(site, pack, t, kind, block) VALUES('inst-a', 1, 5, 'read', 'x')", []).unwrap();
+        let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
+        let packs = count("SELECT COUNT(*) FROM site_packs WHERE site = 'inst-a'");
+        assert!(h.clear(Some("inst-a")).unwrap().compacted);
+        assert_eq!(count("SELECT COUNT(*) FROM site_packs WHERE site = 'inst-a'"), packs);
+        assert_eq!(count("SELECT COUNT(*) FROM param_snapshots"), 1);
+        assert_eq!((count("SELECT COUNT(*) FROM pack"), count("SELECT COUNT(*) FROM events")), (0, 0));
+        assert!(h.clear(None).unwrap().compacted);
+        assert_eq!(count("SELECT COUNT(*) FROM site_packs"), packs);
     }
 
     #[test]

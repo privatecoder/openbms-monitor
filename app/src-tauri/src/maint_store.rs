@@ -515,6 +515,17 @@ impl Store {
     }
 
     /// Archive (or bring back) an installation; everything it owns stays.
+    /// Forget the completed imports of an installation (all with None), so its backups can be restored again after
+    /// its recording was cleared. Open (resumable) imports stay.
+    pub fn forget_completed_imports(&self, installation: Option<&str>) -> Result<(), String> {
+        match installation {
+            Some(i) => self.db.execute("DELETE FROM import_status WHERE completed IS NOT NULL AND installation = ?1", [i]),
+            None => self.db.execute("DELETE FROM import_status WHERE completed IS NOT NULL", []),
+        }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
     pub fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
         self.installation(id)?;
         self.db.execute("UPDATE installations SET archived = ?2 WHERE id = ?1", params![id, archived]).map_err(e)?;
