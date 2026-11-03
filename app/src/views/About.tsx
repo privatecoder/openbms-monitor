@@ -34,7 +34,7 @@ function UpdatePanel() {
               : u.phase === "current" ? t("about.update.current")
               : u.phase === "available" && u.info ? t("about.update.available", { version: u.info.version })
               : u.phase === "installing" ? (u.progress ? (pct != null ? t("about.update.progress", { pct }) : t("about.update.progressMb", { mb: mb(u.progress.done) })) : t("about.update.starting"))
-              : u.phase === "error" ? t("about.update.checkFailed")
+              : u.phase === "error" && u.failed === "check" ? t("about.update.checkFailed")
               : t("about.update.hint")}
           </p>
         </div>
@@ -47,7 +47,8 @@ function UpdatePanel() {
         </div>
       </div>
       {u.phase === "installing" && <div className="h-1.5 overflow-hidden rounded bg-sunken"><div className="h-full bg-charge transition-[width]" style={{ width: `${pct ?? 15}%` }} /></div>}
-      {u.error && <p className="text-sm text-alarm">{t(updateErrorKey(u.error))}{!u.error.startsWith("busy:") && <span className="block text-xs text-muted">{u.error}</span>}</p>}
+      {u.error && u.failed === "check" && <p className="text-xs text-muted">{u.error}</p>}
+      {u.error && u.failed === "install" && <p className="text-sm text-alarm">{t(updateErrorKey(u.error))}{!u.error.startsWith("busy:") && <span className="block text-xs text-muted">{u.error}</span>}</p>}
       {u.phase === "available" && <p className="text-sm text-muted">{t("about.update.installHint")}</p>}
       {u.info?.notes && (u.phase === "available" || u.phase === "installing") && (
         <details className="text-sm">

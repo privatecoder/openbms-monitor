@@ -4,6 +4,8 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- About view: a failed update check shows only its cause below "The check failed", no longer "The update could not be completed".
+
 ## 0.3.1-beta — 2026-11-03
 
 - Overview: in a narrow window the pack boxes keep the width of their columns while the table scrolls sideways, instead of cutting the rows off.
