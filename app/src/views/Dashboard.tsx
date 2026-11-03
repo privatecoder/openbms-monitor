@@ -217,7 +217,7 @@ function RackList({ groups, packs, center, multi, onOpen, pairs }: RackProps) {
   const partner = new Map(pairs.flatMap((p) => [[p.plus, p], [p.minus, p]] as [number, Pair][]));
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[56rem]">
+      <div className="min-w-max">
         <div className={cn(ROW, "mb-5 border-b border-line px-4 pb-2 text-sm text-muted")}>
           <span className="flex items-center gap-1.5">{t("dash.pack")}<InfoIcon id="topic.alarms" /></span>
           <span>{t("dash.soc")}</span>
