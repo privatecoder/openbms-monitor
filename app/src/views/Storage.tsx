@@ -5,7 +5,6 @@ import { Archive, Eraser, FolderOpen, HardDrive, Trash2 } from "lucide-react";
 import { api, type InstallationData, type StorageOverview } from "../api";
 import { Panel } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { backupThenDelete } from "../storage";
 import { updateErrorKey } from "../update";
 import { InfoIcon } from "../help";
 import { size } from "./Recording";
@@ -13,6 +12,15 @@ import { size } from "./Recording";
 type Kind = "clear" | "backups" | "empty";
 
 const date = (ms: number) => new Date(ms).toLocaleDateString();
+const KNOWN = ["backup-inside-data", "open-import", "maint-missing", "history-preparing"];
+
+/** The text of a refusal or error of a storage command. */
+function errorText(t: (k: string, o?: Record<string, unknown>) => string, e: unknown): string {
+  const msg = String(e);
+  if (msg.startsWith("busy:")) return t(updateErrorKey(msg));
+  if (KNOWN.includes(msg)) return t(`about.storage.err.${msg}`);
+  return t("about.storage.d.failed", { err: msg });
+}
 
 /** About → Data & storage: what the data folder holds and freeing space by hand (`storage.rs`). */
 export function StoragePanel() {
@@ -68,8 +76,16 @@ export function StoragePanel() {
             ))}
           </dl>
           {o.reclaimable > 0 && <p className="text-sm text-discharge">{t("about.storage.reclaimable", { size: size(o.reclaimable) })}</p>}
-          {o.empty_pending && <p className="text-sm text-discharge">{t("about.storage.pending")}</p>}
-          {o.empty_error && <p className="text-sm text-alarm">{t("about.storage.emptyError")} <span className="block text-xs text-muted">{o.empty_error}</span></p>}
+          {o.job?.state === "requested" && <p className="text-sm text-discharge">{t("about.storage.pending")}</p>}
+          {o.job?.state === "failed" && (
+            <div className="space-y-2 text-sm text-alarm">
+              <p>{t("about.storage.emptyError")} <span className="block text-xs text-muted">{o.job.error}</span></p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => api.storageEmptyRetry().catch((e) => setError(errorText(t, e)))}>{t("about.storage.retry")}</Button>
+                <Button size="sm" variant="ghost" onClick={() => api.storageEmptyDrop().then(() => load(), (e) => setError(errorText(t, e)))}>{t("about.storage.dropJob")}</Button>
+              </div>
+            </div>
+          )}
           {done && <p className="text-sm text-ok">{done}</p>}
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="secondary" onClick={() => { setDone(null); setDialog("clear"); }}><Eraser className="h-4 w-4" />{t("about.storage.clear")}</Button>
@@ -92,30 +108,29 @@ function DeleteDialog({ kind, overview: o, onClose, onDone }: {
   kind: Kind; overview: StorageOverview; onClose: () => void; onDone: (before: number) => void;
 }) {
   const { t } = useTranslation();
-  const withRecording = o.installations.filter((i) => i.recording_rows > 0);
+  const withRecording = o.installations.filter((i) => i.recording_rows + i.recording_events > 0);
   const [which, setWhich] = useState<string>("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bytes = (key: string) => o.categories.find((c) => c.key === key)?.bytes ?? 0;
-
-  const targets: InstallationData[] = kind === "clear" && which ? o.installations.filter((i) => i.id === which && i.has_data) : o.installations.filter((i) => i.has_data);
-  const del = (): Promise<unknown> =>
-    kind === "clear" ? api.storageClearRecording(which || null) : kind === "backups" ? api.storageDeleteBackups() : api.storageEmpty();
+  // the installations a backup takes (the backend chooses them again when it runs)
+  const targets: InstallationData[] = o.installations.filter((i) => i.has_data && (kind !== "clear" || !which || i.id === which));
 
   const run = async (backup: boolean) => {
     setWorking(true); setError(null);
     try {
-      if (backup && targets.length > 0) {
-        const folder = await open({ directory: true, multiple: false, title: t("about.storage.d.pick") });
-        if (typeof folder !== "string") { setWorking(false); return; }
-        await backupThenDelete(targets, folder, (id, path) => api.installationExport(id, path, true), del);
-      } else {
-        await del();
+      let folder: string | null = null;
+      if (backup) {
+        const picked = await open({ directory: true, multiple: false, title: t("about.storage.d.pick") });
+        if (typeof picked !== "string") { setWorking(false); return; }
+        folder = picked;
       }
+      if (kind === "clear") await api.storageClear(which || null, folder);
+      else if (kind === "backups") await api.storageDeleteBackups();
+      else await api.storageEmpty(folder);
       onDone(o.total);
     } catch (e) {
-      const msg = String(e);
-      setError(msg.startsWith("busy:") ? t(updateErrorKey(msg)) : t("about.storage.d.failed", { err: msg }));
+      setError(errorText(t, e));
       setWorking(false);
     }
   };
