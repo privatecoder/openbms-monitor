@@ -48,7 +48,7 @@ fn manifest_url(releases: &serde_json::Value) -> Option<String> {
 }
 
 /// Why the bus reservation was refused (or a structural data operation runs), for the UI.
-fn busy(state: &AppState) -> Option<&'static str> {
+pub(crate) fn busy(state: &AppState) -> Option<&'static str> {
     if state.flashing.load(Ordering::SeqCst) {
         return Some("flash");
     }
@@ -78,12 +78,12 @@ const DOWNLOAD_MAX: std::time::Duration = std::time::Duration::from_secs(20 * 60
 
 /// What the install holds until the process ends: the bus (no pack action, flash or maintenance operation runs or
 /// starts) and every installation (no merge, delete, export or import runs or starts). Refused with the reason.
-struct InstallSlot {
+pub(crate) struct InstallSlot {
     _bus: crate::PortSlot,
     _installations: crate::control::InstallationGuard,
 }
 
-fn install_slot(state: &AppState) -> Result<InstallSlot, &'static str> {
+pub(crate) fn install_slot(state: &AppState) -> Result<InstallSlot, &'static str> {
     let Some(bus) = crate::control::reserve_bus(state) else {
         return Err(busy(state).unwrap_or("maintenance"));
     };

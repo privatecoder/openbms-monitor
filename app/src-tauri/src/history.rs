@@ -1226,6 +1226,34 @@ pub fn site_summary(db: &Connection, site: &str) -> Result<(i64, Option<i64>, Op
     Ok((rows, from, to))
 }
 
+/// Emptying the data folder (`storage.rs`), before the recorder opens the file: every recorded value, the pack lists
+/// and the old parameter blocks go, the settings (retention, packs to record) stay; then the file shrinks.
+pub fn empty_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let db = Connection::open(path).map_err(e2s)?;
+    let tx = db.unchecked_transaction().map_err(e2s)?;
+    tx.execute_batch(
+        "DELETE FROM pack; DELETE FROM system; DELETE FROM events; DELETE FROM sessions; DELETE FROM sites; DELETE FROM site_packs;
+         DELETE FROM meta WHERE key LIKE 'import:%';",
+    )
+    .map_err(e2s)?;
+    let snapshots: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'param_snapshots')", [], |r| r.get(0)).map_err(e2s)?;
+    if snapshots {
+        tx.execute("DELETE FROM param_snapshots", []).map_err(e2s)?;
+    }
+    tx.commit().map_err(e2s)?;
+    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(e2s)
+}
+
+/// Space inside the file that deleted rows left (free pages): given back to the disk only by a VACUUM.
+pub fn reclaimable(db: &Connection) -> Result<u64, String> {
+    let pages: i64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0)).map_err(e2s)?;
+    let size: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).map_err(e2s)?;
+    Ok((pages.max(0) * size.max(0)) as u64)
+}
+
 /// Installations in the database with their time span and packs, most recent first.
 pub fn sites(db: &Connection) -> Result<Vec<SiteSpan>, String> {
     let mut st = db.prepare("SELECT site, MIN(first), MAX(last) FROM sessions WHERE first IS NOT NULL GROUP BY site ORDER BY MAX(last) DESC").map_err(e2s)?;
