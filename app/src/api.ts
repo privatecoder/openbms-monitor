@@ -554,7 +554,6 @@ const tauriApi = {
   historyExport: (site: string, from: number, to: number, packs: number[], format: "jsonl" | "csv", path: string) =>
     invoke<ExportStats>("history_export", { site, from, to, packs, format, path }),
   historyImport: (path: string, site: string) => invoke<ImportStats>("history_import", { path, site }),
-  historyClear: (site: string | null) => invoke<void>("history_clear", { site }),
   /** Folders the file dialogs start in: [old recordings, exports]. */
   historyDirs: () => invoke<[string, string]>("history_dirs"),
   revealHistory: (path: string | null) => invoke<void>("reveal_history", { path }),
@@ -801,7 +800,6 @@ function demoApi(): typeof tauriApi {
     cellAnalysis: async (_site, pack, from, to, _devices, slices) => demoCells(pack, from, to, slices),
     historyExport: async () => { throw new Error("preview"); },
     historyImport: async () => { throw new Error("preview"); },
-    historyClear: async () => {},
     historyDirs: async () => ["", ""],
     revealHistory: async () => {},
     appInfo: async () => ({ version: pkg.version, data_dir: "" }),

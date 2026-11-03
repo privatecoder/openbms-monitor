@@ -287,7 +287,7 @@ pub async fn installation_delete(state: State<'_, AppState>, installation: Strin
         if !h.ready() {
             return Err(maint::refused("history-preparing"));
         }
-        h.clear(Some(&installation)).map_err(text)?;
+        h.delete_site(&installation).map_err(text)?;
     }
     // the recording is gone now; if the installation's rows cannot go too, say so: deleting again finishes it (the
     // recording's delete finds nothing and succeeds)

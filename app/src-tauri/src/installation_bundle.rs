@@ -650,6 +650,33 @@ mod tests {
     }
 
     #[test]
+    fn a_backup_restores_again_after_the_recording_was_cleared() {
+        let a = env("rca");
+        let id = seeded(&a);
+        {
+            let mut h = a.history.lock().unwrap();
+            h.set_settings(history::Settings { enabled: true, ..Default::default() }).unwrap();
+            h.connected(&id, "can");
+            for i in 0..3 {
+                h.pack(1000 + i * 1000, 0, &serde_json::json!({ "address": 0, "telemetry": { "cell_voltages": [3.30], "current": 1.0 } }));
+            }
+        }
+        let zip = a.dir.join("out.zip");
+        assert!(export(&a.store, Some(&a.dir.join("history.sqlite")), &a.logs, &id, &zip, true, 5000).unwrap().recording);
+        let b = env("rcb");
+        let p = inspect(&b.store, &b.imports, &zip).unwrap();
+        let first = apply(&b.store, &b.history, &b.imports, &b.logs, &p.export_id, &ImportInto::New { copy: false }).unwrap();
+        assert!(first.recording_rows > 0);
+        // the user clears the recording, then restores the same backup
+        b.history.lock().unwrap().clear(Some(&id)).unwrap();
+        store_do(&b.store, |s| s.forget_completed_imports(Some(&id))).unwrap();
+        let p2 = inspect(&b.store, &b.imports, &zip).unwrap();
+        let again = apply(&b.store, &b.history, &b.imports, &b.logs, &p2.export_id, &ImportInto::Same).unwrap();
+        assert!(!again.already);
+        assert_eq!(again.recording_rows, first.recording_rows);
+    }
+
+    #[test]
     fn the_balancing_bits_go_through_the_zip() {
         let a = env("bza");
         let id = seeded(&a);
