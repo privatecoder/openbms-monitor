@@ -30,8 +30,8 @@ jobs:
             bundles: nsis
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -80,7 +80,7 @@ jobs:
         run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - name: Upload artifacts
         if: "!startsWith(github.ref, 'refs/tags/')"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: openbms-monitor-${{ matrix.name }}
           path: |
@@ -94,7 +94,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Write and upload latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
