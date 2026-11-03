@@ -4,6 +4,8 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+## 0.3.1-beta — 2026-11-03
+
 - Overview: in a narrow window the pack boxes keep the width of their columns while the table scrolls sideways, instead of cutting the rows off.
 - Cell database: the datasheet values sit in one column when the detail column is narrow, instead of running out of their boxes.
 - macOS: the app bundle is signed ad hoc as a whole, so macOS no longer calls a downloaded copy "damaged" but offers Open Anyway in Privacy & Security.
