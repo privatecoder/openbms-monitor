@@ -901,7 +901,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 let read_at = telemetry.is_ok().then_some(read_at);
                 let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error, read_at };
                 if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
-                    rec.pack(read_at.unwrap_or_else(history::now_ms), address, &v);
+                    rec.pack(history::now_ms(), address, &v);
                 }
                 let _ = app.emit("pack", update);
             }

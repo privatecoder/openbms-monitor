@@ -445,8 +445,10 @@ impl History {
         self.session
     }
 
-    /// A pack answer (PackUpdate as JSON). Events are tracked on every answer, values per the interval.
+    /// A pack answer (PackUpdate as JSON) received at `t`. Events are tracked on every answer at `t` (after the status
+    /// read), values per the interval at the telemetry's own read time (`read_at`, else `t`).
     pub fn pack(&mut self, t: i64, address: u8, update: &Value) {
+        let (event_t, t) = (t, update["read_at"].as_i64().unwrap_or(t));
         if !self.settings.packs.is_empty() && !self.settings.packs.contains(&address) {
             return;
         }
@@ -455,7 +457,7 @@ impl History {
         let site = self.link.as_ref().map(|l| l.0.clone()).unwrap_or_default();
         let Some(db) = self.db.as_ref() else { return };
         let r = (|| -> rusqlite::Result<bool> {
-            track_events(db, &mut self.open_events, session, t, address, update, None)?;
+            track_events(db, &mut self.open_events, session, event_t, address, update, None)?;
             if !due {
                 return Ok(false);
             }
@@ -1974,6 +1976,20 @@ mod tests {
         h.clear(Some("inst-b")).unwrap();
         // the same bundle again (a restore): its rows come back
         assert_eq!(h.import_bundle(Some(&values), None, "inst-a", "exp-1").unwrap().rows, 1);
+    }
+
+    #[test]
+    fn a_row_keeps_the_telemetry_read_time_and_an_event_the_status_time() {
+        let (path, mut h) = temp_db("read-at");
+        h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+        h.connected("inst-a", "can");
+        let mut u = pack_update(1, 1.0, &[3.3], &["cell_low"]);
+        u["read_at"] = json!(4000);
+        h.pack(9000, 1, &u);
+        let db = reader(&path).unwrap();
+        let row: i64 = db.query_row("SELECT t FROM pack", [], |r| r.get(0)).unwrap();
+        let start: i64 = db.query_row("SELECT start FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!((row, start), (4000, 9000));
     }
 
     #[test]
