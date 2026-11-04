@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
-import { api, effectiveCurrent, packState, type Bus, type SerialRead } from "../api";
+import { api, effectiveCurrent, packState, type Bus, type SerialRead, type SnapshotParams } from "../api";
 import { firmwareText, hardStopLine, useProfile } from "../profile";
 import { useHardStops } from "../hardStops";
 import { packProbeLine, usePackProbes } from "../packProbes";
@@ -15,6 +15,9 @@ import { LiveIndicator, Tick, useNow } from "../components/live";
 import { packFresh } from "../freshness";
 import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
+import { useSettings } from "../installData";
+import { assignedNow, parseDevices, summary, valuesOf } from "../devices";
+import { bmsBalancing, bmsWhy, extNow, type BmsBalancing, type PackMode } from "../balancingHint";
 import { CellAnalysisPanel } from "./CellAnalysis";
 import { DatasheetPanel } from "./DatasheetPanel";
 
@@ -120,7 +123,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
               <h2 className="flex items-center gap-1.5 font-display text-2xl font-semibold">{t("dash.cells")}<InfoIcon id="value.cell_voltages" /></h2>
               <span className="text-sm text-muted">{t("dash.delta")} {fmt((hi - lo) * 1000, 0, "mV")}, {t("dash.stripRefPack", { v: fmt(center, 3, "V") })}</span>
             </div>
-            {live ? <BalancingLine cells={cells} mask={live.balancing} discharging={packState(live.system_status) === "discharging"} />
+            {live ? <BalancingLine cells={cells} mask={live.balancing} mode={modeOf(packState(live.system_status), current)} current={current} pack={p.address} scope={scope} />
               : <p className="mb-3 text-sm text-muted">{t("bal.unknown")}</p>}
             <CellStrip cells={cells} center={center} balancing={live?.balancing} height={64} />
             <div className="mt-3 grid" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
@@ -176,14 +179,42 @@ function Row({ k, v }: { k: React.ReactNode; v: React.ReactNode }) {
   return <><dt className="text-muted">{k}</dt><dd className="text-right font-medium">{v}</dd></>;
 }
 
+const modeOf = (state: string, current: number): PackMode =>
+  state === "discharging" ? "discharging" : state === "charging" || current > 1 ? "charging" : "idle";
+
+/** the stored parameter blocks of an installation (newest per place), loaded when the pack details open */
+function useStoredBlocks(scope: string | null): SnapshotParams[] {
+  const [rows, setRows] = useState<SnapshotParams[]>([]);
+  useEffect(() => {
+    setRows([]);
+    if (!scope) return;
+    let alive = true;
+    api.installationSnapshots(scope).then((r) => { if (alive) setRows(r); }, () => {});
+    return () => { alive = false; };
+  }, [scope]);
+  return rows;
+}
+
 /**
- * Whether the pack balances right now and, if not, the usual reason. On the CAN socket bus only the
- * cell mask is readable; the thresholds (parameters 8 and 62) are named, not evaluated.
+ * Whether the pack balances right now and, if not, why: with the pack's stored parameters (8, 62, function switches 6)
+ * their values, otherwise the usual ones named. An external balancer assigned to the pack gets its own line, computed
+ * from its manual settings.
  */
-function BalancingLine({ cells, mask, discharging }: { cells: number[]; mask: number | undefined; discharging: boolean }) {
-  const { t } = useTranslation();
+function BalancingLine({ cells, mask, mode, current, pack, scope }: { cells: number[]; mask: number | undefined; mode: PackMode; current: number; pack: number; scope: string | null }) {
+  const { t, i18n } = useTranslation();
   const on = balancedCells(mask, cells.length);
   const hi = Math.max(...cells), lo = Math.min(...cells);
+  const blocks = useStoredBlocks(scope);
+  const bms = bmsBalancing(blocks, pack);
+  const { settings } = useSettings(scope);
+  const ext = assignedNow(parseDevices(settings.devices), pack);
+  const v = fmt(hi, 3, "V"), d = fmt((hi - lo) * 1000, 0, "mV");
+  const why = (b: BmsBalancing) => {
+    const at = new Date(b.at).toLocaleDateString(i18n.language, { dateStyle: "short" });
+    const k = bmsWhy(b, hi, lo, mode);
+    return k === "discharging" ? t("bal.whyDischarging")
+      : t(`bal.bms.${k}`, { v, d, at, start: fmt(b.start, 3, "V"), spread: fmt(b.spread * 1000, 0, "mV") });
+  };
   return (
     <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className={cn("inline-flex items-center gap-1.5 font-medium", on.length ? "text-charge" : "text-muted")}>
@@ -192,7 +223,12 @@ function BalancingLine({ cells, mask, discharging }: { cells: number[]; mask: nu
       </span>
       {!on.length && (
         <span className="text-muted">
-          {discharging ? t("bal.whyDischarging") : t("bal.whyThresholds", { v: fmt(hi, 3, "V"), d: fmt((hi - lo) * 1000, 0, "mV") })}
+          {bms ? why(bms) : mode === "discharging" ? t("bal.whyDischarging") : t("bal.whyThresholds", { v, d })}
+        </span>
+      )}
+      {ext && (
+        <span className="basis-full text-muted">
+          {t(`bal.ext.${extNow(valuesOf(ext), hi, lo, current)}`, { name: ext.name || t("dev.unnamed"), rule: summary(valuesOf(ext), t) })}
         </span>
       )}
     </div>

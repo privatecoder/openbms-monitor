@@ -12,4 +12,4 @@ Das BMS balanciert nur, wenn alles zutrifft:
 
 Zwei balancierte Zellen müssen mindestens drei Positionen auseinander liegen (Grenze des Balancing-Chips). LiFePO4 erreicht 3,40 V nur am Ende einer Ladung; bei gut gepaarten Zellen ist Balancing deshalb selten zu sehen.
 
-Am Bus der CAN-Buchse ist nur lesbar, welche Zellen balanciert werden. Die Schwellen (Parameter 8, 62, 63) und den genauen Sperrgrund liest die App erst am Bus RS485-1/2.
+Am Bus der CAN-Buchse ist nur lesbar, welche Zellen balanciert werden. Sind die Parameter eines Packs einmal gelesen, nennt die Pack-Ansicht seine Schwellen (Parameter 8 und 62) und Schalter, sonst die üblichen Werte. Den genauen Sperrgrund liest die App nur am Bus RS485-1/2. Hängt ein externer Balancer am Pack (Installationen, Geräte), zeigt eine eigene Zeile, ob er laut Berechnung arbeitet.
