@@ -38,6 +38,8 @@ use history::{Format, Settings, SharedHistory};
 
 #[derive(Default)]
 struct AppState {
+    /// pairs of packs in parallel (plus, minus) of the current installation: polled one after the other (`poll_order`)
+    poll_pairs: Arc<Mutex<Vec<(u8, u8)>>>,
     conn: Arc<Mutex<Option<Connection>>>,
     bus: Mutex<Option<Bus>>,
     /// Run flag of the current polling thread; each start gets a fresh one, so an old thread cannot stop a new one.
@@ -165,6 +167,8 @@ struct PackUpdate {
     telemetry: Option<Telemetry>,
     status: Option<Status>,
     error: Option<String>,
+    /// when the telemetry was read (ms since the epoch); null when it failed
+    read_at: Option<i64>,
 }
 
 /// System values of the master, sent as event "system".
@@ -274,13 +278,32 @@ fn with_conn<T>(conn: &Shared, flashing: &AtomicBool, f: impl FnOnce(&mut Connec
     f(c).map_err(error_text)
 }
 
-/// The order of one poll round: the packs that answered last time first, in address order, then the silent ones
-/// starting at `turn` (`may_ask` ends a round once its silent waits used up their budget).
-fn poll_order(addresses: &[u8], silent: &std::collections::BTreeSet<u8>, turn: usize) -> (Vec<u8>, Vec<u8>) {
+/// The order of one poll round: the packs that answered last time first, in address order with the partner of a pair
+/// right after its first pack (so the two answers lie about one exchange apart), then the silent ones starting at
+/// `turn` (`may_ask` ends a round once its silent waits used up their budget). A silent partner is not pulled forward.
+fn poll_order(addresses: &[u8], silent: &std::collections::BTreeSet<u8>, turn: usize, pairs: &[(u8, u8)]) -> (Vec<u8>, Vec<u8>) {
     let (quiet, live): (Vec<u8>, Vec<u8>) = addresses.iter().partition(|a| silent.contains(a));
     let n = quiet.len().max(1);
     let quiet = (0..quiet.len()).map(|i| quiet[(turn + i) % n]).collect();
-    (live, quiet)
+    let partner = |a: u8| pairs.iter().find_map(|&(p, m)| if p == a { Some(m) } else if m == a { Some(p) } else { None });
+    let mut ordered = Vec::with_capacity(live.len());
+    for &a in &live {
+        if ordered.contains(&a) {
+            continue;
+        }
+        ordered.push(a);
+        if let Some(b) = partner(a).filter(|b| live.contains(b) && !ordered.contains(b)) {
+            ordered.push(b);
+        }
+    }
+    (ordered, quiet)
+}
+
+/// The pairs of the current installation for the poll order; set by the UI whenever they change.
+#[tauri::command]
+fn set_poll_pairs(state: State<AppState>, pairs: Vec<(u8, u8)>) -> Result<(), String> {
+    *state.poll_pairs.lock().map_err(|e| e.to_string())? = pairs;
+    Ok(())
 }
 
 /// Whether a poll round asks its next pack: until the round's silent waits reach `timing::ROUND_SILENT_BUDGET`; one
@@ -763,6 +786,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
     let paused = state.memory_busy.clone();
     let hold = state.params_pause.clone();
     let (ops, links, gen) = (state.ops.clone(), state.link.clone(), link_now(&state).gen);
+    let poll_pairs = state.poll_pairs.clone();
     // answers of a connection replaced meanwhile are neither recorded nor shown
     let current = move || links.lock().map(|l| l.gen == gen).unwrap_or(false);
     std::thread::spawn(move || {
@@ -807,7 +831,8 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     }
                 }
             }
-            let (live_first, quiet) = poll_order(&addresses, &silent_packs, turn);
+            let pairs = poll_pairs.lock().map(|p| p.clone()).unwrap_or_default();
+            let (live_first, quiet) = poll_order(&addresses, &silent_packs, turn, &pairs);
             let (mut quiet_asked, mut waited_silent) = (0usize, Duration::ZERO);
             for (i, &address) in live_first.iter().chain(quiet.iter()).enumerate() {
                 if !running.load(Ordering::SeqCst) || paused.load(Ordering::SeqCst) || hold.load(Ordering::SeqCst) > 0 {
@@ -829,11 +854,14 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 // the time of the exchange itself, measured under the connection lock: waiting for another holder of
                 // the port (a device query, a serial read) is no silence of this pack
                 let mut took = Duration::ZERO;
+                // the moment of the telemetry answer, for pairing two packs' readings (not the later status read)
+                let mut read_at = 0i64;
                 // held by a parameter write meanwhile: the rest of the round is skipped, no pack counts as silent
                 let Some(telemetry) = poll_exchange(&conn, &flashing, &hold, |c| {
                     let asked = std::time::Instant::now();
                     let r = c.telemetry(address);
                     took = asked.elapsed();
+                    read_at = history::now_ms();
                     r
                 }) else { break };
                 // a pack silent to 0x42 (through its longer wait over a gateway) is not asked 0x44 in this round, and
@@ -870,9 +898,10 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                 if let Ok(st) = status.as_ref() {
                     profile::observe_hard_stop(&state, &Link { gen, installation: link_now(&state).installation }, address, st);
                 }
-                let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error };
+                let read_at = telemetry.is_ok().then_some(read_at);
+                let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error, read_at };
                 if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
-                    rec.pack(history::now_ms(), address, &v);
+                    rec.pack(read_at.unwrap_or_else(history::now_ms), address, &v);
                 }
                 let _ = app.emit("pack", update);
             }
@@ -1227,7 +1256,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![diagnosis::pack_diagnosis, diagnosis::pack_image_flags, diagnosis::pack_calibration, diagnosis::pack_soc_store, diagnosis::firmware_soc_store, list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_dirs, storage::storage_overview, storage::storage_clear, storage::storage_delete_backups, storage::storage_empty, storage::storage_empty_retry, storage::storage_empty_drop, reveal_history, app_info, open_link, updater::update_check, updater::update_install, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::write_name, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::bms_archive_packs, bms_memory::bms_archive, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, control::pack_set_learned_full, marker::marker_read, marker::marker_set, firmware::firmware_check_image, bench::bench_scan, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::access_view, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status, wiring::set_wiring])
+        .invoke_handler(tauri::generate_handler![diagnosis::pack_diagnosis, diagnosis::pack_image_flags, diagnosis::pack_calibration, diagnosis::pack_soc_store, diagnosis::firmware_soc_store, list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, set_poll_pairs, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_dirs, storage::storage_overview, storage::storage_clear, storage::storage_delete_backups, storage::storage_empty, storage::storage_empty_retry, storage::storage_empty_drop, reveal_history, app_info, open_link, updater::update_check, updater::update_install, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::write_name, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::bms_archive_packs, bms_memory::bms_archive, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, control::pack_set_learned_full, marker::marker_read, marker::marker_set, firmware::firmware_check_image, bench::bench_scan, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::access_view, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status, wiring::set_wiring])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {
@@ -1249,9 +1278,14 @@ mod port_reservation_tests {
     #[test]
     fn a_poll_round_asks_the_answering_packs_first_and_the_silent_ones_in_turns() {
         let silent: std::collections::BTreeSet<u8> = [2, 3, 5].into();
-        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 0), (vec![0, 1, 4], vec![2, 3, 5]));
-        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 2), (vec![0, 1, 4], vec![5, 2, 3]));
-        assert_eq!(poll_order(&[0, 1], &Default::default(), 7), (vec![0, 1], vec![]));
+        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 0, &[]), (vec![0, 1, 4], vec![2, 3, 5]));
+        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent, 2, &[]), (vec![0, 1, 4], vec![5, 2, 3]));
+        assert_eq!(poll_order(&[0, 1], &Default::default(), 7, &[]), (vec![0, 1], vec![]));
+        // a pair's partner follows its first pack; a silent partner stays with the silent ones
+        let none = Default::default();
+        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &none, 0, &[(5, 0), (2, 4)]).0, vec![0, 5, 1, 2, 4, 3]);
+        let silent5 = [5].into_iter().collect();
+        assert_eq!(poll_order(&[0, 1, 2, 3, 4, 5], &silent5, 0, &[(5, 0)]), (vec![0, 1, 2, 3, 4], vec![5]));
     }
 
     #[test]

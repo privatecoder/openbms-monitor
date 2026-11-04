@@ -140,7 +140,8 @@ export interface BmsHistoryRead { address: number; records: BmsHistoryRecord[]; 
 export type ArchivedRecord = BmsHistoryRecord & { bms_serial: string | null; read_at: number };
 export interface BmsArchive { records: ArchivedRecord[]; skipped: number }
 export interface ArchivePack { address: number; count: number; newest_read_at: number; serials: (string | null)[] }
-export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null }
+/** read_at: when the telemetry was read (ms), null when it failed */
+export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null; read_at?: number | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 /** Telemetry and status of one pack, read on demand (calibration). */
 export interface PackLive { telemetry: Telemetry; status: Status }
@@ -527,6 +528,8 @@ const tauriApi = {
   /** `connecting`: the search of a connect, stopped by its „Abbrechen“ */
   scan: (addresses?: number[], connecting = false) => invoke<[number, DeviceInfo][]>("scan", { addresses: addresses ?? null, connecting }),
   startPolling: (addresses: number[], intervalMs: number) => invoke<void>("start_polling", { addresses, intervalMs }),
+  /** pairs (plus, minus) polled one after the other */
+  setPollPairs: (pairs: [number, number][]) => invoke<void>("set_poll_pairs", { pairs }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
   systemOnce: () => invoke<void>("system_once"),
   stopPolling: () => invoke<void>("stop_polling"),
@@ -785,6 +788,7 @@ function demoApi(): typeof tauriApi {
       };
       clearInterval(timer); tick(); timer = window.setInterval(tick, intervalMs);
     },
+    setPollPairs: async () => {},
     stopPolling: async () => { clearInterval(timer); },
     // preview: synthetic serial numbers, one pack still with the factory placeholder
     serialNumbers: async (address) => {

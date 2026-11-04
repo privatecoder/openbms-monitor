@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { api } from "./api";
 import { useSettings } from "./installData";
 
 /**
@@ -35,6 +37,15 @@ export function usePairs(scope: string | null) {
   // Browser preview: ?pairs=1 pre-fills neighbouring pairs.
   if (!pairs.length && new URLSearchParams(location.search).get("pairs")) pairs = neighbourPairs(Array.from({ length: 12 }, (_, i) => i));
   return { pairs, save: (p: Pair[]) => save("pairs", p) };
+}
+
+/** The installation's pairs go to the backend, which polls the two packs of a pair one after the other. */
+export function usePollPairsSync(scope: string | null) {
+  const { pairs } = usePairs(scope);
+  const key = JSON.stringify(pairs);
+  useEffect(() => {
+    void api.setPollPairs(pairs.filter((p) => p.plus !== p.minus).map((p) => [p.plus, p.minus])).catch(() => {});
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /**
@@ -158,33 +169,25 @@ export function gapTrend(samples: { i: number; g: number }[]): { kind: "offset" 
 /** The largest resistance (mΩ) an offset verdict cannot rule out: what would grow the gap by TREND_FLAT_V over the range. */
 export const offsetMaxMilliohm = (range: number) => (TREND_FLAT_V * 1000) / range;
 
-/** Least tolerance (ms) for two answers of a pair to count as the same moment (the health report's MATCH_MS). */
+/** Two answers of a pair at most this far apart (ms) count as the same moment, as in the health report (MATCH_MS). The
+ *  poll order puts a pair's packs one after the other (about one exchange apart); answers further apart are left out. */
 export const MATCH_MS = 3_000;
 /** Time-paired samples a pair's live figures need within the window. */
 export const PAIRED_MIN = 3;
 
-/** Median gap (ms) between consecutive answers of a pack: one polling round; undefined below two answers. */
-function roundMs(s: PackSample[]): number | undefined {
-  const gaps = s.slice(1).map((x, k) => x.t - s[k].t).sort((a, b) => a - b);
-  if (!gaps.length) return undefined;
-  const m = gaps.length >> 1;
-  return gaps.length % 2 ? gaps[m] : (gaps[m - 1] + gaps[m]) / 2;
-}
-
-/** One answer of a pack: time, current (A), output voltage (V). */
+/** One answer of a pack: time of the telemetry read, current (A), output voltage (V). */
 export interface PackSample { t: number; i: number; u: number }
 
 /**
  * A pair's live figures from time-paired answers only, so a value from much earlier is never set against a fresh one:
- * answers of the two packs in the last `windowMs` paired one to one within one polling round (the larger median gap
- * between consecutive answers of the two packs in the window, at least MATCH_MS; the packs are polled one after the
- * other, so partners can be most of a round apart), closest first, each answer used at most once. Means of current and
+ * answers of the two packs in the last `windowMs` paired one to one at most MATCH_MS apart, closest first, each answer
+ * used at most once. Means of current and
  * output voltage per pack over those pairs; undefined below PAIRED_MIN pairs (that many different answers of each).
  */
 export function pairedMeans(plus: PackSample[], minus: PackSample[], now: number, windowMs: number): { a: number; b: number; ua: number; ub: number; n: number } | undefined {
   const inWindow = (s: PackSample[]) => s.filter((x) => now - x.t <= windowMs);
   const mine = inWindow(plus), others = inWindow(minus);
-  const tol = Math.max(MATCH_MS, roundMs(mine) ?? 0, roundMs(others) ?? 0);
+  const tol = MATCH_MS;
   const cand: [number, number, number][] = [];
   mine.forEach((x, i) => others.forEach((y, j) => { const d = Math.abs(y.t - x.t); if (d <= tol) cand.push([d, i, j]); }));
   cand.sort((p, q) => p[0] - q[0]);

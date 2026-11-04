@@ -18,6 +18,7 @@ import { useLiveData } from "./store";
 import { packFresh } from "./freshness";
 import { useMaint } from "./maintStore";
 import { useWiringSync } from "./wiring";
+import { usePollPairsSync } from "./pairs";
 import { api, isDemo, type Bus } from "./api";
 import { defaultName, type Monitor } from "./maint";
 import i18n from "./i18n";
@@ -44,6 +45,7 @@ export default function App() {
   const scope = maint.installation;
   // the backend's bus rule follows the installation shown (`wiring.rs`)
   useWiringSync(scope);
+  usePollPairsSync(scope);
   const [connected, setConnected] = useState(false);
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");

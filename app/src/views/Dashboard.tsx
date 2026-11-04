@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpToLine, Cpu, Database, Layers, MoveVertical, Scale, Settings, Thermometer } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
@@ -11,7 +11,8 @@ import { LiveIndicator, useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
-import { PAIRED_MIN, PAIR_MIN_A, checkPairs, offsetMaxMilliohm, pairedMeans, usePairs, validPairs, type Pair, type PackSample, type PairCheck, gapTrend } from "../pairs";
+import { PAIRED_MIN, PAIR_MIN_A, checkPairs, offsetMaxMilliohm, pairedMeans, usePairs, validPairs, type Pair, type PairCheck, gapTrend } from "../pairs";
+import { PAIR_WINDOW_MS, live } from "../livePairs";
 import { GroupEditor } from "./GroupEditor";
 import { CellAssignSheet } from "./CellAssign";
 import { useCellDb } from "../cells/store";
@@ -273,53 +274,42 @@ function blocks(entries: Viewed[], partner: Map<number, Pair>): { pair?: Pair; r
   return out;
 }
 
-const PAIR_WINDOW_MS = 60_000;
 const TREND_EVERY_MS = 20_000;
 const TREND_KEEP_MS = 6 * 3_600_000;
 
 /**
  * Pair check on the means of time-paired answers over the last minute (pairs.ts pairedMeans), with hysteresis against
  * the last result. A polling round over many packs takes ~10 s and the inverter's current swings by a few amperes
- * between rounds, so single readings made the notes flicker; pairing keeps a load step between the two packs' answers
- * from reading as a split. A pair without PAIRED_MIN paired answers gets no check. Waits until every pack has answered
- * once.
+ * between rounds, so single readings made the notes flicker. Only answers read at most MATCH_MS apart are paired (the
+ * poll order puts a pair's packs one after the other); a load step within that time can still show as a split. A pair
+ * without PAIRED_MIN paired answers gets no check. The answers, the last result and the trends live outside the view
+ * (livePairs.ts).
  */
 function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairCheck[] {
-  const samples = useRef(new Map<number, PackSample[]>());
-  const last = useRef<PairCheck[]>([]);
-  const seen = useRef("");
-  // per pair: mean current per pack and output gap, every TREND_EVERY_MS, for the trend of the gap
-  const trend = useRef(new Map<number, { t: number; i: number; g: number }[]>());
   const now = Date.now();
-  for (const p of Object.values(packs)) {
-    if (!p.telemetry || !p.updated) continue;
-    const s = samples.current.get(p.address) ?? [];
-    if (s[s.length - 1]?.t !== p.updated) s.push({ t: p.updated, i: effectiveCurrent(p.telemetry), u: p.telemetry.port_voltage });
-    samples.current.set(p.address, s.filter((x) => now - x.t <= PAIR_WINDOW_MS));
-  }
-  if (!Object.values(packs).every((p) => p.telemetry)) return [];
   // recompute only when new data arrived, so re-renders do not step the hysteresis
-  const key = Object.values(packs).map((p) => p.updated).join();
-  if (key !== seen.current) {
-    seen.current = key;
+  const key = Object.values(packs).map((p) => p.updated).join() + JSON.stringify(pairs);
+  if (key !== live.seen) {
+    live.seen = key;
     // per pack (each in one pair at most) its mean over the pair's paired answers
     const means = new Map<number, { i: number; u: number }>();
     for (const p of pairs) {
-      const m = pairedMeans(samples.current.get(p.plus) ?? [], samples.current.get(p.minus) ?? [], now, PAIR_WINDOW_MS);
+      const m = pairedMeans(live.samples.get(p.plus) ?? [], live.samples.get(p.minus) ?? [], now, PAIR_WINDOW_MS);
       if (m) { means.set(p.plus, { i: m.a, u: m.ua }); means.set(p.minus, { i: m.b, u: m.ub }); }
     }
-    const checks = checkPairs(pairs, (a) => means.get(a)?.i, last.current, (a) => packs[a]?.telemetry?.soc, (a) => means.get(a)?.u);
-    last.current = checks.map((c) => {
+    const checks = checkPairs(pairs, (a) => means.get(a)?.i, live.last, (a) => packs[a]?.telemetry?.soc, (a) => means.get(a)?.u);
+    live.last = checks.map((c) => {
       if (c.gap === undefined) return c;
-      const list = (trend.current.get(c.pair.plus) ?? []).filter((x) => now - x.t <= TREND_KEEP_MS);
+      const id = `${c.pair.plus}-${c.pair.minus}`;
+      const list = (live.trend.get(id) ?? []).filter((x) => now - x.t <= TREND_KEEP_MS);
       if (!list.length || now - list[list.length - 1].t >= TREND_EVERY_MS) list.push({ t: now, i: c.total / 2, g: c.gap });
-      trend.current.set(c.pair.plus, list);
+      live.trend.set(id, list);
       const tr = gapTrend(list);
       // a constant gap is one BMS measuring differently, not a resistance
       return { ...c, trend: tr, gapHigh: c.gapHigh && tr?.kind !== "offset" };
     });
   }
-  return last.current;
+  return live.last;
 }
 
 /** Two rows joined by a bar on the left, with the pair's total current below. */

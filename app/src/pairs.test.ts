@@ -39,9 +39,12 @@ describe("pairs", () => {
     const a = [0, 1, 2, 3, 4, 5].map((k) => s(k * 10_000, 30)), b = [0, 1, 2, 3, 4, 5].map((k) => s(k * 10_000 + 1_000, 20, 53.45));
     expect(pairedMeans(a, b, 55_000, 60_000)).toMatchObject({ a: 30, b: 20, n: 6 });
     expect(pairedMeans(a, b, 55_000, 60_000)!.ua - pairedMeans(a, b, 55_000, 60_000)!.ub).toBeCloseTo(0.05);
-    // rounds of 12 s, the partner 11 s later in the polling order: within one round, paired
-    const r12 = [0, 1, 2, 3, 4].map((k) => s(k * 12_000, 30)), late = [0, 1, 2, 3, 4].map((k) => s(k * 12_000 + 11_000, 20));
-    expect(pairedMeans(r12, late, 59_000, 60_000)).toMatchObject({ a: 30, b: 20, n: 4 }); // one to one, closest first: 11/12 s, 23/24 s, …
+    // rounds of 12 s, the partner 6 s later (half a round): not the same moment (a load step between them would read as a split)
+    const r12 = [0, 1, 2, 3, 4].map((k) => s(k * 12_000, 30)), late = [0, 1, 2, 3, 4].map((k) => s(k * 12_000 + 6_000, 20));
+    expect(pairedMeans(r12, late, 59_000, 60_000)).toBeUndefined();
+    // the partner polled right after (1 s): paired
+    const next = [0, 1, 2, 3, 4].map((k) => s(k * 12_000 + 1_000, 20));
+    expect(pairedMeans(r12, next, 59_000, 60_000)).toMatchObject({ a: 30, b: 20, n: 5 });
     // one pack's last answer 55 s ago at 40 A, the other answering every 10 s at 20 A: not the same moment
     const fresh = [1, 2, 3, 4, 5, 6].map((k) => s(k * 10_000, 20));
     expect(pairedMeans([s(5_000, 40)], fresh, 60_000, 60_000)).toBeUndefined();

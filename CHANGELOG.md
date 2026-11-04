@@ -4,6 +4,8 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- Pairs: the two packs of a pair are polled right after each other, and the live check pairs only answers read at most 3 s apart (as the health report), timed from the telemetry read itself; before, answers up to a whole polling round apart could be paired when one was missing. The answers are collected outside the overview, so opening a pack and coming back no longer shows "no simultaneous samples" for a minute, and one pack without data no longer stops the check of all pairs. The recording stores the time of the telemetry read.
+
 ## 0.3.3-beta — 2026-11-04
 
 - Pack view, balancing line: with the pack's parameters read once, the reason it does not balance uses its own values (start voltage, start spread, function switches 6) instead of the usual ones, and says when they are reached and it still does not balance. An external balancer assigned to the pack gets its own line: working, off, or between its thresholds, computed from its settings.

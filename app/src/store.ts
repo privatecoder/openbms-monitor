@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type DeviceInfo, type PackUpdate, type SerialNumbers } from "./api";
 import type { SystemEntry } from "./freshness";
+import { addAnswer, resetLivePairs } from "./livePairs";
 
 /** updated / statusUpdated: time of the last successful telemetry / status answer; telemetryOk / statusOk: the last
  *  poll of each succeeded (the values kept after a failure are old, `freshness.ts`); interval: smoothed time between two
@@ -21,7 +22,8 @@ export function useLiveData() {
   const [system, setSystem] = useState<SystemEntry | null>(null);
 
   useEffect(() => {
-    const p = api.onPack((u) =>
+    const p = api.onPack((u) => {
+      addAnswer(u);
       setPacks((prev) => ({
         ...prev,
         [u.address]: {
@@ -38,8 +40,8 @@ export function useLiveData() {
           // a full polling round takes longer with more packs and slower buses, so learn it per pack
           interval: smoothInterval(prev[u.address], !!u.telemetry),
         },
-      })),
-    );
+      }));
+    });
     // like the packs: a failed poll keeps the last good values, marked old (not ok)
     const s = api.onSystem((u) => setSystem((prev) => ({ ...u, values: u.values ?? prev?.values ?? null, ok: !!u.values, updated: u.values ? Date.now() : prev?.updated ?? 0 })));
     return () => { p.then((f) => f()); s.then((f) => f()); };
@@ -59,5 +61,5 @@ export function useLiveData() {
   const setSerials = (address: number, serials: SerialNumbers) =>
     setPacks((prev) => (prev[address] ? { ...prev, [address]: { ...prev[address], serials } } : prev));
 
-  return { packs, system, setDevices, addDevices, setSerials, reset: () => { setPacks({}); setSystem(null); } };
+  return { packs, system, setDevices, addDevices, setSerials, reset: () => { setPacks({}); setSystem(null); resetLivePairs(); } };
 }
