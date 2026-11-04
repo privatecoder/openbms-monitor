@@ -457,8 +457,9 @@ impl History {
         let site = self.link.as_ref().map(|l| l.0.clone()).unwrap_or_default();
         let Some(db) = self.db.as_ref() else { return };
         let r = (|| -> rusqlite::Result<bool> {
-            // an event opened or closed at the status time extends the session to it (its end after a crash)
-            if track_events(db, &mut self.open_events, session, event_t, address, update, None)? > 0 {
+            // every status answer extends the session to its time (an open event's end after a crash)
+            track_events(db, &mut self.open_events, session, event_t, address, update, None)?;
+            if update["status"].is_object() {
                 db.prepare_cached("UPDATE sessions SET last = MAX(COALESCE(last, ?2), ?2) WHERE id = ?1")?.execute(params![session, event_t])?;
             }
             if !due {
@@ -2000,6 +2001,23 @@ mod tests {
         again.open(&path).unwrap();
         let end: i64 = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
         assert!(end >= 9000, "end {end}");
+        // the same alarm still on at 19 s (read 14 s), then a crash: it ends at 19 s; gone at 29 s: the session reaches it
+        let mut u2 = pack_update(1, 1.0, &[3.3], &["cell_low"]);
+        u2["read_at"] = json!(14000);
+        again.connected("inst-a", "can");
+        again.pack(19000, 1, &u2);
+        drop(again);
+        let mut third = History::default();
+        third.open(&path).unwrap();
+        let ends: Vec<i64> = reader(&path).unwrap().prepare("SELECT end FROM events ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(ends.last(), Some(&19000));
+        let mut u3 = pack_update(1, 1.0, &[3.3], &[]);
+        u3["read_at"] = json!(24000);
+        third.connected("inst-a", "can");
+        third.pack(29000, 1, &pack_update(1, 1.0, &[3.3], &["cell_low"]));
+        third.pack(39000, 1, &u3);
+        let last: i64 = reader(&path).unwrap().query_row("SELECT MAX(last) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(last, 39000);
     }
 
     #[test]
