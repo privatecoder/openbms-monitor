@@ -105,7 +105,9 @@ export function checkPairs(
   pairs: Pair[], current: (a: number) => number | undefined, prev?: PairCheck[],
   soc?: (a: number) => number | undefined, port?: (a: number) => number | undefined,
 ): PairCheck[] {
-  const last = new Map((prev ?? []).map((c) => [c.pair.plus, c]));
+  // a result of the same pair only (both packs): a new partner starts without the old warning
+  const id = (p: Pair) => `${p.plus}-${p.minus}`;
+  const last = new Map((prev ?? []).map((c) => [id(c.pair), c]));
   const rows = pairs.flatMap((pair) => {
     const a = current(pair.plus), b = current(pair.minus);
     if (a === undefined || b === undefined) return [];
@@ -121,7 +123,7 @@ export function checkPairs(
   return rows.map(({ pair, a, b, total }) => {
     const lo = Math.min(Math.abs(a), Math.abs(b)), hi = Math.max(Math.abs(a), Math.abs(b));
     const share = hi ? lo / hi : 1;
-    const was = last.get(pair.plus);
+    const was = last.get(id(pair));
     const pa = port?.(pair.plus), pb = port?.(pair.minus);
     const gap = pa !== undefined && pb !== undefined ? pa - pb : undefined;
     const gapHigh = gap !== undefined && Math.abs(gap) >= (was?.gapHigh ? PORT_GAP_V * 0.8 : PORT_GAP_V);

@@ -118,3 +118,15 @@ describe("equalizes", () => {
     expect(equalizes(total, mine, other)).toBe(want);
   });
 });
+
+describe("pair hysteresis", () => {
+  it("is not inherited by a new partner of the same pack", () => {
+    const I: Record<number, number> = { 0: 29, 1: 50, 2: 40 };
+    const first = checkPairs([{ plus: 0, minus: 1 }], (a) => I[a]);
+    expect(first[0].weak).toBe(0);
+    // 0/2 at 29/40 A (72.5 %): above the 70 % entry, so not weak without the old pair's warning
+    expect(checkPairs([{ plus: 0, minus: 2 }], (a) => I[a], first)[0].weak).toBeUndefined();
+    // the same pair keeps it (75 % exit threshold)
+    expect(checkPairs([{ plus: 0, minus: 1 }], (a) => ({ 0: 36, 1: 50 } as Record<number, number>)[a], first)[0].weak).toBe(0);
+  });
+});

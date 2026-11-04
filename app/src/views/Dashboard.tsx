@@ -287,29 +287,33 @@ const TREND_KEEP_MS = 6 * 3_600_000;
  */
 function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairCheck[] {
   const now = Date.now();
-  // recompute only when new data arrived, so re-renders do not step the hysteresis
+  const id = (p: Pair) => `${p.plus}-${p.minus}`;
+  // per pack (each in one pair at most) its mean over the pair's paired answers in the window, as of now
+  const means = new Map<number, { i: number; u: number }>();
+  for (const p of pairs) {
+    const m = pairedMeans(live.samples.get(p.plus) ?? [], live.samples.get(p.minus) ?? [], now, PAIR_WINDOW_MS);
+    if (m) { means.set(p.plus, { i: m.a, u: m.ua }); means.set(p.minus, { i: m.b, u: m.ub }); }
+  }
+  // hysteresis and trend step only when new data arrived, so re-renders do not move them
   const key = Object.values(packs).map((p) => p.updated).join() + JSON.stringify(pairs);
   if (key !== live.seen) {
     live.seen = key;
-    // per pack (each in one pair at most) its mean over the pair's paired answers
-    const means = new Map<number, { i: number; u: number }>();
-    for (const p of pairs) {
-      const m = pairedMeans(live.samples.get(p.plus) ?? [], live.samples.get(p.minus) ?? [], now, PAIR_WINDOW_MS);
-      if (m) { means.set(p.plus, { i: m.a, u: m.ua }); means.set(p.minus, { i: m.b, u: m.ub }); }
-    }
+    // a removed pair takes its trend along (a pair set up again later starts fresh)
+    const ids = new Set(pairs.map(id));
+    for (const k of [...live.trend.keys()]) if (!ids.has(k)) live.trend.delete(k);
     const checks = checkPairs(pairs, (a) => means.get(a)?.i, live.last, (a) => packs[a]?.telemetry?.soc, (a) => means.get(a)?.u);
     live.last = checks.map((c) => {
       if (c.gap === undefined) return c;
-      const id = `${c.pair.plus}-${c.pair.minus}`;
-      const list = (live.trend.get(id) ?? []).filter((x) => now - x.t <= TREND_KEEP_MS);
+      const list = (live.trend.get(id(c.pair)) ?? []).filter((x) => now - x.t <= TREND_KEEP_MS);
       if (!list.length || now - list[list.length - 1].t >= TREND_EVERY_MS) list.push({ t: now, i: c.total / 2, g: c.gap });
-      live.trend.set(id, list);
+      live.trend.set(id(c.pair), list);
       const tr = gapTrend(list);
       // a constant gap is one BMS measuring differently, not a resistance
       return { ...c, trend: tr, gapHigh: c.gapHigh && tr?.kind !== "offset" };
     });
   }
-  return live.last;
+  // a result whose answers left the window (no new data, e.g. a paused poll) is no longer shown
+  return live.last.filter((c) => means.has(c.pair.plus) && pairs.some((p) => id(p) === id(c.pair)));
 }
 
 /** Two rows joined by a bar on the left, with the pair's total current below. */
