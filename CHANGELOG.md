@@ -4,6 +4,8 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- Pack view, balancing line: with the pack's parameters read once, the reason it does not balance uses its own values (start voltage, start spread, function switches 6) instead of the usual ones, and says when they are reached and it still does not balance. An external balancer assigned to the pack gets its own line: working, off, or between its thresholds, computed from its settings.
+
 ## 0.3.2-beta — 2026-11-03
 
 - Cell analysis and balancing timeline: the time axis hides a date whose label would run into the start or end label (seen at 7 and 30 days on a narrow window). The history charts leave more room per date at spans over two days and show the date alone at midnight, so the labels no longer run into each other.
