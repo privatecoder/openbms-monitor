@@ -327,8 +327,8 @@ impl History {
             .map_err(|e| e.to_string())?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        // events left open by a crash end where their session's data ends
-        db.execute("UPDATE events SET end = (SELECT last FROM sessions WHERE id = events.session) WHERE end IS NULL", [])
+        // events left open by a crash end where their session's data ends, never before they began
+        db.execute("UPDATE events SET end = MAX(start, COALESCE((SELECT last FROM sessions WHERE id = events.session), start)) WHERE end IS NULL", [])
             .map_err(|e| e.to_string())?;
         self.db = Some(db);
         self.path = Some(path.to_path_buf());
@@ -457,7 +457,10 @@ impl History {
         let site = self.link.as_ref().map(|l| l.0.clone()).unwrap_or_default();
         let Some(db) = self.db.as_ref() else { return };
         let r = (|| -> rusqlite::Result<bool> {
-            track_events(db, &mut self.open_events, session, event_t, address, update, None)?;
+            // an event opened or closed at the status time extends the session to it (its end after a crash)
+            if track_events(db, &mut self.open_events, session, event_t, address, update, None)? > 0 {
+                db.prepare_cached("UPDATE sessions SET last = MAX(COALESCE(last, ?2), ?2) WHERE id = ?1")?.execute(params![session, event_t])?;
+            }
             if !due {
                 return Ok(false);
             }
@@ -1990,6 +1993,13 @@ mod tests {
         let row: i64 = db.query_row("SELECT t FROM pack", [], |r| r.get(0)).unwrap();
         let start: i64 = db.query_row("SELECT start FROM events", [], |r| r.get(0)).unwrap();
         assert_eq!((row, start), (4000, 9000));
+        drop(db);
+        // the app ends without disconnecting: reopened, the open event ends at the session's end, not before it began
+        drop(h);
+        let mut again = History::default();
+        again.open(&path).unwrap();
+        let end: i64 = reader(&path).unwrap().query_row("SELECT end FROM events", [], |r| r.get(0)).unwrap();
+        assert!(end >= 9000, "end {end}");
     }
 
     #[test]

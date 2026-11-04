@@ -294,8 +294,9 @@ function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairChe
     const m = pairedMeans(live.samples.get(p.plus) ?? [], live.samples.get(p.minus) ?? [], now, PAIR_WINDOW_MS);
     if (m) { means.set(p.plus, { i: m.a, u: m.ua }); means.set(p.minus, { i: m.b, u: m.ub }); }
   }
-  // hysteresis and trend step only when new data arrived, so re-renders do not move them
-  const key = Object.values(packs).map((p) => p.updated).join() + JSON.stringify(pairs);
+  // hysteresis and trend step only when new data arrived or answers left the window (the means changed), so re-renders
+  // alone do not move them
+  const key = Object.values(packs).map((p) => p.updated).join() + JSON.stringify(pairs) + JSON.stringify([...means]);
   if (key !== live.seen) {
     live.seen = key;
     // a removed pair takes its trend along (a pair set up again later starts fresh)
