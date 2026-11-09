@@ -39,3 +39,18 @@ describe("an external balancer now", () => {
     expect(extNow(v, 3.45, 3.43, -5)).toBe("off");
   });
 });
+
+describe("the blocks the balancing line explains with", () => {
+  it("over MQTT only the feed's block, never a stored one", async () => {
+    const { balancingBlocks, bmsBalancing } = await import("./balancingHint");
+    const stored = [{ address: 0, at: 9_000, kind: "read", board: "current", bms_serial: null,
+      parameters: { parameters: [{ index: 8, value: 3.4 }, { index: 62, value: 0.03 }], function_switches: [0, 0, 0, 0, 0, 0, 1] } }] as never[];
+    const feed = { state: "live", boot: "b", boot_changed: false, skew_ms: 0, version_error: null,
+      packs: [{ address: 1, device: null, battery_serial: null, bms_serial: null, parameters_at: 5,
+        parameters: { parameters: [{ index: 8, value: 3.45 }, { index: 62, value: 0.02 }], function_switches: [0, 0, 0, 0, 0, 0, 3] } }] } as never;
+    expect(balancingBlocks("bus", stored, feed)).toBe(stored);
+    expect(bmsBalancing(balancingBlocks("mqtt", stored, feed), 0)).toBeNull();
+    expect(bmsBalancing(balancingBlocks("mqtt", stored, feed), 1)).toMatchObject({ start: 3.45, spread: 0.02, enabled: true, idle: true, at: 5 });
+    expect(balancingBlocks("mqtt", stored, null)).toEqual([]);
+  });
+});

@@ -12,7 +12,7 @@ import { InfoIcon } from "../help";
 import { Button } from "../components/ui/button";
 import { arrange, useGroups, type Group } from "../groups";
 import { PAIRED_MIN, PAIR_MIN_A, checkPairs, offsetMaxMilliohm, pairedMeans, usePairs, validPairs, type Pair, type PairCheck, gapTrend } from "../pairs";
-import { PAIR_WINDOW_MS, live } from "../livePairs";
+import { PAIR_WINDOW_MS, live, windowNow } from "../livePairs";
 import { GroupEditor } from "./GroupEditor";
 import { CellAssignSheet } from "./CellAssign";
 import { useCellDb } from "../cells/store";
@@ -286,7 +286,7 @@ const TREND_KEEP_MS = 6 * 3_600_000;
  * (livePairs.ts).
  */
 function usePairChecks(pairs: Pair[], packs: Record<number, PackEntry>): PairCheck[] {
-  const now = Date.now();
+  const now = windowNow();
   const id = (p: Pair) => `${p.plus}-${p.minus}`;
   // per pack (each in one pair at most) its mean over the pair's paired answers in the window, as of now
   const means = new Map<number, { i: number; u: number }>();

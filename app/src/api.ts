@@ -7,6 +7,7 @@ import type { RestartResult } from "./control";
 import { fromRaw, isSigned, toRaw, violations, type Wire } from "./paramWrite";
 import { noteUnchecked } from "./bank";
 import { setProfile } from "./profile";
+import { setSource } from "./source";
 
 export type Bus = "pack" | "can";
 /** what answered at the other bus's baud rate (`pack_at_9600`: RS485-1/2 of firmware 16.04.06 `_9600`, not the CAN socket) */
@@ -505,7 +506,7 @@ const tauriApi = {
    *  JSON `{ kind: "no-answer", noise, intra, busy }`, the port is closed again */
   connect: (endpoint: Endpoint, installation: string | null, addresses?: number[]) =>
     invoke<Connected>("connect", { endpoint, installation, addresses: addresses ?? null })
-      .then((r) => { linkGen = r.gen; setProfile(r.profile); return r; }),
+      .then((r) => { linkGen = r.gen; setProfile(r.profile); setSource("bus"); return r; }),
   /** the connection's firmware profile (null: not connected) */
   firmwareProfile: () => invoke<ProfileView | null>("firmware_profile"),
   /** „Erneut prüfen“ on connection `gen` (CAN socket) */
@@ -533,7 +534,7 @@ const tauriApi = {
     invoke<OtherBus>("probe_other_bus", { path, bus, addresses: addresses ?? null }),
   /** `lost`: the UI drops a dead link to reconnect (notifications keep watching for the lost connection) */
   connectCancel: () => invoke<void>("connect_cancel"),
-  disconnect: (lost = false) => invoke<void>("disconnect", { lost }).finally(() => setProfile(null)),
+  disconnect: (lost = false) => invoke<void>("disconnect", { lost }).finally(() => { setProfile(null); setSource(null); }),
   /** „Erneut prüfen“ found another profile */
   onFirmwareProfile: (f: (p: ProfileView) => void) => listen<ProfileView>("firmware-profile", (e) => f(e.payload)),
   /** without addresses: search 0..15; with addresses: only read their device info */
@@ -544,7 +545,8 @@ const tauriApi = {
   setPollPairs: (pairs: [number, number][]) => invoke<void>("set_poll_pairs", { pairs }),
   /** the broker of the "Home Assistant (MQTT)" connection (app data, readable by the user only) */
   /** read the add-on's feed from the broker instead of the RS485 bus */
-  connectMqtt: (settings: MqttSettings, installation: string | null) => invoke<Connected>("connect_mqtt", { settings, installation }),
+  connectMqtt: (settings: MqttSettings, installation: string | null) => invoke<Connected>("connect_mqtt", { settings, installation })
+    .then((r) => { linkGen = r.gen; setProfile(r.profile); setSource("mqtt"); return r; }),
   loadMqttSettings: () => invoke<MqttSettings | null>("load_mqtt_settings"),
   saveMqttSettings: (settings: MqttSettings) => invoke<void>("save_mqtt_settings", { settings }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
@@ -555,6 +557,8 @@ const tauriApi = {
   serialNumbers: (address: number, binary = false) => invoke<SerialRead>("serial_numbers", { address, binary }),
   onPack: (f: (u: PackUpdate) => void) => listen<PackUpdate>("pack", (e) => f(e.payload)),
   onSystem: (f: (u: SystemUpdate) => void) => listen<SystemUpdate>("system", (e) => f(e.payload)),
+  /** the add-on's feed while the source is MQTT */
+  onFeed: (f: (u: FeedState) => void) => listen<FeedState>("feed", (e) => f(e.payload)),
   /** a valid answer in the poll loop, before its pack event (`timing::CONN_LOST`) */
   onAnswer: (f: () => void) => listen("answer", () => f()),
   /** The backend dropped a dead link (gateway closed the socket, I/O error) and stopped polling. */
@@ -791,7 +795,7 @@ function demoApi(): typeof tauriApi {
     onHardStop: async () => () => {},
     probeOtherBus: async () => ({ answered: null, noise: false, intra: false, pack_at_9600: false }),
     connectCancel: async () => {},
-    disconnect: async () => { clearInterval(timer); setProfile(null); },
+    disconnect: async () => { clearInterval(timer); setProfile(null); setSource(null); },
     onFirmwareProfile: async () => () => {},
     scan: async (addresses?: number[]) => (await load()).scan.filter((s) => !addresses || addresses.includes(s.address))
       .map((s) => [s.address, demoProtocol.has(s.address) ? { ...s.device, can_protocol: demoProtocol.get(s.address)! } : s.device] as [number, DeviceInfo]),
@@ -822,6 +826,7 @@ function demoApi(): typeof tauriApi {
     },
     onPack: (f) => sub(packL, f),
     onSystem: (f) => sub(sysL, f),
+    onFeed: async () => () => {},
     onAnswer: async () => () => {},
     onLinkLost: async () => () => {},
     onMonitorStopped: async () => () => {},

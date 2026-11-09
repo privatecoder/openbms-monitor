@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useFeed, useSource } from "../source";
+import { canTalkToBms } from "../access";
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
 import { api, effectiveCurrent, packState, type Bus, type SerialRead, type SnapshotParams } from "../api";
@@ -17,7 +19,7 @@ import { InfoIcon } from "../help";
 import { cn, fmt } from "../lib/utils";
 import { useSettings } from "../installData";
 import { assignedNow, parseDevices, summary, valuesOf } from "../devices";
-import { bmsBalancing, bmsWhy, extNow, type BmsBalancing, type PackMode } from "../balancingHint";
+import { balancingBlocks, bmsBalancing, bmsWhy, extNow, type BmsBalancing, type PackMode } from "../balancingHint";
 import { CellAnalysisPanel } from "./CellAnalysis";
 import { DatasheetPanel } from "./DatasheetPanel";
 
@@ -43,11 +45,13 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const [asked, setAsked] = useState<SerialRead | { error: string } | null>(null);
   useEffect(() => setAsked(null), [p.address, profile?.gen]);
   // the manual binary read is always offered on the CAN socket (also without any proof)
-  const askable = bus === "can" && !!profile;
+  // over the add-on's feed (MQTT) nothing is asked of the BMS
+  const talk = canTalkToBms(useSource());
+  const askable = bus === "can" && !!profile && talk;
   // a slave's own 64/03 (the master has its profile)
   const [probes, putProbe] = usePackProbes();
   const probe = probes[p.address];
-  const slaveProbe = bus === "can" && !!profile && p.address !== 0;
+  const slaveProbe = bus === "can" && !!profile && p.address !== 0 && talk;
   const [probing, setProbing] = useState(false);
   const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).then(putProbe, () => {}).finally(() => setProbing(false)); };
   const serials = asked && "bms" in asked ? asked : p.serials;
@@ -204,7 +208,9 @@ function BalancingLine({ cells, mask, mode, current, pack, scope }: { cells: num
   const { t, i18n } = useTranslation();
   const on = balancedCells(mask, cells.length);
   const hi = Math.max(...cells), lo = Math.min(...cells);
-  const blocks = useStoredBlocks(scope);
+  const source = useSource();
+  const feed = useFeed();
+  const blocks = balancingBlocks(source, useStoredBlocks(scope), feed);
   const bms = bmsBalancing(blocks, pack);
   const { settings } = useSettings(scope);
   const ext = assignedNow(parseDevices(settings.devices), pack);

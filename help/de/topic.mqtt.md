@@ -1,0 +1,12 @@
+---
+title: Home Assistant (MQTT)
+short: Statt selbst über RS485 abzufragen, liest die App die Messwerte, die das Home-Assistant-Add-on „Seplos BMS“ ohnehin abfragt, über MQTT. Nur lesen.
+related: topic.connection, topic.pairs
+---
+- **Einschalten im Add-on:** In der App des Add-ons (Übersicht) den **OpenBMS-Monitor-Datenstrom** einschalten. Solange er an ist, veröffentlicht das Add-on jede Antwort roh mit ihrem Lesezeitpunkt, fragt schneller ab (Rundenpause 0, Busruhe 200 ms) und liest die Packs einer Parallelgruppe direkt nacheinander. Optional schaltet es sich nach 1, 4 oder 24 Stunden selbst aus.
+- **Verbinden:** In der Verbindung „Home Assistant“ wählen und Broker, Port (meist 1883), Benutzer, Passwort und das MQTT-Topic des Add-ons (Standard `seplos`) eintragen; TLS nach Bedarf. Das Passwort liegt nur lesbar für dich in den App-Daten.
+- **Was geht:** Übersicht, Pack-Ansichten, Paarprüfung, Balancing-Zeile (mit den Parametern, die das Add-on liest), Aufzeichnung, Gesundheitsbericht und Meldungen, wie über RS485. Die Aufzeichnung behält die Lesezeiten des Add-ons.
+- **Was nicht geht:** alles, was mit einem BMS spricht: Parameter lesen und schreiben, Kalibrierung, Steuerbefehle, BMS-Historie, Firmware, Diagnose-Abfragen, Suche. Dafür das Add-on stoppen und direkt verbinden. Gespeicherte Parameterstände bleiben einsehbar; aus dem Datenstrom speichert die App keine, weil er nicht belegt, welche Platine an einer Adresse steckt.
+- **Status:** Unter der Verbindung steht, wenn der Datenstrom aus ist, das Add-on offline ist, noch keine Messwerte kamen oder die Uhr des Home-Assistant-Hosts um mehr als 5 s abweicht. Die Paarprüfung rechnet auf der Uhr des Add-ons und bleibt dabei richtig; nur die Zeiten in der Aufzeichnung setzen eine richtig gestellte Uhr voraus.
+- **Paarprüfung:** Wie über RS485 nur mit Messwerten, die höchstens 3 s auseinander gelesen wurden. Mit eingeschaltetem Datenstrom liest das Add-on die Packs einer Gruppe direkt nacheinander; eine Runde dauert länger als bei der App selbst, daher kommen in 60 s manchmal weniger Paare zusammen.
+- **Archiv:** Das Add-on speichert nichts; die App zeichnet nur auf, solange sie empfängt. Ein Neustart des Add-ons beginnt eine neue Sitzung.

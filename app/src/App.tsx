@@ -20,6 +20,8 @@ import { useMaint } from "./maintStore";
 import { useWiringSync } from "./wiring";
 import { usePollPairsSync } from "./pairs";
 import { api, isDemo, type Bus } from "./api";
+import { useSource } from "./source";
+import { canTalkToBms } from "./access";
 import { defaultName, type Monitor } from "./maint";
 import i18n from "./i18n";
 import { notifyTexts } from "./notifications";
@@ -47,6 +49,10 @@ export default function App() {
   useWiringSync(scope);
   usePollPairsSync(scope);
   const [connected, setConnected] = useState(false);
+  // over the add-on's feed (MQTT) the views that talk to a BMS show the stored data only, or say why not
+  const source = useSource();
+  const talk = connected && canTalkToBms(source);
+  const noBms = <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("feed.noBms")}</div>;
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");
   useEffect(() => { startUpdateChecks(); }, []);
@@ -113,7 +119,9 @@ export default function App() {
             </div>
           ))}
           {maint.naming && <NameDialog suggested={defaultName(maint.installations, i18n.t("maint.picker.base"))} onConfirm={maint.create} onCancel={() => maint.setNaming(false)} />}
-          {view === "firmware" && maintenance ? (
+          {view === "firmware" && maintenance && source === "mqtt" ? (
+            noBms
+          ) : view === "firmware" && maintenance ? (
             <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onEditPorts={() => setView("installations")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
           ) : view === "installations" ? (
             <Installations maint={maint} connected={connected}
@@ -123,11 +131,13 @@ export default function App() {
           ) : view === "cells" ? (
             <Cells />
           ) : view === "history" ? (
-            <History installation={maint.current} connected={connected} bus={bus} packs={packList} />
+            <History installation={maint.current} connected={talk} bus={bus} packs={packList} />
           ) : view === "params" && maintenance ? (
-            <ParametersView connected={connected} bus={bus} installation={maint.current} packs={packList} onMarkerChanged={() => void maint.loadLists()} />
+            <ParametersView connected={talk} bus={bus} installation={maint.current} packs={packList} onMarkerChanged={() => void maint.loadLists()} />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
+          ) : view === "diag" && maintenance && source === "mqtt" ? (
+            noBms
           ) : view === "diag" && maintenance ? (
             <Diagnosis packs={live.packs} scope={scope} />
           ) : current ? (

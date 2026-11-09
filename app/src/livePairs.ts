@@ -15,12 +15,22 @@ export const live = {
   trend: new Map<string, { t: number; i: number; g: number }[]>(),
   /** the answers the last result was computed from */
   seen: "",
+  /** the newest read time and when it arrived here (local ms): the source's clock for the window */
+  clock: null as { readAt: number; at: number } | null,
 };
+
+/** "Now" for the pair window, on the clock the read times come from: the newest read time plus the local time since it
+ *  arrived. For the monitor's own bus that is the local clock; for the add-on's feed (`mqtt_source.rs`) the add-on
+ *  host's, so a clock offset between the two machines neither empties nor stretches the window. */
+export function windowNow(now = Date.now()): number {
+  return live.clock ? live.clock.readAt + Math.max(0, now - live.clock.at) : now;
+}
 
 /** One pack answer: its telemetry at the time it was read (the receive time for a backend that sends none). */
 export function addAnswer(u: PackUpdate, now = Date.now()) {
   if (!u.telemetry) return;
   const t = u.read_at ?? now;
+  if (!live.clock || t >= live.clock.readAt) live.clock = { readAt: t, at: now };
   const list = (live.samples.get(u.address) ?? []).filter((x) => t - x.t <= PAIR_WINDOW_MS);
   list.push({ t, i: effectiveCurrent(u.telemetry), u: u.telemetry.port_voltage });
   live.samples.set(u.address, list);
@@ -31,4 +41,5 @@ export function resetLivePairs() {
   live.last = [];
   live.trend.clear();
   live.seen = "";
+  live.clock = null;
 }

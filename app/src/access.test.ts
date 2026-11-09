@@ -93,3 +93,12 @@ describe("the hard stop choice (MAINT 1.6.3, Group0 bits 6/7)", () => {
     expect(withHardStop(0xff, false)).toBe(0x3f);
   });
 });
+
+describe("canTalkToBms", () => {
+  it("only over the monitor's own bus connection", async () => {
+    const { canTalkToBms } = await import("./access");
+    expect(canTalkToBms("bus")).toBe(true);
+    expect(canTalkToBms("mqtt")).toBe(false);
+    expect(canTalkToBms(null)).toBe(false);
+  });
+});

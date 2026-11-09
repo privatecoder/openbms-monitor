@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Download, Info, Wrench } from "lucide-react";
-import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type SerialNumbers } from "../api";
+import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type MqttSettings, type SerialNumbers } from "../api";
+import { feedText, getSource, useFeed } from "../source";
 import { patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
@@ -75,6 +76,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     };
   });
   const target = targets[kind];
+  // the data source: the monitor's own RS485 connection, or the Seplos BMS add-on's feed over MQTT (read-only)
+  const [src, setSrc] = useState<"bus" | "mqtt">(() => (localStorage.getItem("conn.source") === "mqtt" ? "mqtt" : "bus"));
+  const [mq, setMq] = useState<MqttSettings>({ host: "", port: 1883, user: "", password: "", tls: false, base: "seplos" });
+  useEffect(() => { void api.loadMqttSettings().then((s) => { if (s) setMq(s); }).catch(() => {}); }, []);
+  const feed = useFeed();
   const setTarget = (v: string) => setTargets((cur) => ({ ...cur, [kind]: v }));
   const [bus, setBus] = useState<Bus>(() => (localStorage.getItem("conn.bus") as Bus) ?? "can");
   // 0 = search addresses 0..15; n = packs at addresses 0..n-1, polled right away without a search
@@ -229,6 +235,17 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     setBusy(true); setFailed(false); setOffer(null); setGap(null); if (!retry) { setMsg(null); setLost(false); setTries(0); }
     setLastTry(Date.now());
     try {
+      localStorage.setItem("conn.source", src);
+      if (src === "mqtt") {
+        await api.saveMqttSettings(mq);
+        await api.connectMqtt(mq, connInst.current);
+        linkOpen.current = true;
+        stopIfCancelled();
+        onConnected([], "can");
+        setSince(Date.now()); setLost(false);
+        setMsg(t("conn.mqtt.connected", { host: mq.host }));
+        return;
+      }
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       localStorage.setItem("conn.packs", selText(packSel));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
@@ -398,6 +415,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // Fixed timeout: no successful answer for CONN_TIMEOUT_MS (since connecting or since the last data) = disconnected.
   useEffect(() => {
     if (isDemo || busy || !connected) return;
+    // the add-on's feed says itself why no data come (switched off, add-on offline); the MQTT client reconnects alone
+    if (getSource() === "mqtt") return;
     // a BMS history read pauses polling: that time is no lost connection
     if (now - Math.max(lastUpdate, answeredAt.current, since || now, readMark()) < CONN_TIMEOUT_MS) return;
     markLost(t("conn.lost", { s: CONN_TIMEOUT_MS / 1000 }));
@@ -559,6 +578,33 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             {pickHint && <p className="text-xs text-discharge">{t("conn.pickHint")}</p>}
           </div>
         )}
+        <div className="grid grid-cols-2 gap-1 rounded-md bg-sunken p-1">
+          {(["bus", "mqtt"] as const).map((k) => (
+            <button key={k} onClick={() => setSrc(k)} disabled={fixed}
+              className={cn("rounded py-1.5 text-sm disabled:opacity-60", src === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink disabled:hover:text-muted")}>
+              {t(`conn.source.${k}`)}
+            </button>
+          ))}
+        </div>
+        {src === "mqtt" ? (
+          <div className="space-y-1.5">
+            <p className="flex items-center gap-1.5 text-xs text-muted">{t("conn.mqtt.hint")}<InfoIcon id="topic.mqtt" /></p>
+            <div className="flex gap-1">
+              <input className={input} value={mq.host} disabled={fixed} onChange={(e) => setMq({ ...mq, host: e.target.value.trim() })} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} />
+              <input className={cn(input, "w-20")} value={mq.port} disabled={fixed} inputMode="numeric" aria-label={t("conn.mqtt.port")}
+                onChange={(e) => setMq({ ...mq, port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) })} />
+            </div>
+            <input className={input} value={mq.user} disabled={fixed} onChange={(e) => setMq({ ...mq, user: e.target.value })} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" />
+            <input className={input} type="password" value={mq.password} disabled={fixed} onChange={(e) => setMq({ ...mq, password: e.target.value })} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" />
+            <div className="flex items-center gap-2">
+              <input className={input} value={mq.base} disabled={fixed} onChange={(e) => setMq({ ...mq, base: e.target.value.trim() })} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} />
+              <label className="flex shrink-0 items-center gap-1 text-sm text-muted">
+                <input type="checkbox" checked={mq.tls} disabled={fixed} onChange={(e) => setMq({ ...mq, tls: e.target.checked })} />TLS
+              </label>
+            </div>
+          </div>
+        ) : (
+          <>
         <label className="block">
           <span className="mb-1 flex items-center gap-1.5 text-sm text-muted">{t("conn.bus")}<InfoIcon id="topic.buses" /></span>
           <select className={input} value={bus} disabled={fixed} onChange={(e) => changeBus(e.target.value as Bus)}>
@@ -630,8 +676,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             )}
           </span>
         </label>
+          </>
+        )}
         <div className="flex gap-2">
-          <Button variant="primary" className="flex-1" disabled={busy || !target || locked} onClick={() => connect()}>
+          <Button variant="primary" className="flex-1" disabled={busy || (src === "mqtt" ? !mq.host || !mq.base || !mq.port : !target) || locked} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {waiting ? <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>
@@ -641,7 +689,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
           {shown && <p title={shown} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{shown}</p>}
-          {connected && <FirmwareProfileLine locked={locked} />}
+          {connected && src === "mqtt" && feedText(feed, t) && <p className="text-sm text-alarm">{feedText(feed, t)}</p>}
+          {connected && getSource() !== "mqtt" && <FirmwareProfileLine locked={locked} />}
           {saveAsk && connected && (
             <div className="space-y-1 pt-1">
               <p className="text-sm">{t(`conn.saveAsk.${saveAsk.bus}`, { name: saveAsk.name })}</p>

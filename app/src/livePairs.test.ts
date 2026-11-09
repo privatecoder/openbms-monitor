@@ -21,3 +21,37 @@ describe("live pair memory", () => {
     expect(live.samples.size).toBe(0);
   });
 });
+
+describe("the pair window on the source's clock", () => {
+  it("keeps samples of a source whose clock is 120 s behind", async () => {
+    const { windowNow } = await import("./livePairs");
+    const { pairedMeans } = await import("./pairs");
+    resetLivePairs();
+    const local = 1_000_000, behind = local - 120_000;
+    for (let k = 0; k < 4; k++) {
+      addAnswer(answer(0, 30, behind + k * 13_000), local + k * 13_000 + 100);
+      addAnswer(answer(1, 30, behind + k * 13_000 + 700), local + k * 13_000 + 800);
+    }
+    const now = windowNow(local + 3 * 13_000 + 900);
+    expect(Math.abs(now - (behind + 3 * 13_000 + 800))).toBeLessThan(500);
+    expect(pairedMeans(live.samples.get(0)!, live.samples.get(1)!, now, 60_000)?.n).toBe(4);
+  });
+
+  it("does not pair reads 3.4 s apart, whatever the network delay", async () => {
+    const { windowNow } = await import("./livePairs");
+    const { pairedMeans } = await import("./pairs");
+    resetLivePairs();
+    const t0 = 5_000_000;
+    for (let k = 0; k < 4; k++) {
+      addAnswer(answer(0, 30, t0 + k * 13_000), t0 + k * 13_000 + 700);
+      addAnswer(answer(1, 50, t0 + k * 13_000 + 3_400), t0 + k * 13_000 + 3_600);
+    }
+    expect(pairedMeans(live.samples.get(0)!, live.samples.get(1)!, windowNow(t0 + 60_000), 60_000)).toBeUndefined();
+  });
+
+  it("is the local clock before any answer", async () => {
+    const { windowNow } = await import("./livePairs");
+    resetLivePairs();
+    expect(windowNow(123)).toBe(123);
+  });
+});

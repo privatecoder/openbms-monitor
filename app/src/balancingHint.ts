@@ -2,7 +2,7 @@
  *  assigned external balancer does by its manual settings. Both only explain the live line in the pack details; the
  *  recorded timeline computes the external balancer with its hysteresis in `balancer.rs`. */
 
-import type { SnapshotParams } from "./api";
+import type { FeedState, SnapshotParams, Source } from "./api";
 import type { BalancerValues } from "./devices";
 
 /** The BMS's own balancing thresholds (V) and switches of one stored block. */
@@ -58,4 +58,13 @@ export function extNow(v: BalancerValues, hi: number, lo: number, current: numbe
   if (!when || (cellStop !== null && hiMv < cellStop)) return "off";
   if (spread >= v.trigger_mv && (v.start_mv === null || hiMv >= v.start_mv)) return "on";
   return spread < Math.min(v.stop_mv ?? v.trigger_mv, v.trigger_mv) ? "off" : "between";
+}
+
+/** The blocks the line explains with: the stored ones over the monitor's own bus; over the add-on's feed (MQTT) only
+ *  the feed's blocks of this connection, since the feed cannot tell which board a stored block came from. */
+export function balancingBlocks(source: Source | null, stored: SnapshotParams[], feed: FeedState | null): SnapshotParams[] {
+  if (source !== "mqtt") return stored;
+  return (feed?.packs ?? []).filter((p) => p.parameters && p.parameters_at !== null).map((p) => ({
+    address: p.address, at: p.parameters_at!, kind: "read" as const, board: "current" as const, bms_serial: null, parameters: p.parameters,
+  }));
 }
