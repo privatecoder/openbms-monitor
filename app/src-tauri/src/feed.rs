@@ -88,6 +88,9 @@ fn part<T>(v: &Value, decode: impl FnOnce(&[u8]) -> Result<T, String>) -> Option
 }
 
 fn from_hex(s: &str) -> Result<Vec<u8>, String> {
+    if !s.is_ascii() {
+        return Err("invalid hex".into());
+    }
     if s.len() % 2 != 0 {
         return Err("odd hex length".into());
     }
@@ -367,5 +370,12 @@ mod tests {
         let mut s = state("b1");
         s.meta(&decode_meta(&meta("b2", json!([]))).unwrap());
         assert_eq!(s.accept("b1", 99), Accept::OtherBoot);
+    }
+
+    #[test]
+    fn non_ascii_hex_fails_only_that_part() {
+        let p = decode_pack(&pack(json!({"r42": {"t": 10, "hex": "€0"}, "r44": {"t": 11, "hex": hex(&status_info(16))}}))).unwrap();
+        assert!(p.telemetry.unwrap().value.is_err());
+        assert!(p.status.unwrap().value.is_ok());
     }
 }

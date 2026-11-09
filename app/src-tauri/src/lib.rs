@@ -64,6 +64,9 @@ struct AppState {
     source: Mutex<Option<SourceKind>>,
     /// the running MQTT source (`mqtt_source.rs`)
     mqtt: Mutex<Option<mqtt_source::Running>>,
+    /// held while the MQTT worker applies one message's effect and while a source is stopped: once `stop` returned, no
+    /// effect of the old source reaches link, recording or UI
+    feed_gate: Mutex<()>,
     /// pairs of packs in parallel (plus, minus) of the current installation: polled one after the other (`poll_order`)
     poll_pairs: Arc<Mutex<Vec<(u8, u8)>>>,
     conn: Arc<Mutex<Option<Connection>>>,
@@ -195,6 +198,9 @@ struct PackUpdate {
     error: Option<String>,
     /// when the telemetry was read (ms since the epoch); null when it failed
     read_at: Option<i64>,
+    /// over the add-on's feed: when the add-on sent the answer (its clock, for the live pair window)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sent_at: Option<i64>,
 }
 
 /// System values of the master, sent as event "system".
@@ -472,12 +478,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     };
     // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
     lock(&state.conn)?.take();
-    // an MQTT source ends here too (its session at the add-on's clock)
-    if mqtt_source::stop(&state) {
-        if let Ok(mut h) = state.history.lock() {
-            h.disconnected_at_source();
-        }
-    }
+    // an MQTT source ends here too (its session at the add-on's clock, below)
+    mqtt_source::stop(&state);
     *state.source.lock().map_err(|e| e.to_string())? = None;
     // the old connection is gone; control exchanges must not route through it, nothing more is stored for it
     *state.main.lock().map_err(|e| e.to_string())? = None;
@@ -554,6 +556,8 @@ struct OtherBus {
 /// Open the USB port at the other bus's baud rate, ask like `connect` does, close it again. Read-only.
 #[tauri::command]
 async fn probe_other_bus(state: State<'_, AppState>, path: String, bus: BusArg, addresses: Option<Vec<u8>>) -> Result<OtherBus, String> {
+    // the add-on owns the bus while the source is its feed
+    bms_io_allowed(&state)?;
     let _port_slot = control::reserve_bus(&state).ok_or_else(|| port_busy_error(current_action(&state).or(control::any_pack_action(&state.ops).map(|_| "pack"))))?;
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
@@ -597,14 +601,14 @@ fn stop_monitor_as(state: &AppState, lost: bool) -> Result<(), String> {
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
-    let feed = mqtt_source::stop(state);
+    mqtt_source::stop(state);
     *lock(&state.conn)? = None;
     if let Ok(mut m) = state.main.lock() {
         *m = None;
     }
     new_link(state, None);
     if let Ok(mut h) = state.history.lock() {
-        if feed { h.disconnected_at_source() } else { h.disconnected() }
+        h.disconnected();
     }
     if let Ok(mut s) = state.source.lock() {
         *s = None;
@@ -939,7 +943,7 @@ fn start_polling(app: AppHandle, state: State<AppState>, addresses: Vec<u8>, int
                     profile::observe_hard_stop(&state, &Link { gen, installation: link_now(&state).installation }, address, st);
                 }
                 let read_at = telemetry.is_ok().then_some(read_at);
-                let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error, read_at };
+                let update = PackUpdate { address, telemetry: telemetry.ok(), status: status.ok(), error, read_at, sent_at: None };
                 if let (Ok(mut rec), Ok(v)) = (rec.lock(), serde_json::to_value(&update)) {
                     rec.pack(history::now_ms(), address, &v);
                 }

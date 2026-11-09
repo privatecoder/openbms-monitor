@@ -383,20 +383,6 @@ impl History {
         self.held_reason = None;
     }
 
-    /// `disconnected` for a session whose times come from another clock (the add-on's feed): each pack's open events
-    /// end at its latest status answer, never before they began.
-    pub fn disconnected_at_source(&mut self) {
-        let last = std::mem::take(&mut self.last_status);
-        let fallback = last.values().copied().max();
-        if let (Some(db), Some(_)) = (self.db.as_ref(), self.session) {
-            close_events(db, &mut self.open_events, |p| last.get(&p).copied().or(fallback).unwrap_or_else(now_ms));
-        }
-        self.end_session(now_ms());
-        self.link = None;
-        self.held = false;
-        self.held_reason = None;
-    }
-
     pub fn disconnected(&mut self) {
         self.end_session(now_ms());
         self.link = None;
@@ -433,9 +419,14 @@ impl History {
         self.held = on;
     }
 
+    /// End the running session: its open events end at `t`, or for a session whose times come from another clock (the
+    /// add-on's feed, bus "mqtt") at each pack's latest status answer, never before they began.
     fn end_session(&mut self, t: i64) {
+        let feed = self.link.as_ref().is_some_and(|l| l.1 == "mqtt");
+        let last = std::mem::take(&mut self.last_status);
+        let fallback = last.values().copied().max();
         if let (Some(db), Some(_)) = (self.db.as_ref(), self.session) {
-            close_events(db, &mut self.open_events, |_| t);
+            close_events(db, &mut self.open_events, |p| if feed { last.get(&p).copied().or(fallback).unwrap_or(t) } else { t });
         }
         self.open_events.clear();
         self.last_status.clear();
@@ -2041,20 +2032,27 @@ mod tests {
 
     #[test]
     fn a_feed_session_ends_its_events_at_the_source_time() {
-        // the add-on's clock 120 s behind and 120 s ahead of the Monitor's: the end is the last status time either way
+        // the add-on's clock 120 s behind and 120 s ahead of the Monitor's: the end is the last status time, however the
+        // session ends (disconnect, recording off, pause for a backup)
         for skew in [-120_000i64, 120_000] {
-            let (path, mut h) = temp_db(&format!("source-end-{skew}"));
-            h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
-            h.connected("inst-a", "mqtt");
-            let base = now_ms() + skew;
-            let mut u = pack_update(1, 1.0, &[3.3], &["cell_low"]);
-            u["read_at"] = json!(base);
-            h.pack(base + 500, 1, &u);
-            u["read_at"] = json!(base + 10_000);
-            h.pack(base + 10_500, 1, &u);
-            h.disconnected_at_source();
-            let (start, end): (i64, i64) = reader(&path).unwrap().query_row("SELECT start, end FROM events", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
-            assert_eq!((start, end), (base + 500, base + 10_500), "skew {skew}");
+            for how in ["disconnect", "off", "pause"] {
+                let (path, mut h) = temp_db(&format!("source-end-{skew}-{how}"));
+                h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+                h.connected("inst-a", "mqtt");
+                let base = now_ms() + skew;
+                let mut u = pack_update(1, 1.0, &[3.3], &["cell_low"]);
+                u["read_at"] = json!(base);
+                h.pack(base + 500, 1, &u);
+                u["read_at"] = json!(base + 10_000);
+                h.pack(base + 10_500, 1, &u);
+                match how {
+                    "disconnect" => h.disconnected(),
+                    "off" => { h.set_settings(Settings { enabled: false, ..Settings::default() }).unwrap(); }
+                    _ => h.pause(true),
+                }
+                let (start, end): (i64, i64) = reader(&path).unwrap().query_row("SELECT start, end FROM events", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                assert_eq!((start, end), (base + 500, base + 10_500), "skew {skew}, {how}");
+            }
         }
     }
 

@@ -15,7 +15,7 @@ export const live = {
   trend: new Map<string, { t: number; i: number; g: number }[]>(),
   /** the answers the last result was computed from */
   seen: "",
-  /** the newest read time and when it arrived here (local ms): the source's clock for the window */
+  /** the source's newest time (send time over the feed, else read time) and when it arrived here (local ms) */
   clock: null as { readAt: number; at: number } | null,
 };
 
@@ -30,7 +30,10 @@ export function windowNow(now = Date.now()): number {
 export function addAnswer(u: PackUpdate, now = Date.now()) {
   if (!u.telemetry) return;
   const t = u.read_at ?? now;
-  if (!live.clock || t >= live.clock.readAt) live.clock = { readAt: t, at: now };
+  // the source's "now": the add-on's send time over its feed (a group is sent after its optional reads), the read
+  // time of the monitor's own polls
+  const clock = u.sent_at ?? t;
+  if (!live.clock || clock >= live.clock.readAt) live.clock = { readAt: clock, at: now };
   const list = (live.samples.get(u.address) ?? []).filter((x) => t - x.t <= PAIR_WINDOW_MS);
   list.push({ t, i: effectiveCurrent(u.telemetry), u: u.telemetry.port_voltage });
   live.samples.set(u.address, list);

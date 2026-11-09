@@ -55,3 +55,19 @@ describe("the pair window on the source's clock", () => {
     expect(windowNow(123)).toBe(123);
   });
 });
+
+describe("the window clock with delayed sends", () => {
+  it("follows the add-on's send time, not the read time, so delayed groups do not stretch the window", async () => {
+    const { windowNow } = await import("./livePairs");
+    const { pairedMeans } = await import("./pairs");
+    resetLivePairs();
+    // pairs read at 100/101, 129/130, 158/159 s, each group sent 30 s after its reads
+    for (const r of [100_000, 129_000, 158_000]) {
+      addAnswer({ ...answer(0, 30, r), sent_at: r + 30_000 }, r + 30_000);
+      addAnswer({ ...answer(1, 30, r + 1_000), sent_at: r + 30_000 }, r + 30_000);
+    }
+    const now = windowNow(188_000 + 1_000);
+    expect(now).toBe(189_000);
+    expect(pairedMeans(live.samples.get(0)!, live.samples.get(1)!, now, 60_000)?.n ?? 0).toBeLessThan(3);
+  });
+});

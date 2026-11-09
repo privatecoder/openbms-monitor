@@ -145,7 +145,9 @@ export type ArchivedRecord = BmsHistoryRecord & { bms_serial: string | null; rea
 export interface BmsArchive { records: ArchivedRecord[]; skipped: number }
 export interface ArchivePack { address: number; count: number; newest_read_at: number; serials: (string | null)[] }
 /** read_at: when the telemetry was read (ms), null when it failed */
-export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null; read_at?: number | null }
+export interface PackUpdate { address: number; telemetry: Telemetry | null; status: Status | null; error: string | null; read_at?: number | null;
+  /** over the add-on's feed: when the add-on sent the answer (its clock); the pair window's "now" follows it */
+  sent_at?: number | null }
 export interface SystemUpdate { values: SystemValues | null; error: string | null }
 /** Telemetry and status of one pack, read on demand (calibration). */
 export interface PackLive { telemetry: Telemetry; status: Status }
@@ -777,7 +779,7 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => ({ linked: false, answered: 0, gen: 0, profile: DEMO_PROFILE, source: "bus" as const }),
+    connect: async () => { setSource("bus"); return { linked: false, answered: 0, gen: 0, profile: DEMO_PROFILE, source: "bus" as const }; },
     connectMqtt: async () => { throw new Error("not in the preview"); },
     firmwareProfile: async () => DEMO_PROFILE,
     firmwareProfileCheck: async () => DEMO_PROFILE,

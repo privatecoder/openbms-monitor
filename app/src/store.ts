@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type DeviceInfo, type PackUpdate, type SerialNumbers } from "./api";
+import { api, type DeviceInfo, type FeedState, type PackUpdate, type SerialNumbers } from "./api";
 import type { SystemEntry } from "./freshness";
 import { addAnswer, resetLivePairs } from "./livePairs";
 import { setFeed } from "./source";
@@ -15,6 +15,23 @@ function smoothInterval(prev: PackEntry | undefined, ok: boolean): number | unde
   if (!ok || !prev?.updated) return prev?.interval;
   const dt = Date.now() - prev.updated;
   return prev.interval ? prev.interval * 0.7 + dt * 0.3 : dt;
+}
+
+const emptyEntry = (address: number): PackEntry =>
+  ({ address, telemetry: null, status: null, error: null, updated: 0, statusUpdated: 0, telemetryOk: false, statusOk: false });
+
+/** The add-on's feed state applied to the packs: a restart of the add-on (new boot) starts from nothing, so no value or
+ *  identity of before stays; then the meta's device info and serial numbers, also for packs without an answer yet. */
+export function applyFeed(prev: Record<number, PackEntry>, u: FeedState): Record<number, PackEntry> {
+  const next: Record<number, PackEntry> = u.boot_changed ? {} : { ...prev };
+  for (const m of u.packs) {
+    const e = next[m.address] ?? emptyEntry(m.address);
+    const serials = m.battery_serial || m.bms_serial
+      ? { battery: m.battery_serial ?? e.serials?.battery ?? { kind: "unavailable" as const }, bms: m.bms_serial ?? e.serials?.bms ?? { kind: "unavailable" as const } }
+      : e.serials;
+    next[m.address] = { ...e, device: m.device ?? e.device, serials };
+  }
+  return next;
 }
 
 /** Live data of all packs and the system, fed by backend events. */
@@ -47,23 +64,9 @@ export function useLiveData() {
     const s = api.onSystem((u) => setSystem((prev) => ({ ...u, values: u.values ?? prev?.values ?? null, ok: !!u.values, updated: u.values ? Date.now() : prev?.updated ?? 0 })));
     // the add-on's feed: a restart of the add-on starts the live pair check over; its identity reads fill the packs
     const fd = api.onFeed((u) => {
-      if (u.boot_changed) resetLivePairs();
+      if (u.boot_changed) { resetLivePairs(); setSystem(null); }
       setFeed(u);
-      setPacks((prev) => {
-        const next = { ...prev };
-        for (const m of u.packs) {
-          const e = next[m.address];
-          if (!e) continue;
-          next[m.address] = {
-            ...e,
-            device: m.device ?? e.device,
-            serials: m.battery_serial || m.bms_serial
-              ? { battery: m.battery_serial ?? e.serials?.battery ?? { kind: "unavailable" }, bms: m.bms_serial ?? e.serials?.bms ?? { kind: "unavailable" } }
-              : e.serials,
-          };
-        }
-        return next;
-      });
+      setPacks((prev) => applyFeed(prev, u));
     });
     return () => { p.then((f) => f()); s.then((f) => f()); fd.then((f) => f()); };
   }, []);

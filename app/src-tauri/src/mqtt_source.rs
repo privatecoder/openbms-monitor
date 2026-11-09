@@ -241,14 +241,15 @@ impl Feeder {
                 return out;
             }
             self.skew = Some(p.sent_at - local_ms);
-            self.measured = true;
+            // live with the first measurement that decoded, not with a failure report
+            self.measured |= p.telemetry.as_ref().is_some_and(|x| x.value.is_ok());
             let telemetry = p.telemetry.as_ref().and_then(|x| x.value.clone().ok());
             let status = p.status.as_ref().and_then(|x| x.value.clone().ok());
             let error = [p.telemetry.as_ref(), None].into_iter().flatten().find_map(|x| x.value.as_ref().err().cloned())
                 .or_else(|| p.status.as_ref().and_then(|x| x.value.as_ref().err().cloned()))
                 .or_else(|| p.status.is_none().then(|| "no status read".to_string()));
             let read_at = p.telemetry.as_ref().filter(|x| x.value.is_ok()).map(|x| x.t);
-            let ui = PackUpdate { address: p.address, telemetry, status, error, read_at };
+            let ui = PackUpdate { address: p.address, telemetry, status, error, read_at, sent_at: Some(p.sent_at) };
             let record_t = p.status.as_ref().map(|x| x.t).or(read_at).unwrap_or(p.sent_at);
             let record = serde_json::to_value(&ui).unwrap_or(Value::Null);
             let new_params = p.params.as_ref().is_some_and(|part| self.params(p.address, part));
@@ -264,7 +265,12 @@ impl Feeder {
             }
             let Some(part) = sys.values else { return out };
             let ui = SystemUpdate { values: part.value.as_ref().ok().cloned(), error: part.value.err() };
+            let first = ui.values.is_some() && !self.measured;
             out.push(Effect::System { ui, t: part.t });
+            if first {
+                self.measured = true;
+                self.feed_effect(&mut out, false, mono_ms, true);
+            }
         }
         out
     }
@@ -282,6 +288,8 @@ pub struct Running {
 pub(crate) fn stop(state: &AppState) -> bool {
     let running = state.mqtt.lock().ok().and_then(|mut m| m.take());
     let Some(r) = running else { return false };
+    // waits for an effect being applied; the worker checks the flag under the same gate before each one
+    let _gate = state.feed_gate.lock();
     r.stop.store(true, Ordering::SeqCst);
     let _ = r.client.disconnect();
     true
@@ -328,7 +336,7 @@ pub(crate) fn take_over(state: &AppState, installation: Option<&str>) -> u64 {
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
-    let feed_before = stop(state);
+    stop(state);
     if let Ok(mut c) = state.conn.lock() {
         c.take();
     }
@@ -336,7 +344,7 @@ pub(crate) fn take_over(state: &AppState, installation: Option<&str>) -> u64 {
         *m = None;
     }
     if let Ok(mut h) = state.history.lock() {
-        if feed_before { h.disconnected_at_source() } else { h.disconnected() }
+        h.disconnected();
     }
     new_link(state, installation.map(str::to_owned));
     let gen = link_now(state).gen;
@@ -395,10 +403,9 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
             Ok(Ok(Event::Incoming(Packet::Publish(p)))) => {
                 let mono = start.elapsed().as_millis() as i64;
                 for e in feeder.handle(&p.topic, &p.payload, history::now_ms(), mono) {
-                    if stop_flag.load(Ordering::SeqCst) || link_now(&state).gen != gen {
+                    if !apply_gated(&app, &state, &stop_flag, e, &mut gen, installation.as_deref()) {
                         return;
                     }
-                    apply(&app, &state, e, &mut gen, installation.as_deref());
                 }
             }
             // a reconnect starts a clean session: subscribe again
@@ -412,7 +419,9 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
             Ok(Err(_)) => {
                 let mono = start.elapsed().as_millis() as i64;
                 for e in feeder.handle(&format!("{}/availability", feeder_base(&feeder)), b"offline", history::now_ms(), mono) {
-                    apply(&app, &state, e, &mut gen, installation.as_deref());
+                    if !apply_gated(&app, &state, &stop_flag, e, &mut gen, installation.as_deref()) {
+                        return;
+                    }
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -422,6 +431,21 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
 
 fn feeder_base(f: &Feeder) -> String {
     f.base.clone()
+}
+
+/// Apply one effect while this source is still the current one, checked and done under `feed_gate`; false: it is not.
+fn apply_gated(app: &AppHandle, state: &AppState, stop_flag: &AtomicBool, e: Effect, gen: &mut u64, installation: Option<&str>) -> bool {
+    let _gate = state.feed_gate.lock();
+    if !current(state, stop_flag, *gen) {
+        return false;
+    }
+    apply(app, state, e, gen, installation);
+    true
+}
+
+/// This source is still the one: not stopped, and no other connection took the link since.
+fn current(state: &AppState, stop_flag: &AtomicBool, gen: u64) -> bool {
+    !stop_flag.load(Ordering::SeqCst) && link_now(state).gen == gen
 }
 
 fn apply(app: &AppHandle, state: &AppState, e: Effect, gen: &mut u64, installation: Option<&str>) {
@@ -451,7 +475,7 @@ fn apply(app: &AppHandle, state: &AppState, e: Effect, gen: &mut u64, installati
         Effect::NewBoot => {
             // the add-on restarted: like a reconnect, before any answer of the new boot
             if let Ok(mut h) = state.history.lock() {
-                h.disconnected_at_source();
+                h.disconnected();
             }
             new_link(state, installation.map(str::to_owned));
             *gen = link_now(state).gen;
@@ -656,5 +680,32 @@ mod tests {
         assert_eq!(crate::bms_io_allowed(&state).unwrap_err(), crate::MQTT_SOURCE);
         *state.source.lock().unwrap() = Some(SourceKind::Bus);
         assert!(crate::bms_io_allowed(&state).is_ok());
+    }
+
+    #[test]
+    fn only_a_decoded_measurement_makes_the_feed_live() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([])), 0, 0);
+        let failed = serde_json::to_vec(&json!({"v": 1, "boot": "b1", "seq": 1, "sent_at": 5, "addr": 0, "r42": {"t": 4, "err": "failed"}})).unwrap();
+        let e = f.handle("seplos/openbms/v1/pack/0", &failed, 0, 20_000);
+        assert!(feeds(&e).iter().all(|v| v.state == "waiting"), "{e:?}");
+        assert!(matches!(e[0], Effect::Pack { .. }), "the failure still reaches the UI");
+        let e = f.handle("seplos/openbms/v1/pack/0", &pack_msg("b1", 2, 0, 1, 2), 0, 40_000);
+        assert_eq!(feeds(&e)[0].state, "live");
+    }
+
+    #[test]
+    fn after_stop_no_effect_of_the_old_source_applies() {
+        let state = AppState::default();
+        let (_, gen) = connect_with(&state, None, || Ok(())).unwrap();
+        let (client, _conn) = Client::new(MqttOptions::new("t", "127.0.0.1", 1), 1);
+        let flag = Arc::new(AtomicBool::new(false));
+        *state.mqtt.lock().unwrap() = Some(Running { stop: flag.clone(), client });
+        assert!(current(&state, &flag, gen));
+        // a new connection: stop first (under the gate), then the new link
+        assert!(stop(&state));
+        new_link(&state, Some("inst-b".into()));
+        assert!(!current(&state, &flag, gen));
+        assert!(!current(&state, &flag, link_now(&state).gen), "stopped stays stopped");
     }
 }
