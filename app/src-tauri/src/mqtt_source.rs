@@ -225,6 +225,16 @@ impl Feeder {
         out
     }
 
+    /// The broker accepted the connection again (CONNACK): the broker error ends; what the add-on does shows with its
+    /// next message (broker reachable is not add-on reachable).
+    pub fn reconnected(&mut self, mono_ms: i64) -> Vec<Effect> {
+        let mut out = Vec::new();
+        if self.link_error.take().is_some() {
+            self.feed_effect(&mut out, false, mono_ms, true);
+        }
+        out
+    }
+
     /// One MQTT message: what it makes happen. `local_ms`: the Monitor's wall clock, `mono_ms`: its monotonic clock.
     pub fn handle(&mut self, topic: &str, payload: &[u8], local_ms: i64, mono_ms: i64) -> Vec<Effect> {
         let mut out = Vec::new();
@@ -440,6 +450,12 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
             Ok(Ok(Event::Incoming(Packet::ConnAck(_)))) => {
                 for topic in feeder.topics() {
                     let _ = client.subscribe(topic, QoS::AtMostOnce);
+                }
+                let mono = start.elapsed().as_millis() as i64;
+                for e in feeder.reconnected(mono) {
+                    if !apply_gated(&app, &state, &stop_flag, e, &mut gen, installation.as_deref()) {
+                        return;
+                    }
                 }
             }
             Ok(Ok(_)) | Err(_) => {}
@@ -749,5 +765,14 @@ mod tests {
     fn the_broker_takes_a_meta_far_above_10_kb() {
         let o = broker_options(&MqttSettings { host: "h".into(), port: 1883, user: String::new(), password: String::new(), tls: false, base: "seplos".into() });
         assert!(o.max_packet_size() >= 1024 * 1024);
+    }
+
+    #[test]
+    fn a_reconnect_without_messages_clears_the_broker_error() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([])), 0, 0);
+        f.link_lost("connection reset", 1);
+        let e = f.reconnected(2);
+        assert_eq!((feeds(&e)[0].state, feeds(&e)[0].link_error.as_deref()), ("waiting", None));
     }
 }
