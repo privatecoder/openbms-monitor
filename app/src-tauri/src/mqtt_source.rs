@@ -71,7 +71,8 @@ pub fn save_mqtt_settings(app: AppHandle, settings: MqttSettings) -> Result<(), 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FeedView {
     /// "waiting" (no measurement of this boot yet), "live", "off" (switched off in the add-on), "offline" (the add-on
-    /// reports itself gone), "broker" (the connection to the broker failed; the client reconnects)
+    /// reports itself gone), "broker" (the connection to the broker failed; the client reconnects), "denied" (the broker
+    /// refused the feed subscription)
     pub state: &'static str,
     /// the broker connection's error while state is "broker"
     pub link_error: Option<String>,
@@ -123,6 +124,8 @@ pub struct Feeder {
     master_sent: bool,
     version_error: Option<String>,
     link_error: Option<String>,
+    /// the broker refused the feed subscription (ACL of the account)
+    denied: bool,
     packs: BTreeMap<u8, MetaPackView>,
     skew: Option<i64>,
     sent_view: Option<FeedView>,
@@ -138,8 +141,15 @@ impl Feeder {
         [format!("{}/openbms/v1/#", self.base), format!("{}/availability", self.base)]
     }
 
+    /// Both subscriptions in one request, so the broker's answer lists them in this order (`subscribed`).
+    pub fn filters(&self) -> Vec<rumqttc::SubscribeFilter> {
+        self.topics().into_iter().map(|t| rumqttc::SubscribeFilter::new(t, QoS::AtMostOnce)).collect()
+    }
+
     fn view(&self, boot_changed: bool) -> FeedView {
-        let state = if self.link_error.is_some() {
+        let state = if self.denied {
+            "denied"
+        } else if self.link_error.is_some() {
             "broker"
         } else if !self.available {
             "offline"
@@ -221,6 +231,8 @@ impl Feeder {
     pub fn link_lost(&mut self, error: &str, mono_ms: i64) -> Vec<Effect> {
         let mut out = Vec::new();
         self.link_error = Some(error.to_owned());
+        // after the gap only new measurements count as live again
+        self.measured = false;
         self.feed_effect(&mut out, false, mono_ms, false);
         out
     }
@@ -230,6 +242,18 @@ impl Feeder {
     pub fn reconnected(&mut self, mono_ms: i64) -> Vec<Effect> {
         let mut out = Vec::new();
         if self.link_error.take().is_some() {
+            self.feed_effect(&mut out, false, mono_ms, true);
+        }
+        out
+    }
+
+    /// The broker's answer to the subscriptions, in `topics()` order: a refused feed subscription is named (nothing would
+    /// ever arrive); a refused availability alone changes nothing.
+    pub fn subscribed(&mut self, granted: &[bool], mono_ms: i64) -> Vec<Effect> {
+        let mut out = Vec::new();
+        let denied = granted.first() == Some(&false);
+        if denied != self.denied {
+            self.denied = denied;
             self.feed_effect(&mut out, false, mono_ms, true);
         }
         out
@@ -419,9 +443,7 @@ pub async fn connect_mqtt(app: AppHandle, state: State<'_, AppState>, settings: 
     let opened = tauri::async_runtime::spawn_blocking(move || open_broker(&s)).await.map_err(|e| e.to_string())?;
     let ((client, conn), gen) = connect_with(&state, installation.as_deref(), || opened)?;
     let feeder = Feeder::new(&settings.base);
-    for topic in feeder.topics() {
-        client.subscribe(topic, QoS::AtMostOnce).map_err(|e| e.to_string())?;
-    }
+    client.subscribe_many(feeder.filters()).map_err(|e| e.to_string())?;
     let stop_flag = Arc::new(AtomicBool::new(false));
     *state.mqtt.lock().map_err(|e| e.to_string())? = Some(Running { stop: stop_flag.clone(), client: client.clone() });
     let key = format!("mqtt:{}:{}", settings.host, settings.port);
@@ -448,11 +470,18 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
             }
             // a reconnect starts a clean session: subscribe again
             Ok(Ok(Event::Incoming(Packet::ConnAck(_)))) => {
-                for topic in feeder.topics() {
-                    let _ = client.subscribe(topic, QoS::AtMostOnce);
-                }
+                let _ = client.subscribe_many(feeder.filters());
                 let mono = start.elapsed().as_millis() as i64;
                 for e in feeder.reconnected(mono) {
+                    if !apply_gated(&app, &state, &stop_flag, e, &mut gen, installation.as_deref()) {
+                        return;
+                    }
+                }
+            }
+            Ok(Ok(Event::Incoming(Packet::SubAck(ack)))) => {
+                let granted: Vec<bool> = ack.return_codes.iter().map(|c| !matches!(c, rumqttc::SubscribeReasonCode::Failure)).collect();
+                let mono = start.elapsed().as_millis() as i64;
+                for e in feeder.subscribed(&granted, mono) {
                     if !apply_gated(&app, &state, &stop_flag, e, &mut gen, installation.as_deref()) {
                         return;
                     }
@@ -774,5 +803,24 @@ mod tests {
         f.link_lost("connection reset", 1);
         let e = f.reconnected(2);
         assert_eq!((feeds(&e)[0].state, feeds(&e)[0].link_error.as_deref()), ("waiting", None));
+    }
+
+    #[test]
+    fn a_reconnect_after_measurements_waits_for_new_ones() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([])), 0, 0);
+        f.handle("seplos/openbms/v1/pack/0", &pack_msg("b1", 1, 0, 1, 2), 0, 1);
+        f.link_lost("connection reset", 2);
+        assert_eq!(feeds(&f.reconnected(3))[0].state, "waiting");
+    }
+
+    #[test]
+    fn a_refused_feed_subscription_is_named() {
+        let mut f = Feeder::new("seplos");
+        let e = f.subscribed(&[false, true], 1);
+        assert_eq!(feeds(&e)[0].state, "denied");
+        // only the availability refused: measurements still count
+        let mut f = Feeder::new("seplos");
+        assert!(f.subscribed(&[true, false], 1).is_empty());
     }
 }

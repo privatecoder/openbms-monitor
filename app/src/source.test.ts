@@ -12,6 +12,7 @@ describe("feed status line", () => {
     expect(feedText(feed({}), t)).toBeNull();
     expect(feedText(feed({ state: "off" }), t)).toBe("feed.off");
     expect(feedText(feed({ state: "offline" }), t)).toBe("feed.offline");
+    expect(feedText(feed({ state: "denied" }), t)).toBe("feed.denied");
     expect(feedText(feed({ state: "broker", link_error: "payload too big" }), t)).toBe('feed.broker:{"err":"payload too big"}');
     expect(feedText(feed({ state: "waiting" }), t)).toBe("feed.waiting");
     expect(feedText(feed({ skew_ms: -120_400 }), t)).toBe('feed.skew:{"n":-120}');

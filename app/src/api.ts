@@ -486,9 +486,9 @@ export interface Connected { linked: boolean; answered: number; gen: number; pro
 export interface FeedPack { address: number; device: DeviceInfo | null; battery_serial: SerialValue | null; bms_serial: SerialValue | null;
   parameters: Parameters | null; parameters_at: number | null }
 /** The add-on's feed (event "feed"): "waiting" for the first measurement, "live", "off" (switched off in the add-on),
- *  "offline" (the add-on reports itself gone), "broker" (the broker connection failed, `link_error`; it reconnects).
+ *  "offline" (the add-on reports itself gone), "broker" (the broker connection failed, `link_error`; it reconnects), "denied" (the broker refused the subscription).
  *  `skew_ms`: its clock minus the Monitor's. */
-export interface FeedState { state: "waiting" | "live" | "off" | "offline" | "broker"; boot: string | null; boot_changed: boolean; skew_ms: number | null;
+export interface FeedState { state: "waiting" | "live" | "off" | "offline" | "broker" | "denied"; boot: string | null; boot_changed: boolean; skew_ms: number | null;
   version_error: string | null; link_error?: string | null; packs: FeedPack[] }
 
 /** A write's result from the backend: the value and whether the target had no serial to check the bank with. The

@@ -34,6 +34,7 @@ export const SKEW_SHOWN_MS = 5_000;
 export function feedText(f: FeedState | null, t: T): string | null {
   if (!f) return null;
   if (f.version_error) return t("feed.version", { err: f.version_error });
+  if (f.state === "denied") return t("feed.denied");
   if (f.state === "broker") return t("feed.broker", { err: f.link_error ?? "" });
   if (f.state === "offline") return t("feed.offline");
   if (f.state === "off") return t("feed.off");
