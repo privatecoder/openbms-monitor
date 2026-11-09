@@ -70,8 +70,11 @@ pub fn save_mqtt_settings(app: AppHandle, settings: MqttSettings) -> Result<(), 
 /// What the UI shows of the feed (event "feed").
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FeedView {
-    /// "waiting" (no measurement of this boot yet), "live", "off" (switched off in the add-on), "offline" (add-on gone)
+    /// "waiting" (no measurement of this boot yet), "live", "off" (switched off in the add-on), "offline" (the add-on
+    /// reports itself gone), "broker" (the connection to the broker failed; the client reconnects)
     pub state: &'static str,
+    /// the broker connection's error while state is "broker"
+    pub link_error: Option<String>,
     pub boot: Option<String>,
     /// the add-on restarted: live samples and hysteresis start over
     pub boot_changed: bool,
@@ -119,6 +122,7 @@ pub struct Feeder {
     measured: bool,
     master_sent: bool,
     version_error: Option<String>,
+    link_error: Option<String>,
     packs: BTreeMap<u8, MetaPackView>,
     skew: Option<i64>,
     sent_view: Option<FeedView>,
@@ -135,7 +139,9 @@ impl Feeder {
     }
 
     fn view(&self, boot_changed: bool) -> FeedView {
-        let state = if !self.available {
+        let state = if self.link_error.is_some() {
+            "broker"
+        } else if !self.available {
             "offline"
         } else if self.source.boot().is_some() && !self.on {
             "off"
@@ -150,6 +156,7 @@ impl Feeder {
             boot_changed,
             skew_ms: self.skew,
             version_error: self.version_error.clone(),
+            link_error: self.link_error.clone(),
             packs: self.packs.values().cloned().collect(),
         }
     }
@@ -210,9 +217,19 @@ impl Feeder {
         changed
     }
 
+    /// The broker connection failed (the client reconnects with its next poll): named until a message arrives again.
+    pub fn link_lost(&mut self, error: &str, mono_ms: i64) -> Vec<Effect> {
+        let mut out = Vec::new();
+        self.link_error = Some(error.to_owned());
+        self.feed_effect(&mut out, false, mono_ms, false);
+        out
+    }
+
     /// One MQTT message: what it makes happen. `local_ms`: the Monitor's wall clock, `mono_ms`: its monotonic clock.
     pub fn handle(&mut self, topic: &str, payload: &[u8], local_ms: i64, mono_ms: i64) -> Vec<Effect> {
         let mut out = Vec::new();
+        // a message arrived: the broker connection works again (the changed view goes out below)
+        self.link_error = None;
         let rest = topic.strip_prefix(&self.base).unwrap_or(topic);
         if rest == "/availability" {
             self.available = payload != b"offline";
@@ -298,15 +315,26 @@ pub(crate) fn stop(state: &AppState) -> bool {
 /// How long the broker gets to accept the connection.
 const CONNACK_WAIT: Duration = Duration::from_secs(10);
 
-/// Connect to the broker and wait for its acceptance; the broker's refusal (wrong password, unknown host) as text.
-fn open_broker(s: &MqttSettings) -> Result<(Client, Connection), String> {
+/// The client options: the retained meta carries every pack's identity and parameter block, far above rumqttc's
+/// default 10 KB limit (a larger message would end the connection again and again).
+fn broker_options(s: &MqttSettings) -> MqttOptions {
     let id = format!("openbms-monitor-{:08x}", rand_id());
     let mut o = MqttOptions::new(id, s.host.clone(), s.port);
     o.set_keep_alive(Duration::from_secs(30));
-    o.set_clean_session(true);
+    o.set_max_packet_size(MAX_PACKET, MAX_PACKET);
     if !s.user.is_empty() {
         o.set_credentials(s.user.clone(), s.password.clone());
     }
+    o
+}
+
+/// The largest message taken from the broker (and sent: only subscriptions).
+const MAX_PACKET: usize = 1024 * 1024;
+
+/// Connect to the broker and wait for its acceptance; the broker's refusal (wrong password, unknown host) as text.
+fn open_broker(s: &MqttSettings) -> Result<(Client, Connection), String> {
+    let mut o = broker_options(s);
+    o.set_clean_session(true);
     if s.tls {
         use rustls_platform_verifier::ConfigVerifierExt;
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -416,9 +444,9 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
             }
             Ok(Ok(_)) | Err(_) => {}
             // the broker is gone for now: rumqttc reconnects with the next poll
-            Ok(Err(_)) => {
+            Ok(Err(err)) => {
                 let mono = start.elapsed().as_millis() as i64;
-                for e in feeder.handle(&format!("{}/availability", feeder_base(&feeder)), b"offline", history::now_ms(), mono) {
+                for e in feeder.link_lost(&err.to_string(), mono) {
                     if !apply_gated(&app, &state, &stop_flag, e, &mut gen, installation.as_deref()) {
                         return;
                     }
@@ -427,10 +455,6 @@ fn run(app: AppHandle, client: Client, mut conn: Connection, mut feeder: Feeder,
             }
         }
     }
-}
-
-fn feeder_base(f: &Feeder) -> String {
-    f.base.clone()
 }
 
 /// Apply one effect while this source is still the current one, checked and done under `feed_gate`; false: it is not.
@@ -707,5 +731,23 @@ mod tests {
         new_link(&state, Some("inst-b".into()));
         assert!(!current(&state, &flag, gen));
         assert!(!current(&state, &flag, link_now(&state).gen), "stopped stays stopped");
+    }
+
+    #[test]
+    fn a_broker_error_is_named_and_cleared_by_the_next_message() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([])), 0, 0);
+        let e = f.link_lost("payload size limit exceeded", 1);
+        let v = feeds(&e)[0];
+        assert_eq!((v.state, v.link_error.as_deref()), ("broker", Some("payload size limit exceeded")));
+        let e = f.handle("seplos/openbms/v1/pack/0", &pack_msg("b1", 1, 0, 1, 2), 0, 2);
+        let v = feeds(&e)[0];
+        assert_eq!((v.state, v.link_error.as_deref()), ("live", None));
+    }
+
+    #[test]
+    fn the_broker_takes_a_meta_far_above_10_kb() {
+        let o = broker_options(&MqttSettings { host: "h".into(), port: 1883, user: String::new(), password: String::new(), tls: false, base: "seplos".into() });
+        assert!(o.max_packet_size() >= 1024 * 1024);
     }
 }
