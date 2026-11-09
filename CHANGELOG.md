@@ -4,6 +4,11 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+## 0.3.7-beta — 2026-11-10
+
+- Firmware → Flash a board: "Bootloader recovery" for a board without a working firmware whose bootloader already waits (it answers no search). "Check bootloader" sends one R F L without a restart and refuses unless exactly one bootloader answers; "Recover" writes the chosen image and then looks for the application at every address. A recovery keeps its own pending record, so no normal flash starts while a board may still hang in its bootloader.
+- Home Assistant (MQTT) per installation: the broker belongs to the installation (exported with it, never the password). The password stays in this computer's app data, bound to its broker, so it is never sent to another one. Choosing an installation fills in its broker and preselects the way last used; a first broker is saved after a connect that worked, another one is offered. Installations → Ports shows, changes or removes it.
+
 ## 0.3.6-beta — 2026-11-09
 
 - Home Assistant (MQTT): the add-on's retained feed description (every pack's identity and parameters) is larger than the MQTT client's 10 KB default; the connection broke again and again and the app said "add-on offline". Messages up to 1 MB are taken now. A broker error is shown with its own text, a refused subscription (the MQTT user's rights) is named, and after a reconnect the app waits for new measurements before it says the feed is live.

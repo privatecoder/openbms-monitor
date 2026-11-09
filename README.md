@@ -2,7 +2,7 @@
 
 Cross-platform monitor for the **Seplos BMS V2.0** (boards 10C/10E, module EMU1101, SH Energy ETECH firmware), as a replacement for the vendor's Windows-only BatteryMonitor. German and English UI, light and dark theme, help for every value behind an info icon.
 
-Status: **pre-release (0.3.6-beta)**. Monitoring of multi-pack banks is in daily use. Release builds for macOS (Apple silicon) and Windows 10/11 (x64 and arm64) are on the releases page; they are not signed, so macOS and Windows warn on first start. The monitor is read only; with maintenance functions on, the Parameters view writes a pack's parameters, the serial numbers, the BMS clock, the CAN protocol and the calibration on a click and controls a pack (restart, on/off, heater, remaining capacity, clearing history and counters), and firmware updates (CLI `openbms-flash`, or the app's maintenance view) write only after explicit confirmation. Protocol knowledge: [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs).
+Status: **pre-release (0.3.7-beta)**. Monitoring of multi-pack banks is in daily use. Release builds for macOS (Apple silicon) and Windows 10/11 (x64 and arm64) are on the releases page; they are not signed, so macOS and Windows warn on first start. The monitor is read only; with maintenance functions on, the Parameters view writes a pack's parameters, the serial numbers, the BMS clock, the CAN protocol and the calibration on a click and controls a pack (restart, on/off, heater, remaining capacity, clearing history and counters), and firmware updates (CLI `openbms-flash`, or the app's maintenance view) write only after explicit confirmation. Protocol knowledge: [seplos-emu1101-docs](https://github.com/privatecoder/seplos-emu1101-docs).
 
 ## Features
 
