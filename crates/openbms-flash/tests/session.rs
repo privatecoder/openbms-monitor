@@ -538,3 +538,42 @@ fn a_recovery_whose_app_stays_silent_still_confirms_the_transfer() {
     let r = session::recover_with_progress(&mut sim, &image(), &mut Vec::new(), fast(), &mut |_| {}).unwrap();
     assert!(r.found.is_none() && sim.wrote_flash());
 }
+
+/// A link that hands out one scripted chunk per read (a TCP gateway can pack two answers into one).
+struct Script(std::collections::VecDeque<Vec<u8>>);
+
+impl openbms_flash::link::Link for Script {
+    fn clear_input(&mut self) -> openbms_flash::Result<()> {
+        Ok(())
+    }
+    fn write_raw(&mut self, bytes: &[u8]) -> openbms_flash::Result<()> {
+        assert!(bytes.starts_with(b"::::"), "only R F L may be sent");
+        Ok(())
+    }
+    fn read_raw(&mut self, out: &mut [u8]) -> openbms_flash::Result<usize> {
+        let chunk = self.0.pop_front().unwrap_or_default();
+        out[..chunk.len()].copy_from_slice(&chunk);
+        Ok(chunk.len())
+    }
+    fn wait(&mut self, _: Duration) {}
+}
+
+fn quiet_then(chunks: Vec<Vec<u8>>) -> Script {
+    // the 20 quiet reads of the bus check, then the answer
+    let mut all: Vec<Vec<u8>> = vec![Vec::new(); 20];
+    all.extend(chunks);
+    Script(all.into())
+}
+
+#[test]
+fn a_second_bootloader_answer_in_the_same_read_refuses() {
+    let rfb = openbms_flash::boot::encode(b'R', b'B', 0, &[1, 0]).unwrap();
+    let mut link = quiet_then(vec![[rfb.clone(), rfb.clone()].concat()]);
+    assert!(session::probe_bootloader(&mut link, &mut Vec::new(), fast()).is_err());
+    let mut link = quiet_then(vec![[rfb.clone(), b"x".to_vec()].concat()]);
+    assert!(session::probe_bootloader(&mut link, &mut Vec::new(), fast()).is_err());
+    let mut link = quiet_then(vec![[b"x".to_vec(), rfb.clone()].concat()]);
+    assert!(session::probe_bootloader(&mut link, &mut Vec::new(), fast()).is_err(), "noise before it too");
+    let mut link = quiet_then(vec![rfb]);
+    assert_eq!(session::probe_bootloader(&mut link, &mut Vec::new(), fast()).unwrap(), 256);
+}

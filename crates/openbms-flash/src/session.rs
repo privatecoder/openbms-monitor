@@ -725,10 +725,40 @@ pub fn probe_bootloader(link: &mut impl Link, log_file: &mut impl Write, options
     log(log_file, "TX", &rfl)?;
     let sent = Instant::now();
     link.write_raw(&rfl)?;
-    let (answer, _) = read_boot(link, log_file, options.ack_timeout.min(timing::FLASH_ASCII), sent, false).map_err(|e| match e {
-        Error::Timeout { .. } => Error::NoBootloader(options.ack_timeout.min(timing::FLASH_ASCII)),
-        other => other,
-    })?;
+    // everything received is kept: a gateway may pack two answers (or an answer and other bytes) into one read
+    let timeout = options.ack_timeout.min(timing::FLASH_ASCII);
+    let mut got: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 512];
+    let frame_len = loop {
+        let n = link.read_raw(&mut buf)?;
+        if n > 0 {
+            log(log_file, "RX", &buf[..n])?;
+            got.extend_from_slice(&buf[..n]);
+        }
+        if let Some(start) = got.windows(4).position(|w| w == b"::::") {
+            if start > 0 {
+                return Err(Error::Unexpected(format!("{start} bytes before the bootloader answer: more than one board on the line?")));
+            }
+            if got.len() >= 9 {
+                let len = u16::from_be_bytes([got[7], got[8]]) as usize;
+                if len > 1024 {
+                    return Err(Error::Proto(format!("boot answer length {len} is excessive")));
+                }
+                if got.len() >= len + 17 {
+                    break len + 17;
+                }
+            }
+        } else if got.len() > 4 && !got.ends_with(b":") {
+            return Err(Error::Unexpected("bytes without a bootloader answer: more than one board or traffic on the line?".into()));
+        }
+        if got.len() > 4096 {
+            return Err(Error::Proto("bootloader answer too long".into()));
+        }
+        if sent.elapsed() >= timeout {
+            return Err(Error::NoBootloader(timeout));
+        }
+    };
+    let answer = boot::decode(&got[..frame_len])?;
     if (answer.cid1, answer.cid2, answer.cid3) != (b'R', b'F', b'B') || answer.address != 0 || answer.data.len() != 2 {
         return Err(Error::Unexpected(format!("{}{}{} is no bootloader answer", answer.cid1 as char, answer.cid2 as char, answer.cid3 as char)));
     }
@@ -736,9 +766,8 @@ pub fn probe_bootloader(link: &mut impl Link, log_file: &mut impl Write, options
     if packet_size != 256 {
         return Err(Error::PacketSize(u32::from(packet_size)));
     }
-    // a second answer or any other byte: more than one board (or traffic) on the line
-    let mut buf = [0u8; 512];
-    let mut extra = 0;
+    // a second answer or any other byte, in the same read or after it: more than one board (or traffic) on the line
+    let mut extra = got.len() - frame_len;
     for _ in 0..3 {
         extra += receive(link, log_file, &mut buf)?;
     }
