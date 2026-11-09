@@ -577,9 +577,21 @@ fn boot_phase<W: Write>(
     options: Options,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Vec<Duration>> {
-    let total = frames.len() - 3;
     progress(Progress::Bootloader);
     enter_boot(link, address, log_file, options, &frames[0])?;
+    program(link, frames, log_file, options, progress)
+}
+
+/// W F E, the data blocks and W F G to a bootloader that has answered R F L: shared by the flash and the recovery. From
+/// the moment W F E is sent, log errors no longer stop it (`FlashLog`). Nothing is repeated.
+fn program<W: Write>(
+    link: &mut impl Link,
+    frames: &[Vec<u8>],
+    log_file: &mut FlashLog<'_, W>,
+    options: Options,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Vec<Duration>> {
+    let total = frames.len() - 3;
     note(
         log_file,
         "sending W F E; board is in update mode until application restart",
@@ -689,6 +701,115 @@ fn flash_steps<W: Write>(
         wfd_reply_times,
         log_error: None,
     })
+}
+
+/// The result of a recovery: no "before" exists (the board had no application), the application is looked for at every
+/// DIP address afterwards.
+pub struct RecoveryResult {
+    pub packet_size: u16,
+    pub blocks: usize,
+    /// the address and 0x51 of the restarted application; None: none answered within `post_timeout` (a master polling
+    /// its slaves on this bus does not answer, for example): the transfer is confirmed, the application unchecked
+    pub found: Option<(u8, DeviceInfo)>,
+    pub wfd_reply_times: ReplyTimes,
+    pub log_error: Option<String>,
+}
+
+/// Whether a bootloader already answers on this link, without any reset or write: one R F L. Only a single complete
+/// R F B at bootloader address 0 with the 256-byte packet size counts; anything after it (a second bootloader, other
+/// traffic) refuses, because the bootloader has no pack address and every bootloader on the line would be erased.
+pub fn probe_bootloader(link: &mut impl Link, log_file: &mut impl Write, options: Options) -> Result<u16> {
+    quiet(link, log_file)?;
+    let rfl = boot::encode(b'R', b'L', 0, &[])?;
+    link.clear_input()?;
+    log(log_file, "TX", &rfl)?;
+    let sent = Instant::now();
+    link.write_raw(&rfl)?;
+    let (answer, _) = read_boot(link, log_file, options.ack_timeout.min(timing::FLASH_ASCII), sent, false).map_err(|e| match e {
+        Error::Timeout { .. } => Error::NoBootloader(options.ack_timeout.min(timing::FLASH_ASCII)),
+        other => other,
+    })?;
+    if (answer.cid1, answer.cid2, answer.cid3) != (b'R', b'F', b'B') || answer.address != 0 || answer.data.len() != 2 {
+        return Err(Error::Unexpected(format!("{}{}{} is no bootloader answer", answer.cid1 as char, answer.cid2 as char, answer.cid3 as char)));
+    }
+    let packet_size = u16::from_be_bytes([answer.data[0], answer.data[1]]);
+    if packet_size != 256 {
+        return Err(Error::PacketSize(u32::from(packet_size)));
+    }
+    // a second answer or any other byte: more than one board (or traffic) on the line
+    let mut buf = [0u8; 512];
+    let mut extra = 0;
+    for _ in 0..3 {
+        extra += receive(link, log_file, &mut buf)?;
+    }
+    if extra > 0 {
+        return Err(Error::Unexpected(format!("{extra} more bytes after the bootloader answer: more than one board on the line?")));
+    }
+    note(log_file, "bootloader answers R F B with 256-byte packets")?;
+    Ok(packet_size)
+}
+
+/// The application after a recovery: 0x51 at every DIP address in turn until one answers, within `post_timeout`.
+fn find_app(link: &mut impl Link, log_file: &mut impl Write, options: Options) -> Result<Option<(u8, DeviceInfo)>> {
+    let deadline = Instant::now() + options.post_timeout;
+    while Instant::now() < deadline {
+        for address in openbms_proto::address::DIP {
+            match ascii_query(link, address, 0x51, log_file, timing::FLASH_REACH_TRY) {
+                Ok(reply) => return Ok(Some((address, DeviceInfo::parse(&reply.info)?))),
+                Err(Error::Timeout { .. }) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        link.wait(timing::FLASH_REACH_PAUSE);
+    }
+    Ok(None)
+}
+
+/// Recover a board whose bootloader already answers (no application to reset): R F L once more on this link, then the
+/// same W F E, data blocks and W F G as a flash. Never a reset (0x45), never a 0x51/0x47 precondition, no retries. The
+/// caller has confirmed that exactly one board is on the line.
+pub fn recover_with_progress(
+    link: &mut impl Link,
+    image: &Image,
+    log_file: &mut impl Write,
+    options: Options,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<RecoveryResult> {
+    let mut log = FlashLog { inner: log_file, lenient: false, error: None };
+    let r = recover_steps(link, image, &mut log, options, progress);
+    let log_error = log.error.map(|e| e.to_string());
+    match (r, log_error) {
+        (Ok(r), log_error) => Ok(RecoveryResult { log_error, ..r }),
+        (Err(Error::Unexpected(m)), Some(le)) => Err(Error::Unexpected(format!("{m}; log write failed: {le}"))),
+        (Err(e), _) => Err(e),
+    }
+}
+
+fn recover_steps<W: Write>(
+    link: &mut impl Link,
+    image: &Image,
+    log_file: &mut FlashLog<'_, W>,
+    options: Options,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<RecoveryResult> {
+    let frames = dry_run(image)?;
+    let blocks = frames.len() - 3;
+    progress(Progress::Bootloader);
+    link.pause_capture(true);
+    let programmed = probe_bootloader(link, log_file, options).and_then(|packet_size| {
+        program(link, &frames, log_file, options, progress).map(|times| (packet_size, times))
+    });
+    link.pause_capture(false);
+    let (packet_size, times) = programmed?;
+    progress(Progress::AppRestart);
+    // the transfer is done: an application that does not show is no failure of it
+    let found = find_app(link, log_file, options).unwrap_or(None);
+    let wfd_reply_times = ReplyTimes::from_samples(times)?;
+    match &found {
+        Some((address, _)) => note(log_file, &format!("recovery complete; application answered 0x51 at address {address}"))?,
+        None => note(log_file, "recovery transfer complete; no application answered 0x51 (unchecked)")?,
+    }
+    Ok(RecoveryResult { packet_size, blocks, found, wfd_reply_times, log_error: None })
 }
 
 #[cfg(test)]

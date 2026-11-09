@@ -31,6 +31,12 @@ pub struct BootSim {
     /// answer the reset with this RTN and do not restart (1.6.3: RTN 08, the SOC could not be saved)
     refuse_reset: Option<u8>,
     resets: usize,
+    /// the board starts in its bootloader (no application): it answers R F L at any time
+    in_bootloader: bool,
+    /// a second bootloader on the line answers R F L as well
+    rfl_twice: bool,
+    /// the application answers only at this address (None: at any)
+    app_address: Option<u8>,
 }
 
 impl BootSim {
@@ -55,6 +61,9 @@ impl BootSim {
             soc_save: Duration::ZERO,
             refuse_reset: None,
             resets: 0,
+            in_bootloader: false,
+            rfl_twice: false,
+            app_address: None,
         }
     }
     /// The bootloader listens only this long after the reset request (a SOC save before the reset).
@@ -64,6 +73,19 @@ impl BootSim {
     /// Answer the reset with RTN `rtn` and stay in the application.
     pub fn refuse_reset(&mut self, rtn: u8) {
         self.refuse_reset = Some(rtn);
+    }
+    /// The board waits in its bootloader: no application answers until a flash, R F L is answered at any time.
+    pub fn start_in_bootloader(&mut self) {
+        self.in_bootloader = true;
+        self.app_resume_at = Duration::MAX;
+    }
+    /// Another bootloader on the same line answers R F L too.
+    pub fn answer_rfl_twice(&mut self) {
+        self.rfl_twice = true;
+    }
+    /// The application answers ASCII only at this address.
+    pub fn set_app_address(&mut self, address: u8) {
+        self.app_address = Some(address);
     }
     /// How many reset requests came.
     pub fn resets(&self) -> usize {
@@ -133,7 +155,7 @@ impl BootSim {
             return;
         }
         self.asked.push((request.rtn, self.now));
-        if self.now < self.app_resume_at {
+        if self.now < self.app_resume_at || self.app_address.is_some_and(|a| a != request.address) {
             return;
         }
         let set = self.answers.iter().find(|(c, _, _)| *c == request.rtn);
@@ -162,9 +184,12 @@ impl BootSim {
             .reset_at
             .is_some_and(|t| self.now >= t && self.now - t <= Duration::from_millis(800));
         match (request.cid1, request.cid3) {
-            (b'R', b'L') if window => {
+            (b'R', b'L') if window || self.in_bootloader => {
                 self.locked = true;
                 self.queue(boot::encode(b'R', b'B', 0, &[1, 0]).unwrap());
+                if self.rfl_twice {
+                    self.queue(boot::encode(b'R', b'B', 0, &[1, 0]).unwrap());
+                }
             }
             (b'W', b'E') if self.locked => {
                 self.enabled = true;

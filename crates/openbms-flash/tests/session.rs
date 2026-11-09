@@ -494,3 +494,47 @@ fn a_refused_restart_ends_the_entry_and_nothing_is_flashed() {
     assert_eq!(sim.resets(), 1);
     assert!(!sim.wrote_flash() && sim.boot_writes().iter().all(|w| w.0 == b'L'));
 }
+
+// ---- recovery: a board already in its bootloader ----
+
+#[test]
+fn recovery_programs_a_waiting_bootloader_without_any_reset_and_finds_the_app() {
+    let mut sim = BootSim::new();
+    sim.start_in_bootloader();
+    sim.set_app_address(7);
+    let r = session::recover_with_progress(&mut sim, &image(), &mut Vec::new(), fast(), &mut |_| {}).unwrap();
+    assert_eq!((r.packet_size, r.blocks), (256, 3));
+    assert_eq!(r.found.map(|(a, _)| a), Some(7));
+    assert_eq!(sim.resets(), 0);
+    assert_eq!(sim.data_writes(), 3);
+    assert!(!sim.capture_paused());
+}
+
+#[test]
+fn recovery_refuses_before_any_write_when_a_second_board_answers() {
+    let mut sim = BootSim::new();
+    sim.start_in_bootloader();
+    sim.answer_rfl_twice();
+    assert!(session::recover_with_progress(&mut sim, &image(), &mut Vec::new(), fast(), &mut |_| {}).is_err());
+    assert!(!sim.wrote_flash());
+    assert_eq!(sim.resets(), 0);
+}
+
+#[test]
+fn recovery_sends_nothing_but_rfl_to_a_board_without_a_waiting_bootloader() {
+    let mut sim = BootSim::new();
+    assert!(session::probe_bootloader(&mut sim, &mut Vec::new(), fast()).is_err());
+    assert!(session::recover_with_progress(&mut sim, &image(), &mut Vec::new(), fast(), &mut |_| {}).is_err());
+    assert!(!sim.wrote_flash());
+    assert_eq!(sim.resets(), 0);
+    assert!(sim.boot_writes().iter().all(|(c, _)| *c == b'L'), "only R F L probes");
+}
+
+#[test]
+fn a_recovery_whose_app_stays_silent_still_confirms_the_transfer() {
+    let mut sim = BootSim::new();
+    sim.start_in_bootloader();
+    sim.set_app_address(99);    // never answers a DIP address
+    let r = session::recover_with_progress(&mut sim, &image(), &mut Vec::new(), fast(), &mut |_| {}).unwrap();
+    assert!(r.found.is_none() && sim.wrote_flash());
+}
