@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Download, Info, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type MqttSettings, type SerialNumbers } from "../api";
 import { feedText, getSource, useFeed } from "../source";
+import { useSettingsRevision } from "../installData";
 import { patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
@@ -17,7 +18,7 @@ import { readMark } from "../bmsMemory";
 import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
 import { useUpdate } from "../update";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, targetsForInstallation, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -85,6 +86,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [mqStored, setMqStored] = useState<MqttSettings | null>(null);
   // after a connect with another broker than the installation's: the offer to keep it
   const [mqttAsk, setMqttAsk] = useState<{ inst: string; name: string; settings: MqttSettings } | null>(null);
+  // the broker of the chosen installation is being read: its form and „Verbinden“ wait, so no other installation's
+  // broker is ever used for it
+  const [mqLoading, setMqLoading] = useState(false);
+  const settingsRev = useSettingsRevision();
   const feed = useFeed();
   const setTarget = (v: string) => setTargets((cur) => ({ ...cur, [kind]: v }));
   const [bus, setBus] = useState<Bus>(() => (localStorage.getItem("conn.bus") as Bus) ?? "can");
@@ -480,24 +485,36 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   };
   const cur = maint.installations.find((i) => i.id === maint.installation) ?? null;
   const storedPorts = JSON.stringify([cur?.control ?? null, cur?.endpoints ?? []]);
+  const portsFor = useRef<string | null>(null);
   useEffect(() => {
     if (connected || lost || busy || !maint.installation) return;
-    apply(fillFields(cur, bus, lastConn(maint.installation), "installation"));
+    const f = fillFields(cur, bus, lastConn(maint.installation), "installation");
+    // another installation: its own port only, the other transport's field emptied (never the one chosen before)
+    if (portsFor.current !== maint.installation) { setTargets(targetsForInstallation(f)); portsFor.current = maint.installation; }
+    apply(f);
   }, [maint.installation, maint.loaded, storedPorts]); // eslint-disable-line react-hooks/exhaustive-deps
   // The broker of the chosen installation (or the "view only" one) fills the Home Assistant tab, and the way last used
   // with it is preselected; an answer for an installation chosen before is dropped. Never while connected.
   const mqGen = useRef(0);
+  const mqFor = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (connected || lost || busy || !maint.loaded) return;
     const gen = ++mqGen.current;
     const inst = maint.installation;
+    // another installation: its broker only, nothing of the one before (a reload of the same one keeps the draft
+    // until the stored values are back)
+    const switched = mqFor.current !== inst;
+    mqFor.current = inst;
     setMqttAsk(null);
+    setMqLoading(true);
+    if (switched) { setMq(MQTT_EMPTY); setMqStored(null); }
     void api.loadMqttSettings(inst ?? null).then((s) => {
       if (gen !== mqGen.current) return;
       setMq(s ?? MQTT_EMPTY); setMqStored(s);
-      if (inst) setSrc(initialWay(lastWay(inst), !!s, !!(cur && (storedPort(cur, "can") || storedPort(cur, "pack")))));
-    }).catch(() => {});
-  }, [maint.installation, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+      if (inst && switched) setSrc(initialWay(lastWay(inst), !!s, !!(cur && (storedPort(cur, "can") || storedPort(cur, "pack")))));
+    }, () => { if (gen === mqGen.current) { setMq(MQTT_EMPTY); setMqStored(null); } })
+      .finally(() => { if (gen === mqGen.current) setMqLoading(false); });
+  }, [maint.installation, maint.loaded, settingsRev]); // eslint-disable-line react-hooks/exhaustive-deps
   // the installation's stored port of the chosen bus is shown as a fixed line; the free fields only without one, or
   // for a one-off other port („Anderer Anschluss“, not stored unless the offer after connecting is accepted)
   const [other, setOther] = useState(false);
@@ -626,16 +643,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <div className="space-y-1.5">
             <p className="flex items-center gap-1.5 text-xs text-muted">{t("conn.mqtt.hint")}<InfoIcon id="topic.mqtt" /></p>
             <div className="flex gap-1">
-              <input className={input} value={mq.host} disabled={fixed} onChange={(e) => setMq({ ...mq, host: e.target.value.trim() })} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} />
-              <input className={cn(input, "w-20")} value={mq.port} disabled={fixed} inputMode="numeric" aria-label={t("conn.mqtt.port")}
-                onChange={(e) => setMq({ ...mq, port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) })} />
+              <input className={input} value={mq.host} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { host: e.target.value.trim() }))} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} />
+              <input className={cn(input, "w-20")} value={mq.port} disabled={fixed || mqLoading} inputMode="numeric" aria-label={t("conn.mqtt.port")}
+                onChange={(e) => setMq(editBroker(mq, { port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) }))} />
             </div>
-            <input className={input} value={mq.user} disabled={fixed} onChange={(e) => setMq({ ...mq, user: e.target.value })} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" />
-            <input className={input} type="password" value={mq.password} disabled={fixed} onChange={(e) => setMq({ ...mq, password: e.target.value })} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" />
+            <input className={input} value={mq.user} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { user: e.target.value }))} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" />
+            <input className={input} type="password" value={mq.password} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { password: e.target.value }))} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" />
             <div className="flex items-center gap-2">
-              <input className={input} value={mq.base} disabled={fixed} onChange={(e) => setMq({ ...mq, base: e.target.value.trim() })} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} />
+              <input className={input} value={mq.base} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { base: e.target.value.trim() }))} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} />
               <label className="flex shrink-0 items-center gap-1 text-sm text-muted">
-                <input type="checkbox" checked={mq.tls} disabled={fixed} onChange={(e) => setMq({ ...mq, tls: e.target.checked })} />TLS
+                <input type="checkbox" checked={mq.tls} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { tls: e.target.checked }))} />TLS
               </label>
             </div>
           </div>
@@ -715,7 +732,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           </>
         )}
         <div className="flex gap-2">
-          <Button variant="primary" className="flex-1" disabled={busy || (src === "mqtt" ? !mq.host || !mq.base || !mq.port : !target) || locked} onClick={() => connect()}>
+          <Button variant="primary" className="flex-1" disabled={busy || (src === "mqtt" ? mqLoading || !mq.host || !mq.base || !mq.port : !target) || locked} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {waiting ? <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>

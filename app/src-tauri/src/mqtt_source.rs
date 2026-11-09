@@ -176,15 +176,31 @@ pub fn save_mqtt_settings(app: AppHandle, state: State<'_, AppState>, installati
         return Err("invalid broker settings".into());
     }
     let path = settings_path(&app)?;
-    if let Some(id) = &installation {
-        let config = serde_json::to_string(&BrokerConfig::of(&settings)).map_err(|e| e.to_string())?;
-        maint::with_store(&state, |s| {
-            s.installation(id)?;
-            s.set_mqtt(id, Some(&config))
-        })
-        .map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+    match &installation {
+        None => save_to(&path, None, &settings),
+        Some(id) => {
+            let store_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+            let old = maint::with_store(&state, |s| {
+                s.installation(id)?;
+                s.mqtt(id)
+            })
+            .map_err(store_text)?;
+            save_both(&path, id, &settings, old, |data| maint::with_store(&state, |s| s.set_mqtt(id, data)).map_err(store_text))
+        }
     }
-    save_to(&path, installation.as_deref(), &settings)
+}
+
+/// The installation's broker in its store row (`set`) and its password in `mqtt.json` as one change: a password file
+/// that cannot be read is found before the row changes, and a failed password write puts the row (`old`) back.
+pub(crate) fn save_both(path: &Path, id: &str, settings: &MqttSettings, old: Option<String>, mut set: impl FnMut(Option<&str>) -> Result<(), String>) -> Result<(), String> {
+    read_passwords(path)?;
+    let config = serde_json::to_string(&BrokerConfig::of(settings)).map_err(|e| e.to_string())?;
+    set(Some(&config))?;
+    if let Err(e) = save_to(path, Some(id), settings) {
+        let _ = set(old.as_deref());
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// An installation was deleted: drop its password (a failure only leaves an unused entry).
@@ -734,6 +750,24 @@ mod tests {
         // a damaged file is refused, not overwritten
         std::fs::write(&path, b"{not json").unwrap();
         assert!(save_to(&path, None, &sample()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_password_write_keeps_the_stored_broker() {
+        let dir = std::env::temp_dir().join(format!("openbms-mqtt-both-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mqtt.json");
+        let row = std::cell::RefCell::new(Some("A".to_string()));
+        let set = |d: Option<&str>| { *row.borrow_mut() = d.map(str::to_owned); Ok(()) };
+        // a damaged password file: refused before the row changes
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!(save_both(&path, "a", &sample(), Some("A".into()), set).is_err());
+        assert_eq!(row.borrow().as_deref(), Some("A"));
+        // a good file: both change
+        std::fs::remove_file(&path).unwrap();
+        save_both(&path, "a", &sample(), Some("A".into()), |d| { *row.borrow_mut() = d.map(str::to_owned); Ok(()) }).unwrap();
+        assert!(row.borrow().as_deref().is_some_and(|r| r.contains("broker.local")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

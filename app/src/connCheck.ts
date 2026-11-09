@@ -209,3 +209,22 @@ export function mqttSaveAction(stored: MqttSettings | null, used: MqttSettings):
     && stored.tls === used.tls && stored.base === used.base;
   return same ? "none" : "ask";
 }
+
+/** One edit of a broker form: a password filled in from storage belongs to its host, port, user and TLS, so changing
+ *  any of them clears it (it must never reach another broker); the topic prefix may change with it kept. A password
+ *  typed in is taken as it is. */
+export function editBroker(draft: MqttSettings, change: Partial<MqttSettings>): MqttSettings {
+  const next = { ...draft, ...change };
+  if (!("password" in change) && (next.host !== draft.host || next.port !== draft.port || next.user !== draft.user || next.tls !== draft.tls)) {
+    next.password = "";
+  }
+  return next;
+}
+
+/** Both transport fields for a newly chosen installation: only its own port (`fill`, from `fillFields`) in its
+ *  transport's field, the other one empty, so no port of the installation chosen before can be connected under it. */
+export function targetsForInstallation(fill: { kind: "tcp" | "serial"; target: string } | null): { tcp: string; serial: string } {
+  const t = { tcp: "", serial: "" };
+  if (fill) t[fill.kind] = fill.target;
+  return t;
+}

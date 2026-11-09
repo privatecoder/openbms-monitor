@@ -127,8 +127,17 @@ export async function resyncCellTypes(q: CellQueue, reload: () => Promise<Record
   await reload().then((s) => { q.stale = false; restore(s); }, (r) => console.error("cell types read back:", r));
 }
 
-/** After a merge or the move of the old data: read again from the backend. */
-export function reloadSettings() { cache.clear(); changed(); }
+/** After a merge, an import, the move of the old data or a change of the MQTT broker: read again from the backend. */
+let revision = 0;
+export function reloadSettings() { revision += 1; cache.clear(); changed(); }
+
+/** Counts `reloadSettings`: what reads an installation's settings outside this cache (the sidebar's broker) reads
+ *  them again when it changes. */
+export function useSettingsRevision(): number {
+  const [, tick] = useState(0);
+  useEffect(() => { const f = () => tick((n) => n + 1); subs.add(f); return () => { subs.delete(f); }; }, []);
+  return revision;
+}
 
 export function useSettings(scope: string | null) {
   const [, tick] = useState(0);

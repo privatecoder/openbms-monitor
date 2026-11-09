@@ -246,3 +246,26 @@ describe("MQTT per installation", () => {
     expect(initialWay(null, false, false)).toBe("bus");
   });
 });
+
+describe("editing a loaded broker", () => {
+  const ms = (over = {}) => ({ host: "broker.example", port: 1883, user: "u", password: "secret", tls: false, base: "seplos", ...over });
+  it("drops the loaded password when host, port, user or TLS change; keeps it for the topic; takes a typed one", async () => {
+    const { editBroker } = await import("./connCheck");
+    expect(editBroker(ms(), { host: "other.example" }).password).toBe("");
+    expect(editBroker(ms(), { port: 8883 }).password).toBe("");
+    expect(editBroker(ms(), { user: "v" }).password).toBe("");
+    expect(editBroker(ms(), { tls: true }).password).toBe("");
+    expect(editBroker(ms(), { base: "bank2" }).password).toBe("secret");
+    expect(editBroker(ms(), { host: "broker.example" }).password).toBe("secret");
+    expect(editBroker(ms({ password: "" }), { password: "new" }).password).toBe("new");
+  });
+});
+
+describe("switching the installation", () => {
+  it("never keeps another installation's port in the other transport's field", async () => {
+    const { targetsForInstallation } = await import("./connCheck");
+    // A was used over USB; B has a gateway: the USB field is empty, not A's adapter
+    expect(targetsForInstallation({ kind: "tcp", target: "gw.example:4196" })).toEqual({ tcp: "gw.example:4196", serial: "" });
+    expect(targetsForInstallation(null)).toEqual({ tcp: "", serial: "" });
+  });
+});

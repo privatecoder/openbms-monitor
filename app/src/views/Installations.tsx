@@ -6,6 +6,7 @@ import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
+import { editBroker } from "../connCheck";
 import { errorKey, keyLabel, mergeSuggestion, nameCheck, packIsCanAdapter, packPortOf, storedPort, controlKey } from "../maint";
 import type { Maint } from "../maintStore";
 import { reloadSettings } from "../installData";
@@ -295,15 +296,15 @@ function MqttPort({ inst }: { inst: Installation }) {
       {draft && (
         <div className="max-w-md space-y-1.5">
           <div className="flex gap-1">
-            <input className={input} value={draft.host} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} onChange={(e) => setDraft({ ...draft, host: e.target.value.trim() })} />
+            <input className={input} value={draft.host} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} onChange={(e) => setDraft(editBroker(draft, { host: e.target.value.trim() }))} />
             <input className={cn(input, "w-20")} value={draft.port} inputMode="numeric" aria-label={t("conn.mqtt.port")}
-              onChange={(e) => setDraft({ ...draft, port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) })} />
+              onChange={(e) => setDraft(editBroker(draft, { port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) }))} />
           </div>
-          <input className={input} value={draft.user} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" onChange={(e) => setDraft({ ...draft, user: e.target.value })} />
-          <input className={input} type="password" value={draft.password} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+          <input className={input} value={draft.user} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" onChange={(e) => setDraft(editBroker(draft, { user: e.target.value }))} />
+          <input className={input} type="password" value={draft.password} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" onChange={(e) => setDraft(editBroker(draft, { password: e.target.value }))} />
           <div className="flex items-center gap-2">
-            <input className={input} value={draft.base} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} onChange={(e) => setDraft({ ...draft, base: e.target.value.trim() })} />
-            <label className="flex shrink-0 items-center gap-1 text-muted"><input type="checkbox" checked={draft.tls} onChange={(e) => setDraft({ ...draft, tls: e.target.checked })} />TLS</label>
+            <input className={input} value={draft.base} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} onChange={(e) => setDraft(editBroker(draft, { base: e.target.value.trim() }))} />
+            <label className="flex shrink-0 items-center gap-1 text-muted"><input type="checkbox" checked={draft.tls} onChange={(e) => setDraft(editBroker(draft, { tls: e.target.checked }))} />TLS</label>
           </div>
           <p className="text-xs text-muted">{t("inst.mqtt.passwordLocal")}</p>
           <div className="flex gap-1">
