@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod feed;
 mod balancer;
 mod bench;
 mod marker;
