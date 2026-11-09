@@ -201,6 +201,7 @@ fn drop_dead_main(state: &AppState, error: &str) {
 /// bus, otherwise on a connection opened for this exchange. A dead main connection is dropped and the
 /// exchange repeated once on its own channel (`retry_fresh`).
 pub fn with_control<T, E: std::fmt::Display>(state: &AppState, inst: &Installation, mut f: impl FnMut(&mut Connection) -> Result<T, E>) -> Result<Result<T, E>, MaintError> {
+    crate::bms_io_allowed(state).map_err(|_| refused("mqtt-source"))?;
     let control = inst.control.as_ref().ok_or_else(|| refused("no-control-channel"))?;
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
     let key = control.key();
@@ -397,6 +398,7 @@ pub fn pack_endpoint(key: &str) -> Result<Endpoint, MaintError> {
 /// Open the pack bus port (an endpoint key, `pack_key`); first stop the monitor when it holds that endpoint or polls
 /// the pack bus, and tell the UI ("monitor-stopped"): a stop by the app is no lost connection.
 pub fn open_pack_for(state: &AppState, app: &AppHandle, key: &str) -> Result<Connection, MaintError> {
+    crate::bms_io_allowed(state).map_err(|_| refused("mqtt-source"))?;
     let ep = pack_endpoint(key)?;
     let main = state.main.lock().map_err(|e| store_err(e.to_string()))?.clone();
     if must_stop_monitor(main.as_ref(), &pack_key(key)?) {

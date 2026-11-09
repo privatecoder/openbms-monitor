@@ -38,8 +38,32 @@ mod storage;
 mod updater;
 use history::{Format, Settings, SharedHistory};
 
+/// Where the monitor's data comes from: its own RS485 connection, or the Seplos BMS add-on's feed over MQTT (read-only).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SourceKind {
+    Bus,
+    Mqtt,
+}
+
+/// The refusal of anything that talks to a BMS while the data come over MQTT (`maint.ts` / `errorText`).
+pub(crate) const MQTT_SOURCE: &str = r#"{"kind":"mqtt-source"}"#;
+
+/// Err while the source is the add-on's feed: the RS485 bus belongs to the add-on then, nothing may open a port or send
+/// a request. Checked before anything stops the monitor or opens a port.
+pub(crate) fn bms_io_allowed(state: &AppState) -> Result<(), String> {
+    match state.source.lock().map(|s| *s) {
+        Ok(Some(SourceKind::Mqtt)) => Err(MQTT_SOURCE.into()),
+        _ => Ok(()),
+    }
+}
+
 #[derive(Default)]
 struct AppState {
+    /// the source of the current connection (None: not connected)
+    source: Mutex<Option<SourceKind>>,
+    /// the running MQTT source (`mqtt_source.rs`)
+    mqtt: Mutex<Option<mqtt_source::Running>>,
     /// pairs of packs in parallel (plus, minus) of the current installation: polled one after the other (`poll_order`)
     poll_pairs: Arc<Mutex<Vec<(u8, u8)>>>,
     conn: Arc<Mutex<Option<Connection>>>,
@@ -163,7 +187,7 @@ impl From<BusArg> for Bus {
 }
 
 /// Snapshot of one pack, sent to the UI as event "pack".
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 struct PackUpdate {
     address: u8,
     telemetry: Option<Telemetry>,
@@ -174,7 +198,7 @@ struct PackUpdate {
 }
 
 /// System values of the master, sent as event "system".
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 struct SystemUpdate {
     values: Option<SystemValues>,
     error: Option<String>,
@@ -384,6 +408,7 @@ struct Connected {
     answered: u8,
     /// the firmware profile read on this endpoint (`profile.rs`); the UI configures itself from it
     profile: profile::ProfileView,
+    source: SourceKind,
 }
 
 /// Ask once whether anything answers: on the CAN socket the master's Modbus values first, then 0x51 of 0..=15
@@ -447,6 +472,13 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     };
     // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
     lock(&state.conn)?.take();
+    // an MQTT source ends here too (its session at the add-on's clock)
+    if mqtt_source::stop(&state) {
+        if let Ok(mut h) = state.history.lock() {
+            h.disconnected_at_source();
+        }
+    }
+    *state.source.lock().map_err(|e| e.to_string())? = None;
     // the old connection is gone; control exchanges must not route through it, nothing more is stored for it
     *state.main.lock().map_err(|e| e.to_string())? = None;
     new_link(&state, None);
@@ -503,7 +535,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         stop_monitor(&state)?;
         return Err(CONNECT_CANCELLED.into());
     }
-    Ok(Connected { linked, answered, gen, profile: profile::view(gen, &found) })
+    *state.source.lock().map_err(|e| e.to_string())? = Some(SourceKind::Bus);
+    Ok(Connected { linked, answered, gen, profile: profile::view(gen, &found), source: SourceKind::Bus })
 }
 
 /// What answered at the other bus's baud rate on a USB port whose connect check found nothing.
@@ -564,13 +597,17 @@ fn stop_monitor_as(state: &AppState, lost: bool) -> Result<(), String> {
     if let Ok(p) = state.polling.lock() {
         p.store(false, Ordering::SeqCst);
     }
+    let feed = mqtt_source::stop(state);
     *lock(&state.conn)? = None;
     if let Ok(mut m) = state.main.lock() {
         *m = None;
     }
     new_link(state, None);
     if let Ok(mut h) = state.history.lock() {
-        h.disconnected();
+        if feed { h.disconnected_at_source() } else { h.disconnected() }
+    }
+    if let Ok(mut s) = state.source.lock() {
+        *s = None;
     }
     Ok(())
 }
@@ -578,6 +615,7 @@ fn stop_monitor_as(state: &AppState, lost: bool) -> Result<(), String> {
 /// `stop_monitor` for a maintenance step that needs the pack port: the UI is told ("monitor-stopped"), so it
 /// shows "not connected" instead of waiting for its data timeout and counting a lost connection.
 pub(crate) fn stop_monitor_and_tell(state: &AppState, app: &AppHandle) -> Result<(), String> {
+    bms_io_allowed(state)?;
     stop_monitor(state)?;
     let _ = app.emit("monitor-stopped", ());
     Ok(())
@@ -759,7 +797,7 @@ fn uart1_serials_offered(state: &AppState, link: &Link, address: u8) -> bool {
 
 /// Notifications on the CAN socket run only with the installation's own master: compare its battery serial with the one
 /// stored for address 0. No answer decides nothing (the poll thread asks again).
-fn can_master_check(state: &AppState, gen: u64, inst: &str, battery: &SerialValue) {
+pub(crate) fn can_master_check(state: &AppState, gen: u64, inst: &str, battery: &SerialValue) {
     if *battery == SerialValue::NoAnswer {
         return;
     }
@@ -1258,7 +1296,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![diagnosis::pack_diagnosis, diagnosis::pack_image_flags, diagnosis::pack_calibration, diagnosis::pack_soc_store, diagnosis::firmware_soc_store, list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, set_poll_pairs, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_dirs, storage::storage_overview, storage::storage_clear, storage::storage_delete_backups, storage::storage_empty, storage::storage_empty_retry, storage::storage_empty_drop, reveal_history, app_info, open_link, updater::update_check, updater::update_install, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::write_name, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::bms_archive_packs, bms_memory::bms_archive, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, control::pack_set_learned_full, marker::marker_read, marker::marker_set, firmware::firmware_check_image, bench::bench_scan, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::access_view, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status, wiring::set_wiring, mqtt_source::load_mqtt_settings, mqtt_source::save_mqtt_settings])
+        .invoke_handler(tauri::generate_handler![diagnosis::pack_diagnosis, diagnosis::pack_image_flags, diagnosis::pack_calibration, diagnosis::pack_soc_store, diagnosis::firmware_soc_store, list_ports, connect, connect_cancel, probe_other_bus, disconnect, scan, system_once, telemetry, serial_numbers, start_polling, stop_polling, set_poll_pairs, load_user_cells, save_user_cells, history_status, history_settings, history_sites, history_series, health_report, balancer_timeline, cell_analysis, history_export, history_import, history_dirs, storage::storage_overview, storage::storage_clear, storage::storage_delete_backups, storage::storage_empty, storage::storage_empty_retry, storage::storage_empty_drop, reveal_history, app_info, open_link, updater::update_check, updater::update_install, parameters, save_parameters, reveal_parameters, bms_memory::bms_clock, bms_memory::set_bms_clock, bms_memory::pack_live, bms_memory::pack_full_capacity, bms_memory::bms_calibrate, bms_memory::set_can_protocol, bms_memory::write_parameters, bms_memory::param_history, bms_memory::set_serial, bms_memory::write_name, uart1_id::bank_mark_gone, bms_memory::bms_history, bms_memory::bms_history_cancel, bms_memory::bms_archive_packs, bms_memory::bms_archive, bms_memory::save_bms_history, bank::bank_confirm, bank::bank_reads_done, control::pack_restart, control::pack_on_off, control::pack_heater, control::pack_clear_history, control::pack_set_remaining, control::pack_set_learned_full, marker::marker_read, marker::marker_set, firmware::firmware_check_image, bench::bench_scan, firmware::firmware_start, firmware::firmware_group0, firmware::reveal_firmware_logs, maint::maint_installations, maint::maint_installations_of, maint::maint_save_installation, maint::maint_create_installation, installations::installations_migrate, installations::installation_settings, installations::set_installation_setting, installations::set_installation_cell_types, installations::installation_overview, installations::installation_merge, installations::installation_archive, installations::installation_rename, installations::installation_delete, installations::installation_snapshots, installations::logs_unassigned, installations::installation_export, installations::installation_import_inspect, installations::installation_import_apply, installations::installation_imports_open, installations::installation_import_discard, installations::installation_import_abandon, maint::maint_adopt_master_serial, maint::maint_alerts, maint::maint_clear_pending, maint::maint_discard_latent_marker, maint::maint_live, maint::maint_scan_packs, maint::maint_scan_cancel, maint::maint_halt, maint::maint_release, maint::maint_expected_slaves, profile::firmware_profile, profile::firmware_profile_check, profile::hard_stops, profile::pack_probe, profile::pack_probes, profile::access_view, profile::patch_proof_confirm, profile::patch_proof_revoke, capture::capture_start, capture::capture_stop, capture::capture_clear, capture::capture_status, link_timing, capture::capture_export, notifications::notify_texts, notifications::notify_test, notifications::notify_status, wiring::set_wiring, mqtt_source::connect_mqtt, mqtt_source::load_mqtt_settings, mqtt_source::save_mqtt_settings])
         .build(tauri::generate_context!())
         .expect("error while running OpenBMS Monitor")
         .run(|app, event| {

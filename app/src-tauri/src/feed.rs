@@ -38,7 +38,6 @@ pub struct FeedPack {
 pub struct FeedSystem {
     pub boot: String,
     pub seq: u64,
-    pub sent_at: i64,
     pub values: Option<Part<SystemValues>>,
 }
 
@@ -55,8 +54,6 @@ pub struct MetaPack {
 pub struct FeedMeta {
     pub on: bool,
     pub boot: String,
-    pub bus: String,
-    pub auto_off: Option<i64>,
     pub packs: Vec<MetaPack>,
 }
 
@@ -128,7 +125,6 @@ pub fn decode_system(v: &Value) -> Result<FeedSystem, String> {
     Ok(FeedSystem {
         boot: text(v, "boot")?,
         seq: number(v, "seq")?,
-        sent_at: v["sent_at"].as_i64().unwrap_or(0),
         values: part(&v["r1000"], |b| {
             let regs: Vec<u16> = b.chunks(2).filter(|c| c.len() == 2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
             if b.len() % 2 != 0 {
@@ -161,8 +157,6 @@ pub fn decode_meta(v: &Value) -> Result<FeedMeta, String> {
     Ok(FeedMeta {
         on: v["on"].as_bool().unwrap_or(false),
         boot: text(v, "boot")?,
-        bus: v["bus"].as_str().unwrap_or("").to_owned(),
-        auto_off: v["auto_off"].as_i64(),
         packs,
     })
 }
@@ -175,12 +169,11 @@ pub enum Accept {
     NoMeta,
 }
 
-/// What the Monitor knows of the source: the boot of the latest meta, the last accepted `seq`, the add-on's clock.
+/// What the Monitor knows of the source: the boot of the latest meta and the last accepted `seq`.
 #[derive(Debug, Default)]
 pub struct SourceState {
     boot: Option<String>,
     last_seq: u64,
-    clock: Option<(i64, i64)>,
 }
 
 impl SourceState {
@@ -192,7 +185,6 @@ impl SourceState {
         let changed = self.boot.is_some();
         self.boot = Some(m.boot.clone());
         self.last_seq = 0;
-        self.clock = None;
         changed
     }
 
@@ -211,16 +203,6 @@ impl SourceState {
                 Accept::Yes
             }
         }
-    }
-
-    /// The add-on's clock at a message: its `sent_at` and the local monotonic ms when it arrived.
-    pub fn clock(&mut self, sent_at: i64, local_mono_ms: i64) {
-        self.clock = Some((sent_at, local_mono_ms));
-    }
-
-    /// The add-on's "now", advanced by the local monotonic time since the latest message.
-    pub fn source_now(&self, local_mono_ms: i64) -> Option<i64> {
-        self.clock.map(|(sent, at)| sent + (local_mono_ms - at).max(0))
     }
 }
 
@@ -331,7 +313,7 @@ mod tests {
         params.extend(std::iter::repeat_n(0u8, 168));
         let m = decode_meta(&meta("b1", json!([{"addr": 0, "r51": null, "a2": {"t": 3, "hex": hex(&serial30("BAT-1"))},
             "a4": null, "maint": null, "r47": {"t": 4, "hex": hex(&params)}}]))).unwrap();
-        assert!(m.on && m.bus == "uart1" && m.packs.len() == 1);
+        assert!(m.on && m.packs.len() == 1);
         let p = &m.packs[0];
         assert_eq!(p.battery_serial.as_ref().unwrap().value, Ok(SerialValue::Set { value: "BAT-1".into(), truncated: false }));
         assert!(p.device.is_none() && p.bms_serial.is_none());
@@ -385,14 +367,5 @@ mod tests {
         let mut s = state("b1");
         s.meta(&decode_meta(&meta("b2", json!([]))).unwrap());
         assert_eq!(s.accept("b1", 99), Accept::OtherBoot);
-    }
-
-    #[test]
-    fn source_now_advances_with_local_monotonic_time() {
-        let mut s = state("b1");
-        assert_eq!(s.source_now(0), None);
-        s.clock(50_000, 1_000);
-        assert_eq!(s.source_now(1_000), Some(50_000));
-        assert_eq!(s.source_now(4_500), Some(53_500));
     }
 }

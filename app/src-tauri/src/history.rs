@@ -232,6 +232,9 @@ pub struct History {
     preparing: bool,
     last: HashMap<u8, i64>,
     open_events: OpenEvents,
+    /// per pack, the time of its latest status answer in this session: a feed session (`mqtt_source.rs`) ends its open
+    /// events there, on the add-on's clock, not at the Monitor's
+    last_status: HashMap<u8, i64>,
     last_maintain: i64,
     rows: u64,
     error: Option<String>,
@@ -380,6 +383,20 @@ impl History {
         self.held_reason = None;
     }
 
+    /// `disconnected` for a session whose times come from another clock (the add-on's feed): each pack's open events
+    /// end at its latest status answer, never before they began.
+    pub fn disconnected_at_source(&mut self) {
+        let last = std::mem::take(&mut self.last_status);
+        let fallback = last.values().copied().max();
+        if let (Some(db), Some(_)) = (self.db.as_ref(), self.session) {
+            close_events(db, &mut self.open_events, |p| last.get(&p).copied().or(fallback).unwrap_or_else(now_ms));
+        }
+        self.end_session(now_ms());
+        self.link = None;
+        self.held = false;
+        self.held_reason = None;
+    }
+
     pub fn disconnected(&mut self) {
         self.end_session(now_ms());
         self.link = None;
@@ -421,6 +438,7 @@ impl History {
             close_events(db, &mut self.open_events, |_| t);
         }
         self.open_events.clear();
+        self.last_status.clear();
         self.session = None;
         self.last.clear();
     }
@@ -460,6 +478,7 @@ impl History {
             // every status answer extends the session to its time (an open event's end after a crash)
             track_events(db, &mut self.open_events, session, event_t, address, update, None)?;
             if update["status"].is_object() {
+                self.last_status.insert(address, event_t);
                 db.prepare_cached("UPDATE sessions SET last = MAX(COALESCE(last, ?2), ?2) WHERE id = ?1")?.execute(params![session, event_t])?;
             }
             if !due {
@@ -988,7 +1007,7 @@ fn close_events(db: &Connection, open: &mut OpenEvents, at: impl Fn(u8) -> i64) 
         let t = at(pack);
         for (_, id) in m {
             if id > 0 {
-                let _ = db.execute("UPDATE events SET end = ?2 WHERE id = ?1", params![id, t]);
+                let _ = db.execute("UPDATE events SET end = MAX(start, ?2) WHERE id = ?1", params![id, t]);
             } else if id < 0 {
                 // a known event of an import still on at the pack's last status: its end at least that time, like a
                 // new one (an open one stays open, nothing is shortened)
@@ -2018,6 +2037,25 @@ mod tests {
         third.pack(39000, 1, &u3);
         let last: i64 = reader(&path).unwrap().query_row("SELECT MAX(last) FROM sessions", [], |r| r.get(0)).unwrap();
         assert_eq!(last, 39000);
+    }
+
+    #[test]
+    fn a_feed_session_ends_its_events_at_the_source_time() {
+        // the add-on's clock 120 s behind and 120 s ahead of the Monitor's: the end is the last status time either way
+        for skew in [-120_000i64, 120_000] {
+            let (path, mut h) = temp_db(&format!("source-end-{skew}"));
+            h.set_settings(Settings { enabled: true, ..Settings::default() }).unwrap();
+            h.connected("inst-a", "mqtt");
+            let base = now_ms() + skew;
+            let mut u = pack_update(1, 1.0, &[3.3], &["cell_low"]);
+            u["read_at"] = json!(base);
+            h.pack(base + 500, 1, &u);
+            u["read_at"] = json!(base + 10_000);
+            h.pack(base + 10_500, 1, &u);
+            h.disconnected_at_source();
+            let (start, end): (i64, i64) = reader(&path).unwrap().query_row("SELECT start, end FROM events", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!((start, end), (base + 500, base + 10_500), "skew {skew}");
+        }
     }
 
     #[test]

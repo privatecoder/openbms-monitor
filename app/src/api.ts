@@ -476,7 +476,16 @@ const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 
 /** What `connect` did: the endpoint linked to the installation now, the generation, the first pack that answered, and
  *  the firmware profile read on this endpoint. */
-export interface Connected { linked: boolean; answered: number; gen: number; profile: ProfileView }
+/** Where the data come from: the monitor's own RS485 connection or the Seplos BMS add-on's feed over MQTT (read-only). */
+export type Source = "bus" | "mqtt";
+export interface Connected { linked: boolean; answered: number; gen: number; profile: ProfileView; source: Source }
+/** One pack's identity and parameters as the add-on last read them (feed meta). */
+export interface FeedPack { address: number; device: DeviceInfo | null; battery_serial: SerialValue | null; bms_serial: SerialValue | null;
+  parameters: Parameters | null; parameters_at: number | null }
+/** The add-on's feed (event "feed"): "waiting" for the first measurement, "live", "off" (switched off in the add-on),
+ *  "offline" (the add-on is gone). `skew_ms`: its clock minus the Monitor's. */
+export interface FeedState { state: "waiting" | "live" | "off" | "offline"; boot: string | null; boot_changed: boolean; skew_ms: number | null;
+  version_error: string | null; packs: FeedPack[] }
 
 /** A write's result from the backend: the value and whether the target had no serial to check the bank with. The
  *  wrapper hands on the value and reports `unchecked` to the note in the Parameters view (`bank.ts`). */
@@ -534,6 +543,8 @@ const tauriApi = {
   /** pairs (plus, minus) polled one after the other */
   setPollPairs: (pairs: [number, number][]) => invoke<void>("set_poll_pairs", { pairs }),
   /** the broker of the "Home Assistant (MQTT)" connection (app data, readable by the user only) */
+  /** read the add-on's feed from the broker instead of the RS485 bus */
+  connectMqtt: (settings: MqttSettings, installation: string | null) => invoke<Connected>("connect_mqtt", { settings, installation }),
   loadMqttSettings: () => invoke<MqttSettings | null>("load_mqtt_settings"),
   saveMqttSettings: (settings: MqttSettings) => invoke<void>("save_mqtt_settings", { settings }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
@@ -762,7 +773,8 @@ function demoApi(): typeof tauriApi {
   const sub = <T,>(set: Set<(u: T) => void>, f: (u: T) => void) => { set.add(f); return Promise.resolve(() => { set.delete(f); }); };
   return {
     listPorts: async () => ["/dev/cu.usbserial-demo"],
-    connect: async () => ({ linked: false, answered: 0, gen: 0, profile: DEMO_PROFILE }),
+    connect: async () => ({ linked: false, answered: 0, gen: 0, profile: DEMO_PROFILE, source: "bus" as const }),
+    connectMqtt: async () => { throw new Error("not in the preview"); },
     firmwareProfile: async () => DEMO_PROFILE,
     firmwareProfileCheck: async () => DEMO_PROFILE,
     patchProofConfirm: async () => { throw new Error("desktop app only"); },
