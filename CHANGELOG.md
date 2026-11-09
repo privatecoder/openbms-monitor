@@ -4,6 +4,10 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+## 0.3.6-beta — 2026-11-09
+
+- Home Assistant (MQTT): the add-on's retained feed description (every pack's identity and parameters) is larger than the MQTT client's 10 KB default; the connection broke again and again and the app said "add-on offline". Messages up to 1 MB are taken now. A broker error is shown with its own text, a refused subscription (the MQTT user's rights) is named, and after a reconnect the app waits for new measurements before it says the feed is live.
+
 ## 0.3.5-beta — 2026-11-09
 
 - Home Assistant (MQTT): a third connection type reads the measurements of the Seplos BMS add-on (its "OpenBMS Monitor feed", switched on in the add-on) from the MQTT broker instead of polling the RS485 bus a second time. Overview, pack views, pair check, balancing line, recording, health report and notifications work as before; the recording keeps the add-on's read times, and the pair window runs on the add-on's clock. Read-only: everything that talks to a BMS is refused for this source.
