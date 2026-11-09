@@ -166,7 +166,7 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
       case "rejected": return { key: "maint.err.rejected", params: { rtn: m.rtn.toString(16).padStart(2, "0") } };
       case "connection": case "store": return { key: `maint.err.${m.kind}`, params: { text: m.message } };
       case "other-bank": return { key: "maint.err.other-bank", params: { serial: m.serial } };
-      case "bootloader-pending": return { key: "maint.err.bootloader-pending", params: { pack: m.pack, port: keyLabel(m.endpoint ?? "") } };
+      case "bootloader-pending": return { key: "maint.err.bootloader-pending", params: { pack: pendingPackLabel(m.pack ?? 0), port: keyLabel(m.endpoint ?? "") } };
       default: return { key: `maint.err.${m.kind}` };
     }
   }
@@ -274,7 +274,7 @@ export function flashBlocked(f: { image: FirmwareImage | null; quiet: boolean; b
   if (f.busy) return { key: "maint.packs.why.busy" };
   if (!f.quiet) return { key: "maint.packs.why.quiet" };
   const p = pendingBlock(f.pending, f.port, f.address);
-  if (p) return { key: "maint.err.bootloader-pending", params: { pack: p.pack, port: keyLabel(p.endpoint) } };
+  if (p) return { key: "maint.err.bootloader-pending", params: { pack: pendingPackLabel(p.pack), port: keyLabel(p.endpoint) } };
   if (releaseFirst(f.master, f.address, f.image.kind)) return { key: "maint.packs.why.releaseFirst" };
   return null;
 }
@@ -298,3 +298,8 @@ export function packVersionText(firmware: string, probe: PackProbeView | undefin
   const key = probe?.state === "negative" ? (probe.version ? "maint.packs.versionNoPatch" : "maint.packs.versionUnknownFormat") : "maint.packs.versionUnchecked";
   return t(key, { version: firmware });
 }
+
+/** The pack number of a recovery's pending record (backend `maint::RECOVERY_PACK`): no DIP address, the bootloader has
+ *  none. Shown as "?". */
+export const RECOVERY_PACK = 255;
+export const pendingPackLabel = (pack: number): number | string => (pack === RECOVERY_PACK ? "?" : pack);

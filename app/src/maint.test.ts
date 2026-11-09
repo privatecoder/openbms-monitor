@@ -234,3 +234,11 @@ describe("the pack list's version", () => {
     expect(packVersionText("16.06", undefined, de)).toBe("Firmware 16.06 · Patch nicht geprüft");
   });
 });
+
+describe("a recovery's pending record", () => {
+  it("shows no address", async () => {
+    const { pendingPackLabel, RECOVERY_PACK } = await import("./maint");
+    expect(pendingPackLabel(RECOVERY_PACK)).toBe("?");
+    expect(pendingPackLabel(3)).toBe(3);
+  });
+});

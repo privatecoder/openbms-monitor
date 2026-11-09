@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, showDone, storedPort, type Tone } from "../maint";
+import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -153,7 +153,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   const packs: [number, DeviceInfo | null][] = [
     ...(scan?.packs ?? []).map(([a, d]) => [a, d] as [number, DeviceInfo | null]),
     // a pending pack does not answer 0x51: it is listed without a version
-    ...pendingHere.filter((p) => !scan?.packs.some(([a]) => a === p.pack)).map((p) => [p.pack, null] as [number, DeviceInfo | null]),
+    ...pendingHere.filter((p) => p.pack !== RECOVERY_PACK && !scan?.packs.some(([a]) => a === p.pack)).map((p) => [p.pack, null] as [number, DeviceInfo | null]),
   ].sort((x, y) => x[0] - y[0]);
 
   // flashing belongs to an installation: without one the panel only says so

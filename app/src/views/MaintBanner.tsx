@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TriangleAlert, Wrench } from "lucide-react";
 import { api, type Alerts } from "../api";
-import { errorKey } from "../maint";
+import { errorKey, pendingPackLabel } from "../maint";
 import { Button } from "../components/ui/button";
 
 /** „14:02“ today, else with the date: a record can be days old. */
@@ -48,17 +48,17 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
         <div key={p.id} role="alert" className="flex items-start gap-3 rounded-md border border-alarm p-3 text-sm text-alarm">
           <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="flex-1 space-y-1">
-            <p className="font-medium">{t("maint.banner.pending", { pack: p.pack, endpoint: endpointText(p.endpoint), since: when(p.since) })}</p>
-            <p className="text-muted">{t("maint.banner.pendingHint", { pack: p.pack })}</p>
+            <p className="font-medium">{t("maint.banner.pending", { pack: pendingPackLabel(p.pack), endpoint: endpointText(p.endpoint), since: when(p.since) })}</p>
+            <p className="text-muted">{t("maint.banner.pendingHint", { pack: pendingPackLabel(p.pack) })}</p>
             {confirming === p.id && (
               <div className="flex flex-wrap gap-2">
-                <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => act(`p${p.id}`, () => api.maintClearPending(p.id))}>{t("maint.banner.pendingYes", { pack: p.pack })}</Button>
+                <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => act(`p${p.id}`, () => api.maintClearPending(p.id))}>{t("maint.banner.pendingYes", { pack: pendingPackLabel(p.pack) })}</Button>
                 <Button variant="secondary" size="sm" onClick={() => setConfirming(null)}>{t("maint.setup.cancel")}</Button>
               </div>
             )}
             {err(`p${p.id}`)}
           </div>
-          {confirming !== p.id && <Button variant="secondary" size="sm" className="shrink-0" onClick={() => setConfirming(p.id)}>{t("maint.banner.pendingConfirm", { pack: p.pack })}</Button>}
+          {confirming !== p.id && <Button variant="secondary" size="sm" className="shrink-0" onClick={() => setConfirming(p.id)}>{t("maint.banner.pendingConfirm", { pack: pendingPackLabel(p.pack) })}</Button>}
         </div>
       ))}
       {alerts.markers.map((m) => (

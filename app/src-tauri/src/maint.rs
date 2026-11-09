@@ -532,6 +532,28 @@ pub fn pending_same_board(pending: &[Pending], key: &str, address: u8, read: Opt
     Ok(())
 }
 
+/// The pack number of a recovery's pending record (`firmware_recovery_start`): no DIP address, the bootloader has none.
+/// Like any other record it refuses every normal flash (`pending_refusal`) until it is settled.
+pub const RECOVERY_PACK: u8 = 255;
+
+/// After a recovery whose application answered at `address` with String 2 `read`: a pending record there is cleared
+/// only when it names a real String 2 and the board read is exactly that one. Without that proof it stays for the user.
+pub fn recovery_clears(p: &Pending, key: &str, address: u8, read: Option<&str>) -> bool {
+    p.endpoint == key && p.pack == address && p.bms_serial.is_some() && p.bms_serial.as_deref() == read
+}
+
+/// The recovery's own pending record once it returned: Some(how) clears it, None keeps it (the transfer may have
+/// stopped after W F E: the board may hang in its bootloader).
+pub fn recovery_record_after(ok: bool, last: Option<Progress>) -> Option<&'static str> {
+    if ok {
+        Some("recovered")
+    } else if crate::firmware::written(last) {
+        None
+    } else {
+        Some("preflight")
+    }
+}
+
 /// The pending rule on all stored records, for a flash at endpoint key `key` (`firmware_start`).
 pub fn pending_check(store: &Arc<Mutex<Option<Store>>>, key: &str, address: u8) -> Result<(), MaintError> {
     with_store_arc(store, |s| s.all_pending()).and_then(|p| pending_refusal(&p, key, address))
@@ -996,6 +1018,30 @@ mod tests {
 
     fn pending(pack: u8) -> Pending {
         Pending { id: 1, endpoint: "serial:/dev/p".into(), pack, release: "16.06.13".into(), since: 0, bms_serial: None }
+    }
+
+    #[test]
+    fn a_recovery_clears_only_a_record_of_the_board_proven_by_its_string_2() {
+        let key = "serial:/dev/p";
+        let with = Pending { bms_serial: Some("BMS-A".into()), ..pending(3) };
+        assert!(recovery_clears(&with, key, 3, Some("BMS-A")));
+        assert!(!recovery_clears(&with, key, 3, Some("BMS-B")), "another board");
+        assert!(!recovery_clears(&with, key, 3, None), "String 2 unreadable");
+        assert!(!recovery_clears(&pending(3), key, 3, Some("BMS-A")), "a record without String 2 stays for the user");
+        assert!(!recovery_clears(&with, key, 4, Some("BMS-A")));
+        assert!(!recovery_clears(&with, "tcp:gw:4196", 3, Some("BMS-A")));
+    }
+
+    #[test]
+    fn a_recovery_keeps_its_own_record_once_w_f_e_went_out() {
+        assert_eq!(recovery_record_after(true, Some(Progress::AppRestart)), Some("recovered"));
+        assert_eq!(recovery_record_after(false, Some(Progress::Bootloader)), Some("preflight"));
+        assert_eq!(recovery_record_after(false, None), Some("preflight"));
+        assert_eq!(recovery_record_after(false, Some(Progress::Erase)), None);
+        assert_eq!(recovery_record_after(false, Some(Progress::Block { index: 3, total: 9 })), None);
+        // its record refuses every normal flash, like any other
+        let rec = Pending { pack: RECOVERY_PACK, ..pending(0) };
+        assert!(pending_refusal(&[rec], "serial:/dev/p", 0).is_err());
     }
 
     fn store_at(name: &str) -> Store {

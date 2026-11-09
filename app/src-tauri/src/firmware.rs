@@ -487,6 +487,9 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
     let mut link = open_port(&key, l)?;
     let (mut log, log_path, log_id) = new_log(&app, &state, None, 0, "recovery", Some(&info.release))?;
     writeln!(log, "CONFIRMED recovery code_sha256={} release={} custom={} source=app one_board_confirmed=true", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
+    // written before anything is sent, so a crash or a break after W F E leaves it: every normal flash is refused until
+    // it is settled (a recovery itself is not)
+    let record = maint::with_store(&state, |s| s.add_pending(&key, maint::RECOVERY_PACK, &info.release, None, crate::history::now_ms())).map_err(to_text)?;
     maint::event(&state, None, &format!("recovery start release={} custom={} log={}", info.release, info.custom, log_path.display()));
     let store = state.maint.clone();
     std::thread::spawn(move || {
@@ -497,23 +500,29 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
                 let _ = app.emit("firmware-progress", progress_event(p));
             })
         }));
-        // the application found: a pending record of exactly this board at this address is settled
+        // the application found: a pending record of exactly this board (by its String 2) at this address is settled
         if let Ok(Ok(r)) = &result {
             if let Some((address, _)) = &r.found {
                 let serial = maint::string2(&mut link, *address);
                 if let Ok(all) = maint::with_store_arc(&store, |s| s.all_pending()) {
-                    for p in all.iter().filter(|p| p.endpoint == key && p.pack == *address && (p.bms_serial.is_none() || p.bms_serial == serial)) {
+                    for p in all.iter().filter(|p| maint::recovery_clears(p, &key, *address, serial.as_deref())) {
                         let _ = maint::with_store_arc(&store, |s| s.clear_pending(p.id, "recovered", crate::history::now_ms()));
                     }
                 }
             }
         }
+        // the recovery's own record
+        let ok = matches!(result, Ok(Ok(_)));
+        let kept = match maint::recovery_record_after(ok, last) {
+            Some(how) => maint::with_store_arc(&store, |s| s.clear_pending(record, how, crate::history::now_ms())).is_err(),
+            None => true,
+        };
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: false, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: false, log_error: None, comparison: None, recovered_at: None, recovery: true },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: false, log_error: None, comparison: None, recovered_at: None, recovery: true },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: kept, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true },
         };
         let state = app.state::<AppState>();
         maint::event(&state, None, &format!("recovery done ok={} found={:?} stage={:?} error={:?}", done.ok, done.recovered_at, done.stage, done.error));

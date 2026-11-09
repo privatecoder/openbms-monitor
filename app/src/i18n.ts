@@ -427,6 +427,7 @@ const resources = {
           start: "Wiederherstellen", needImage: "Zuerst die .ehex-Datei wählen.",
           runTitle: "Wiederherstellung",
           okFound: "Übertragung bestätigt, Anwendung antwortet an Adresse {{address}} (Firmware {{version}}).",
+          failBefore: "In diesem Versuch wurde nichts gelöscht oder geschrieben. Ob der Bootloader weiter wartet, ist offen: erneut „Bootloader prüfen“.",
           okUnchecked: "Übertragung bestätigt; die Anwendung hat sich an keiner Adresse gemeldet (nicht geprüft). Ein Master, der seine Slaves abfragt, antwortet hier nicht: DIP 5–8 kurz auf OFF und erneut suchen.",
         },
         bench: {
@@ -1665,6 +1666,7 @@ const resources = {
           start: "Recover", needImage: "Choose the .ehex file first.",
           runTitle: "Recovery",
           okFound: "Transfer confirmed, the application answers at address {{address}} (firmware {{version}}).",
+          failBefore: "Nothing was erased or written in this attempt. Whether the bootloader still waits is open: “Check bootloader” again.",
           okUnchecked: "Transfer confirmed; the application did not answer at any address (unchecked). A master polling its slaves does not answer here: set DIP 5–8 to OFF for a moment and search again.",
         },
         bench: {

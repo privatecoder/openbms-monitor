@@ -310,7 +310,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
                   <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.failTitle")}</p>
                   <p className="text-sm">{done.error}</p>
                   {done.stage && <p className="text-sm text-muted">{t("fw.failStage", { stage: t(`fw.stage.${done.stage}`, { n: (progress?.block ?? 0) + 1, total: progress?.total ?? 0 }) })}</p>}
-                  <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : t("fw.failBefore")}</p>
+                  <p className={cn("text-sm", done.written ? "text-alarm" : "text-muted")}>{done.stage === "post_check" ? t("fw.failPostCheck") : done.written ? t("fw.failAfter") : done.recovery ? t("fw.rec.failBefore") : t("fw.failBefore")}</p>
                 </>
               )}
               {/* the image this run flashed, not the one chosen since */}
