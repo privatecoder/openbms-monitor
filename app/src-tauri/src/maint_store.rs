@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings, bms_records];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings, bms_records, mqtt_settings];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -194,6 +194,12 @@ fn bms_records(db: &Connection) -> rusqlite::Result<()> {
            record BLOB NOT NULL, read_at INTEGER NOT NULL);
          CREATE INDEX bms_records_place ON bms_records(installation, address, id);",
     )
+}
+
+/// 14: the installation's Home Assistant (MQTT) broker (JSON: host, port, user, tls, base; never a password, which
+/// stays in the app data's `mqtt.json`, `mqtt_source.rs`).
+fn mqtt_settings(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch("CREATE TABLE mqtt(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -642,6 +648,7 @@ impl Store {
                 "DELETE FROM notifications WHERE installation = ?1",
                 "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM wiring WHERE installation = ?1",
+                "DELETE FROM mqtt WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
                 "DELETE FROM bms_records WHERE installation = ?1",
                 "DELETE FROM patch_proof WHERE installation = ?1",
@@ -954,6 +961,9 @@ pub struct Settings {
     /// absent in exports of earlier versions
     #[serde(default)]
     pub wiring: Option<String>,
+    /// the Home Assistant (MQTT) broker, without password; absent in exports of earlier versions
+    #[serde(default)]
+    pub mqtt: Option<String>,
 }
 
 /// A stored parameter block and which board it belongs to: "current" (the newest board at the place), "previous"
@@ -1444,7 +1454,7 @@ impl Store {
     pub fn settings(&self, inst: &str) -> Result<Settings, String> {
         let (groups, pairs) = self.layout(inst)?;
         Ok(Settings { cell_types: self.cell_types(inst)?.into_iter().collect(), groups, pairs, diagnosis: self.diagnosis(inst)?, notifications: self.notifications(inst)?,
-            devices: self.devices(inst)?, wiring: self.wiring(inst)?,
+            devices: self.devices(inst)?, wiring: self.wiring(inst)?, mqtt: self.mqtt(inst)?,
         })
     }
 
@@ -1495,6 +1505,11 @@ impl Store {
             self.set_wiring(inst, add.wiring.as_deref())?;
         }
         kept.wiring = k;
+        let (take, k) = pick(&have.mqtt, &add.mqtt);
+        if take {
+            self.set_mqtt(inst, add.mqtt.as_deref())?;
+        }
+        kept.mqtt = k;
         // devices by content, as `devices_conflict` sees them: a stored but empty value takes the source's
         match (devices_content(&have.devices), devices_content(&add.devices)) {
             (None, Some(_)) => self.set_devices(inst, add.devices.as_deref())?,
@@ -1637,6 +1652,7 @@ impl Store {
                 "DELETE FROM notifications WHERE installation = ?1",
                 "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM wiring WHERE installation = ?1",
+                "DELETE FROM mqtt WHERE installation = ?1",
                 // a version proof and a halted master's slave count belong to the source's places and master: not taken
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
@@ -1818,6 +1834,19 @@ impl Store {
         .map_err(e)
     }
 
+    pub fn set_mqtt(&self, inst: &str, data: Option<&str>) -> Result<(), String> {
+        match data {
+            Some(d) => self.db.execute("INSERT OR REPLACE INTO mqtt(installation, data) VALUES (?1, ?2)", params![inst, d]),
+            None => self.db.execute("DELETE FROM mqtt WHERE installation = ?1", [inst]),
+        }
+        .map(|_| ())
+        .map_err(e)
+    }
+
+    pub fn mqtt(&self, inst: &str) -> Result<Option<String>, String> {
+        self.db.query_row("SELECT data FROM mqtt WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
+    }
+
     pub fn wiring(&self, inst: &str) -> Result<Option<String>, String> {
         self.db.query_row("SELECT data FROM wiring WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
     }
@@ -1917,6 +1946,25 @@ mod tests {
         a2.endpoints.clear();
         s.save_installation(&a2).unwrap();
         assert_eq!(ids("serial:/dev/p"), vec![b.id.clone()]);
+    }
+
+    #[test]
+    fn the_mqtt_broker_belongs_to_the_installation_and_merges_like_the_other_settings() {
+        let s = Store::open(&temp("mqtt")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let b = s.create_installation("B", None, vec![]).unwrap();
+        let broker = r#"{"host":"broker.example","port":1883,"user":"u","tls":false,"base":"seplos"}"#;
+        s.set_mqtt(&a.id, Some(broker)).unwrap();
+        assert_eq!(s.settings(&a.id).unwrap().mqtt.as_deref(), Some(broker));
+        assert_eq!(s.mqtt(&b.id).unwrap(), None);
+        // a target without a broker takes the source's; one with its own keeps it and names the source's
+        let kept = s.add_settings(&b.id, &s.settings(&a.id).unwrap()).unwrap();
+        assert_eq!((s.mqtt(&b.id).unwrap().as_deref(), kept.mqtt), (Some(broker), None));
+        let other = r#"{"host":"other.example","port":1883,"user":"","tls":true,"base":"seplos"}"#;
+        let kept = s.add_settings(&b.id, &Settings { mqtt: Some(other.into()), ..Settings::default() }).unwrap();
+        assert_eq!((s.mqtt(&b.id).unwrap().as_deref(), kept.mqtt.as_deref()), (Some(broker), Some(other)));
+        s.delete_installation(&a.id).unwrap();
+        assert_eq!(s.mqtt(&a.id).unwrap(), None);
     }
 
     #[test]
@@ -2272,6 +2320,7 @@ mod tests {
                  DROP TABLE devices;
                  DROP TABLE wiring;
                  DROP TABLE bms_records;
+                 DROP TABLE mqtt;
                  ALTER TABLE bootloader_pending DROP COLUMN bms_serial;",
             )
             .unwrap();

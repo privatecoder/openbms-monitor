@@ -34,13 +34,114 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("mqtt.json"))
 }
 
-pub(crate) fn load_from(path: &Path) -> Option<MqttSettings> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+/// The broker an installation keeps (`maint_store` table `mqtt`): everything but the password.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokerConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub tls: bool,
+    pub base: String,
 }
 
-/// Written readable by the user only: the file holds the broker password.
-pub(crate) fn save_to(path: &Path, s: &MqttSettings) -> Result<(), String> {
-    let text = serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?;
+impl BrokerConfig {
+    pub fn of(s: &MqttSettings) -> Self {
+        Self { host: s.host.clone(), port: s.port, user: s.user.clone(), tls: s.tls, base: s.base.clone() }
+    }
+    fn with_password(self, password: String) -> MqttSettings {
+        MqttSettings { host: self.host, port: self.port, user: self.user, password, tls: self.tls, base: self.base }
+    }
+}
+
+/// An installation's password, bound to the broker it was given for: after a change of host, port, TLS or user it is
+/// never sent (a password of broker A must not go to broker B). The topic prefix is no part of the binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Bound {
+    host: String,
+    port: u16,
+    tls: bool,
+    user: String,
+    password: String,
+}
+
+impl Bound {
+    fn fits(&self, c: &BrokerConfig) -> bool {
+        (self.host.as_str(), self.port, self.tls, self.user.as_str()) == (c.host.as_str(), c.port, c.tls, c.user.as_str())
+    }
+}
+
+/// `mqtt.json` in the app data: the "view only" connection (no installation) and each installation's password. Never in
+/// an installation export. Earlier versions kept one flat `MqttSettings`: it becomes the "view only" one.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Passwords {
+    version: u32,
+    view_only: Option<MqttSettings>,
+    #[serde(default)]
+    installations: std::collections::BTreeMap<String, Bound>,
+}
+
+/// One read-modify-write of `mqtt.json` at a time.
+static FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn read_passwords(path: &Path) -> Result<Passwords, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Passwords { version: 2, ..Default::default() }),
+        Err(e) => return Err(e.to_string()),
+    };
+    if let Ok(p) = serde_json::from_slice::<Passwords>(&bytes) {
+        if p.version >= 2 {
+            return Ok(p);
+        }
+    }
+    match serde_json::from_slice::<MqttSettings>(&bytes) {
+        Ok(old) => Ok(Passwords { version: 2, view_only: Some(old), installations: Default::default() }),
+        // a damaged file is never overwritten silently
+        Err(e) => Err(format!("mqtt.json is not readable: {e}")),
+    }
+}
+
+/// The settings to show: an installation's broker (from its store row) with its password if bound to that broker,
+/// else the "view only" one.
+pub(crate) fn load_from(path: &Path, installation: Option<(&str, Option<BrokerConfig>)>) -> Option<MqttSettings> {
+    let file = read_passwords(path).ok();
+    match installation {
+        None => file?.view_only,
+        Some((id, config)) => {
+            let config = config?;
+            let password = file.and_then(|f| f.installations.get(id).filter(|b| b.fits(&config)).map(|b| b.password.clone())).unwrap_or_default();
+            Some(config.with_password(password))
+        }
+    }
+}
+
+/// Keep `s` as the "view only" connection, or as `installation`'s password bound to its broker.
+pub(crate) fn save_to(path: &Path, installation: Option<&str>, s: &MqttSettings) -> Result<(), String> {
+    let _lock = FILE.lock().map_err(|e| e.to_string())?;
+    let mut file = read_passwords(path)?;
+    file.version = 2;
+    match installation {
+        None => file.view_only = Some(s.clone()),
+        Some(id) => {
+            file.installations.insert(id.to_owned(), Bound { host: s.host.clone(), port: s.port, tls: s.tls, user: s.user.clone(), password: s.password.clone() });
+        }
+    }
+    write_file(path, &file)
+}
+
+/// An installation is gone: its password too.
+pub(crate) fn forget_in(path: &Path, installation: &str) -> Result<(), String> {
+    let _lock = FILE.lock().map_err(|e| e.to_string())?;
+    let mut file = read_passwords(path)?;
+    if file.installations.remove(installation).is_some() {
+        write_file(path, &file)?;
+    }
+    Ok(())
+}
+
+/// Written readable by the user only: the file holds broker passwords.
+fn write_file(path: &Path, file: &Passwords) -> Result<(), String> {
+    let text = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
     #[cfg(unix)]
     {
@@ -55,14 +156,42 @@ pub(crate) fn save_to(path: &Path, s: &MqttSettings) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+/// The broker of `installation` (its stored row, its password if bound to that broker), or the "view only" one.
 #[tauri::command]
-pub fn load_mqtt_settings(app: AppHandle) -> Option<MqttSettings> {
-    load_from(&settings_path(&app).ok()?)
+pub fn load_mqtt_settings(app: AppHandle, state: State<'_, AppState>, installation: Option<String>) -> Option<MqttSettings> {
+    let path = settings_path(&app).ok()?;
+    match installation {
+        None => load_from(&path, None),
+        Some(id) => {
+            let config = maint::with_store(&state, |s| s.mqtt(&id)).ok().flatten().and_then(|t| serde_json::from_str::<BrokerConfig>(&t).ok());
+            load_from(&path, Some((&id, config)))
+        }
+    }
 }
 
+/// Keep the broker: for `installation` in its store row (no password) and its password locally; else as "view only".
 #[tauri::command]
-pub fn save_mqtt_settings(app: AppHandle, settings: MqttSettings) -> Result<(), String> {
-    save_to(&settings_path(&app)?, &settings)
+pub fn save_mqtt_settings(app: AppHandle, state: State<'_, AppState>, installation: Option<String>, settings: MqttSettings) -> Result<(), String> {
+    if settings.host.trim().is_empty() || settings.port == 0 || settings.base.is_empty() || settings.base.contains(['+', '#']) {
+        return Err("invalid broker settings".into());
+    }
+    let path = settings_path(&app)?;
+    if let Some(id) = &installation {
+        let config = serde_json::to_string(&BrokerConfig::of(&settings)).map_err(|e| e.to_string())?;
+        maint::with_store(&state, |s| {
+            s.installation(id)?;
+            s.set_mqtt(id, Some(&config))
+        })
+        .map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
+    }
+    save_to(&path, installation.as_deref(), &settings)
+}
+
+/// An installation was deleted: drop its password (a failure only leaves an unused entry).
+pub(crate) fn forget(app: &AppHandle, installation: &str) {
+    if let Ok(path) = settings_path(app) {
+        let _ = forget_in(&path, installation);
+    }
 }
 
 // ---- the source's state and what a message makes of it (pure) ------------------------------------------------------
@@ -576,18 +705,35 @@ mod tests {
     }
 
     #[test]
-    fn settings_round_trip_and_mode_0600() {
+    fn passwords_per_installation_bound_to_their_broker_and_mode_0600() {
         let dir = std::env::temp_dir().join(format!("openbms-mqtt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mqtt.json");
-        assert_eq!(load_from(&path), None);
-        save_to(&path, &sample()).unwrap();
-        assert_eq!(load_from(&path), Some(sample()));
+        assert_eq!(load_from(&path, None), None);
+        // an earlier flat file becomes the "view only" connection, never an installation's
+        std::fs::write(&path, serde_json::to_vec(&sample()).unwrap()).unwrap();
+        assert_eq!(load_from(&path, None), Some(sample()));
+        assert_eq!(load_from(&path, Some(("a", Some(BrokerConfig::of(&sample()))))).unwrap().password, "");
+        save_to(&path, Some("a"), &sample()).unwrap();
+        assert_eq!(load_from(&path, Some(("a", Some(BrokerConfig::of(&sample()))))), Some(sample()));
+        assert_eq!(load_from(&path, None), Some(sample()), "the view-only one stays");
+        // another broker (or user) under the same installation never gets the password
+        let moved = BrokerConfig { host: "other.example".into(), ..BrokerConfig::of(&sample()) };
+        assert_eq!(load_from(&path, Some(("a", Some(moved)))).unwrap().password, "");
+        // a new topic prefix keeps it
+        let base = BrokerConfig { base: "bank2".into(), ..BrokerConfig::of(&sample()) };
+        assert_eq!(load_from(&path, Some(("a", Some(base)))).unwrap().password, "p");
+        assert_eq!(load_from(&path, Some(("a", None))), None, "no broker stored for it");
+        forget_in(&path, "a").unwrap();
+        assert_eq!(load_from(&path, Some(("a", Some(BrokerConfig::of(&sample()))))).unwrap().password, "");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+        // a damaged file is refused, not overwritten
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!(save_to(&path, None, &sample()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

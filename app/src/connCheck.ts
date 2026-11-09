@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { Bus, Installation, OtherBus } from "./api";
+import type { Bus, Installation, MqttSettings, OtherBus } from "./api";
 import { storedPort } from "./maint";
 import { DIP_MAX } from "./access";
 import { decode, kindOf } from "./errors";
@@ -178,3 +178,34 @@ export async function endBeforeSwitch(o: { running: () => Promise<void> | null; 
 /** A connect that returns for another installation than the one chosen now (the choice changed meanwhile) must not
  *  stay open. */
 export const connectedForOther = (connInst: string | null, chosen: string | null) => connInst !== chosen;
+
+/** The way last used with an installation: "tcp", "serial" (RS485) or "mqtt" (Home Assistant), kept in this browser. */
+export type Way = "tcp" | "serial" | "mqtt";
+const wayKey = (installation: string) => `conn.way.${installation}`;
+
+export function saveLastWay(installation: string, way: Way) {
+  try { localStorage.setItem(wayKey(installation), way); } catch { /* storage full or off */ }
+}
+
+export function lastWay(installation: string): Way | null {
+  try {
+    const v = localStorage.getItem(wayKey(installation));
+    return v === "tcp" || v === "serial" || v === "mqtt" ? v : null;
+  } catch { return null; }
+}
+
+/** The source tab to preselect for an installation: the way last used with it; without one Home Assistant only when a
+ *  broker is all it has (`hasMqtt`, no stored RS485 port `hasPort`). Never connects by itself. */
+export function initialWay(way: Way | null, hasMqtt: boolean, hasPort: boolean): "bus" | "mqtt" {
+  if (way) return way === "mqtt" ? "mqtt" : "bus";
+  return hasMqtt && !hasPort ? "mqtt" : "bus";
+}
+
+/** After a successful MQTT connect with an installation: a first broker is kept for it, an identical one needs
+ *  nothing, another one is offered (the connection was used once, the stored one stays until „Speichern“). */
+export function mqttSaveAction(stored: MqttSettings | null, used: MqttSettings): "save" | "none" | "ask" {
+  if (!stored) return "save";
+  const same = stored.host === used.host && stored.port === used.port && stored.user === used.user && stored.password === used.password
+    && stored.tls === used.tls && stored.base === used.base;
+  return same ? "none" : "ask";
+}

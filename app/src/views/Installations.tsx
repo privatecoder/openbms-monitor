@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, FolderOpen, Merge, Pencil, Plus, Trash2 } from "lucide-react";
-import { api, isDemo, type Installation, type InstallationOverview, type PlaceView } from "../api";
+import { api, isDemo, type Installation, type InstallationOverview, type MqttSettings, type PlaceView } from "../api";
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon } from "../help";
@@ -259,6 +259,61 @@ function Ports({ inst, maint }: { inst: Installation; maint: Maint }) {
           {more.length > 0 && <><dt className="text-muted">{t("inst.ports.more")}</dt><dd>{more.map(keyLabel).join(", ")}</dd></>}
         </dl>
       )}
+      <MqttPort inst={inst} />
+    </div>
+  );
+}
+
+/** The installation's Home Assistant (MQTT) broker: shown, changed or removed here; the sidebar fills its fields from
+ *  it. The password stays in this computer's app data and never goes into an export. */
+function MqttPort({ inst }: { inst: Installation }) {
+  const { t } = useTranslation();
+  const [stored, setStored] = useState<MqttSettings | null>(null);
+  const [draft, setDraft] = useState<MqttSettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => { void api.loadMqttSettings(inst.id).then(setStored, () => setStored(null)); };
+  useEffect(load, [inst.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const input = "w-full rounded-md border border-line bg-surface px-2 py-1 text-sm";
+  const save = async () => {
+    if (!draft) return;
+    setError(null);
+    try { await api.saveMqttSettings(inst.id, draft); setDraft(null); load(); reloadSettings(); }
+    catch (e) { setError(String(e)); }
+  };
+  const remove = async () => {
+    setError(null);
+    try { await api.setInstallationSetting(inst.id, "mqtt", null); setDraft(null); load(); reloadSettings(); }
+    catch (e) { setError(String(e)); }
+  };
+  return (
+    <div className="space-y-1 pt-1">
+      <div className="flex items-center gap-2">
+        <span className="text-muted">{t("inst.mqtt.title")}</span>
+        {!draft && <Button size="sm" variant="ghost" onClick={() => setDraft(stored ?? { host: "", port: 1883, user: "", password: "", tls: false, base: "seplos" })}><Pencil className="h-4 w-4" />{t("inst.ports.edit")}</Button>}
+      </div>
+      {!draft && <p>{stored ? `${stored.host}:${stored.port} · ${stored.base}${stored.tls ? " · TLS" : ""}${stored.user ? ` · ${stored.user}` : ""}` : t("inst.ports.none")}</p>}
+      {draft && (
+        <div className="max-w-md space-y-1.5">
+          <div className="flex gap-1">
+            <input className={input} value={draft.host} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} onChange={(e) => setDraft({ ...draft, host: e.target.value.trim() })} />
+            <input className={cn(input, "w-20")} value={draft.port} inputMode="numeric" aria-label={t("conn.mqtt.port")}
+              onChange={(e) => setDraft({ ...draft, port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) })} />
+          </div>
+          <input className={input} value={draft.user} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" onChange={(e) => setDraft({ ...draft, user: e.target.value })} />
+          <input className={input} type="password" value={draft.password} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+          <div className="flex items-center gap-2">
+            <input className={input} value={draft.base} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} onChange={(e) => setDraft({ ...draft, base: e.target.value.trim() })} />
+            <label className="flex shrink-0 items-center gap-1 text-muted"><input type="checkbox" checked={draft.tls} onChange={(e) => setDraft({ ...draft, tls: e.target.checked })} />TLS</label>
+          </div>
+          <p className="text-xs text-muted">{t("inst.mqtt.passwordLocal")}</p>
+          <div className="flex gap-1">
+            <Button size="sm" variant="primary" disabled={!draft.host || !draft.port || !draft.base} onClick={() => void save()}>{t("inst.mqtt.save")}</Button>
+            {stored && <Button size="sm" variant="ghost" onClick={() => void remove()}>{t("inst.mqtt.remove")}</Button>}
+            <Button size="sm" variant="ghost" onClick={() => { setDraft(null); setError(null); }}>{t("inst.mqtt.cancel")}</Button>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-alarm">{error}</p>}
     </div>
   );
 }

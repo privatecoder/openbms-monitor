@@ -325,8 +325,10 @@ export type ControlEndpoint = { kind: "serial"; path: string } | { kind: "tcp"; 
  *  text it was moved in from, „übernommen“) and `last_connect` are set by the backend. */
 export interface Installation { id: string; name: string; endpoints: string[]; control: ControlEndpoint | null; master_serial?: string | null; archived?: boolean; legacy?: string | null; last_connect?: number | null }
 /** Settings an installation owns (JSON each, null: none). */
-export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown; devices: unknown; wiring: unknown }
-export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices" | "wiring";
+export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown; devices: unknown; wiring: unknown;
+  /** the Home Assistant (MQTT) broker, without password */
+  mqtt?: { host: string; port: number; user: string; tls: boolean; base: string } | null }
+export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices" | "wiring" | "mqtt";
 /** One slice of the balancer timeline (ms per state; time without a row is in none). External balancer computed:
  *  active / inactive / unknown / unassigned. BMS as reported: bal (a minute row by its share) / idle / no_status;
  *  cells: most cells at once in a single answer; minutes: minute rows that balanced (only their share is known). */
@@ -552,8 +554,10 @@ const tauriApi = {
   /** read the add-on's feed from the broker instead of the RS485 bus */
   connectMqtt: (settings: MqttSettings, installation: string | null) => invoke<Connected>("connect_mqtt", { settings, installation })
     .then((r) => { linkGen = r.gen; setProfile(r.profile); setSource("mqtt"); return r; }),
-  loadMqttSettings: () => invoke<MqttSettings | null>("load_mqtt_settings"),
-  saveMqttSettings: (settings: MqttSettings) => invoke<void>("save_mqtt_settings", { settings }),
+  /** `installation`: its broker (password only if bound to that broker); null: the "view only" one */
+  loadMqttSettings: (installation: string | null) => invoke<MqttSettings | null>("load_mqtt_settings", { installation }),
+  /** for `installation`: the broker in its store row, the password locally; null: as "view only" */
+  saveMqttSettings: (installation: string | null, settings: MqttSettings) => invoke<void>("save_mqtt_settings", { installation, settings }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
   systemOnce: () => invoke<void>("system_once"),
   stopPolling: () => invoke<void>("stop_polling"),

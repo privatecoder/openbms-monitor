@@ -225,3 +225,24 @@ describe("a gap after the packs answered", () => {
     expect(pruneGap(g, [0])).toBe(g);
   });
 });
+
+describe("MQTT per installation", () => {
+  const ms = (over = {}) => ({ host: "broker.example", port: 1883, user: "u", password: "p", tls: false, base: "seplos", ...over });
+
+  it("saves a first broker, keeps an identical one, asks before replacing another", async () => {
+    const { mqttSaveAction } = await import("./connCheck");
+    expect(mqttSaveAction(null, ms())).toBe("save");
+    expect(mqttSaveAction(ms(), ms())).toBe("none");
+    expect(mqttSaveAction(ms(), ms({ host: "other.example" }))).toBe("ask");
+    expect(mqttSaveAction(ms(), ms({ password: "new" }))).toBe("ask");
+  });
+
+  it("preselects the way last used with the installation, else MQTT only when it is all it has", async () => {
+    const { initialWay } = await import("./connCheck");
+    expect(initialWay("mqtt", false, true)).toBe("mqtt");
+    expect(initialWay("tcp", true, false)).toBe("bus");
+    expect(initialWay(null, true, false)).toBe("mqtt");
+    expect(initialWay(null, true, true)).toBe("bus");
+    expect(initialWay(null, false, false)).toBe("bus");
+  });
+});

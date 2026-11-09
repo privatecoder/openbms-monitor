@@ -17,7 +17,7 @@ import { readMark } from "../bmsMemory";
 import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
 import { useUpdate } from "../update";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, mergeAfterSearch, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, fixedFallback, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -36,6 +36,8 @@ const declined = new Set<string>();
 
 /** The offer under the connection status to store the connected endpoint as a port of the installation. */
 interface SaveAsk { inst: string; name: string; bus: Bus; kind: PortKind; target: string }
+
+const MQTT_EMPTY: MqttSettings = { host: "", port: 1883, user: "", password: "", tls: false, base: "seplos" };
 
 export function Sidebar({ userActions, connected, paused, lastUpdate, onConnected, onDevices, onSerials, onBoard, onDisconnected, view, setView, maint, packs, answering, locked, maintenance, setMaintenance }: {
   connected: boolean;
@@ -78,8 +80,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const target = targets[kind];
   // the data source: the monitor's own RS485 connection, or the Seplos BMS add-on's feed over MQTT (read-only)
   const [src, setSrc] = useState<"bus" | "mqtt">(() => (localStorage.getItem("conn.source") === "mqtt" ? "mqtt" : "bus"));
-  const [mq, setMq] = useState<MqttSettings>({ host: "", port: 1883, user: "", password: "", tls: false, base: "seplos" });
-  useEffect(() => { void api.loadMqttSettings().then((s) => { if (s) setMq(s); }).catch(() => {}); }, []);
+  const [mq, setMq] = useState<MqttSettings>(MQTT_EMPTY);
+  // the broker stored for the chosen installation (or the "view only" one): what a successful connect compares with
+  const [mqStored, setMqStored] = useState<MqttSettings | null>(null);
+  // after a connect with another broker than the installation's: the offer to keep it
+  const [mqttAsk, setMqttAsk] = useState<{ inst: string; name: string; settings: MqttSettings } | null>(null);
   const feed = useFeed();
   const setTarget = (v: string) => setTargets((cur) => ({ ...cur, [kind]: v }));
   const [bus, setBus] = useState<Bus>(() => (localStorage.getItem("conn.bus") as Bus) ?? "can");
@@ -237,13 +242,23 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     try {
       localStorage.setItem("conn.source", src);
       if (src === "mqtt") {
-        await api.saveMqttSettings(mq);
-        await api.connectMqtt(mq, connInst.current);
+        const used = mq, owner = connInst.current, stored = mqStored;
+        await api.connectMqtt(used, owner);
         linkOpen.current = true;
         stopIfCancelled();
         onConnected([], "can");
         setSince(Date.now()); setLost(false);
-        setMsg(t("conn.mqtt.connected", { host: mq.host }));
+        let note = "";
+        // kept only after a connect that worked: a first broker for the installation, the "view only" one always
+        if (!retry) {
+          const name = maint.installations.find((i) => i.id === owner)?.name ?? "";
+          const action = owner ? mqttSaveAction(stored, used) : "save";
+          if (action === "save") {
+            await api.saveMqttSettings(owner, used).then(() => { setMqStored(used); if (owner) note = t("conn.mqtt.saved", { name }); }, () => {});
+          } else if (action === "ask" && owner) setMqttAsk({ inst: owner, name, settings: used });
+          if (owner) saveLastWay(owner, "mqtt");
+        }
+        setMsg([t("conn.mqtt.connected", { host: used.host }), note].filter(Boolean).join(" "));
         return;
       }
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
@@ -254,6 +269,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, fixedAddrs);
       linkOpen.current = true;
       stopIfCancelled();
+      if (connInst.current && !retry) saveLastWay(connInst.current, kind);
       // the choice changed while connecting: this link belongs to the earlier one, it is closed again
       if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
       if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, sel: selText(packSel) });
@@ -436,7 +452,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const [pickHint, setPickHint] = useState(false);
   const asked = useRef<string | null>(null);
   useEffect(() => {
-    if (isDemo || kind !== "tcp" || connected || lost || busy || !target.trim()) { setPickHint(false); return; }
+    // only for the RS485 network tab: a gateway hidden behind the Home Assistant tab chooses nothing
+    if (isDemo || src !== "bus" || kind !== "tcp" || connected || lost || busy || !target.trim()) { setPickHint(false); return; }
     if (!maint.loaded || asked.current === target.trim().toLowerCase()) return;
     const timer = setTimeout(() => {
       asked.current = target.trim().toLowerCase();
@@ -447,7 +464,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       }).catch(() => {});
     }, 400);
     return () => clearTimeout(timer);
-  }, [kind, target, connected, lost, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [src, kind, target, connected, lost, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Another installation or bus chosen while not connected: the installation's stored port of the bus fills the
   // fields, the last working connection the bus and pack count (`fillFields`). The address counts as asked, so the
@@ -467,6 +484,20 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     if (connected || lost || busy || !maint.installation) return;
     apply(fillFields(cur, bus, lastConn(maint.installation), "installation"));
   }, [maint.installation, maint.loaded, storedPorts]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The broker of the chosen installation (or the "view only" one) fills the Home Assistant tab, and the way last used
+  // with it is preselected; an answer for an installation chosen before is dropped. Never while connected.
+  const mqGen = useRef(0);
+  useEffect(() => {
+    if (connected || lost || busy || !maint.loaded) return;
+    const gen = ++mqGen.current;
+    const inst = maint.installation;
+    setMqttAsk(null);
+    void api.loadMqttSettings(inst ?? null).then((s) => {
+      if (gen !== mqGen.current) return;
+      setMq(s ?? MQTT_EMPTY); setMqStored(s);
+      if (inst) setSrc(initialWay(lastWay(inst), !!s, !!(cur && (storedPort(cur, "can") || storedPort(cur, "pack")))));
+    }).catch(() => {});
+  }, [maint.installation, maint.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
   // the installation's stored port of the chosen bus is shown as a fixed line; the free fields only without one, or
   // for a one-off other port („Anderer Anschluss“, not stored unless the offer after connecting is accepted)
   const [other, setOther] = useState(false);
@@ -516,6 +547,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       const k = errorKey(e);
       setSaveError(t(k.key, refusalParams(inst, maint.alerts.pending, k.params)));
     }
+  };
+  const saveMqtt = async (a: { inst: string; settings: MqttSettings }) => {
+    setSaveError(null);
+    try { await api.saveMqttSettings(a.inst, a.settings); setMqStored(a.settings); setMqttAsk(null); }
+    catch (e) { setSaveError(String(e)); }
   };
   const declinePort = (a: SaveAsk) => { declined.add(askKey(a)); setSaveAsk(null); setSaveError(null); };
 
@@ -691,6 +727,15 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           {shown && <p title={shown} className={cn("break-words text-sm", failed ? "line-clamp-5" : "line-clamp-2", lost || failed ? "text-alarm" : "text-muted")}>{shown}</p>}
           {connected && src === "mqtt" && feedText(feed, t) && <p className="text-sm text-alarm">{feedText(feed, t)}</p>}
           {connected && getSource() !== "mqtt" && <FirmwareProfileLine locked={locked} />}
+          {mqttAsk && connected && (
+            <div className="space-y-1 pt-1">
+              <p className="text-sm">{t("conn.mqtt.saveAsk", { name: mqttAsk.name })}</p>
+              <div className="flex gap-1">
+                <Button variant="secondary" size="sm" disabled={locked} onClick={() => void saveMqtt(mqttAsk)}>{t("conn.saveYes")}</Button>
+                <Button variant="ghost" size="sm" onClick={() => setMqttAsk(null)}>{t("conn.saveNo")}</Button>
+              </div>
+            </div>
+          )}
           {saveAsk && connected && (
             <div className="space-y-1 pt-1">
               <p className="text-sm">{t(`conn.saveAsk.${saveAsk.bus}`, { name: saveAsk.name })}</p>

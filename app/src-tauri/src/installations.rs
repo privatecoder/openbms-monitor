@@ -136,6 +136,7 @@ pub struct SettingsView {
     notifications: Value,
     devices: Value,
     wiring: Value,
+    mqtt: Value,
 }
 
 fn parse(t: Option<String>) -> Value {
@@ -157,6 +158,7 @@ pub async fn installation_settings(state: State<'_, AppState>, installation: Str
         notifications: parse(s.notifications),
         devices: parse(s.devices),
         wiring: parse(s.wiring),
+        mqtt: parse(s.mqtt),
     })
 }
 
@@ -188,6 +190,7 @@ pub async fn set_installation_setting(state: State<'_, AppState>, installation: 
             "notifications" => s.set_notifications(&installation, text.as_deref()),
             "devices" => s.set_devices(&installation, text.as_deref()),
             "wiring" => s.set_wiring(&installation, text.as_deref()),
+            "mqtt" => s.set_mqtt(&installation, text.as_deref()),
             other => Err(format!("unknown setting {other}")),
         }
     })
@@ -294,7 +297,12 @@ pub async fn installation_delete(state: State<'_, AppState>, installation: Strin
     with_store(&state, |s| s.delete_installation(&installation)).map_err(|e| {
         eprintln!("installation delete after its recording: {e:?}");
         maint::refused("delete-recording-only")
-    })
+    })?;
+    // its MQTT password, kept outside the store
+    if let Some(app) = state.app.get() {
+        crate::mqtt_source::forget(app, &installation);
+    }
+    Ok(())
 }
 
 /// The newest stored parameter block of every place (offline Parameters view).
