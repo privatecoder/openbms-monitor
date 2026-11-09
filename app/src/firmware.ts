@@ -113,3 +113,6 @@ export function compareLines(c: FlashComparison, image: FirmwareImage | null, t:
   if (c.before.positive !== null && c.after.positive !== null && c.before.positive !== c.after.positive) out.push({ key: "fw.cmp.polarity", tone: "warn" });
   return out;
 }
+
+/** The phrase a recovery is confirmed with (backend `recovery_confirmation_ok`): no pack address, the bootloader has none. */
+export const recoveryPhrase = (custom: boolean | undefined): string => (custom ? "RECOVER CUSTOM" : "RECOVER");

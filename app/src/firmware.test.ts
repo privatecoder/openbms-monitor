@@ -152,3 +152,11 @@ describe("the comparison before/after a flash", () => {
     for (const lng of ["de", "en"]) for (const k of all) expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
   });
 });
+
+describe("recovery phrase", () => {
+  it("matches the backend: no address, custom named", async () => {
+    const { recoveryPhrase } = await import("./firmware");
+    expect(recoveryPhrase(false)).toBe("RECOVER");
+    expect(recoveryPhrase(true)).toBe("RECOVER CUSTOM");
+  });
+});

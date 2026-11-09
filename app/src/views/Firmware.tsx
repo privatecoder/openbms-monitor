@@ -8,7 +8,7 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
 import { chargeLine } from "../control";
 import { useWriteTexts } from "../components/ParamEdit";
 import { errorKey, packPortOf, portKey, type PortKind } from "../maint";
@@ -49,7 +49,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [progress, setProgress] = useState<FirmwareProgress | null>(null);
   const [done, setDone] = useState<FirmwareDone | null>(null);
   // what the last run flashed: the pack, the image and the version known before (for the result's version line)
-  const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string; marker?: string; bench: boolean } | null>(null);
+  const [flashed, setFlashed] = useState<{ address: number; image: FirmwareImage; checked: string | null; bank: string; marker?: string; bench: boolean; recovery?: boolean } | null>(null);
+  // recovery of a board waiting in its bootloader: the probe's result on the bench port, and the operator's
+  // confirmation that exactly one board is on the line
+  const [recProbe, setRecProbe] = useState<"probing" | "ok" | string | null>(null);
+  const [oneBoard, setOneBoard] = useState(false);
   const [flashTick, setFlashTick] = useState(0);
   const [tab, setTab] = useState<"bus" | "bench">(maint.current ? "bus" : "bench");
   const [closeRefused, setCloseRefused] = useState(false);
@@ -72,7 +76,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const port = inst ? packPortOf(inst) ?? "" : "";
   const bPort = benchPort.target.trim() ? portKey(benchPort.kind, benchPort.target.trim()) : "";
   // a search belongs to the port it ran on
-  useEffect(() => { setScan(null); setError(null); }, [bPort]);
+  useEffect(() => { setScan(null); setError(null); setRecProbe(null); setOneBoard(false); }, [bPort]);
   const busy = scanning;
   const inputsLocked = firmwareInputsLocked(running, busy);
   const phrase = confirmationPhrase(address, image?.custom);
@@ -143,6 +147,29 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
   };
   const markerKey = benchMarkerKey(chosen, image);
+
+  const probeBootloader = async () => {
+    onUserAction(); setRecProbe("probing"); setOneBoard(false); setError(null);
+    if (connected) onMonitorStopped();
+    try { await api.firmwareRecoveryProbe(bPort, lang); setRecProbe("ok"); }
+    catch (e) { const k = errorKey(e); setRecProbe(t(k.key, k.params)); }
+  };
+
+  const recover = async () => {
+    if (!path || !image || recProbe !== "ok" || !oneBoard) return;
+    if (connected) onMonitorStopped();
+    onUserAction();
+    setError(null); setDone(null); setProgress(null); setCloseRefused(false);
+    setRunning(true); onRunning(true); startedAt.current = Date.now();
+    try {
+      await api.firmwareRecoveryStart(bPort, path, allowCustom, image.sha256, recoveryPhrase(image.custom), lang);
+      setFlashed({ address: 0, image, checked: null, bank: "none", bench: true, recovery: true });
+      setRecProbe(null); setOneBoard(false);
+    } catch (e) {
+      setRunning(false); onRunning(false);
+      const k = errorKey(e); setError(t(k.key, k.params));
+    }
+  };
 
   const reset = () => { setDone(null); setProgress(null); setError(null); setFlashed(null); };
   const versions = done && flashed ? resultVersions(done, flashed.checked, flashed.image, t) : null;
@@ -233,12 +260,30 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {benchPort.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
         <Button variant="primary" disabled={!chosen || !image || inputsLocked} title={phrase} onClick={() => void benchFlash()}>{t("fw.bench.flash", { address: chosen?.address ?? address })}</Button>
         {error && <p className="text-sm text-alarm">{error}</p>}
+        {/* a board whose application is gone answers no search: its bootloader may still wait on the line */}
+        <details className="rounded-md border border-line p-3 text-sm" open={recProbe !== null || (scan !== null && scan.packs.length === 0)}>
+          <summary className="cursor-pointer font-medium">{t("fw.rec.title")}</summary>
+          <div className="mt-2 space-y-2">
+            <p className="text-muted">{t("fw.rec.hint")}</p>
+            <Button variant="secondary" size="sm" disabled={!bPort || inputsLocked || recProbe === "probing"} onClick={() => void probeBootloader()}>
+              {recProbe === "probing" ? t("fw.rec.probing") : t("fw.rec.probe")}</Button>
+            {recProbe && recProbe !== "probing" && recProbe !== "ok" && <p className="text-alarm">{recProbe}</p>}
+            {recProbe === "ok" && (
+              <>
+                <p>{t("fw.rec.found")}</p>
+                <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={oneBoard} disabled={inputsLocked} onChange={(e) => setOneBoard(e.target.checked)} />{t("fw.rec.oneBoard")}</label>
+                <Button variant="primary" size="sm" disabled={!image || !oneBoard || inputsLocked} title={recoveryPhrase(image?.custom)} onClick={() => void recover()}>{t("fw.rec.start")}</Button>
+                {!image && <p className="text-muted">{t("fw.rec.needImage")}</p>}
+              </>
+            )}
+          </div>
+        </details>
       </section>}
 
       {/* progress and result below the tab that started the flash */}
       {(running || done) && (
         <section className="space-y-3 border-t border-line pt-5">
-          <h2 className="font-display text-lg font-semibold">{flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
+          <h2 className="font-display text-lg font-semibold">{flashed?.recovery ? t("fw.rec.runTitle") : flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
           {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
           {flashed?.marker === "unchecked" && (!flashed.bench || flashed.address === 0) && <p className="text-sm text-discharge">{t(flashed.bench ? "fw.bench.markerUnchecked" : "fw.markerUnchecked")}</p>}
           {flashed?.marker === "released" && <p className="text-sm text-muted">{t("fw.bench.markerReleased")}</p>}
@@ -253,7 +298,12 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           )}
           {done && (
             <div className="space-y-2">
-              {done.ok ? (
+              {done.ok && done.recovery ? (
+                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />
+                  {done.recovered_at !== null && done.recovered_at !== undefined
+                    ? t("fw.rec.okFound", { address: done.recovered_at, version: done.after?.firmware_version ?? "?" })
+                    : t("fw.rec.okUnchecked")}</p>
+              ) : done.ok ? (
                 <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />{t("fw.okTitle")}: {t("fw.okText", versions ?? { from: "?", to: "?" })}</p>
               ) : (
                 <>

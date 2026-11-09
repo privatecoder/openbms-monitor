@@ -286,7 +286,9 @@ export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "fi
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
  *  pack may hang in its bootloader and its record stays. */
-export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null; comparison?: FlashComparison | null }
+export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null; comparison?: FlashComparison | null;
+  /** a recovery: the address the restarted application answered at (null: did not show, transfer confirmed) */
+  recovered_at?: number | null; recovery?: boolean }
 /** SOC, remaining and learned full capacity, cycles (backend `flash_check::Charge`). */
 export interface Charge { soc: number; remaining_ah: number; full_ah: number; cycles: number }
 /** One side of the comparison before/after a flash (backend `flash_check::Side`); null: not read or not supported. */
@@ -676,6 +678,11 @@ const tauriApi = {
    *  RS485-1/2 port) its bank, board and master checks apply; without one („Platine flashen“) the board's marker is
    *  checked over RS485-1/2 where its build shows it there, and `expected` is the String 2 the search showed (the board
    *  flashed must be that one). */
+  /** recovery: whether a bootloader already answers on the RS485-1/2 port (one R F L, no reset, no write); its packet size */
+  firmwareRecoveryProbe: (port: string, lang: string) => invoke<number>("firmware_recovery_probe", { port, lang }),
+  /** recovery: flash the one board waiting in its bootloader on `port`; progress and result as `firmwareStart` */
+  firmwareRecoveryStart: (port: string, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
+    invoke<void>("firmware_recovery_start", { port, path, allowCustom, expectedSha256, confirmation, lang }),
   firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, expected: string | null) =>
     invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, expected }),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
@@ -1023,6 +1030,8 @@ function demoApi(): typeof tauriApi {
     markerRead: async () => { throw new Error("desktop app only"); },
     markerSet: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
+    firmwareRecoveryProbe: async () => { throw new Error("desktop app only"); },
+    firmwareRecoveryStart: async () => { throw new Error("desktop app only"); },
     maintInstallations: async () => [],
     maintInstallationsOf: async () => [],
     maintSaveInstallation: async () => { throw new Error("desktop app only"); },

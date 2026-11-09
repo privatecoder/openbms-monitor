@@ -59,6 +59,11 @@ struct FirmwareDone {
     log_error: Option<String>,
     /// the target before and once back (`flash_check`), only after a finished flash
     comparison: Option<crate::flash_check::Comparison>,
+    /// a recovery (`firmware_recovery_start`): the DIP address the restarted application answered at; None for a flash,
+    /// and for a recovery whose application did not show (transfer confirmed, application unchecked)
+    recovered_at: Option<u8>,
+    /// true for the result of a recovery
+    recovery: bool,
 }
 
 /// What `firmware_start` checked before it began: the right-bank check ("match" | "stored" | "unchecked" |
@@ -415,9 +420,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison, recovered_at: None, recovery: false },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false },
         };
         let state = app.state::<AppState>();
         maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?} compare={}", done.ok, done.stage, done.error, done.log_error, done.comparison.as_ref().map_or("-", |c| c.verdict)));
@@ -430,6 +435,96 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let _ = app.emit("firmware-done", done);
     });
     Ok(FlashStarted { bank, marker })
+}
+
+/// The phrase a recovery is confirmed with (no pack address: the bootloader has none).
+pub fn recovery_confirmation_ok(custom: bool, typed: &str) -> bool {
+    typed.trim() == if custom { "RECOVER CUSTOM" } else { "RECOVER" }
+}
+
+/// Recovery, step 1: whether a bootloader already answers on the RS485-1/2 port `port` (`maint::pack_key`): one R F L,
+/// no reset, no write. Ok: its packet size (256).
+#[tauri::command]
+pub async fn firmware_recovery_probe(app: AppHandle, state: State<'_, AppState>, port: String, lang: String) -> Result<u16, String> {
+    let l = self::lang(&lang);
+    if state.flashing.load(Ordering::SeqCst) {
+        return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
+    }
+    let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let _port_slot = crate::control::reserve_bus_wait(&state)
+        .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
+    let key = maint::pack_key(&port).map_err(to_text)?;
+    stop_monitor_and_tell(&state, &app)?;
+    let mut link = open_port(&key, l)?;
+    tauri::async_runtime::spawn_blocking(move || session::probe_bootloader(&mut link, &mut std::io::sink(), session::Options::default()))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.text(l))
+}
+
+/// Recovery, step 2: flash a board whose bootloader already answers (it has no application to restart), over the
+/// RS485-1/2 port `port`. The operator has confirmed that exactly one board is on the line: the bootloader has no pack
+/// address. The same image checks and progress/done events as a flash; afterwards the application is looked for at
+/// every DIP address, and a pending record of that board at that address is cleared.
+#[tauri::command]
+pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>, port: String, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<(), String> {
+    let l = self::lang(&lang);
+    let (image, info) = read_image(&path, allow_custom, l)?;
+    confirmed_image(&info, &expected_sha256, l)?;
+    if !recovery_confirmation_ok(info.custom, &confirmation) {
+        return Err(openbms_flash::Error::Cancelled.text(l));
+    }
+    let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let port_slot = crate::control::reserve_bus_wait(&state)
+        .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
+    let _action = maint::begin_action(&state, "flash");
+    let key = maint::pack_key(&port).map_err(to_text)?;
+    if !try_begin(&state.flashing) {
+        return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
+    }
+    let slot = FlashSlot(state.flashing.clone());
+    stop_monitor_and_tell(&state, &app)?;
+    let mut link = open_port(&key, l)?;
+    let (mut log, log_path, log_id) = new_log(&app, &state, None, 0, "recovery", Some(&info.release))?;
+    writeln!(log, "CONFIRMED recovery code_sha256={} release={} custom={} source=app one_board_confirmed=true", info.sha256, info.release, info.custom).map_err(|e| e.to_string())?;
+    maint::event(&state, None, &format!("recovery start release={} custom={} log={}", info.release, info.custom, log_path.display()));
+    let store = state.maint.clone();
+    std::thread::spawn(move || {
+        let mut last = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session::recover_with_progress(&mut link, &image, &mut log, session::Options::default(), &mut |p| {
+                last = Some(p);
+                let _ = app.emit("firmware-progress", progress_event(p));
+            })
+        }));
+        // the application found: a pending record of exactly this board at this address is settled
+        if let Ok(Ok(r)) = &result {
+            if let Some((address, _)) = &r.found {
+                let serial = maint::string2(&mut link, *address);
+                if let Ok(all) = maint::with_store_arc(&store, |s| s.all_pending()) {
+                    for p in all.iter().filter(|p| p.endpoint == key && p.pack == *address && (p.bms_serial.is_none() || p.bms_serial == serial)) {
+                        let _ = maint::with_store_arc(&store, |s| s.clear_pending(p.id, "recovered", crate::history::now_ms()));
+                    }
+                }
+            }
+        }
+        drop(link);
+        let log = log_path.display().to_string();
+        let done = match result {
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: false, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: false, log_error: None, comparison: None, recovered_at: None, recovery: true },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: false, log_error: None, comparison: None, recovered_at: None, recovery: true },
+        };
+        let state = app.state::<AppState>();
+        maint::event(&state, None, &format!("recovery done ok={} found={:?} stage={:?} error={:?}", done.ok, done.recovered_at, done.stage, done.error));
+        if let Some(id) = log_id {
+            let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, if done.ok { "ok" } else { "failed" }));
+        }
+        drop(slot);
+        drop(port_slot);
+        let _ = app.emit("firmware-done", done);
+    });
+    Ok(())
 }
 
 /// The String 2 a version proof after a finished patched flash is bound to: the one read back, and only if it is the
@@ -575,7 +670,15 @@ mod tests {
     }
 
     #[test]
-    fn progress_events_name_the_stage() {
+    fn a_recovery_is_confirmed_with_its_own_phrase_only() {
+        assert!(recovery_confirmation_ok(false, " RECOVER "));
+        assert!(!recovery_confirmation_ok(false, "FLASH 0"));
+        assert!(!recovery_confirmation_ok(true, "RECOVER"));
+        assert!(recovery_confirmation_ok(true, "RECOVER CUSTOM"));
+    }
+
+    #[test]
+        fn progress_events_name_the_stage() {
         let e = progress_event(Progress::Block { index: 4, total: 209 });
         assert_eq!((e.stage, e.block, e.total), ("block", Some(4), Some(209)));
         assert_eq!(progress_event(Progress::AppRestart).stage, "app_restart");
