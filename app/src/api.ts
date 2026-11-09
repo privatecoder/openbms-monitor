@@ -32,6 +32,9 @@ export type Endpoint = { kind: "serial"; path: string; bus: Bus } | { kind: "tcp
 export type Severity = "info" | "warning" | "protection" | "fault";
 export type LimitState = "normal" | "below_limit" | "above_limit" | { other: number };
 
+/** The broker of the "Home Assistant (MQTT)" connection; `base` is the add-on's topic prefix. */
+export interface MqttSettings { host: string; port: number; user: string; password: string; tls: boolean; base: string }
+
 export interface DeviceInfo { device_name: string; firmware_version: string; can_protocol: string }
 /** truncated: only the first 22 characters were readable (CAN socket bus); unavailable: not offered (RTN 04) or not
  *  reachable on this bus; no_answer: the pack stayed silent or the answer was malformed */
@@ -530,6 +533,9 @@ const tauriApi = {
   startPolling: (addresses: number[], intervalMs: number) => invoke<void>("start_polling", { addresses, intervalMs }),
   /** pairs (plus, minus) polled one after the other */
   setPollPairs: (pairs: [number, number][]) => invoke<void>("set_poll_pairs", { pairs }),
+  /** the broker of the "Home Assistant (MQTT)" connection (app data, readable by the user only) */
+  loadMqttSettings: () => invoke<MqttSettings | null>("load_mqtt_settings"),
+  saveMqttSettings: (settings: MqttSettings) => invoke<void>("save_mqtt_settings", { settings }),
   /** CAN socket bus: read the master's system values once and send them as a "system" event */
   systemOnce: () => invoke<void>("system_once"),
   stopPolling: () => invoke<void>("stop_polling"),
@@ -789,6 +795,8 @@ function demoApi(): typeof tauriApi {
       clearInterval(timer); tick(); timer = window.setInterval(tick, intervalMs);
     },
     setPollPairs: async () => {},
+    loadMqttSettings: async () => null,
+    saveMqttSettings: async () => {},
     stopPolling: async () => { clearInterval(timer); },
     // preview: synthetic serial numbers, one pack still with the factory placeholder
     serialNumbers: async (address) => {
