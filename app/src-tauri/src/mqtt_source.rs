@@ -252,6 +252,10 @@ impl Feeder {
     pub fn subscribed(&mut self, granted: &[bool], mono_ms: i64) -> Vec<Effect> {
         let mut out = Vec::new();
         let denied = granted.first() == Some(&false);
+        // the add-on's availability cannot be read: an old "offline" says nothing any more
+        if granted.get(1) == Some(&false) {
+            self.available = true;
+        }
         if denied != self.denied {
             self.denied = denied;
             self.feed_effect(&mut out, false, mono_ms, true);
@@ -822,5 +826,15 @@ mod tests {
         // only the availability refused: measurements still count
         let mut f = Feeder::new("seplos");
         assert!(f.subscribed(&[true, false], 1).is_empty());
+    }
+
+    #[test]
+    fn a_refused_availability_drops_an_old_offline() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([])), 0, 0);
+        f.handle("seplos/availability", b"offline", 0, 1);
+        f.subscribed(&[true, false], 2);
+        let e = f.handle("seplos/openbms/v1/pack/0", &pack_msg("b1", 1, 0, 1, 2), 0, 3);
+        assert_eq!(feeds(&e)[0].state, "live");
     }
 }
