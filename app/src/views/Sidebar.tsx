@@ -509,6 +509,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const rev = settingsRev;
     if (!profileLoadNeeded(mqLoaded.current, inst, rev)) return;
     const gen = ++mqGen.current;
+    // the form no longer holds what was read before: until this read is accepted nothing counts as loaded (a switch
+    // back to an installation read earlier reads it again and makes this read's answer stale)
+    mqLoaded.current = null;
     // another installation: its broker only, nothing of the one before (a reload of the same one keeps the draft
     // until the stored values are back)
     const switched = mqFor.current !== inst;
