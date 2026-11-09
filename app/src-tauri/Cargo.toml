@@ -28,6 +28,9 @@ tauri-plugin-notification = "2.7"
 tauri-plugin-updater = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Home Assistant (MQTT) source: the add-on's OpenBMS feed; TLS with the platform's certificate store
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }
+rustls-platform-verifier = "0.7"
 
 [target.'cfg(unix)'.dependencies]
 # free disk space before a migration copies a database
