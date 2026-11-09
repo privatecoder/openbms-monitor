@@ -4,6 +4,8 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- Home Assistant (MQTT): a third connection type reads the measurements of the Seplos BMS add-on (its "OpenBMS Monitor feed", switched on in the add-on) from the MQTT broker instead of polling the RS485 bus a second time. Overview, pack views, pair check, balancing line, recording, health report and notifications work as before; the recording keeps the add-on's read times, and the pair window runs on the add-on's clock. Read-only: everything that talks to a BMS is refused for this source.
+
 ## 0.3.4-beta — 2026-11-04
 
 - Pairs: the two packs of a pair are polled right after each other, and the live check pairs only answers read at most 3 s apart (as the health report), timed from the telemetry read itself; before, answers up to a whole polling round apart could be paired when one was missing. The answers are collected outside the overview, so opening a pack and coming back no longer shows "no simultaneous samples" for a minute, and one pack without data no longer stops the check of all pairs. The recording stores the time of the telemetry read.
