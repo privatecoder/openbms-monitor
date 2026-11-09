@@ -228,3 +228,9 @@ export function targetsForInstallation(fill: { kind: "tcp" | "serial"; target: s
   if (fill) t[fill.kind] = fill.target;
   return t;
 }
+
+/** Whether the sidebar reads the broker again: not yet read, another installation, or a settings change since
+ *  (`reloadSettings`). Checked whenever it is not connected, so a change made during a connection is read after it. */
+export function profileLoadNeeded(loaded: { inst: string | null; rev: number } | null, inst: string | null, rev: number): boolean {
+  return !loaded || loaded.inst !== inst || loaded.rev !== rev;
+}

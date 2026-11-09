@@ -18,7 +18,7 @@ import { readMark } from "../bmsMemory";
 import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
 import { useUpdate } from "../update";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, targetsForInstallation, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, profileLoadNeeded, targetsForInstallation, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -239,6 +239,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   const connectOnce = async (retry: boolean, useBus: Bus, inst?: string | null) => {
     cancelRef.current = false;
     serialGen.current += 1;
+    // a broker still being read belongs to before this connect: its answer changes neither the form nor the way chosen
+    // (it is read again once the connection ends)
+    mqGen.current += 1;
+    setMqLoading(false);
     forgetBank();
     if (!retry) connInst.current = inst !== undefined ? inst : maint.installation;
     const bus = useBus;
@@ -497,10 +501,14 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // with it is preselected; an answer for an installation chosen before is dropped. Never while connected.
   const mqGen = useRef(0);
   const mqFor = useRef<string | null | undefined>(undefined);
+  // what the form holds was read for this installation at this settings revision
+  const mqLoaded = useRef<{ inst: string | null; rev: number } | null>(null);
   useEffect(() => {
     if (connected || lost || busy || !maint.loaded) return;
-    const gen = ++mqGen.current;
     const inst = maint.installation;
+    const rev = settingsRev;
+    if (!profileLoadNeeded(mqLoaded.current, inst, rev)) return;
+    const gen = ++mqGen.current;
     // another installation: its broker only, nothing of the one before (a reload of the same one keeps the draft
     // until the stored values are back)
     const switched = mqFor.current !== inst;
@@ -510,11 +518,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     if (switched) { setMq(MQTT_EMPTY); setMqStored(null); }
     void api.loadMqttSettings(inst ?? null).then((s) => {
       if (gen !== mqGen.current) return;
+      mqLoaded.current = { inst, rev };
       setMq(s ?? MQTT_EMPTY); setMqStored(s);
       if (inst && switched) setSrc(initialWay(lastWay(inst), !!s, !!(cur && (storedPort(cur, "can") || storedPort(cur, "pack")))));
     }, () => { if (gen === mqGen.current) { setMq(MQTT_EMPTY); setMqStored(null); } })
       .finally(() => { if (gen === mqGen.current) setMqLoading(false); });
-  }, [maint.installation, maint.loaded, settingsRev]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [maint.installation, maint.loaded, settingsRev, connected, lost, busy]); // eslint-disable-line react-hooks/exhaustive-deps
   // the installation's stored port of the chosen bus is shown as a fixed line; the free fields only without one, or
   // for a one-off other port („Anderer Anschluss“, not stored unless the offer after connecting is accepted)
   const [other, setOther] = useState(false);

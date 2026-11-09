@@ -269,3 +269,14 @@ describe("switching the installation", () => {
     expect(targetsForInstallation(null)).toEqual({ tcp: "", serial: "" });
   });
 });
+
+describe("when the sidebar reads the broker again", () => {
+  it("after a change of installation or settings revision, also one made while connected; not for an unchanged one", async () => {
+    const { profileLoadNeeded } = await import("./connCheck");
+    expect(profileLoadNeeded(null, "a", 0)).toBe(true);
+    expect(profileLoadNeeded({ inst: "a", rev: 0 }, "a", 0)).toBe(false);
+    expect(profileLoadNeeded({ inst: "a", rev: 0 }, "a", 1)).toBe(true);
+    expect(profileLoadNeeded({ inst: "a", rev: 1 }, "b", 1)).toBe(true);
+    expect(profileLoadNeeded({ inst: null, rev: 0 }, null, 0)).toBe(false);
+  });
+});
