@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFeed, useSource } from "../source";
-import { canTalkToBms } from "../access";
+import { decideUi, type UiFacts } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Activity, Scale, ArrowDownFromLine, ArrowLeft, ArrowUpToLine, BatteryMedium, Flame, Gauge, PlugZap, RotateCw, ShieldHalf, Thermometer, ToggleRight, Zap, type LucideIcon } from "lucide-react";
 import { api, effectiveCurrent, packState, type Bus, type SerialRead, type SnapshotParams } from "../api";
@@ -46,13 +46,14 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   useEffect(() => setAsked(null), [p.address, profile?.gen]);
   // the manual binary read is always offered on the CAN socket (also without any proof)
   // over the add-on's feed (MQTT) nothing is asked of the BMS
-  const talk = canTalkToBms(useSource());
-  const askable = bus === "can" && !!profile && talk;
+  const [probing, setProbing] = useState(false);
+  const pf: UiFacts = { source: useSource(), chosen: null, bus, profile: !!profile, address: p.address, busy: probing };
+  const askable = decideUi("pack.askSerials", pf).visible;
   // a slave's own 64/03 (the master has its profile)
   const [probes, putProbe] = usePackProbes();
   const probe = probes[p.address];
-  const slaveProbe = bus === "can" && !!profile && p.address !== 0 && talk;
-  const [probing, setProbing] = useState(false);
+  const probeAction = decideUi("pack.probe", pf);
+  const slaveProbe = probeAction.visible;
   const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).then(putProbe, () => {}).finally(() => setProbing(false)); };
   const serials = asked && "bms" in asked ? asked : p.serials;
   const hardStops = useHardStops();
@@ -93,7 +94,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
             {asked && "error" in asked && <span className="text-alarm">{asked.error}</span>}
             {slaveProbe && (
               <span className="flex items-center gap-1">{packProbeLine(probe, t)}<InfoIcon id="topic.firmwareProfile" />
-                <button className="underline disabled:opacity-40" disabled={probing} onClick={recheck}>{t("probe.recheck")}</button>
+                <button className="underline disabled:opacity-40" disabled={probeAction.locked} onClick={recheck}>{t("probe.recheck")}</button>
               </span>
             )}
             <span className="flex items-center gap-1">{hardStopLine(hardFlag, hardFlag === null || hardFlag === undefined ? hardStops[p.address] : undefined, t, i18n.language, imageFlags)}<InfoIcon id="topic.hardStop" /></span>

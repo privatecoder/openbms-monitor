@@ -1,12 +1,8 @@
 import type { TFunction } from "i18next";
-import type { AccessDecision, AccessReason, Channel, Source } from "./api";
+import type { AccessDecision, AccessReason, Channel } from "./api";
 import CATALOG from "./generated/access.json";
 
 export const CHANNELS: Channel[] = ["uart0", "uart1", "uart2"];
-
-/** Whether the UI may offer anything that talks to a BMS: only over the monitor's own bus connection. Over the Seplos
- *  BMS add-on's feed (MQTT) the add-on owns the bus; the backend refuses as well (`bms_io_allowed`). */
-export const canTalkToBms = (source: Source | null): boolean => source === "bus";
 
 /** The matrix as rows: one per action, in the backend's order, with its ways per channel (none where the firmware has
  *  none; the CAN socket may have two, e.g. the binary serial read and the master's Modbus String 1). */

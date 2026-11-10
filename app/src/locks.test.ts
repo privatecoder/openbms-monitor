@@ -159,3 +159,22 @@ describe("parameters: one write at a time", () => {
     expect(s("params.restore", { address: 3, pausedAt: 2, writes: { multi: true } })).toBe("locked:lock.writeRunning");
   });
 });
+
+describe("asking a BMS directly", () => {
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: "bus", chosen: null, bus: "can", profile: true, address: 3, ...f });
+  it("only over the monitor's own RS485 connection, never over the add-on's feed", () => {
+    expect(s("bms.talk", {})).toBe("open");
+    expect(s("bms.talk", { source: "mqtt" })).toBe("hidden");
+    expect(s("bms.talk", { source: null })).toBe("hidden");
+  });
+  it("the pack view's binary serial read and a slave's 64/03: CAN socket with a profile", () => {
+    expect(s("pack.askSerials", {})).toBe("open");
+    expect(s("pack.askSerials", { bus: "pack" })).toBe("hidden");
+    expect(s("pack.askSerials", { profile: false })).toBe("hidden");
+    expect(s("pack.askSerials", { source: "mqtt" })).toBe("hidden");
+    expect(s("pack.probe", {})).toBe("open");
+    expect(s("pack.probe", { address: 0 })).toBe("hidden");
+    expect(s("pack.probe", { busy: true })).toBe("locked:lock.busy");
+    expect(s("pack.probe", { source: "mqtt" })).toBe("hidden");
+  });
+});

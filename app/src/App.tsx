@@ -23,7 +23,7 @@ import { reloadSettings } from "./installData";
 import { usePollPairsSync } from "./pairs";
 import { api, isDemo, type Bus } from "./api";
 import { useSource } from "./source";
-import { canTalkToBms } from "./access";
+import { decideUi } from "./locks";
 import { defaultName, type Monitor } from "./maint";
 import i18n from "./i18n";
 import { notifyTexts } from "./notifications";
@@ -59,7 +59,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   // over the add-on's feed (MQTT) the views that talk to a BMS show the stored data only, or say why not
   const source = useSource();
-  const talk = connected && canTalkToBms(source);
+  const talk = decideUi("bms.talk", { source: connected ? source : null, chosen: scope }).visible;
   const noBms = <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("feed.noBms")}</div>;
   const [bus, setBus] = useState<Bus | null>(null);
   const [view, setView] = useState(demoView ?? "dashboard");

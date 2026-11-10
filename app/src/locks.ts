@@ -1,4 +1,4 @@
-import type { Source } from "./api";
+import type { Bus, Source } from "./api";
 import { flashBlocked } from "./maint";
 
 /** One place for when a field or action of the UI is shown, offered or locked, and why. Components gather the facts
@@ -64,7 +64,15 @@ export type UiAction =
   | "params.reread"
   /** one of the single-pack sections (clock, CAN protocol, Hard-Stop, serials, name, calibration, control, marker,
    *  diagnosis reads): `section` names it */
-  | "params.section";
+  | "params.section"
+  // Asking a BMS directly (pack view, the views that read or write a pack)
+  /** anything that talks to a BMS: only over the monitor's own RS485 connection; over the add-on's feed (MQTT) the add-on
+   *  owns the bus (the backend refuses as well, `bms_io_allowed`) */
+  | "bms.talk"
+  /** pack view: read the serial numbers over the binary service (CAN socket) */
+  | "pack.askSerials"
+  /** pack view: ask a slave's own firmware identity (64/03) again */
+  | "pack.probe";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
@@ -112,8 +120,12 @@ export interface UiFacts {
   columnWritable?: boolean;
   /** Parameters: the pack at a pause of a run to several packs (its restore is free then) */
   pausedAt?: number | null;
-  /** Parameters: the pack a decision is about (restore, Hard-Stop vs. the open editor) */
+  /** Parameters: the pack a decision is about (restore, Hard-Stop vs. the open editor); pack view: the pack shown */
   address?: number | null;
+  /** the bus of the open RS485 connection */
+  bus?: Bus | null;
+  /** the connection's firmware profile is read */
+  profile?: boolean;
 }
 
 export interface UiReason { key: string; params?: Record<string, unknown> }
@@ -234,6 +246,15 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       // Hard-Stop writes parameters of the pack whose editor is open
       if (f.section === "hs" && f.editing != null && f.editing === f.address) return lock("lock.editOpen");
       return show();
+    case "bms.talk":
+      return f.source === "bus" ? show() : hide;
+    // the CAN socket's binary read is offered always there (also without any proof)
+    case "pack.askSerials":
+      return f.source === "bus" && f.bus === "can" && f.profile ? show() : hide;
+    // a slave's own 64/03 (the master has its profile)
+    case "pack.probe":
+      if (f.source !== "bus" || f.bus !== "can" || !f.profile || f.address === 0) return hide;
+      return f.busy ? lock("lock.busy") : show();
   }
 }
 
