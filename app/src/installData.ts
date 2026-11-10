@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, isDemo, type InstallationSettings, type LegacyLocal, type SettingKey } from "./api";
+import { decode } from "./errors";
 
 /** Settings an installation owns (cell type per place, groups, pairs, diagnosis, notifications, devices), kept by the backend per installation.
  *  With „Nur ansehen“ (scope null) and in the browser preview they live in memory for this session only. One cache for
@@ -11,6 +12,12 @@ const subs = new Set<() => void>();
 const keyOf = (scope: string | null) => scope ?? "";
 const stored = (scope: string | null): scope is string => !!scope && !isDemo;
 const changed = () => subs.forEach((f) => f());
+
+/** The backend's refusal for an installation that no longer exists. */
+const gone = (e: unknown) => {
+  const v = decode(e) as { reason?: unknown } | null;
+  return v?.reason === "unknown-installation" || e === "unknown-installation";
+};
 
 // a failed load is not cached (nothing may be saved over settings the app could not read): asked again shortly
 function load(scope: string | null) {
@@ -33,6 +40,8 @@ function load(scope: string | null) {
   const rev = revision;
   let again = false;
   api.installationSettings(scope).then((s) => { if (rev === revision) cache.set(k, s); else again = true; }, (e) => {
+    // an installation deleted or merged away has nothing to read any more: not asked again
+    if (gone(e)) return;
     console.error("installation settings:", e);
     setTimeout(() => load(scope), 5000);
   }).finally(() => { loading.delete(k); if (again) load(scope); changed(); });

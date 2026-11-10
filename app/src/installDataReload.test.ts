@@ -49,3 +49,22 @@ describe("reloadSettings during a read", () => {
     expect(loadedSettings("B")?.packs).toEqual({ mode: "count", n: 12 });
   });
 });
+
+describe("an installation deleted meanwhile", () => {
+  it("is not asked again after its read is refused", async () => {
+    vi.useFakeTimers();
+    const { reloadSettings, __loadForTest } = await import("./installData");
+    const calls: string[] = [];
+    settings.mockImplementation(async (id: string) => {
+      calls.push(id);
+      if (id === "C" && calls.filter((x) => x === "C").length > 1) throw JSON.stringify({ kind: "refused", reason: "unknown-installation" });
+      return { cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null, wiring: null } as never;
+    });
+    __loadForTest("C");
+    await vi.runOnlyPendingTimersAsync();
+    reloadSettings();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls.filter((x) => x === "C").length).toBe(2);
+    vi.useRealTimers();
+  });
+});
