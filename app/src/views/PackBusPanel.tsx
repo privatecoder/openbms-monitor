@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
-import { busLine, keyParts, packIsCanAdapter, errorKey, flashBlocked, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
+import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
+import { busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -108,6 +109,9 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   useEffect(() => { onMaster(master); }, [master]); // eslint-disable-line react-hooks/exhaustive-deps
   const quiet = live?.bus === "quiet";
   const busy = !!action || scanning;
+  // what may be done now (`locks.ts`)
+  const facts: UiFacts = { source: null, chosen: inst?.id ?? null, busy, flashRunning: running, quiet };
+  const may = (a: UiAction) => lockProps(decideUi(a, facts), t);
   // the running flash stores its own record before the restart: it counts only once the flash has ended (like the banner)
   const pendingHere = running ? [] : maint.alerts.pending.filter((p) => port && p.endpoint === port);
 
@@ -170,7 +174,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
         <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /></h2>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{inst.name}</span>
-          <Button variant="ghost" size="sm" disabled={running} onClick={onEditPorts}>{t("maint.panel.editPorts")}</Button>
+          <Button variant="ghost" size="sm" {...may("maintenance.editPorts")} onClick={onEditPorts}>{t("maint.panel.editPorts")}</Button>
         </div>
       </div>
 
@@ -202,7 +206,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           {/* a halted master may finish the round it had started: no DIP advice for that */}
           {master?.marker === "on" && master.slaves === 0 ? <p>{t("maint.quiet.halted")}</p>
           : master?.may_halt && inst ? (
-            <ActButton variant="primary" size="sm" spinning={action === "halt"} disabled={busy} onClick={() => marker(false)}>{t("maint.halt")}</ActButton>
+            <ActButton variant="primary" size="sm" spinning={action === "halt"} {...may("maintenance.halt")} onClick={() => marker(false)}>{t("maint.halt")}</ActButton>
           ) : <p>{t("maint.quiet.dip")}</p>}
           {master && master.kind !== "patched" && <p className="text-muted">{t("maint.quiet.noPatch")}</p>}
           <p className="text-muted">{t("maint.quiet.hint")}</p>
@@ -219,13 +223,13 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
             bank.state === "mismatch" ? (
               <div className="space-y-1 text-alarm">
                 <p className="flex gap-2"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{t("maint.err.other-bank", { serial: bank.serial })}</p>
-                <ActButton variant="secondary" size="sm" spinning={action === "adopt"} disabled={busy || running} onClick={() => adopt(bank.serial!)}>{t("maint.bank.adopt")}</ActButton>
+                <ActButton variant="secondary" size="sm" spinning={action === "adopt"} {...may("maintenance.adopt")} onClick={() => adopt(bank.serial!)}>{t("maint.bank.adopt")}</ActButton>
               </div>
             ) : <p className="text-muted">{t(`maint.bank.${bank.state}`, { serial: bank.serial })}</p>
           )}
           <div className="flex items-center gap-2">
             <h3 className="font-medium">{t("maint.packs.title")}</h3>
-            <ActButton variant="ghost" size="sm" spinning={scanning} disabled={busy || running || !quiet} onClick={() => { onUserAction(); void doScan(inst?.id ?? null, port); }}>{t("maint.packs.rescan")}</ActButton>
+            <ActButton variant="ghost" size="sm" spinning={scanning} {...may("maintenance.rescan")} onClick={() => { onUserAction(); void doScan(inst?.id ?? null, port); }}>{t("maint.packs.rescan")}</ActButton>
             {scanning && <Button variant="ghost" size="sm" onClick={() => void api.maintScanCancel()}>{t("maint.packs.cancel")}</Button>}
           </div>
           {scan?.cancelled && !scanning && <p className="text-muted">{t("maint.packs.cancelled")}</p>}
@@ -233,7 +237,8 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           <ul className="space-y-2">
             {packs.map(([a, d]) => {
               const pending = pendingHere.find((p) => p.pack === a);
-              const blocked = flashBlocked({ image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port });
+              const row = decideUi("maintenance.flash", { ...facts, flash: { image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port } });
+              const blocked = row.locked ? row.reason ?? null : null;
               const name = a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a });
               const version = d ? packVersion(a, d.firmware_version, master) : null;
               return (
@@ -244,7 +249,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
                     {/* one button in a fixed place: the backend checks quiet bus, target and installation, then flashes */}
                     {d && <ActButton variant="secondary" size="sm" className="ml-auto" spinning={(action === "flash" || running) && target === a} disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => flash(a, version)}>{t("maint.packs.flash")}</ActButton>}
                   </div>
-                  {d && image && <RowSocNote port={port} address={a} disabled={busy || running} />}
+                  {d && image && <RowSocNote port={port} address={a} disabled={decideUi("firmware.readTarget", { ...facts, port: !!port }).locked} />}
                   {pending && <p className="text-alarm">{t("maint.packs.pending", { pack: a })}</p>}
                   {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                 </li>
@@ -256,7 +261,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
       {actionError && (
         <div className="space-y-1 text-alarm">
           <p className="flex gap-2"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{actionError.text}</p>
-          {actionError.serial && inst && <ActButton variant="secondary" size="sm" spinning={action === "adopt"} disabled={busy || running} onClick={() => adopt(actionError.serial!)}>{t("maint.bank.adopt")}</ActButton>}
+          {actionError.serial && inst && <ActButton variant="secondary" size="sm" spinning={action === "adopt"} {...may("maintenance.adopt")} onClick={() => adopt(actionError.serial!)}>{t("maint.bank.adopt")}</ActButton>}
         </div>
       )}
 
@@ -267,14 +272,14 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           <h3 className="font-medium">{t("maint.done.title")}</h3>
           {master?.may_release && inst ? (
             askSlaves === null ? (
-              <ActButton variant="primary" size="sm" spinning={action === "release"} disabled={busy} onClick={() => marker(true)}>{t("maint.release")}</ActButton>
+              <ActButton variant="primary" size="sm" spinning={action === "release"} {...may("maintenance.release")} onClick={() => marker(true)}>{t("maint.release")}</ActButton>
             ) : (
               <div className="space-y-1">
                 <p>{t("maint.done.askSlaves")}</p>
                 <div className="flex items-center gap-2">
                   <input type="number" min={0} max={15} value={askSlaves} onChange={(e) => setAskSlaves(Math.max(0, Math.min(15, Number(e.target.value) || 0)))}
                     className="w-16 rounded border border-line bg-surface px-2 py-1" aria-label={t("maint.done.askSlaves")} />
-                  <ActButton variant="primary" size="sm" spinning={action === "release"} disabled={busy} onClick={() => marker(true, askSlaves)}>{t("maint.release")}</ActButton>
+                  <ActButton variant="primary" size="sm" spinning={action === "release"} {...may("maintenance.release")} onClick={() => marker(true, askSlaves)}>{t("maint.release")}</ActButton>
                   <Button variant="ghost" size="sm" onClick={() => setAskSlaves(null)}>{t("maint.packs.cancel")}</Button>
                 </div>
               </div>

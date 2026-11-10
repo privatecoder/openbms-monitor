@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { TriangleAlert, Wrench } from "lucide-react";
 import { api, type Alerts } from "../api";
 import { errorKey, pendingPackLabel } from "../maint";
+import { decideUi, lockProps, type UiFacts } from "../locks";
 import { Button } from "../components/ui/button";
 
 /** „14:02“ today, else with the date: a record can be days old. */
@@ -40,6 +41,8 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
   };
   const err = (at: string) => error?.at === at && <p className="text-alarm">{error.text}</p>;
   const pending = flashing ? [] : alerts.pending;
+  // what may be done now (`locks.ts`)
+  const facts: UiFacts = { source: null, chosen: null, busy: busy !== null, flashRunning: flashing };
   if (!alerts.markers.length && !pending.length && !failed) return null;
   return (
     <div className="mb-6 space-y-2">
@@ -52,7 +55,7 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
             <p className="text-muted">{t("maint.banner.pendingHint", { pack: pendingPackLabel(p.pack) })}</p>
             {confirming === p.id && (
               <div className="flex flex-wrap gap-2">
-                <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => act(`p${p.id}`, () => api.maintClearPending(p.id))}>{t("maint.banner.pendingYes", { pack: pendingPackLabel(p.pack) })}</Button>
+                <Button variant="primary" size="sm" {...lockProps(decideUi("pending.clear", facts), t)} onClick={() => act(`p${p.id}`, () => api.maintClearPending(p.id))}>{t("maint.banner.pendingYes", { pack: pendingPackLabel(p.pack) })}</Button>
                 <Button variant="secondary" size="sm" onClick={() => setConfirming(null)}>{t("maint.setup.cancel")}</Button>
               </div>
             )}
@@ -71,7 +74,7 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
               <div className="space-y-1">
                 <p>{t("maint.banner.discardExplain")}</p>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => act(`m${m.installation}`, () => api.maintDiscardLatentMarker(m.installation))}>{t("maint.banner.discardYes")}</Button>
+                  <Button variant="primary" size="sm" {...lockProps(decideUi("marker.release", facts), t)} onClick={() => act(`m${m.installation}`, () => api.maintDiscardLatentMarker(m.installation))}>{t("maint.banner.discardYes")}</Button>
                   <Button variant="secondary" size="sm" onClick={() => setDiscarding(null)}>{t("maint.setup.cancel")}</Button>
                 </div>
               </div>
@@ -81,8 +84,8 @@ export function MaintBanner({ alerts, failed, flashing, onShow, onChanged }: {
           <div className="flex shrink-0 gap-2">
             <Button variant="secondary" size="sm" onClick={() => onShow(m.installation)}>{t("maint.banner.show")}</Button>
             {/* a latent marker cannot be released under an image without 0x64: it can only be discarded */}
-            {m.latent ? discarding !== m.installation && <Button variant="secondary" size="sm" disabled={busy !== null || flashing} onClick={() => setDiscarding(m.installation)}>{t("maint.banner.discard")}</Button>
-              : <Button variant="secondary" size="sm" disabled={busy !== null || flashing} onClick={() => act(`m${m.installation}`, () => api.maintRelease(m.installation))}>{t("maint.release")}</Button>}
+            {m.latent ? discarding !== m.installation && <Button variant="secondary" size="sm" {...lockProps(decideUi("marker.release", facts), t)} onClick={() => setDiscarding(m.installation)}>{t("maint.banner.discard")}</Button>
+              : <Button variant="secondary" size="sm" {...lockProps(decideUi("marker.release", facts), t)} onClick={() => act(`m${m.installation}`, () => api.maintRelease(m.installation))}>{t("maint.release")}</Button>}
           </div>
         </div>
       ))}

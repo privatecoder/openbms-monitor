@@ -785,6 +785,11 @@ const resources = {
         connectedInstallation: "Nicht, solange mit dieser Anlage verbunden ist: ihre Werte kommen weiter an.",
         connectionOpen: "Fest, solange verbunden ist. Zum Ändern: trennen.",
         portHeld: "Ein Vorgang hält gerade den Anschluss (Flashen, Wartung oder Pack-Prüfung).",
+        flashRunning: "Ein Update läuft; bis zu seinem Ende bleibt alles, womit es gestartet wurde.",
+        noPort: "Erst einen Anschluss angeben.",
+        noImage: "Erst ein Firmware-Image wählen.",
+        noTarget: "Erst eine Platine wählen.",
+        oneBoard: "Erst bestätigen, dass nur diese eine Platine am Anschluss hängt.",
       },
       wiring: {
         label: "Wechselrichter angeschlossen über",
@@ -2038,6 +2043,11 @@ const resources = {
         connectedInstallation: "Not while connected with this installation: its values keep arriving.",
         connectionOpen: "Fixed while connected. To change it: disconnect.",
         portHeld: "An action holds the port right now (flashing, maintenance or a pack check).",
+        flashRunning: "An update runs; until it ends everything it was started with stays as it is.",
+        noPort: "Give a port first.",
+        noImage: "Choose a firmware image first.",
+        noTarget: "Choose a board first.",
+        oneBoard: "First confirm that only this one board is on the port.",
       },
       wiring: {
         label: "Inverter connected via",

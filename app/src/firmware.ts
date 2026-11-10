@@ -73,10 +73,6 @@ export function flashGateKeys(g0: number, powerRtc = false, packCutoff = false, 
   return [...keys, ...power, ...cutoff];
 }
 
-/** The image, „Eigene Firmware zulassen“, port and address are fixed while a flash runs (until its end event) or a pack
- *  check runs: a change then could not reach the running flash and would only mislead. */
-export const firmwareInputsLocked = (running: boolean, busy: boolean) => running || busy;
-
 /** One line of the comparison before/after a flash: an i18n key with its values, and its tone. `param` lines carry the
  *  parameter index (the view names it). */
 export interface CompareLine { key: string; vars?: Record<string, unknown>; tone: "ok" | "warn" | "alarm" | "muted"; param?: number }

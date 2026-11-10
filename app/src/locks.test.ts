@@ -60,3 +60,65 @@ describe("sidebar connection", () => {
     expect(lockProps(decideUi("connection.editFields", { ...base, linkPhase: "idle" }), t)).toEqual({ disabled: false });
   });
 });
+
+describe("firmware and maintenance", () => {
+  const fw: UiFacts = { source: null, chosen: "A", image: true, port: true };
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { ...fw, ...f });
+  it("what a flash starts with stays fixed while one runs or a check holds the panel", () => {
+    for (const a of ["firmware.inputs", "firmware.benchSearch", "firmware.recoverProbe"] as const) {
+      expect(s(a, {})).toBe("open");
+      expect(s(a, { flashRunning: true })).toBe("locked:lock.flashRunning");
+      expect(s(a, { busy: true })).toBe("locked:lock.busy");
+    }
+    expect(s("firmware.benchSearch", { port: false })).toBe("locked:lock.noPort");
+    expect(s("firmware.tab", { flashRunning: true })).toBe("locked:lock.flashRunning");
+    expect(s("firmware.tab", { busy: true })).toBe("open");
+  });
+  it("bench flash and recovery need their target, the image, and nothing running", () => {
+    expect(s("firmware.benchFlash", { target: true })).toBe("open");
+    expect(s("firmware.benchFlash", { target: false })).toBe("locked:lock.noTarget");
+    expect(s("firmware.benchFlash", { target: true, image: false })).toBe("locked:lock.noImage");
+    expect(s("firmware.benchFlash", { target: true, flashRunning: true })).toBe("locked:lock.flashRunning");
+    expect(s("firmware.recover", { target: true })).toBe("open");
+    expect(s("firmware.recover", { target: false })).toBe("locked:lock.oneBoard");
+    expect(s("firmware.recover", { target: true, image: false })).toBe("locked:lock.noImage");
+    expect(s("firmware.recover", { target: true, busy: true })).toBe("locked:lock.busy");
+  });
+  it("a read of the target: not while flashing, the port is held or a read runs", () => {
+    expect(s("firmware.readTarget", {})).toBe("open");
+    expect(s("firmware.readTarget", { flashRunning: true })).toBe("locked:lock.flashRunning");
+    expect(s("firmware.readTarget", { portHeld: true })).toBe("locked:lock.portHeld");
+    expect(s("firmware.readTarget", { busy: true })).toBe("locked:lock.busy");
+    expect(s("firmware.readTarget", { port: false })).toBe("locked:lock.noPort");
+  });
+  it("halt and release only wait for another panel action; rescan needs a quiet bus", () => {
+    for (const a of ["maintenance.halt", "maintenance.release"] as const) {
+      expect(s(a, { flashRunning: true })).toBe("open");
+      expect(s(a, { busy: true })).toBe("locked:lock.busy");
+    }
+    expect(s("maintenance.rescan", { quiet: true })).toBe("open");
+    expect(s("maintenance.rescan", { quiet: false })).toBe("locked:maint.packs.why.quiet");
+    expect(s("maintenance.rescan", { quiet: true, flashRunning: true })).toBe("locked:lock.flashRunning");
+    expect(s("maintenance.adopt", { flashRunning: true })).toBe("locked:lock.flashRunning");
+    expect(s("maintenance.editPorts", { flashRunning: true })).toBe("locked:lock.flashRunning");
+    expect(s("maintenance.editPorts", { busy: true })).toBe("open");
+  });
+  it("a pack row's flash: the reasons of flashBlocked, in its order", () => {
+    const image = { kind: "original" } as never;
+    const flash = { image, quiet: true, busy: false, running: false, address: 1, master: null, pending: [], port: "serial:/dev/p" };
+    expect(s("maintenance.flash", { flash })).toBe("open");
+    expect(s("maintenance.flash", { flash: { ...flash, quiet: false } })).toBe("locked:maint.packs.why.quiet");
+    expect(s("maintenance.flash", { flash: { ...flash, running: true } })).toBe("locked:maint.packs.why.running");
+    expect(s("maintenance.flash", { flash: { ...flash, image: null } })).toBe("locked:maint.packs.why.image");
+    const pending = [{ id: 1, endpoint: "serial:/dev/p", pack: 3, since: 0 }] as never;
+    expect(s("maintenance.flash", { flash: { ...flash, pending } })).toBe("locked:maint.err.bootloader-pending");
+    // the pack the record is of may be flashed again (to finish it)
+    expect(s("maintenance.flash", { flash: { ...flash, pending, address: 3 } })).toBe("open");
+  });
+  it("the banner: a pending record can always be cleared by hand; a marker is released unless a flash runs", () => {
+    expect(s("pending.clear", { flashRunning: true })).toBe("open");
+    expect(s("pending.clear", { busy: true })).toBe("locked:lock.busy");
+    expect(s("marker.release", {})).toBe("open");
+    expect(s("marker.release", { flashRunning: true })).toBe("locked:lock.flashRunning");
+  });
+});

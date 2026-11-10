@@ -8,7 +8,8 @@ import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, firmwareInputsLocked, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
+import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
 import { chargeLine } from "../control";
 import { useWriteTexts } from "../components/ParamEdit";
 import { errorKey, packPortOf, portKey, type PortKind } from "../maint";
@@ -77,8 +78,12 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const bPort = benchPort.target.trim() ? portKey(benchPort.kind, benchPort.target.trim()) : "";
   // a search belongs to the port it ran on
   useEffect(() => { setScan(null); setError(null); setRecProbe(null); setOneBoard(false); }, [bPort]);
-  const busy = scanning;
-  const inputsLocked = firmwareInputsLocked(running, busy);
+  // a search or a bootloader probe holds the port
+  const busy = scanning || recProbe === "probing";
+  // what may be done now (`locks.ts`)
+  const fw: UiFacts = { source: null, chosen: inst?.id ?? null, flashRunning: running, busy, image: !!image, port: !!bPort };
+  const may = (a: UiAction, more: Partial<UiFacts> = {}) => lockProps(decideUi(a, { ...fw, ...more }), t);
+  const inputsLocked = decideUi("firmware.inputs", fw).locked;
   const phrase = confirmationPhrase(address, image?.custom);
   const owner = inst && bPort && bPort === port ? inst : null;
 
@@ -179,7 +184,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const imagePicker = (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-4">
-        <Button variant="secondary" size="sm" disabled={inputsLocked} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
+        <Button variant="secondary" size="sm" {...may("firmware.inputs")} onClick={chooseImage}>{t("fw.chooseImage")}</Button>
         {/* like every other input: fixed while a flash (or a check) runs */}
         <label className={cn("flex items-center gap-2 text-sm text-muted", inputsLocked && "opacity-60")}><Switch checked={allowCustom} onChange={toggleCustom} disabled={inputsLocked} />{t("fw.allowCustom")}</label>
       </div>
@@ -213,7 +218,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       {/* two ways to flash, one image: the pack bus panel (live status, packs) or one pack by hand */}
       <div className="flex rounded-md bg-sunken p-0.5 text-sm" role="group">
         {(["bus", "bench"] as const).map((k) => (
-          <button key={k} aria-pressed={tab === k} disabled={running} onClick={() => setTab(k)}
+          <button key={k} aria-pressed={tab === k} {...may("firmware.tab")} onClick={() => setTab(k)}
             className={cn("flex-1 rounded px-2 py-1 disabled:opacity-50", tab === k ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>{t(`fw.tab.${k}`)}</button>
         ))}
       </div>
@@ -235,7 +240,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {owner && <p className="text-sm text-discharge">{t("fw.bench.useBus", { name: owner.name })}</p>}
         {imagePicker}
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" disabled={!bPort || inputsLocked} onClick={() => void search()}>{scanning ? t("fw.bench.searching") : t("fw.bench.search")}</Button>
+          <Button variant="secondary" {...may("firmware.benchSearch")} onClick={() => void search()}>{scanning ? t("fw.bench.searching") : t("fw.bench.search")}</Button>
           {scanning && <Button variant="ghost" size="sm" onClick={() => void api.maintScanCancel()}>{t("maint.packs.cancel")}</Button>}
         </div>
         {scan && scan.traffic > 0 && <p className="text-sm text-discharge">{t("fw.bench.traffic", { bytes: scan.traffic })}</p>}
@@ -258,21 +263,21 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {chosen && image && <p className="font-medium">{t("fw.summary", { address: chosen.address, from: chosen.info.firmware_version, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         {benchPort.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
-        <Button variant="primary" disabled={!chosen || !image || inputsLocked} title={phrase} onClick={() => void benchFlash()}>{t("fw.bench.flash", { address: chosen?.address ?? address })}</Button>
+        <Button variant="primary" disabled={decideUi("firmware.benchFlash", { ...fw, target: !!chosen }).locked} title={phrase} onClick={() => void benchFlash()}>{t("fw.bench.flash", { address: chosen?.address ?? address })}</Button>
         {error && <p className="text-sm text-alarm">{error}</p>}
         {/* a board whose application is gone answers no search: its bootloader may still wait on the line */}
         <details className="rounded-md border border-line p-3 text-sm" open={recProbe !== null || (scan !== null && scan.packs.length === 0)}>
           <summary className="cursor-pointer font-medium">{t("fw.rec.title")}</summary>
           <div className="mt-2 space-y-2">
             <p className="text-muted">{t("fw.rec.hint")}</p>
-            <Button variant="secondary" size="sm" disabled={!bPort || inputsLocked || recProbe === "probing"} onClick={() => void probeBootloader()}>
+            <Button variant="secondary" size="sm" {...may("firmware.recoverProbe")} onClick={() => void probeBootloader()}>
               {recProbe === "probing" ? t("fw.rec.probing") : t("fw.rec.probe")}</Button>
             {recProbe && recProbe !== "probing" && recProbe !== "ok" && <p className="text-alarm">{recProbe}</p>}
             {recProbe === "ok" && (
               <>
                 <p>{t("fw.rec.found")}</p>
                 <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={oneBoard} disabled={inputsLocked} onChange={(e) => setOneBoard(e.target.checked)} />{t("fw.rec.oneBoard")}</label>
-                <Button variant="primary" size="sm" disabled={!image || !oneBoard || inputsLocked} title={recoveryPhrase(image?.custom)} onClick={() => void recover()}>{t("fw.rec.start")}</Button>
+                <Button variant="primary" size="sm" disabled={decideUi("firmware.recover", { ...fw, target: oneBoard }).locked} title={recoveryPhrase(image?.custom)} onClick={() => void recover()}>{t("fw.rec.start")}</Button>
                 {!image && <p className="text-muted">{t("fw.rec.needImage")}</p>}
               </>
             )}
@@ -371,7 +376,7 @@ function FlashSocNote({ port, address, locked }: { port: string; address: number
     <div className="space-y-1 rounded-md border border-line p-3 text-sm">
       <p className="flex items-center gap-1 font-medium">{t("fw.soc.title")}<InfoIcon id="topic.remoteDiagnosis" /></p>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" disabled={locked || reading || !port} onClick={() => void readNow()}>{reading ? t("rdiag.reading") : t("fw.soc.read")}</Button>
+        <Button variant="ghost" size="sm" disabled={decideUi("firmware.readTarget", { source: null, chosen: null, portHeld: locked, busy: reading, port: !!port }).locked} onClick={() => void readNow()}>{reading ? t("rdiag.reading") : t("fw.soc.read")}</Button>
       </div>
       {read === null && <p className="text-muted">{t("fw.soc.unavailable")}</p>}
       {read && <SocLines read={read} />}
@@ -410,7 +415,7 @@ function PatchImageNotes({ inst, port, address, release, powerRtc, packCutoff, p
       {latent && <p className="text-alarm">{t("fw.markerLatent")}</p>}
       {/* the pack chosen above (Pack-Adresse) */}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" disabled={locked || reading || !port} onClick={() => void readNow()}>{t("fw.patch.readNow")}</Button>
+        <Button variant="ghost" size="sm" disabled={decideUi("firmware.readTarget", { source: null, chosen: null, portHeld: locked, busy: reading, port: !!port }).locked} onClick={() => void readNow()}>{t("fw.patch.readNow")}</Button>
       </div>
       {fresh !== undefined && fresh !== null && <p>{t("fw.patch.fresh", { value: fresh.toString(16).toUpperCase().padStart(2, "0") })}</p>}
       {fresh === null && <p className="text-muted">{t("fw.patch.unread")}</p>}
