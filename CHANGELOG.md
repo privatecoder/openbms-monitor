@@ -4,6 +4,12 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+## 0.3.9-beta — 2026-11-10
+
+- 0.3.8-beta could keep "Connect" locked as "loading" on its first start: taking over the pack selection remembered on this computer emptied the installation settings and nothing read them again (until another installation was chosen). Settings are read again at once now, and a read started before is not taken.
+- A connect refused before it opens the port (installation busy or gone) leaves a running connection's bus rule as it is.
+- The sidebar's packs line shows the running connection's selection only while connected; an installation deleted or merged away is no longer asked for its settings again and again.
+
 ## 0.3.8-beta — 2026-11-10
 
 - Installations → Ports: "Packs polled over RS485" (search, a count from address 00, or one address) belongs to the installation and is exported with it; the selection last used on this computer is taken over once. The sidebar shows it as one line ("12 packs · addresses 00–11"); the picker stays for "View only". A change during a connection applies from the next one. A set count or address now wins over the slave count the master reports, which counts only when searching.
