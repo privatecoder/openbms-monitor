@@ -89,8 +89,12 @@ pub fn settle() {
     if held() {
         return;
     }
-    if let Some(r) = PENDING.lock().ok().and_then(|mut p| p.take()) {
-        *NOW.lock().unwrap_or_else(|e| e.into_inner()) = r;
+    // the locks in one order everywhere: NOW, PENDING, BOUND. Taking a change and putting it in force is one step, so
+    // a connect's `bind` comes either before (and drops it) or after (and replaces it).
+    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    let waiting = PENDING.lock().ok().and_then(|mut p| p.take());
+    if let Some(r) = waiting {
+        *now = r;
     }
 }
 
@@ -171,10 +175,16 @@ pub fn install(state: &crate::AppState) {
 /// said the inverter is paused. While an action holds the bus the change waits for its end (`PENDING`).
 #[tauri::command]
 pub fn set_wiring(installation: Option<String>, inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
-    if !accepts(BOUND.lock().map_err(|e| e.to_string())?.as_ref(), installation.as_deref()) {
-        return Ok(());
+    {
+        // checked and queued under the same locks, in `bind`'s order (PENDING, then BOUND): a connect binding meanwhile
+        // either comes first (and this change of another installation is dropped) or clears it from PENDING after
+        let mut pending = PENDING.lock().map_err(|e| e.to_string())?;
+        let bound = BOUND.lock().map_err(|e| e.to_string())?;
+        if !accepts(bound.as_ref(), installation.as_deref()) {
+            return Ok(());
+        }
+        *pending = Some(Rule { scope: installation, wiring: Wiring { inverter, paused } });
     }
-    *PENDING.lock().map_err(|e| e.to_string())? = Some(Rule { scope: installation, wiring: Wiring { inverter, paused } });
     settle();
     Ok(())
 }
