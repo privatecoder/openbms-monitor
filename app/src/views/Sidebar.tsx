@@ -292,7 +292,6 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       // cancelled, or the choice changed, while the setting was read: nothing is opened
       stopIfCancelled();
       if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
-      setRunSel(sel);
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       if (!connInst.current) localStorage.setItem("conn.packs", selText(sel));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
@@ -300,6 +299,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
       const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, addrsFixed);
       linkOpen.current = true;
+      // only now is this the running selection: a reconnect cancelled while it waited keeps the old one shown
+      setRunSel(sel);
       stopIfCancelled();
       if (connInst.current && !retry) saveLastWay(connInst.current, kind);
       // the choice changed while connecting: this link belongs to the earlier one, it is closed again

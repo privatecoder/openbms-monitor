@@ -459,7 +459,7 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         return Err(FLASHING.into());
     }
     // the bus is ours now: the rule of exactly this installation, before the first request
-    wiring::bind(&state, installation.as_deref());
+    let bound = wiring::bind(&state, installation.as_deref());
     // a merge, delete, export or import of this installation runs to its end first
     let ids: Vec<&str> = installation.as_deref().into_iter().collect();
     let _inst = control::reserve_installations(&state.ops, &ids, "connect").map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
@@ -522,6 +522,8 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
         _ => false,
     };
     new_link(&state, installation.clone());
+    // the connection is set up: its rule stays bound until it ends
+    bound.keep();
     let gen = link_now(&state).gen;
     let pending = (!can && installation.is_some()).then(|| bank::PendingLink { key: key.clone(), control });
     bank::begin(&state, gen, !can, pending);
@@ -607,6 +609,7 @@ fn stop_monitor_as(state: &AppState, lost: bool) -> Result<(), String> {
         *m = None;
     }
     new_link(state, None);
+    wiring::unbind();
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }

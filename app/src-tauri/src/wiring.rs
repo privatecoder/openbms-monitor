@@ -100,14 +100,47 @@ pub fn settle() {
 /// installation). The inverter is always read from the store; only the session's pause is kept, and only from a rule of
 /// this installation. Without an installation only the brief listen applies (`permit`). A connect refused for a busy
 /// bus never gets here, so it never changes a running action's rule.
-pub fn bind(state: &crate::AppState, installation: Option<&str>) {
+pub fn bind(state: &crate::AppState, installation: Option<&str>) -> Bound {
     let stored = installation
         .and_then(|id| crate::maint::with_store(state, |s| s.wiring(id)).ok().flatten())
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .and_then(|v| serde_json::from_value(v["inverter"].clone()).ok());
     let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    *BOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(installation.map(String::from));
     rebind(&mut now, &mut pending, installation, stored);
+    Bound(true)
+}
+
+/// The installation whose rule an RS485 connection bound (`bind`), from its connect until it ends (`unbind`): a change
+/// for another installation arriving meanwhile (a late update of the one the UI showed before) is dropped, so it never
+/// takes over once the port is free.
+static BOUND: Mutex<Option<Option<String>>> = Mutex::new(None);
+
+/// The connection whose rule was bound ended (disconnect, or another source): changes for any installation count again.
+pub fn unbind() {
+    *BOUND.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Held by a connect after `bind`: a connect that fails or is cancelled unbinds again when it is dropped; one that
+/// worked `keep`s the binding until the connection ends.
+pub struct Bound(bool);
+impl Bound {
+    pub fn keep(mut self) {
+        self.0 = false;
+    }
+}
+impl Drop for Bound {
+    fn drop(&mut self) {
+        if self.0 {
+            unbind();
+        }
+    }
+}
+
+/// Whether a change for `scope` is taken while `bound` (the installation of a running RS485 connection, if any).
+fn accepts(bound: Option<&Option<String>>, scope: Option<&str>) -> bool {
+    bound.map_or(true, |b| b.as_deref() == scope)
 }
 
 /// `bind` without the store: the stored inverter, the pause of a waiting or current rule of the same installation. Every
@@ -138,6 +171,9 @@ pub fn install(state: &crate::AppState) {
 /// said the inverter is paused. While an action holds the bus the change waits for its end (`PENDING`).
 #[tauri::command]
 pub fn set_wiring(installation: Option<String>, inverter: Option<Inverter>, paused: bool) -> Result<(), String> {
+    if !accepts(BOUND.lock().map_err(|e| e.to_string())?.as_ref(), installation.as_deref()) {
+        return Ok(());
+    }
     *PENDING.lock().map_err(|e| e.to_string())? = Some(Rule { scope: installation, wiring: Wiring { inverter, paused } });
     settle();
     Ok(())
@@ -208,6 +244,20 @@ mod tests {
         // no installation: nothing stored, no pause
         rebind(&mut now, &mut pending, None, None);
         assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (None, None, false));
+    }
+
+    #[test]
+    fn while_a_connection_is_bound_only_its_installation_may_change_the_rule() {
+        let b = Some("B".to_string());
+        // B's connection: a late change of C is dropped, B's own (e.g. the pause) is taken
+        assert!(!accepts(Some(&b), Some("C")));
+        assert!(!accepts(Some(&b), None));
+        assert!(accepts(Some(&b), Some("B")));
+        // a „Nur ansehen“ connection: no installation's change replaces its brief listen
+        assert!(!accepts(Some(&None), Some("C")));
+        assert!(accepts(Some(&None), None));
+        // no connection bound (disconnected, failed connect, MQTT): any installation
+        assert!(accepts(None, Some("C")));
     }
 
     #[test]

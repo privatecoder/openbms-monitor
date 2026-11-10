@@ -557,6 +557,8 @@ pub(crate) fn take_over(state: &AppState, installation: Option<&str>) -> u64 {
     if let Ok(mut h) = state.history.lock() {
         h.disconnected();
     }
+    // no RS485 connection any more: its bound bus rule ends (`wiring.rs`)
+    crate::wiring::unbind();
     new_link(state, installation.map(str::to_owned));
     let gen = link_now(state).gen;
     bank::begin(state, gen, false, None);
