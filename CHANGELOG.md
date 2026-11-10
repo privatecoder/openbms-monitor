@@ -4,6 +4,12 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+## 0.3.8-beta — 2026-11-10
+
+- Installations → Ports: "Packs polled over RS485" (search, a count from address 00, or one address) belongs to the installation and is exported with it; the selection last used on this computer is taken over once. The sidebar shows it as one line ("12 packs · addresses 00–11"); the picker stays for "View only". A change during a connection applies from the next one. A set count or address now wins over the slave count the master reports, which counts only when searching.
+- "Inverter connected via" can be changed while connected over Home Assistant; it applies from the next direct RS485 connection. A connect always takes the stored value, and a running RS485 connection takes no late change of another installation.
+- When a field or button is offered or locked is decided in one place for the whole app; a locked button names its reason on hover. The bank check's "Disconnect" and "Connect with B" wait for a take-over running, and its answer counts only for the connection it was asked on.
+
 ## 0.3.7-beta — 2026-11-10
 
 - Firmware → Flash a board: "Bootloader recovery" for a board without a working firmware whose bootloader already waits (it answers no search). "Check bootloader" sends one R F L without a restart and refuses unless exactly one bootloader answers; "Recover" writes the chosen image and then looks for the application at every address. A recovery keeps its own pending record, so no normal flash starts while a board may still hang in its bootloader.

@@ -2705,7 +2705,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openbms-cli"
-version = "0.3.7-beta"
+version = "0.3.8-beta"
 dependencies = [
  "clap",
  "openbms-proto",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "openbms-flash"
-version = "0.3.7-beta"
+version = "0.3.8-beta"
 dependencies = [
  "clap",
  "hex",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "openbms-monitor"
-version = "0.3.7-beta"
+version = "0.3.8-beta"
 dependencies = [
  "chrono",
  "libc",
@@ -2752,7 +2752,7 @@ dependencies = [
 
 [[package]]
 name = "openbms-proto"
-version = "0.3.7-beta"
+version = "0.3.8-beta"
 dependencies = [
  "serde",
  "serde_json",
@@ -2761,7 +2761,7 @@ dependencies = [
 
 [[package]]
 name = "openbms-transport"
-version = "0.3.7-beta"
+version = "0.3.8-beta"
 dependencies = [
  "openbms-proto",
  "serde",
