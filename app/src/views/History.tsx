@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { decideUi, lockProps } from "../locks";
 import { useTranslation } from "react-i18next";
 import { ChartLine, Download, FileUp, RotateCcw } from "lucide-react";
 import { api, isDemo, type Bus, type Installation, type Series, type SiteSpan } from "../api";
@@ -214,10 +215,10 @@ export function History({ installation, connected, bus, packs: livePacks }: { in
             {hasData && (
               <>
                 <Segmented value={format} onChange={(v) => setFormat(v as "jsonl" | "csv")} items={[["csv", "CSV"], ["jsonl", "JSON Lines"]]} />
-                <Button variant="secondary" disabled={isDemo || !data} onClick={doExport}><Download className="h-4 w-4" />{t("hist.export")}</Button>
+                <Button variant="secondary" {...lockProps(decideUi("history.export", { source: null, chosen: site, demo: isDemo, entries: !!data }), t)} onClick={doExport}><Download className="h-4 w-4" />{t("hist.export")}</Button>
               </>
             )}
-            <Button variant="ghost" disabled={isDemo || !site} onClick={doImport}><FileUp className="h-4 w-4" />{t("hist.import")}</Button>
+            <Button variant="ghost" {...lockProps(decideUi("history.import", { source: null, chosen: site, demo: isDemo }), t)} onClick={doImport}><FileUp className="h-4 w-4" />{t("hist.import")}</Button>
           </div>
         </div>
         {hasData && <p className="text-sm text-muted">{t("hist.exportHint")}</p>}

@@ -178,3 +178,34 @@ describe("asking a BMS directly", () => {
     expect(s("pack.probe", { source: "mqtt" })).toBe("hidden");
   });
 });
+
+describe("the rest: BMS history, notifications, capture, recording export", () => {
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: null, chosen: "A", ...f });
+  it("BMS history: read only where offered and not twice; the picker waits for a read", () => {
+    expect(s("bmsHistory.read", { offered: true })).toBe("open");
+    expect(s("bmsHistory.read", { offered: false })).toBe("locked:lock.notOffered");
+    expect(s("bmsHistory.read", { offered: true, reading: true })).toBe("locked:lock.reading");
+    expect(s("bmsHistory.pick", { reading: true })).toBe("locked:lock.reading");
+  });
+  it("notifications belong to an installation; thresholds only while they are on", () => {
+    expect(s("notifications.toggle", { loaded: true })).toBe("open");
+    expect(s("notifications.toggle", { chosen: null })).toBe("locked:lock.noInstallation");
+    expect(s("notifications.toggle", { loaded: false })).toBe("locked:lock.loading");
+    expect(s("notifications.field", { loaded: true, enabled: false })).toBe("locked:lock.notifyOff");
+    expect(s("notifications.field", { loaded: true, enabled: true })).toBe("open");
+    expect(s("recording.system", { available: false })).toBe("locked:rec.systemUnavailable");
+  });
+  it("capture and the recording's export/import", () => {
+    expect(s("capture.toggle", { loaded: true })).toBe("open");
+    expect(s("capture.toggle", { loaded: true, full: true })).toBe("locked:lock.captureFull");
+    expect(s("capture.toggle", { demo: true })).toBe("locked:lock.demo");
+    expect(s("capture.export", { entries: true })).toBe("open");
+    expect(s("capture.export", { entries: true, busy: true })).toBe("locked:lock.busy");
+    expect(s("capture.export", { entries: false })).toBe("locked:lock.nothing");
+    expect(s("capture.clear", { full: true })).toBe("open");
+    expect(s("capture.clear", {})).toBe("locked:lock.nothing");
+    expect(s("history.export", { entries: true })).toBe("open");
+    expect(s("history.export", { entries: true, demo: true })).toBe("locked:lock.demo");
+    expect(s("history.import", { chosen: null })).toBe("locked:lock.noInstallation");
+  });
+});

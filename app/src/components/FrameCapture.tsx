@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { decideUi, lockProps, type UiFacts } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Download, Pause, Play, Radio, Trash2 } from "lucide-react";
 import { api, isDemo, type CaptureStatus, type LinkTiming } from "../api";
@@ -49,6 +50,8 @@ export function FrameCapture() {
   };
 
   const entries = s?.entries ?? 0;
+  // what may be done now (`locks.ts`)
+  const cf: UiFacts = { source: null, chosen: null, demo: isDemo, loaded: !!s, full: !!s?.full, entries: entries > 0, busy };
   const summary = t("cap.summary", {
     entries: t("cap.entries", { count: entries }),
     span: durationText((s?.span_ms ?? 0) / 1000),
@@ -64,11 +67,11 @@ export function FrameCapture() {
       <SectionHead icon={Radio} title={t("cap.title")} help="topic.capture" />
       <p className="max-w-3xl text-muted">{t("cap.intro")}</p>
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant={s?.running ? "secondary" : "primary"} disabled={!s || !!s.full || isDemo} onClick={toggle}>
+        <Button size="sm" variant={s?.running ? "secondary" : "primary"} {...lockProps(decideUi("capture.toggle", cf), t)} onClick={toggle}>
           {s?.running ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}{s?.running ? t("cap.stop") : t("cap.start")}
         </Button>
-        <Button size="sm" disabled={!entries || busy || isDemo} onClick={save}><Download className="h-4 w-4" />{t("cap.export")}</Button>
-        <Button size="sm" variant="ghost" disabled={(!entries && !s?.full) || busy} onClick={clear}><Trash2 className="h-4 w-4" />{t("cap.clear")}</Button>
+        <Button size="sm" {...lockProps(decideUi("capture.export", cf), t)} onClick={save}><Download className="h-4 w-4" />{t("cap.export")}</Button>
+        <Button size="sm" variant="ghost" {...lockProps(decideUi("capture.clear", cf), t)} onClick={clear}><Trash2 className="h-4 w-4" />{t("cap.clear")}</Button>
       </div>
       {state && <StatusLine tone={s?.full ? "warn" : s?.running ? "ok" : "muted"} className="tabular-nums">{state}</StatusLine>}
       {isDemo && <StatusLine>{t("cap.demo")}</StatusLine>}

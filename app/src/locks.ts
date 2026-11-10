@@ -72,7 +72,25 @@ export type UiAction =
   /** pack view: read the serial numbers over the binary service (CAN socket) */
   | "pack.askSerials"
   /** pack view: ask a slave's own firmware identity (64/03) again */
-  | "pack.probe";
+  | "pack.probe"
+  // The rest: BMS history, notifications and recording, frame capture, the recording's export and import
+  /** BMS history: read a pack's records (`offered`: connected, the pack answers, the catalog offers the read) */
+  | "bmsHistory.read"
+  /** BMS history: the pack picker */
+  | "bmsHistory.pick"
+  /** notifications on or off (of the chosen installation) */
+  | "notifications.toggle"
+  /** a notification threshold (only while they are on) */
+  | "notifications.field"
+  /** record the master's system values (`available`: the CAN socket has them) */
+  | "recording.system"
+  /** frame capture: start or stop */
+  | "capture.toggle"
+  | "capture.export"
+  | "capture.clear"
+  /** the recording of the installation: export (`entries`: data is shown) and import */
+  | "history.export"
+  | "history.import";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
@@ -126,6 +144,18 @@ export interface UiFacts {
   bus?: Bus | null;
   /** the connection's firmware profile is read */
   profile?: boolean;
+  /** the browser preview: nothing reaches a file or a device */
+  demo?: boolean;
+  /** the catalog offers the action on this connection (e.g. reading a pack's history) */
+  offered?: boolean;
+  /** a setting group is switched on (notifications) */
+  enabled?: boolean;
+  /** what the action works on is there (system values on the CAN socket) */
+  available?: boolean;
+  /** there is something to act on (captured frames, loaded recording) */
+  entries?: boolean;
+  /** frame capture: its memory limit is reached */
+  full?: boolean;
 }
 
 export interface UiReason { key: string; params?: Record<string, unknown> }
@@ -255,6 +285,35 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     case "pack.probe":
       if (f.source !== "bus" || f.bus !== "can" || !f.profile || f.address === 0) return hide;
       return f.busy ? lock("lock.busy") : show();
+    case "bmsHistory.read":
+      if (!f.offered) return lock("lock.notOffered");
+      return f.reading ? lock("lock.reading") : show();
+    case "bmsHistory.pick":
+      return f.reading ? lock("lock.reading") : show();
+    case "notifications.toggle":
+    case "notifications.field":
+      if (!f.chosen) return lock("lock.noInstallation");
+      if (f.loaded === false) return lock("lock.loading");
+      return action === "notifications.field" && !f.enabled ? lock("lock.notifyOff") : show();
+    case "recording.system":
+      return f.available ? show() : lock("rec.systemUnavailable");
+    case "capture.toggle":
+      if (f.demo) return lock("lock.demo");
+      if (f.loaded === false) return lock("lock.loading");
+      return f.full ? lock("lock.captureFull") : show();
+    case "capture.export":
+      if (f.demo) return lock("lock.demo");
+      if (f.busy) return lock("lock.busy");
+      return f.entries ? show() : lock("lock.nothing");
+    case "capture.clear":
+      if (f.busy) return lock("lock.busy");
+      return f.entries || f.full ? show() : lock("lock.nothing");
+    case "history.export":
+      if (f.demo) return lock("lock.demo");
+      return f.entries ? show() : lock("lock.nothing");
+    case "history.import":
+      if (f.demo) return lock("lock.demo");
+      return f.chosen ? show() : lock("lock.noInstallation");
   }
 }
 

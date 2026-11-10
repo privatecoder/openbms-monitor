@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { decideUi, lockProps, type UiFacts } from "../locks";
 import { useTranslation } from "react-i18next";
 import { ChartLine, FolderOpen, HardDrive } from "lucide-react";
 import { api, isDemo, type HistorySettings, type HistoryStatus, type NotifyStatus } from "../api";
@@ -143,7 +144,7 @@ function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable
             </div>
             {!all && <PackPicker sections={sections} chosen={chosen} onToggle={toggle} count={(a, b) => t("rec.ofCount", { a, b })} />}
             <label className={cn("flex items-start gap-3 rounded-md border border-line p-3 text-sm", !systemAvailable && "opacity-50")}>
-              <Switch checked={opts.system && systemAvailable} disabled={!systemAvailable} onChange={(v) => update({ ...opts, system: v })} />
+              <Switch checked={opts.system && systemAvailable} disabled={decideUi("recording.system", { source: null, chosen: null, available: systemAvailable }).locked} onChange={(v) => update({ ...opts, system: v })} />
               <span>
                 <span className="block font-medium">{t("rec.system")}</span>
                 <span className="text-muted">{systemAvailable ? t("rec.systemHint") : t("rec.systemUnavailable")}</span>
@@ -198,7 +199,9 @@ function NotifySection({ scope }: { scope: string | null }) {
     const id = window.setInterval(tick, 3000);
     return () => { alive = false; window.clearInterval(id); };
   }, []);
-  const usable = !!scope && loaded;
+  // what may be done now (`locks.ts`)
+  const nf: UiFacts = { source: null, chosen: scope, loaded, enabled: n.enabled };
+  const usable = !decideUi("notifications.toggle", nf).locked;
   const set = (next: Partial<NotifySettings>) => {
     void save("notifications", { ...n, ...next }).then((e) => {
       if (e === null) return;
@@ -211,7 +214,7 @@ function NotifySection({ scope }: { scope: string | null }) {
       <span className="text-muted">{label}</span>
       <span className="flex items-center gap-1.5">
         {/* applied when left, so typing a number does not store every keystroke */}
-        <input key={`${scope}-${value}`} type="number" min={range[0]} max={range[1]} defaultValue={value} disabled={!usable || !n.enabled} aria-label={label} className={input}
+        <input key={`${scope}-${value}`} type="number" min={range[0]} max={range[1]} defaultValue={value} {...lockProps(decideUi("notifications.field", nf), t)} aria-label={label} className={input}
           onBlur={(e) => { const v = notifySettings({ [key]: Number(e.target.value) })[key]; e.target.value = String(v); if (v !== value) set({ [key]: v }); }} />
         <span className="w-7 text-muted">{unit}</span>
       </span>
@@ -225,7 +228,7 @@ function NotifySection({ scope }: { scope: string | null }) {
     <section className="space-y-3">
       <h3 className="flex items-center gap-1.5 font-medium">{t("notify.title")}<InfoIcon id="topic.notifications" /></h3>
       <label className={cn("flex items-start gap-3 rounded-md border border-line p-3 text-sm", !usable && "opacity-50")}>
-        <Switch checked={n.enabled} disabled={!usable} onChange={(v) => set({ enabled: v })} />
+        <Switch checked={n.enabled} disabled={decideUi("notifications.toggle", nf).locked} onChange={(v) => set({ enabled: v })} />
         <span>
           <span className="block font-medium">{t("notify.enable")}</span>
           <span className="text-muted">{t("notify.enableHint")}</span>

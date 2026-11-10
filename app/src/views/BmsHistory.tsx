@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { decideUi, lockProps, type UiFacts } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Download, History as HistoryIcon, X } from "lucide-react";
 import { api, isDemo, linkNow, type ArchivePack, type ArchivedRecord, type BmsHistoryRecord, type Bus } from "../api";
@@ -123,18 +124,20 @@ export function BmsHistory({ connected, bus, packs: livePacks, installation }: {
     ? result.archived != null ? t("bmsh.arch.saved", { count: result.archived }) : result.archive_note ? t(`bmsh.arch.${result.archive_note}`) : null
     : null;
 
+  // what may be done now (`locks.ts`)
+  const hf: UiFacts = { source: null, chosen: null, offered: usable && address !== null, reading: !!reading };
   return (
     <div className="space-y-6">
       <Panel className="space-y-3 p-5">
         <p className="max-w-3xl text-muted">{t("bmsh.intro")}<InfoIcon id="topic.bmsHistory" className="ml-1.5 align-middle" /></p>
         <div className="flex flex-wrap items-center gap-2">
           {packs.length > 0 && (
-            <select value={address ?? ""} onChange={(e) => { setAddress(Number(e.target.value)); setSaved(null); }} disabled={reading} aria-label={t("bmsh.pack")}
+            <select value={address ?? ""} onChange={(e) => { setAddress(Number(e.target.value)); setSaved(null); }} {...lockProps(decideUi("bmsHistory.pick", hf), t)} aria-label={t("bmsh.pack")}
               className="h-9 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
               {packs.map((a) => <option key={a} value={a}>{t("bmsh.pack")} {no(a)}</option>)}
             </select>
           )}
-          <Button variant="primary" disabled={!usable || address === null || reading} onClick={start}><HistoryIcon className="h-4 w-4" />{t("bmsh.read")}</Button>
+          <Button variant="primary" {...lockProps(decideUi("bmsHistory.read", hf), t)} onClick={start}><HistoryIcon className="h-4 w-4" />{t("bmsh.read")}</Button>
           {reading && <Button variant="ghost" onClick={() => void api.bmsHistoryCancel()}><X className="h-4 w-4" />{t("bmsh.cancel")}</Button>}
           {all.length > 0 && !reading && <Button className="ml-auto" onClick={save}><Download className="h-4 w-4" />{t("bmsh.save")}</Button>}
         </div>
