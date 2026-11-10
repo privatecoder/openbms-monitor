@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Tag } from "lucide-react";
 import { api } from "../api";
@@ -34,11 +34,13 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, pendi
   useEffect(() => { setInput(""); setNote(null); setAsk(null); }, [address, linkKey]);
   // a refusal left switches live meanwhile: a confirmation asked before must not send now
   useEffect(() => { if (pending) setAsk(null); }, [pending]);
-  if (!usable || address === null) return null;
+  if (address === null || !decideUi("pack.section", { source: null, chosen: null, address, connected: usable, offered: true }).visible) return null;
 
   const nf = new Intl.NumberFormat(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const name = input.trim();
-  const ok = nameInputOk(name) && !!read && name !== read.device_name && !pending;
+  // the name typed is valid and new; whether it may be written now is `params.name` (`locks.ts`)
+  const nameFacts = { source: null, chosen: null, busy: !!busy, held: !!locked, available: !!read, refused: pending } as const;
+  const ok = nameInputOk(name) && !!read && name !== read.device_name && !decideUi("params.name", nameFacts).locked;
 
   const write = async (confirmed: boolean) => {
     if (!read || pending) return;
@@ -85,17 +87,17 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, pendi
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="w-32 text-muted">{t("nmw.current")}</span>
         <span className="min-w-56 font-mono text-xs">{read ? read.device_name || t("nmw.empty") : t("nmw.notRead")}</span>
-        <input value={input} onChange={(e) => { setInput(e.target.value); setAsk(null); }} maxLength={12} disabled={actLocked(!!busy, !!locked) || !read}
+        <input value={input} onChange={(e) => { setInput(e.target.value); setAsk(null); }} maxLength={12} disabled={decideUi("params.name", { ...nameFacts, refused: false }).locked}
           placeholder={t("nmw.placeholder")} aria-label={t("nmw.placeholder")}
           className={`h-8 w-40 rounded-md border bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-charge ${name && !nameInputOk(name) ? "border-alarm" : "border-line"}`} />
-        <Button size="sm" disabled={actLocked(!!busy, !!locked) || !ok} onClick={() => void write(false)}>{busy ? t("nmw.writing") : t("nmw.write")}</Button>
+        <Button size="sm" disabled={!ok} onClick={() => void write(false)}>{busy ? t("nmw.writing") : t("nmw.write")}</Button>
         {name !== "" && !nameInputOk(name) && <span className="text-alarm">{t("nmw.invalid")}</span>}
       </div>
       {ask && (
         <div className="flex flex-wrap items-center gap-2">
           <StatusLine tone="warn">{ask.full === null ? t("nmw.capacityUnknown", { rated: nf.format(ask.rated / 100) })
             : t("nmw.capacityResets", { full: nf.format(ask.full), rated: nf.format(ask.rated / 100) })}</StatusLine>
-          <Button size="sm" disabled={actLocked(!!busy, !!locked) || pending} onClick={() => void write(true)}>{t("nmw.writeAnyway")}</Button>
+          <Button size="sm" disabled={decideUi("params.name", nameFacts).locked} onClick={() => void write(true)}>{t("nmw.writeAnyway")}</Button>
           <Button size="sm" variant="ghost" disabled={actLocked(!!busy, false)} onClick={() => setAsk(null)}>{t("ctl.cancel")}</Button>
         </div>
       )}

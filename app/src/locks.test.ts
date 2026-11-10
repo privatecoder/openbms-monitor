@@ -315,3 +315,20 @@ describe("the last ones: other bus, stored parameters, files, cells, updates, pa
     expect(s("pack.section", { address: 1, connected: true, offered: false })).toBe("hidden");
   });
 });
+
+describe("name, diff filter, report export", () => {
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: null, chosen: null, ...f });
+  it("the name: typed once read; written unless a refusal is open", () => {
+    expect(s("params.name", { available: true })).toBe("open");
+    expect(s("params.name", { available: false })).toBe("locked:lock.notRead");
+    expect(s("params.name", { available: true, refused: true })).toBe("locked:lock.refused");
+    expect(s("params.name", { available: true, held: true })).toBe("locked:lock.writeRunning");
+    expect(s("params.name", { available: true, busy: true })).toBe("locked:lock.busy");
+  });
+  it("diff filter and report export need their data", () => {
+    expect(s("params.onlyDiff", { available: false })).toBe("locked:par.onlyDiffNeeds");
+    expect(s("params.onlyDiff", { available: true })).toBe("open");
+    expect(s("report.export", { entries: false })).toBe("locked:lock.nothing");
+    expect(s("report.export", { entries: true })).toBe("open");
+  });
+});

@@ -628,7 +628,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           <input ref={file} type="file" accept=".toml,application/toml,text/plain" multiple className="hidden" onChange={(e) => open(e.target.files)} />
           {cols.some((c) => !c.notRead) && <Button variant="ghost" disabled={lockedFor("params.clear")} onClick={() => { setSources(() => withPlaceholders([], packs, readsBus)); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm" title={diffUsable ? t("par.onlyDiffHint") : t("par.onlyDiffNeeds")}>
-            <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={filtered} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={!diffUsable} />
+            <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={filtered} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={decideUi("params.onlyDiff", { source: null, chosen: null, available: diffUsable }).locked} />
             <span className={cn(!diffUsable && "text-muted")}>{t("par.onlyDiff")}</span>
           </label>
         </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Hash } from "lucide-react";
 import { api, type SerialNumbers } from "../api";
@@ -36,7 +36,7 @@ export function SerialLine({ address, usable, locked, onBusy, linkKey }: { addre
     api.serialNumbers(address).then((r) => { if (alive) { setRead(r); setReadAt(new Date()); } }, (e) => alive && setRead({ error: errorText(e, t) }));
     return () => { alive = false; };
   }, [address, usable, reload]);
-  if (!usable || address === null) return null;
+  if (address === null || !decideUi("pack.section", { source: null, chosen: null, address, connected: usable, offered: true }).visible) return null;
 
   const write = async (which: Which) => {
     const a = address, text = input[which].trim();

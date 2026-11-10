@@ -141,7 +141,14 @@ export type UiAction =
   | "update.install"
   /** a single-pack section of Parameters: shown with a chosen pack on the direct connection, where the firmware offers
    *  it (`offered`, from the catalog or the image flags; decided there) */
-  | "pack.section";
+  | "pack.section"
+  /** Parameters: the pack's name (`available`: its parameter block is read; `refused`: a refusal still open, which
+   *  holds the write but not the typing) */
+  | "params.name"
+  /** Parameters: show only the rows that differ (`available`: two comparable columns) */
+  | "params.onlyDiff"
+  /** health report: export as CSV (`entries`) */
+  | "report.export";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
@@ -444,6 +451,15 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       return f.available ? show() : hide;
     case "pack.section":
       return f.address != null && f.connected && f.offered ? show() : hide;
+    case "params.name":
+      if (f.busy) return lock("lock.busy");
+      if (f.held) return lock("lock.writeRunning");
+      if (!f.available) return lock("lock.notRead");
+      return f.refused ? lock("lock.refused") : show();
+    case "params.onlyDiff":
+      return f.available ? show() : lock("par.onlyDiffNeeds");
+    case "report.export":
+      return f.entries ? show() : lock("lock.nothing");
   }
 }
 

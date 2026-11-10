@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { decideUi, lockProps } from "../locks";
 import { useTranslation } from "react-i18next";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Download } from "lucide-react";
 import { api, isDemo, type CellAnalysis, type HealthReport as Report, type PackDay } from "../api";
@@ -140,7 +141,7 @@ export function HealthReport({ site, name, siteFrom, pairs }: { site: string; na
           <Segmented value={String(period)} onChange={(v) => setPeriod(v === "all" ? "all" : (Number(v) as Period))}
             items={PERIODS.map((p) => [String(p), p === "all" ? t("hist.all") : t("hist.daysShort", { count: p })] as [string, string])} />
           {busy && <span className="text-sm text-muted">{t("hist.loading")}</span>}
-          <Button className="ml-auto" variant="secondary" disabled={!report?.packs.length} onClick={save}><Download className="h-4 w-4" />{t("hist.rep.csv")}</Button>
+          <Button className="ml-auto" variant="secondary" {...lockProps(decideUi("report.export", { source: null, chosen: null, entries: !!report?.packs.length }), t)} onClick={save}><Download className="h-4 w-4" />{t("hist.rep.csv")}</Button>
         </div>
         <p className="max-w-3xl text-sm text-muted">{t("hist.rep.intro")}</p>
         {report && <p className="text-sm text-muted">{date(report.from)} – {date(Math.max(report.from, report.to - 1)) /* to: the midnight after the last day */}</p>}

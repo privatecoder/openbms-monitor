@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Crosshair, Network } from "lucide-react";
 import { api, type DeviceInfo, type PackLive } from "../api";
@@ -50,7 +50,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
     }, (e) => alive && setDevice({ error: String(e) }));
     return () => { alive = false; };
   }, [address, usable, reload]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!usable || address === null) return null;
+  if (address === null || !decideUi("pack.section", { source: null, chosen: null, address, connected: usable, offered: true }).visible) return null;
 
   const set = async () => {
     if (choice === null) return;
@@ -130,7 +130,7 @@ export function CalibrationSection({ address, usable, locked, onBusy, linkKey }:
     void tick();
     return () => { gen.current++; window.clearTimeout(timer); };
   }, [open, usable, address, kick]);
-  if (!usable || address === null) return null;
+  if (address === null || !decideUi("pack.section", { source: null, chosen: null, address, connected: usable, offered: true }).visible) return null;
 
   const nf = (d: number) => new Intl.NumberFormat(lang, { minimumFractionDigits: d, maximumFractionDigits: d });
   const tel = live && "telemetry" in live ? live.telemetry : null;
