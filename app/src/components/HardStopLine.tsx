@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { OctagonPause } from "lucide-react";
 import type { Parameters } from "../params";
@@ -27,7 +27,7 @@ export function HardStopLine({ address, read, known, connected, linkKey, locked,
   const gen = useRef(0);
   useEffect(() => onBusy?.(busy), [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { gen.current += 1; setNote(null); setPending(null); }, [address, linkKey]);
-  if (address === null || !connected || !hardStopConfigurable(flags)) return null;
+  if (address === null || !decideUi("pack.section", { source: null, chosen: null, address, connected, offered: hardStopConfigurable(flags) }).visible) return null;
   const choice = read ? hardStopChoice(read.function_switches[0], flags!) : null;
   const set = async (enabled: boolean, confirmed: boolean) => {
     if (!read) return;

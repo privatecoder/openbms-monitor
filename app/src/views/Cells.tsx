@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Check, Copy, Download, Pencil, Plus, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { useCellDb, type DbEntry, type ImportPlan, type Origin } from "../cells/store";
@@ -50,8 +51,8 @@ export function Cells() {
           <p className="mt-1 text-muted">{t("cells.count", { total: db.entries.length, mine: db.user.length })}</p>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" disabled={!db.ready} onClick={() => setEditing({ cell: blankCell(), isNew: true })}><Plus className="h-4 w-4" />{t("cells.new")}</Button>
-          <Button size="sm" variant="ghost" disabled={!db.ready} onClick={() => setTransfer("import")}><Upload className="h-4 w-4" />{t("cells.import")}</Button>
+          <Button size="sm" disabled={decideUi("cells.act", { source: null, chosen: null, loaded: db.ready }).locked} onClick={() => setEditing({ cell: blankCell(), isNew: true })}><Plus className="h-4 w-4" />{t("cells.new")}</Button>
+          <Button size="sm" variant="ghost" disabled={decideUi("cells.act", { source: null, chosen: null, loaded: db.ready }).locked} onClick={() => setTransfer("import")}><Upload className="h-4 w-4" />{t("cells.import")}</Button>
           <Button size="sm" variant="ghost" onClick={() => setTransfer("export")}><Download className="h-4 w-4" />{t("cells.export")}</Button>
         </div>
       </header>
@@ -128,10 +129,10 @@ function Detail({ entry, ready, onEdit, onDuplicate, onRestore, onDelete }: { en
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={!ready} onClick={onEdit}><Pencil className="h-4 w-4" />{entry.origin === "bundled" ? t("cells.adapt") : t("cells.edit")}</Button>
-          <Button size="sm" variant="ghost" disabled={!ready} onClick={onDuplicate}><Copy className="h-4 w-4" />{t("cells.duplicate")}</Button>
-          {entry.origin === "overridden" && <Button size="sm" variant="ghost" disabled={!ready} onClick={onRestore}><RotateCcw className="h-4 w-4" />{t("cells.restore")}</Button>}
-          {entry.origin === "own" && <Button size="sm" variant="ghost" disabled={!ready} onClick={onDelete}><Trash2 className="h-4 w-4" />{t("cells.delete")}</Button>}
+          <Button size="sm" disabled={decideUi("cells.act", { source: null, chosen: null, loaded: ready }).locked} onClick={onEdit}><Pencil className="h-4 w-4" />{entry.origin === "bundled" ? t("cells.adapt") : t("cells.edit")}</Button>
+          <Button size="sm" variant="ghost" disabled={decideUi("cells.act", { source: null, chosen: null, loaded: ready }).locked} onClick={onDuplicate}><Copy className="h-4 w-4" />{t("cells.duplicate")}</Button>
+          {entry.origin === "overridden" && <Button size="sm" variant="ghost" disabled={decideUi("cells.act", { source: null, chosen: null, loaded: ready }).locked} onClick={onRestore}><RotateCcw className="h-4 w-4" />{t("cells.restore")}</Button>}
+          {entry.origin === "own" && <Button size="sm" variant="ghost" disabled={decideUi("cells.act", { source: null, chosen: null, loaded: ready }).locked} onClick={onDelete}><Trash2 className="h-4 w-4" />{t("cells.delete")}</Button>}
         </div>
       </div>
 

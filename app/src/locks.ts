@@ -127,7 +127,21 @@ export type UiAction =
   /** an offer after a connect: keep the broker or port, connect on the other bus */
   | "connection.saveOffer"
   /** switching views and the maintenance functions: not while an action holds the port (a flash) */
-  | "app.navigate";
+  | "app.navigate"
+  /** after a connect where nothing answered: one click connects on the other bus that answered (`available`) */
+  | "connection.otherBus"
+  /** Parameters: load the installation's stored parameter states */
+  | "params.loadStored"
+  /** open a saved file's folder (not in the preview) */
+  | "file.reveal"
+  /** an action on the cell database or the datasheet choice: once it is loaded (`loaded`) */
+  | "cells.act"
+  /** About: look for an update (not while one is looked for or installed: `busy`); install one found (`available`) */
+  | "update.check"
+  | "update.install"
+  /** a single-pack section of Parameters: shown with a chosen pack on the direct connection, where the firmware offers
+   *  it (`offered`, from the catalog or the image flags; decided there) */
+  | "pack.section";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
@@ -372,9 +386,6 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       return f.chosen ? show() : lock("lock.noInstallation");
     case "history.enable":
       return f.demo ? lock("lock.demo") : show();
-    case "history.reveal":
-    case "notifications.test":
-      return f.demo ? hide : show();
     case "connection.connect":
       if (f.linkPhase === "connecting") return lock("lock.connecting");
       if (f.portHeld) return lock("lock.portHeld");
@@ -415,6 +426,24 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     case "connection.saveOffer":
     case "app.navigate":
       return f.portHeld ? lock("lock.portHeld") : show();
+    case "connection.otherBus":
+      if (!f.available || f.linkPhase !== "idle") return hide;
+      return f.portHeld ? lock("lock.portHeld") : show();
+    case "params.loadStored":
+      if (f.demo) return lock("lock.demo");
+      return f.chosen ? show() : lock("lock.noInstallation");
+    case "history.reveal":
+    case "file.reveal":
+    case "notifications.test":
+      return f.demo ? hide : show();
+    case "cells.act":
+      return f.loaded === false ? lock("lock.loading") : show();
+    case "update.check":
+      return f.available ? hide : f.busy ? lock("lock.busy") : show();
+    case "update.install":
+      return f.available ? show() : hide;
+    case "pack.section":
+      return f.address != null && f.connected && f.offered ? show() : hide;
   }
 }
 

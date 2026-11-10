@@ -283,3 +283,35 @@ describe("the rest, all of it: navigation, offers, broker fields, parameter writ
     expect(s("pack.power", { available: true })).toBe("open");
   });
 });
+
+describe("the last ones: other bus, stored parameters, files, cells, updates, pack sections", () => {
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: null, chosen: "A", ...f });
+  it("the other-bus offer only while idle and something answered there", () => {
+    expect(s("connection.otherBus", { available: true, linkPhase: "idle" })).toBe("open");
+    expect(s("connection.otherBus", { available: true, linkPhase: "connecting" })).toBe("hidden");
+    expect(s("connection.otherBus", { available: true, linkPhase: "open" })).toBe("hidden");
+    expect(s("connection.otherBus", { available: false, linkPhase: "idle" })).toBe("hidden");
+    expect(s("connection.otherBus", { available: true, linkPhase: "idle", portHeld: true })).toBe("locked:lock.portHeld");
+  });
+  it("stored parameters need an installation; files and the cell database", () => {
+    expect(s("params.loadStored", {})).toBe("open");
+    expect(s("params.loadStored", { chosen: null })).toBe("locked:lock.noInstallation");
+    expect(s("params.loadStored", { demo: true })).toBe("locked:lock.demo");
+    expect(s("file.reveal", { demo: true })).toBe("hidden");
+    expect(s("cells.act", { loaded: false })).toBe("locked:lock.loading");
+    expect(s("cells.act", { loaded: true })).toBe("open");
+  });
+  it("updates: check unless one runs or is found; install once found", () => {
+    expect(s("update.check", {})).toBe("open");
+    expect(s("update.check", { busy: true })).toBe("locked:lock.busy");
+    expect(s("update.check", { available: true })).toBe("hidden");
+    expect(s("update.install", { available: true })).toBe("open");
+    expect(s("update.install", {})).toBe("hidden");
+  });
+  it("a pack section: a chosen pack, the direct connection, offered by the firmware", () => {
+    expect(s("pack.section", { address: 0, connected: true, offered: true })).toBe("open");
+    expect(s("pack.section", { address: null, connected: true, offered: true })).toBe("hidden");
+    expect(s("pack.section", { address: 1, connected: false, offered: true })).toBe("hidden");
+    expect(s("pack.section", { address: 1, connected: true, offered: false })).toBe("hidden");
+  });
+});

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import { BatteryCharging, BookOpen, Bug, Download, ExternalLink, GitBranch, Package, RefreshCw, Scale, ScrollText } from "lucide-react";
@@ -40,9 +41,9 @@ function UpdatePanel() {
           </p>
         </div>
         <div className="flex gap-2">
-          {u.phase === "available"
+          {decideUi("update.install", { source: null, chosen: null, available: u.phase === "available" }).visible
             ? <Button size="sm" onClick={() => void installUpdate()}><Download className="h-4 w-4" />{t("about.update.install")}</Button>
-            : <Button size="sm" variant="ghost" disabled={u.phase === "checking" || u.phase === "installing"} onClick={() => void checkUpdate()}>
+            : <Button size="sm" variant="ghost" disabled={decideUi("update.check", { source: null, chosen: null, busy: u.phase === "checking" || u.phase === "installing" }).locked} onClick={() => void checkUpdate()}>
                 <RefreshCw className={u.phase === "checking" ? "h-4 w-4 animate-spin" : "h-4 w-4"} />{t("about.update.check")}
               </Button>}
         </div>

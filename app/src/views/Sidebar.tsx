@@ -591,7 +591,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     try {
       const done = await api.bankConfirm(inst, addresses);
       if (linkNow() === link) setIds((all) => all.map((v) => (done.includes(v.address) ? { ...v, kind: "known" } : v)));
-    } catch (e) { setBankError(t("bank.confirmFailed", { err: String(e) })); }
+    } catch (e) { if (linkNow() === link) setBankError(t("bank.confirmFailed", { err: String(e) })); }
     finally { setConfirming(false); }
   };
   const askKey = (a: SaveAsk) => `${a.inst}|${a.bus}|${portKey(a.kind, a.target)}`;
@@ -819,8 +819,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
               {saveError && <p className="text-sm text-alarm">{saveError}</p>}
             </div>
           )}
-          {offer && !busy && !connected && (
-            <Button variant="secondary" size="sm" className="mt-1" {...lockProps(decideUi("connection.saveOffer", facts), t)} onClick={() => { setBus(offer); void connect(false, offer); }}>
+          {decideUi("connection.otherBus", { ...facts, available: !!offer }).visible && offer && (
+            <Button variant="secondary" size="sm" className="mt-1" {...lockProps(decideUi("connection.otherBus", { ...facts, available: true }), t)} onClick={() => { setBus(offer); void connect(false, offer); }}>
               {t("conn.check.switch", { bus: t(`conn.busName.${offer}`) })}
             </Button>
           )}

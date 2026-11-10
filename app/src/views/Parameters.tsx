@@ -1,4 +1,4 @@
-import { decideUi, type UiAction, type UiFacts, type WriteKind, actLocked } from "../locks";
+import { decideUi, type UiAction, type UiFacts, type WriteKind, actLocked, lockProps } from "../locks";
 import { AccessMatrix } from "../components/AccessMatrix";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -623,7 +623,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
       <Panel className="space-y-3 p-5">
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="primary" disabled={!canRead} onClick={read}><Download className="h-4 w-4" />{t("par.read")}</Button>
-          <Button disabled={!installation || isDemo} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
+          <Button {...lockProps(decideUi("params.loadStored", { source: null, chosen: installation?.id ?? null, demo: isDemo }), t)} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".toml,application/toml,text/plain" multiple className="hidden" onChange={(e) => open(e.target.files)} />
           {cols.some((c) => !c.notRead) && <Button variant="ghost" disabled={lockedFor("params.clear")} onClick={() => { setSources(() => withPlaceholders([], packs, readsBus)); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
@@ -666,7 +666,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           storedProof={chosen !== null && ["flash", "user"].includes(targetRead(chosen)?.patch?.source ?? "")} linkKey={link} />}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-sm">
           <span className="flex items-center gap-1.5 font-medium">{t("par.check")}<InfoIcon id="topic.paramCheck" /></span>
-          <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={db.loading}
+          <select value={refChoice === "none" ? "" : ref?.cell ?? ""} disabled={decideUi("cells.act", { source: null, chosen: null, loaded: !db.loading }).locked}
             onChange={(e) => setRef(e.target.value ? { cell: e.target.value, parallel: ref?.parallel ?? common?.parallel ?? 1 } : "none")}
             className="h-8 min-w-60 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
             <option value="">{t("par.noCheck")}</option>
@@ -684,7 +684,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           "path" in saved ? (
             <p className="flex flex-wrap items-center gap-2 text-sm text-ok">
               {t("par.saved", { name: saved.path.split(/[\\/]/).pop() })}
-              {!isDemo && <Button size="sm" variant="ghost" onClick={() => api.revealParameters(saved.path)}><FolderOpen className="h-4 w-4" />{t("par.reveal")}</Button>}
+              {decideUi("file.reveal", { source: null, chosen: null, demo: isDemo }).visible && <Button size="sm" variant="ghost" onClick={() => api.revealParameters(saved.path)}><FolderOpen className="h-4 w-4" />{t("par.reveal")}</Button>}
             </p>
           ) : <p className="text-sm text-alarm">{t("par.saveError", { err: saved.error })}</p>
         )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { HardDrive } from "lucide-react";
 import { api, type DiagCompare, type DiagRecord, type MemoryDiagnosis } from "../api";
@@ -24,7 +24,8 @@ export function DiagnosisLine({ address, known, connected, locked, linkKey }: { 
   // the request generation: a new pack or link drops whatever answer is still on its way
   const gen = useRef(0);
   useEffect(() => { gen.current += 1; setD(null); setBusy(false); }, [address, linkKey]);
-  if (address === null || !connected || flags === null || (flags & DIAGNOSIS) === 0) return null;
+  // `address`/`flags` checked here too only so the types narrow; the rule is `pack.section`
+  if (address === null || flags === null || !decideUi("pack.section", { source: null, chosen: null, address, connected, offered: flags !== undefined && (flags & DIAGNOSIS) !== 0 }).visible) return null;
   const ask = async () => {
     const mine = ++gen.current;
     setBusy(true); setD(null);

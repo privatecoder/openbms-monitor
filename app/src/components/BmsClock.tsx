@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
 import { api, isDemo, linkNow, type BmsTime, type Bus } from "../api";
@@ -120,7 +120,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
   const bmsNow = read && "bms" in read ? toBmsTime(new Date(fromBmsTime(read.bms).getTime() + (now - read.at))) : null;
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
-      <SectionHead icon={Clock} title={t("clock.title")} help="topic.bmsHistory" onReload={usable && address !== null ? reload : undefined}
+      <SectionHead icon={Clock} title={t("clock.title")} help="topic.bmsHistory" onReload={decideUi("pack.section", { source: null, chosen: null, address, connected: usable, offered: true }).visible ? reload : undefined}
         reloading={usable && address !== null && read === null} reloadDisabled={actLocked(!!busy, !!locked)} readAt={read && "bms" in read ? new Date(read.at) : null} />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {packs.length > 0 && (
@@ -144,7 +144,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
       ) : "error" in read && (
         <StatusLine tone="error">{t("clock.readError", { err: read.error })}</StatusLine>
       )}
-      {usable && access.write && address !== null && (
+      {decideUi("pack.section", { source: null, chosen: null, address, connected: usable, offered: access.write }).visible && (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={actLocked(!!busy, !!locked)} onClick={setOne} className="tabular-nums">{label}</Button>
           {packs.length > 1 && <Button size="sm" variant="ghost" disabled={actLocked(!!busy, !!locked)} onClick={setAll}>{t("clock.setAll")}</Button>}

@@ -25,7 +25,7 @@ export function RemoteDiagnosis({ address, known, connected, locked, linkKey }: 
   const gen = useRef(0);
   useEffect(() => { gen.current += 1; setCal(null); setSoc(null); setBusy(null); }, [address, linkKey]);
   const calOk = has(caps, CAP.calibration), socOk = has(caps, CAP.soc_store) || has(caps, CAP.energy);
-  if (address === null || !connected || (!calOk && !socOk)) return null;
+  if (address === null || !decideUi("pack.section", { source: null, chosen: null, address, connected, offered: calOk || socOk }).visible) return null;
   const run = async <T,>(what: "cal" | "soc", ask: () => Promise<T>, set: (v: T | { error: string } | null) => void) => {
     const mine = ++gen.current;
     setBusy(what); set(null);
