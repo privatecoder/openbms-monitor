@@ -777,8 +777,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <div className="flex items-baseline justify-between gap-3 text-sm">
             <span className="text-muted">{t("conn.packs")}</span>
             <span className="text-right">
-              {packsLoading ? t("lock.loading") : fixed && runSel ? packsLine(runSel, t) : packsLine(packSel, t)}
-              {fixed && runSel && !packsLoading && selText(runSel) !== selText(packSel) && (
+              {packsLoading ? t("lock.loading") : (connected || lost) && runSel ? packsLine(runSel, t) : packsLine(packSel, t)}
+              {(connected || lost) && runSel && !packsLoading && selText(runSel) !== selText(packSel) && (
                 <span className="block text-xs text-muted">{t("conn.packsLine.next", { line: packsLine(packSel, t) })}</span>
               )}
               {!fixed && <button className="ml-2 text-xs text-muted underline hover:text-ink" onClick={() => setView("installations")}>{t("conn.editPorts")}</button>}
