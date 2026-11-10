@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { actLocked } from "../locks";
+import { actLocked, decideUi } from "../locks";
 import { PenLine, TriangleAlert } from "lucide-react";
 import type { Parameters } from "../params";
 import { parseNumber } from "../calibration";
@@ -128,7 +128,8 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
   const fullAh = full && full.address === e.address && "ah" in full ? full.ah : null;
   const nf2 = new Intl.NumberFormat(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const resets = capacityResets(fullAh, e.raws[RATED_INDEX]);
-  const canWrite = !busy && !locked && !held && !refused && changes.length > 0 && blockers.length === 0;
+  // the write: its own run, another write, a refusal still open (`locks.ts`); what is changed and what blocks it stays here
+  const canWrite = !decideUi("params.write", { source: null, chosen: null, busy: !!busy, held: !!locked || !!held, refused: !!refused }).locked && changes.length > 0 && blockers.length === 0;
   const capacityLine = (rated: number) => fullAh !== null && capacityResets(fullAh, rated) &&
     t("pw.full.resets", { full: nf2.format(fullAh), rated: nf2.format(fromRaw(RATED_INDEX, rated)) });
 

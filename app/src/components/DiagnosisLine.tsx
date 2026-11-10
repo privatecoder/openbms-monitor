@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { HardDrive } from "lucide-react";
 import { api, type DiagCompare, type DiagRecord, type MemoryDiagnosis } from "../api";
@@ -39,7 +40,7 @@ export function DiagnosisLine({ address, known, connected, locked, linkKey }: { 
     <div className="space-y-2 border-t border-line pt-3 text-sm">
       <SectionHead icon={HardDrive} title={t("mdiag.title")} help="topic.memoryDiagnosis" />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Button size="sm" disabled={busy || locked} onClick={ask}>{busy ? t("mdiag.reading") : t("mdiag.read")}</Button>
+        <Button size="sm" disabled={actLocked(!!busy, !!locked)} onClick={ask}>{busy ? t("mdiag.reading") : t("mdiag.read")}</Button>
       </div>
       {d && "error" in d && <StatusLine tone="error">{d.error}</StatusLine>}
       {d && !("error" in d) && (

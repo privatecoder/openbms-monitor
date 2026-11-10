@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Download, Upload } from "lucide-react";
 import { api, type ImportApplied, type ImportInto, type ImportPreview, type Installation, type OpenImport } from "../api";
@@ -87,12 +88,12 @@ export function ImportPanel({ onDone }: { onDone: () => Promise<void> }) {
   const choices = preview ? importChoices(preview) : [];
   return (
     <div className="space-y-3">
-      <Button variant="secondary" disabled={busy} onClick={() => void pick()}><Upload className="h-4 w-4" />{t("inst.imp.button")}</Button>
+      <Button variant="secondary" disabled={actLocked(!!busy, false)} onClick={() => void pick()}><Upload className="h-4 w-4" />{t("inst.imp.button")}</Button>
       {open.map((o) => (
         <div key={o.export_id} className="flex flex-wrap items-center gap-3 rounded-md border border-discharge p-3 text-sm">
           <p className="flex-1">{t("inst.imp.open", { name: o.name, at: date(o.started) })}</p>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(o.export_id, { kind: "same" }, o.name)}>{t("inst.imp.resume")}</Button>
-          <Button size="sm" variant="ghost" disabled={busy} title={t("inst.imp.abandonHint")} onClick={() => void abandon(o.export_id)}>{t("inst.imp.abandon")}</Button>
+          <Button size="sm" variant="secondary" disabled={actLocked(!!busy, false)} onClick={() => void run(o.export_id, { kind: "same" }, o.name)}>{t("inst.imp.resume")}</Button>
+          <Button size="sm" variant="ghost" disabled={actLocked(!!busy, false)} title={t("inst.imp.abandonHint")} onClick={() => void abandon(o.export_id)}>{t("inst.imp.abandon")}</Button>
         </div>
       ))}
       {preview && (
@@ -121,12 +122,12 @@ export function ImportPanel({ onDone }: { onDone: () => Promise<void> }) {
           <p className="text-muted">{t("inst.imp.rules")}</p>
           <div className="flex gap-2">
             {preview.completed == null && (
-              <Button size="sm" variant="primary" disabled={busy}
+              <Button size="sm" variant="primary" disabled={actLocked(!!busy, false)}
                 onClick={() => void run(preview.export_id, preview.open_into ? { kind: "same" } : choices[choice].into, preview.name)}>
                 {busy ? t("inst.imp.running") : preview.open_into ? t("inst.imp.resume") : t("inst.imp.go")}
               </Button>
             )}
-            <Button size="sm" variant="secondary" disabled={busy} onClick={close}>{t("maint.setup.cancel")}</Button>
+            <Button size="sm" variant="secondary" disabled={actLocked(!!busy, false)} onClick={close}>{t("maint.setup.cancel")}</Button>
           </div>
         </Panel>
       )}
@@ -158,9 +159,9 @@ export function ExportRow({ inst, recorded }: { inst: Installation; recorded: nu
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run()}><Download className="h-4 w-4" />{busy ? t("inst.exp.running") : t("inst.exp.button")}</Button>
+        <Button size="sm" variant="secondary" disabled={actLocked(!!busy, false)} onClick={() => void run()}><Download className="h-4 w-4" />{busy ? t("inst.exp.running") : t("inst.exp.button")}</Button>
         <label className="flex cursor-pointer items-center gap-2" title={t("inst.exp.recordingHint")}>
-          <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={recording} disabled={busy || !recorded} onChange={(e) => setRecording(e.target.checked)} />
+          <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={recording} disabled={actLocked(busy, false) || !recorded} onChange={(e) => setRecording(e.target.checked)} />
           <span className={recorded ? "" : "text-muted"}>{t("inst.exp.recording", { count: recorded })}</span>
         </label>
       </div>

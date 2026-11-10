@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Button } from "../components/ui/button";
 
@@ -31,8 +32,8 @@ export function NameDialog({ suggested, onConfirm, onCancel }: {
         </label>
         {error && <p className="text-alarm">{error}</p>}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" size="sm" disabled={saving} onClick={onCancel}>{t("maint.nameDialog.cancel")}</Button>
-          <Button type="submit" variant="primary" size="sm" disabled={saving}>{t("maint.nameDialog.create")}</Button>
+          <Button type="button" variant="secondary" size="sm" disabled={actLocked(!!saving, false)} onClick={onCancel}>{t("maint.nameDialog.cancel")}</Button>
+          <Button type="submit" variant="primary" size="sm" disabled={actLocked(!!saving, false)}>{t("maint.nameDialog.create")}</Button>
         </div>
       </form>
     </div>

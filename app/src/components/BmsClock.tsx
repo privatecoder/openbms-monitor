@@ -121,7 +121,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
       <SectionHead icon={Clock} title={t("clock.title")} help="topic.bmsHistory" onReload={usable && address !== null ? reload : undefined}
-        reloading={usable && address !== null && read === null} reloadDisabled={!!busy || locked} readAt={read && "bms" in read ? new Date(read.at) : null} />
+        reloading={usable && address !== null && read === null} reloadDisabled={actLocked(!!busy, !!locked)} readAt={read && "bms" in read ? new Date(read.at) : null} />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {packs.length > 0 && (
           <select value={address ?? ""} onChange={(e) => setAddress(Number(e.target.value))} disabled={actLocked(!!busy, !!locked)} aria-label={t("bmsh.pack")}

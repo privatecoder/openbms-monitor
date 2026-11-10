@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { api, type ControlEndpoint, type Installation, type Pending } from "../api";
@@ -98,8 +99,8 @@ export function MaintSetup({ installation, pending, markerOn, onSaved, onCancel,
       {installation.master_serial && <p className="text-muted">{t("maint.setup.serial", { serial: installation.master_serial })}</p>}
 
       <div className="flex flex-wrap gap-2">
-        <Button variant="primary" size="sm" disabled={saving || disabled} onClick={save}>{t("maint.setup.save")}</Button>
-        <Button variant="secondary" size="sm" disabled={saving} onClick={onCancel}>{t("maint.setup.cancel")}</Button>
+        <Button variant="primary" size="sm" disabled={actLocked(saving, disabled)} onClick={save}>{t("maint.setup.save")}</Button>
+        <Button variant="secondary" size="sm" disabled={actLocked(saving, false)} onClick={onCancel}>{t("maint.setup.cancel")}</Button>
       </div>
       {error && <p className="text-alarm">{error}</p>}
     </div>

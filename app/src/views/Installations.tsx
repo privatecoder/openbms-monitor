@@ -8,7 +8,7 @@ import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
 import { editBroker, packsOf, type PackSel } from "../connCheck";
 import { DIP_MAX } from "../access";
-import { decideUi, lockProps, type UiFacts } from "../locks";
+import { decideUi, lockProps, type UiFacts, actLocked } from "../locks";
 import { useSource } from "../source";
 import { errorKey, keyLabel, mergeSuggestion, nameCheck, packIsCanAdapter, packPortOf, storedPort, controlKey } from "../maint";
 import type { Maint } from "../maintStore";
@@ -131,7 +131,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
           {renaming !== null ? (
             <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); rename(); }}>
               <input className={input} value={renaming} autoFocus onChange={(e) => setRenaming(e.target.value)} aria-label={t("maint.setup.name")} />
-              <Button size="sm" variant="primary" type="submit" disabled={busy}>{t("maint.setup.save")}</Button>
+              <Button size="sm" variant="primary" type="submit" disabled={actLocked(busy, false)}>{t("maint.setup.save")}</Button>
               <Button size="sm" variant="ghost" type="button" onClick={() => setRenaming(null)}>{t("maint.setup.cancel")}</Button>
             </form>
           ) : (
@@ -150,8 +150,8 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
         </div>
         <div className="flex flex-wrap items-center gap-1">
           {decideUi("installation.choose", facts).visible && <Button size="sm" variant="secondary" onClick={() => void maint.switchTo(inst.id)}>{t("inst.choose")}</Button>}
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRenaming(inst.name)} title={t("inst.rename")} aria-label={t("inst.rename")}><Pencil className="h-4 w-4" /></Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => api.installationArchive(inst.id, !inst.archived))} title={t(inst.archived ? "inst.unarchive" : "inst.archive")} aria-label={t(inst.archived ? "inst.unarchive" : "inst.archive")}>
+          <Button size="sm" variant="ghost" disabled={actLocked(busy, false)} onClick={() => setRenaming(inst.name)} title={t("inst.rename")} aria-label={t("inst.rename")}><Pencil className="h-4 w-4" /></Button>
+          <Button size="sm" variant="ghost" disabled={actLocked(busy, false)} onClick={() => act(() => api.installationArchive(inst.id, !inst.archived))} title={t(inst.archived ? "inst.unarchive" : "inst.archive")} aria-label={t(inst.archived ? "inst.unarchive" : "inst.archive")}>
             {inst.archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
           </Button>
           <Button size="sm" variant="ghost" {...may("installation.delete")} onClick={() => setDeleting(!deleting)} title={t("inst.delete")} aria-label={t("inst.delete")}><Trash2 className="h-4 w-4" /></Button>

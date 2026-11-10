@@ -100,7 +100,7 @@ export function SerialLine({ address, usable, locked, onBusy, linkKey }: { addre
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
       <SectionHead icon={Hash} title={t("snw.title")} help="topic.paramWrite" onReload={() => setReload((r) => r + 1)} reloading={read === null}
-        reloadDisabled={!!busy || locked} reloadLabel={t("snw.reload")} readAt={readAt} />
+        reloadDisabled={actLocked(!!busy, !!locked)} reloadLabel={t("snw.reload")} readAt={readAt} />
       {read && "error" in read && <StatusLine tone="error">{t("snw.readError", { err: read.error })}</StatusLine>}
       {row("battery")}
       {row("bms")}

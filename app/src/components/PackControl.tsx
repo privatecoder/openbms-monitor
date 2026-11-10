@@ -387,12 +387,12 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
 
           <div className="flex flex-wrap items-center gap-2">
             {offers("restart") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>}
-            {offers("power-on-off") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked || !st} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
+            {offers("power-on-off") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld, available: !!st }).locked} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
               title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>}
             {relock && offers("power-on-off") && (
-              <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked || !st} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>
+              <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld, available: !!st }).locked} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>
                 {t("ctl.cutoff.offConfirm")}
               </Button>
             )}

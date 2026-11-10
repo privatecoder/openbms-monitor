@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, RefreshCw, type LucideIcon } from "lucide-react";
 import { InfoIcon } from "../help";
@@ -28,7 +29,7 @@ export function SectionHead({ icon: I, title, help, open, onToggle, closedHint, 
         : <span className="flex shrink-0 items-center gap-1.5 font-medium">{label}</span>}
       {help && <InfoIcon id={help} />}
       {onReload && (
-        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" disabled={reloadDisabled || reloading} onClick={onReload}
+        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" disabled={actLocked(!!reloading, !!reloadDisabled)} onClick={onReload}
           aria-label={reloadLabel ?? t("sec.reload")} title={reloadLabel ?? t("sec.reload")}>
           <RefreshCw className={cn("h-4 w-4", reloading && "animate-spin")} />
         </Button>

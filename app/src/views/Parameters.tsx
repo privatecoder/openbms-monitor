@@ -1,4 +1,4 @@
-import { decideUi, type UiAction, type UiFacts, type WriteKind } from "../locks";
+import { decideUi, type UiAction, type UiFacts, type WriteKind, actLocked } from "../locks";
 import { AccessMatrix } from "../components/AccessMatrix";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -944,12 +944,12 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onRead, onEdit, onPreviou
           </button>
         )}
         {c.kind !== "file" && c.read && (
-          <button onClick={onSave} disabled={busy} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.save")} aria-label={t("par.save")}>
+          <button onClick={onSave} disabled={actLocked(busy, false)} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.save")} aria-label={t("par.save")}>
             <Download className="h-3.5 w-3.5" />
           </button>
         )}
         {(c.kind !== "pack" || c.error) && (
-          <button onClick={onRemove} disabled={busy} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.remove")} aria-label={t("par.remove")}>
+          <button onClick={onRemove} disabled={actLocked(busy, false)} className="rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:opacity-40" title={t("par.remove")} aria-label={t("par.remove")}>
             <X className="h-3.5 w-3.5" />
           </button>
         )}
@@ -970,7 +970,7 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onRead, onEdit, onPreviou
       {c.read?.patch && (
         <div className="flex items-center justify-end gap-1 text-xs whitespace-nowrap text-muted" title={t(`par.patch.source.${c.read.patch.source}`)}>
           {c.read.patch.release}
-          {onRevokePatch && <button className="underline" disabled={busy} onClick={onRevokePatch}>{t("par.patch.revoke")}</button>}
+          {onRevokePatch && <button className="underline" disabled={actLocked(busy, false)} onClick={onRevokePatch}>{t("par.patch.revoke")}</button>}
         </div>
       )}
       {writeLocked(c.read?.patch, c.path === "uart1", c.switches?.[0]) && (
@@ -980,7 +980,7 @@ function ColumnHead({ c, twin, busy, onSave, onRemove, onRead, onEdit, onPreviou
         <div className="text-xs font-semibold whitespace-nowrap text-alarm" title={t("par.packLockHint")}>{t("par.packLock")}</div>
       )}
       {onConfirmPatch && (
-        <button className="text-xs whitespace-nowrap text-muted underline" disabled={busy} title={t("par.patch.confirmHint")} onClick={onConfirmPatch}>{t("par.patch.confirm")}</button>
+        <button className="text-xs whitespace-nowrap text-muted underline" disabled={actLocked(busy, false)} title={t("par.patch.confirmHint")} onClick={onConfirmPatch}>{t("par.patch.confirm")}</button>
       )}
       {c.lastWritten && (
         <div className="text-xs whitespace-nowrap text-muted">

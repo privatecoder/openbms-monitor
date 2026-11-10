@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { actLocked } from "../locks";
 import { TriangleAlert } from "lucide-react";
 import { errorText } from "../control";
 import type { Outcome, SeriesEnd } from "../multiWrite";
@@ -102,8 +103,8 @@ export function SeriesPanel({ rows, current, paused, end, held, onCancel, onGoOn
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-alarm/40 bg-alarm/10 p-3">
           <span className="text-alarm">{t("pw.multi.paused", { pack: no(paused) })}</span>
           <span className="ml-auto flex gap-2">
-            <Button size="sm" disabled={held} onClick={onGoOn}>{t("pw.multi.goOn")}</Button>
-            <Button size="sm" variant="ghost" disabled={held} onClick={onCancel}>{t("pw.multi.cancel")}</Button>
+            <Button size="sm" disabled={actLocked(false, !!held)} onClick={onGoOn}>{t("pw.multi.goOn")}</Button>
+            <Button size="sm" variant="ghost" disabled={actLocked(false, !!held)} onClick={onCancel}>{t("pw.multi.cancel")}</Button>
           </span>
         </div>
       )}

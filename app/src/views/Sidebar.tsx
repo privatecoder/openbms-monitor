@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Download, Info, Wrench } from "lucide-react";
-import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type MqttSettings, type SerialNumbers } from "../api";
+import { api, isDemo, linkNow, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type MqttSettings, type SerialNumbers } from "../api";
 import { feedText, getSource, useFeed } from "../source";
 import { loadedSettings, useSettings, useSettingsRevision } from "../installData";
 import { decideUi, lockProps, type UiFacts } from "../locks";
@@ -586,9 +586,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const inst = connInst.current;
     if (!inst || !addresses.length) return;
     setConfirming(true); setBankError(null);
+    // the answer counts only for the connection it was asked on: after a new one the boards at these addresses may differ
+    const link = linkNow();
     try {
       const done = await api.bankConfirm(inst, addresses);
-      setIds((all) => all.map((v) => (done.includes(v.address) ? { ...v, kind: "known" } : v)));
+      if (linkNow() === link) setIds((all) => all.map((v) => (done.includes(v.address) ? { ...v, kind: "known" } : v)));
     } catch (e) { setBankError(t("bank.confirmFailed", { err: String(e) })); }
     finally { setConfirming(false); }
   };
@@ -631,14 +633,14 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           ...(maintenance ? [["diag", Gauge], ["params", SlidersHorizontal], ["firmware", Cpu]] : []), ["about", Info]].map(([id, Icon]) => {
           const I = Icon as typeof LayoutDashboard;
           return (
-            <button key={id as string} onClick={() => setView(id as string)} disabled={locked}
+            <button key={id as string} onClick={() => setView(id as string)} {...lockProps(decideUi("app.navigate", facts), t)}
               className={cn("flex w-full items-center gap-2 rounded-md px-3 py-2 disabled:opacity-50", view === id ? "bg-sunken font-medium text-ink" : "text-muted hover:bg-sunken/60 hover:text-ink")}>
               <I className="h-4 w-4" />{t(`nav.${id}`)}
             </button>
           );
         })}
         {update.phase === "available" && update.info && view !== "about" && (
-          <button onClick={() => setView("about")} disabled={locked} className="mt-2 flex w-full items-center gap-2 rounded-md border border-charge/50 px-3 py-2 text-sm text-charge hover:bg-sunken/60 disabled:opacity-50">
+          <button onClick={() => setView("about")} {...lockProps(decideUi("app.navigate", facts), t)} className="mt-2 flex w-full items-center gap-2 rounded-md border border-charge/50 px-3 py-2 text-sm text-charge hover:bg-sunken/60 disabled:opacity-50">
             <Download className="h-4 w-4" />{t("about.update.sidebar", { version: update.info.version })}
           </button>
         )}
@@ -683,16 +685,16 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <div className="space-y-1.5">
             <p className="flex items-center gap-1.5 text-xs text-muted">{t("conn.mqtt.hint")}<InfoIcon id="topic.mqtt" /></p>
             <div className="flex gap-1">
-              <input className={input} value={mq.host} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { host: e.target.value.trim() }))} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} />
-              <input className={cn(input, "w-20")} value={mq.port} disabled={fixed || mqLoading} inputMode="numeric" aria-label={t("conn.mqtt.port")}
+              <input className={input} value={mq.host} {...lockProps(decideUi("connection.brokerFields", { ...facts, loaded: !mqLoading }), t)} onChange={(e) => setMq(editBroker(mq, { host: e.target.value.trim() }))} placeholder="homeassistant.local" aria-label={t("conn.mqtt.host")} />
+              <input className={cn(input, "w-20")} value={mq.port} {...lockProps(decideUi("connection.brokerFields", { ...facts, loaded: !mqLoading }), t)} inputMode="numeric" aria-label={t("conn.mqtt.port")}
                 onChange={(e) => setMq(editBroker(mq, { port: Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) }))} />
             </div>
-            <input className={input} value={mq.user} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { user: e.target.value }))} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" />
-            <input className={input} type="password" value={mq.password} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { password: e.target.value }))} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" />
+            <input className={input} value={mq.user} {...lockProps(decideUi("connection.brokerFields", { ...facts, loaded: !mqLoading }), t)} onChange={(e) => setMq(editBroker(mq, { user: e.target.value }))} placeholder={t("conn.mqtt.user")} aria-label={t("conn.mqtt.user")} autoComplete="off" />
+            <input className={input} type="password" value={mq.password} {...lockProps(decideUi("connection.brokerFields", { ...facts, loaded: !mqLoading }), t)} onChange={(e) => setMq(editBroker(mq, { password: e.target.value }))} placeholder={t("conn.mqtt.password")} aria-label={t("conn.mqtt.password")} autoComplete="off" />
             <div className="flex items-center gap-2">
-              <input className={input} value={mq.base} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { base: e.target.value.trim() }))} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} />
+              <input className={input} value={mq.base} {...lockProps(decideUi("connection.brokerFields", { ...facts, loaded: !mqLoading }), t)} onChange={(e) => setMq(editBroker(mq, { base: e.target.value.trim() }))} aria-label={t("conn.mqtt.base")} title={t("conn.mqtt.base")} />
               <label className="flex shrink-0 items-center gap-1 text-sm text-muted">
-                <input type="checkbox" checked={mq.tls} disabled={fixed || mqLoading} onChange={(e) => setMq(editBroker(mq, { tls: e.target.checked }))} />TLS
+                <input type="checkbox" checked={mq.tls} {...lockProps(decideUi("connection.brokerFields", { ...facts, loaded: !mqLoading }), t)} onChange={(e) => setMq(editBroker(mq, { tls: e.target.checked }))} />TLS
               </label>
             </div>
           </div>
@@ -802,7 +804,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <div className="space-y-1 pt-1">
               <p className="text-sm">{t("conn.mqtt.saveAsk", { name: mqttAsk.name })}</p>
               <div className="flex gap-1">
-                <Button variant="secondary" size="sm" disabled={locked} onClick={() => void saveMqtt(mqttAsk)}>{t("conn.saveYes")}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("connection.saveOffer", facts), t)} onClick={() => void saveMqtt(mqttAsk)}>{t("conn.saveYes")}</Button>
                 <Button variant="ghost" size="sm" onClick={() => setMqttAsk(null)}>{t("conn.saveNo")}</Button>
               </div>
             </div>
@@ -811,14 +813,14 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <div className="space-y-1 pt-1">
               <p className="text-sm">{t(`conn.saveAsk.${saveAsk.bus}`, { name: saveAsk.name })}</p>
               <div className="flex gap-1">
-                <Button variant="secondary" size="sm" disabled={locked} onClick={() => void savePort(saveAsk)}>{t("conn.saveYes")}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("connection.saveOffer", facts), t)} onClick={() => void savePort(saveAsk)}>{t("conn.saveYes")}</Button>
                 <Button variant="ghost" size="sm" onClick={() => declinePort(saveAsk)}>{t("conn.saveNo")}</Button>
               </div>
               {saveError && <p className="text-sm text-alarm">{saveError}</p>}
             </div>
           )}
           {offer && !busy && !connected && (
-            <Button variant="secondary" size="sm" className="mt-1" disabled={locked} onClick={() => { setBus(offer); void connect(false, offer); }}>
+            <Button variant="secondary" size="sm" className="mt-1" {...lockProps(decideUi("connection.saveOffer", facts), t)} onClick={() => { setBus(offer); void connect(false, offer); }}>
               {t("conn.check.switch", { bus: t(`conn.busName.${offer}`) })}
             </Button>
           )}
@@ -826,8 +828,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <div className="space-y-1 pt-1">
               <p className="text-sm text-alarm">{t("bank.foreign", { count: line.packs.length, packs: packList(line.packs), other: line.other.name })}</p>
               <div className="flex flex-wrap gap-1">
-                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.leave", facts), t)} onClick={() => void disconnect()}>{t("bank.disconnect")}</Button>
-                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.leave", facts), t)} onClick={() => void connectWith(line.other.id)}>{t("bank.connectOther", { other: line.other.name })}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.leave", { ...facts, busy: confirming }), t)} onClick={() => void disconnect()}>{t("bank.disconnect")}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.leave", { ...facts, busy: confirming }), t)} onClick={() => void connectWith(line.other.id)}>{t("bank.connectOther", { other: line.other.name })}</Button>
               </div>
               {!line.hint && line.confirm.length > 0 && (
                 <button className="text-xs text-muted underline hover:text-ink disabled:opacity-60" {...lockProps(decideUi("bank.adopt", { ...facts, busy: confirming }), t)} onClick={() => void confirm(line.confirm)}>
@@ -851,7 +853,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           {noSerial.length > 0 && (
             <p className="pt-1 text-xs text-muted">
               {t("bank.noSerial", { count: noSerial.length, packs: packList(noSerial) })}{" "}
-              <button className="underline hover:text-ink disabled:opacity-60" disabled={locked} onClick={() => { setMaintenance(true); setView("params"); }}>{t("bank.openParams")}</button>
+              <button className="underline hover:text-ink disabled:opacity-60" {...lockProps(decideUi("app.navigate", facts), t)} onClick={() => { setMaintenance(true); setView("params"); }}>{t("bank.openParams")}</button>
             </p>
           )}
           {bankError && <p className="text-sm text-alarm">{bankError}</p>}
@@ -871,7 +873,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         </Button>
         <RecordingEntry scope={maint.installation} packs={packs} systemAvailable={bus === "can"} connected={connected} onOpenHistory={() => setView("history")} onOpenStorage={() => setView("about")} />
         {/* maintenance functions: an icon toggle, highlighted while on; the label is the tooltip */}
-        <Button variant="ghost" size="icon" onClick={() => setMaintenance(!maintenance)} disabled={locked}
+        <Button variant="ghost" size="icon" onClick={() => setMaintenance(!maintenance)} {...lockProps(decideUi("app.navigate", facts), t)}
           aria-pressed={maintenance} aria-label={t("maintToggle")} title={t("maintToggle")}
           className={cn(maintenance && "bg-sunken text-ink")}>
           <Wrench className="h-4 w-4" />

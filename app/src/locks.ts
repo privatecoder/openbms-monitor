@@ -117,8 +117,17 @@ export type UiAction =
   | "view.busTools"
   /** an action inside a section or editor: its own action (`busy`) or another write holding it (`held`) */
   | "section.act"
-  /** the pack control's switching (restart, on/off): also held by a power lock over the CAN socket (`powerHeld`) */
-  | "pack.power";
+  /** the pack control's switching (restart, on/off): also held by a power lock over the CAN socket (`powerHeld`) and
+   *  without a read status (`available`, where the caller asks for it) */
+  | "pack.power"
+  /** the parameter editor's „Schreiben“: its own run, another write, a refusal still open */
+  | "params.write"
+  /** the Home Assistant broker fields: like the other connection fields, and while the installation's broker is read */
+  | "connection.brokerFields"
+  /** an offer after a connect: keep the broker or port, connect on the other bus */
+  | "connection.saveOffer"
+  /** switching views and the maintenance functions: not while an action holds the port (a flash) */
+  | "app.navigate";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
@@ -192,6 +201,8 @@ export interface UiFacts {
   held?: boolean;
   /** the pack's power switching is locked over the CAN socket (Group0) */
   powerHeld?: boolean;
+  /** the parameter write: the pack refused the last write and that is not cleared yet */
+  refused?: boolean;
   /** BMS history: the connection is open (direct), the chosen pack answers on it */
   connected?: boolean;
   answering?: boolean;
@@ -393,7 +404,17 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     case "pack.power":
       if (f.busy) return lock("lock.busy");
       if (f.held) return lock("lock.writeRunning");
-      return f.powerHeld ? lock("lock.powerLocked") : show();
+      if (f.powerHeld) return lock("lock.powerLocked");
+      return f.available === false ? lock("lock.noStatus") : show();
+    case "params.write":
+      if (f.busy) return lock("lock.busy");
+      if (f.held) return lock("lock.writeRunning");
+      return f.refused ? lock("lock.refused") : show();
+    case "connection.brokerFields":
+      return fieldsLock(f).locked ? fieldsLock(f) : f.loaded === false ? lock("lock.loading") : show();
+    case "connection.saveOffer":
+    case "app.navigate":
+      return f.portHeld ? lock("lock.portHeld") : show();
   }
 }
 

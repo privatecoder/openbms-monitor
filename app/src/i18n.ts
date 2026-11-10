@@ -804,6 +804,8 @@ const resources = {
         connecting: "Die Verbindung wird gerade aufgebaut.",
         formIncomplete: "Erst die Felder der Verbindung ausfüllen.",
         powerLocked: "Über die CAN-Buchse gesperrt (Freigabebit in Funktionsschalter 0).",
+        noStatus: "Erst muss der Status des Packs gelesen sein.",
+        refused: "Das Pack hat den letzten Schreibversuch abgewiesen: erst den Hinweis dazu klären.",
       },
       wiring: {
         label: "Wechselrichter angeschlossen über",
@@ -2076,6 +2078,8 @@ const resources = {
         connecting: "The connection is being set up.",
         formIncomplete: "Fill in the connection's fields first.",
         powerLocked: "Locked over the CAN socket (release bit in function switch 0).",
+        noStatus: "The pack's status must be read first.",
+        refused: "The pack refused the last write: clear its note first.",
       },
       wiring: {
         label: "Inverter connected via",

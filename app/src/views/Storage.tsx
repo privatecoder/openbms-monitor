@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Archive, Eraser, FolderOpen, HardDrive, Trash2 } from "lucide-react";
@@ -163,14 +164,14 @@ function DeleteDialog({ kind, overview: o, onClose, onDone }: {
         {kind !== "backups" && targets.length > 0 && <p className="text-muted">{t("about.storage.d.backupText")}</p>}
         {error && <p className="text-alarm">{error}</p>}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button type="button" variant="secondary" size="sm" disabled={working} onClick={onClose}>{t("about.storage.d.cancel")}</Button>
+          <Button type="button" variant="secondary" size="sm" disabled={actLocked(!!working, false)} onClick={onClose}>{t("about.storage.d.cancel")}</Button>
           {kind === "backups" ? (
-            <Button type="button" variant="primary" size="sm" disabled={working} onClick={() => void run(false)}>{working ? t("about.storage.d.working") : t("about.storage.d.delete")}</Button>
+            <Button type="button" variant="primary" size="sm" disabled={actLocked(!!working, false)} onClick={() => void run(false)}>{working ? t("about.storage.d.working") : t("about.storage.d.delete")}</Button>
           ) : (
             <>
-              <Button type="button" variant="ghost" size="sm" disabled={working} onClick={() => void run(false)}>{t(`about.storage.d.${kind === "empty" ? "emptyOnly" : "deleteOnly"}`)}</Button>
+              <Button type="button" variant="ghost" size="sm" disabled={actLocked(!!working, false)} onClick={() => void run(false)}>{t(`about.storage.d.${kind === "empty" ? "emptyOnly" : "deleteOnly"}`)}</Button>
               {targets.length > 0 && (
-                <Button type="button" variant="primary" size="sm" disabled={working} onClick={() => void run(true)}>
+                <Button type="button" variant="primary" size="sm" disabled={actLocked(!!working, false)} onClick={() => void run(true)}>
                   {working ? t("about.storage.d.working") : t(`about.storage.d.${kind === "empty" ? "emptyNow" : "backupDelete"}`)}
                 </Button>
               )}

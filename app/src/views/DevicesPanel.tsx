@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -58,7 +59,7 @@ export function DevicesPanel({ installation, places }: { installation: string; p
       <div className="flex items-center gap-2">
         <h3 className="font-medium">{t("dev.title")}</h3>
         <InfoIcon id="topic.balancers" />
-        {!editing && <Button size="sm" variant="ghost" disabled={!loaded || busy} onClick={() => { setError(null); setEditing({ id: null, form: toForm("", BALANCER_DEFAULTS) }); }}><Plus className="h-4 w-4" />{t("dev.add")}</Button>}
+        {!editing && <Button size="sm" variant="ghost" disabled={actLocked(busy, !loaded)} onClick={() => { setError(null); setEditing({ id: null, form: toForm("", BALANCER_DEFAULTS) }); }}><Plus className="h-4 w-4" />{t("dev.add")}</Button>}
       </div>
       <p className="max-w-3xl text-muted">{t("dev.intro")}</p>
 
@@ -69,7 +70,7 @@ export function DevicesPanel({ installation, places }: { installation: string; p
             <li key={d.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="font-medium">{name(d.name)}</span>
               <span className="text-muted">{t(`dev.kind.${d.kind}`)} · {summary(valuesOf(d), t)}</span>
-              <Button size="sm" variant="ghost" title={t("dev.edit")} aria-label={t("dev.edit")} disabled={!!editing || busy}
+              <Button size="sm" variant="ghost" title={t("dev.edit")} aria-label={t("dev.edit")} disabled={actLocked(busy, !!editing)}
                 onClick={() => { setError(null); setEditing({ id: d.id, form: toForm(d.name, valuesOf(d)) }); }}><Pencil className="h-4 w-4" /></Button>
               <Button size="sm" variant="ghost" title={t("dev.remove")} aria-label={t("dev.remove")} onClick={() => setRemoving(d.id)}><Trash2 className="h-4 w-4" /></Button>
             </li>
@@ -129,7 +130,7 @@ function Editor({ form, saving, onChange, onSave, onCancel }: { form: BalancerFo
   const field = (k: Exclude<keyof BalancerForm, "when">, label: string, placeholder?: string, wide = false) => (
     <label className="flex flex-col gap-0.5">
       <span className="text-muted">{label}</span>
-      <input className={`${input} ${wide ? "w-48" : "w-28"}`} value={form[k]} placeholder={placeholder} inputMode={k === "name" ? undefined : "decimal"} disabled={saving}
+      <input className={`${input} ${wide ? "w-48" : "w-28"}`} value={form[k]} placeholder={placeholder} inputMode={k === "name" ? undefined : "decimal"} disabled={actLocked(!!saving, false)}
         onChange={(e) => onChange({ ...form, [k]: e.target.value })} />
     </label>
   );
@@ -145,16 +146,16 @@ function Editor({ form, saving, onChange, onSave, onCancel }: { form: BalancerFo
         {field("stop_cell_mv", t("dev.f.stopCell"), t("dev.f.stopCellPh"))}
         <label className="flex flex-col gap-0.5">
           <span className="text-muted">{t("dev.f.when")}</span>
-          <select className={input} value={form.when} disabled={saving} onChange={(e) => onChange({ ...form, when: e.target.value as BalancerForm["when"] })}>
+          <select className={input} value={form.when} disabled={actLocked(!!saving, false)} onChange={(e) => onChange({ ...form, when: e.target.value as BalancerForm["when"] })}>
             {WHENS.map((w) => <option key={w} value={w}>{t(`dev.when.${w}`)}</option>)}
           </select>
         </label>
         {field("max_a", t("dev.f.maxA"))}
       </div>
       <div className="flex gap-2">
-        <Button size="sm" variant="primary" type="submit" disabled={saving}>{t("dev.save")}</Button>
+        <Button size="sm" variant="primary" type="submit" disabled={actLocked(!!saving, false)}>{t("dev.save")}</Button>
         {/* while saving the draft stays: a late success must not close a newer one */}
-        <Button size="sm" variant="ghost" type="button" disabled={saving} onClick={onCancel}>{t("dev.cancel")}</Button>
+        <Button size="sm" variant="ghost" type="button" disabled={actLocked(!!saving, false)} onClick={onCancel}>{t("dev.cancel")}</Button>
       </div>
     </form>
   );

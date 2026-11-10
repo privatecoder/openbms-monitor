@@ -261,3 +261,25 @@ describe("the rest, completed: connection actions, bank check, sections, views",
     expect(s("history.enable", { demo: true })).toBe("locked:lock.demo");
   });
 });
+
+describe("the rest, all of it: navigation, offers, broker fields, parameter write, status", () => {
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: null, chosen: "A", ...f });
+  it("navigation and the offers after a connect wait while an action holds the port", () => {
+    for (const a of ["app.navigate", "connection.saveOffer"] as const) {
+      expect(s(a, {})).toBe("open");
+      expect(s(a, { portHeld: true })).toBe("locked:lock.portHeld");
+    }
+  });
+  it("broker fields: like the connection's fields, and while the broker is read", () => {
+    expect(s("connection.brokerFields", { linkPhase: "idle" })).toBe("open");
+    expect(s("connection.brokerFields", { linkPhase: "open" })).toBe("locked:lock.connectionOpen");
+    expect(s("connection.brokerFields", { linkPhase: "idle", loaded: false })).toBe("locked:lock.loading");
+  });
+  it("the parameter write and pack power without a status", () => {
+    expect(s("params.write", {})).toBe("open");
+    expect(s("params.write", { refused: true })).toBe("locked:lock.refused");
+    expect(s("params.write", { held: true })).toBe("locked:lock.writeRunning");
+    expect(s("pack.power", { available: false })).toBe("locked:lock.noStatus");
+    expect(s("pack.power", { available: true })).toBe("open");
+  });
+});

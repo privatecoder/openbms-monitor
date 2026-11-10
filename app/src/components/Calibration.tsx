@@ -76,7 +76,7 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
   return (
     <div className="space-y-2 border-t border-line pt-3 text-sm">
       <SectionHead icon={Network} title={t("can.title")} help="topic.calibration" onReload={() => setReload((n) => n + 1)} reloading={device === null}
-        reloadDisabled={busy || locked} reloadLabel={t("can.reload")} readAt={readAt} />
+        reloadDisabled={actLocked(!!busy, !!locked)} reloadLabel={t("can.reload")} readAt={readAt} />
       {device === null ? <StatusLine>{t("can.reading")}</StatusLine>
         : "error" in device && <StatusLine tone="error">{t("can.readError", { err: device.error })}</StatusLine>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -179,7 +179,7 @@ export function CalibrationSection({ address, usable, locked, onBusy, linkKey }:
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
       <SectionHead icon={Crosshair} title={t("cal.title")} help="topic.calibration" open={open} onToggle={() => setOpen(!open)} closedHint={t("cal.closed")}
-        onReload={open ? () => setKick((n) => n + 1) : undefined} reloading={open && live === null} reloadDisabled={!!busy || locked} readAt={readAt} />
+        onReload={open ? () => setKick((n) => n + 1) : undefined} reloading={open && live === null} reloadDisabled={actLocked(!!busy, !!locked)} readAt={readAt} />
       {open && (
         <div className="space-y-3">
           <StatusLine>{t("cal.intro")}</StatusLine>
