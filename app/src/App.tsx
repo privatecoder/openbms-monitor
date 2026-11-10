@@ -127,7 +127,7 @@ export default function App() {
             </div>
           ))}
           {maint.naming && <NameDialog suggested={defaultName(maint.installations, i18n.t("maint.picker.base"))} onConfirm={maint.create} onCancel={() => maint.setNaming(false)} />}
-          {view === "firmware" && maintenance && source === "mqtt" ? (
+          {view === "firmware" && maintenance && !decideUi("view.busTools", { source, chosen: scope }).visible ? (
             noBms
           ) : view === "firmware" && maintenance ? (
             <Firmware connected={connected} maint={maint} onRunning={setFlashing} onBack={() => setView("dashboard")} onEditPorts={() => setView("installations")} onUserAction={userAction} onMonitorStopped={monitorStopped} />
@@ -144,7 +144,7 @@ export default function App() {
             <ParametersView connected={talk} bus={bus} installation={maint.current} packs={packList} onMarkerChanged={() => void maint.loadLists()} />
           ) : !connected ? (
             <div className="flex h-full max-w-md flex-col justify-center gap-3 text-lg text-muted"><Cable className="h-8 w-8" strokeWidth={1.5} aria-hidden />{t("dash.empty")}</div>
-          ) : view === "diag" && maintenance && source === "mqtt" ? (
+          ) : view === "diag" && maintenance && !decideUi("view.busTools", { source, chosen: scope }).visible ? (
             noBms
           ) : view === "diag" && maintenance ? (
             <Diagnosis packs={live.packs} scope={scope} />

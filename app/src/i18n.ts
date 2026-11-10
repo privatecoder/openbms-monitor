@@ -801,6 +801,9 @@ const resources = {
         demo: "In der Vorschau nicht verfügbar.",
         captureFull: "Der Mitschnitt ist voll: erst exportieren oder leeren.",
         nothing: "Noch nichts vorhanden.",
+        connecting: "Die Verbindung wird gerade aufgebaut.",
+        formIncomplete: "Erst die Felder der Verbindung ausfüllen.",
+        powerLocked: "Über die CAN-Buchse gesperrt (Freigabebit in Funktionsschalter 0).",
       },
       wiring: {
         label: "Wechselrichter angeschlossen über",
@@ -2070,6 +2073,9 @@ const resources = {
         demo: "Not available in the preview.",
         captureFull: "The capture is full: export or clear it first.",
         nothing: "Nothing there yet.",
+        connecting: "The connection is being set up.",
+        formIncomplete: "Fill in the connection's fields first.",
+        powerLocked: "Locked over the CAN socket (release bit in function switch 0).",
       },
       wiring: {
         label: "Inverter connected via",

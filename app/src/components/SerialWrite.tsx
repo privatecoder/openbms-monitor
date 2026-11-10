@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Hash } from "lucide-react";
 import { api, type SerialNumbers } from "../api";
@@ -81,12 +82,12 @@ export function SerialLine({ address, usable, locked, onBusy, linkKey }: { addre
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span className="w-32 text-muted">{t(`snw.${which}`)}</span>
           <span className="min-w-56 font-mono text-xs" title={shown?.title}>{read === null ? t("snw.reading") : shown?.text ?? "–"}</span>
-          <input value={s} onChange={(e) => setInput((i) => ({ ...i, [which]: e.target.value }))} maxLength={40} disabled={!!busy || locked}
+          <input value={s} onChange={(e) => setInput((i) => ({ ...i, [which]: e.target.value }))} maxLength={40} disabled={actLocked(!!busy, !!locked)}
             placeholder={t("snw.placeholder")} aria-label={`${t(`snw.${which}`)}: ${t("snw.placeholder")}`}
             className={`h-8 w-72 rounded-md border bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-charge ${bad ? "border-alarm" : "border-line"}`} />
-          <Button size="sm" disabled={!!busy || locked || !serialInputOk(s)} onClick={() => write(which)}>{busy === which ? t("snw.writing") : t("snw.write")}</Button>
+          <Button size="sm" disabled={actLocked(!!busy, !!locked) || !serialInputOk(s)} onClick={() => write(which)}>{busy === which ? t("snw.writing") : t("snw.write")}</Button>
           {which === "battery" && offerBms && (
-            <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={useBms} title={t("snw.useBmsHint")}>{t("snw.useBms")}</Button>
+            <Button size="sm" variant="ghost" disabled={actLocked(!!busy, !!locked)} onClick={useBms} title={t("snw.useBmsHint")}>{t("snw.useBms")}</Button>
           )}
           {bad && <span className="text-alarm">{t("snw.invalid")}</span>}
         </div>

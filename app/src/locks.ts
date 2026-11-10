@@ -78,6 +78,10 @@ export type UiAction =
   | "bmsHistory.read"
   /** BMS history: the pack picker */
   | "bmsHistory.pick"
+  /** BMS history: cancel a read running */
+  | "bmsHistory.cancel"
+  /** BMS history: save what was read (`entries`) */
+  | "bmsHistory.save"
   /** notifications on or off (of the chosen installation) */
   | "notifications.toggle"
   /** a notification threshold (only while they are on) */
@@ -90,7 +94,31 @@ export type UiAction =
   | "capture.clear"
   /** the recording of the installation: export (`entries`: data is shown) and import */
   | "history.export"
-  | "history.import";
+  | "history.import"
+  /** the recording: switch it on (from the empty History view) */
+  | "history.enable"
+  /** open the recording's folder (not in the preview) */
+  | "history.reveal"
+  /** send a test notification (not in the preview) */
+  | "notifications.test"
+  // Sidebar connection actions
+  /** „Verbinden“ / „Neu verbinden“ (`ready`: the form is complete; `loaded`: the installation's broker or packs are read) */
+  | "connection.connect"
+  /** „Abbrechen“ of a connect running or waiting for the port */
+  | "connection.cancel"
+  | "connection.disconnect"
+  /** the bank check: take the packs over for the installation */
+  | "bank.adopt"
+  /** the bank check: leave (disconnect, „Mit B verbinden“, „Nicht diese Anlage“) */
+  | "bank.leave"
+  /** the firmware profile line: read it again */
+  | "profile.recheck"
+  /** the Firmware and Diagnosis views talk to the bus themselves: not over the add-on's feed */
+  | "view.busTools"
+  /** an action inside a section or editor: its own action (`busy`) or another write holding it (`held`) */
+  | "section.act"
+  /** the pack control's switching (restart, on/off): also held by a power lock over the CAN socket (`powerHeld`) */
+  | "pack.power";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
@@ -156,6 +184,17 @@ export interface UiFacts {
   entries?: boolean;
   /** frame capture: its memory limit is reached */
   full?: boolean;
+  /** the form an action needs is complete (host, port, a chosen port …; checked where it is typed) */
+  ready?: boolean;
+  /** a connect waits for the port another action holds */
+  waiting?: boolean;
+  /** another write or the section's owner holds this control */
+  held?: boolean;
+  /** the pack's power switching is locked over the CAN socket (Group0) */
+  powerHeld?: boolean;
+  /** BMS history: the connection is open (direct), the chosen pack answers on it */
+  connected?: boolean;
+  answering?: boolean;
 }
 
 export interface UiReason { key: string; params?: Record<string, unknown> }
@@ -286,10 +325,16 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       if (f.source !== "bus" || f.bus !== "can" || !f.profile || f.address === 0) return hide;
       return f.busy ? lock("lock.busy") : show();
     case "bmsHistory.read":
-      if (!f.offered) return lock("lock.notOffered");
+      if (!f.connected) return lock("lock.notConnected");
+      if (f.address == null) return lock("lock.noTarget");
+      if (!f.answering || !f.offered) return lock("lock.notOffered");
       return f.reading ? lock("lock.reading") : show();
     case "bmsHistory.pick":
       return f.reading ? lock("lock.reading") : show();
+    case "bmsHistory.cancel":
+      return f.reading ? show() : hide;
+    case "bmsHistory.save":
+      return f.entries && !f.reading ? show() : hide;
     case "notifications.toggle":
     case "notifications.field":
       if (!f.chosen) return lock("lock.noInstallation");
@@ -314,8 +359,46 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     case "history.import":
       if (f.demo) return lock("lock.demo");
       return f.chosen ? show() : lock("lock.noInstallation");
+    case "history.enable":
+      return f.demo ? lock("lock.demo") : show();
+    case "history.reveal":
+    case "notifications.test":
+      return f.demo ? hide : show();
+    case "connection.connect":
+      if (f.linkPhase === "connecting") return lock("lock.connecting");
+      if (f.portHeld) return lock("lock.portHeld");
+      if (f.loaded === false) return lock("lock.loading");
+      return f.ready ? show() : lock("lock.formIncomplete");
+    case "connection.cancel":
+      return f.waiting || f.linkPhase === "connecting" ? show() : hide;
+    case "connection.disconnect":
+      if (f.waiting || (f.linkPhase !== "open" && f.linkPhase !== "lost")) return hide;
+      return f.portHeld ? lock("lock.portHeld") : show();
+    case "bank.adopt":
+      if (f.portHeld) return lock("lock.portHeld");
+      return f.busy ? lock("lock.busy") : show();
+    case "bank.leave":
+      if (f.portHeld) return lock("lock.portHeld");
+      if (f.linkPhase === "connecting") return lock("lock.connecting");
+      return f.busy ? lock("lock.busy") : show();
+    case "profile.recheck":
+      if (f.portHeld) return lock("lock.portHeld");
+      return f.busy ? lock("lock.busy") : show();
+    // the Firmware view also works without a connection (bench, recovery): only the add-on's feed keeps it away
+    case "view.busTools":
+      return f.source === "mqtt" ? hide : show();
+    case "section.act":
+      if (f.busy) return lock("lock.busy");
+      return f.held ? lock("lock.writeRunning") : show();
+    case "pack.power":
+      if (f.busy) return lock("lock.busy");
+      if (f.held) return lock("lock.writeRunning");
+      return f.powerHeld ? lock("lock.powerLocked") : show();
   }
 }
+
+/** An action inside a section: its own action running (`busy`) or held by another write (`held`). */
+export const actLocked = (busy: boolean, held: boolean): boolean => decideUi("section.act", { source: null, chosen: null, busy, held }).locked;
 
 /** For JSX: the `disabled` of a control and its title (the reason, translated). */
 export function lockProps(d: UiDecision, t: (key: string, params?: Record<string, unknown>) => string): { disabled: boolean; title?: string } {

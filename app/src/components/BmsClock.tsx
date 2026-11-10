@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
 import { api, isDemo, linkNow, type BmsTime, type Bus } from "../api";
@@ -123,7 +124,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
         reloading={usable && address !== null && read === null} reloadDisabled={!!busy || locked} readAt={read && "bms" in read ? new Date(read.at) : null} />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {packs.length > 0 && (
-          <select value={address ?? ""} onChange={(e) => setAddress(Number(e.target.value))} disabled={!!busy || locked} aria-label={t("bmsh.pack")}
+          <select value={address ?? ""} onChange={(e) => setAddress(Number(e.target.value))} disabled={actLocked(!!busy, !!locked)} aria-label={t("bmsh.pack")}
             className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
             {packs.map((a) => <option key={a} value={a}>{t("bmsh.pack")} {no(a)}</option>)}
           </select>
@@ -145,8 +146,8 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
       )}
       {usable && access.write && address !== null && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={!!busy || locked} onClick={setOne} className="tabular-nums">{label}</Button>
-          {packs.length > 1 && <Button size="sm" variant="ghost" disabled={!!busy || locked} onClick={setAll}>{t("clock.setAll")}</Button>}
+          <Button size="sm" disabled={actLocked(!!busy, !!locked)} onClick={setOne} className="tabular-nums">{label}</Button>
+          {packs.length > 1 && <Button size="sm" variant="ghost" disabled={actLocked(!!busy, !!locked)} onClick={setAll}>{t("clock.setAll")}</Button>}
         </div>
       )}
       {usable && access.write && address !== null && <StatusLine>{busy ?? (can ? `${t("clock.hint")} ${t("clock.canHint")}` : t("clock.hint"))}</StatusLine>}

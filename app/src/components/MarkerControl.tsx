@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Wrench } from "lucide-react";
 import { api, type MarkerView } from "../api";
@@ -51,7 +52,8 @@ export function MarkerSection({ address, bus, locked, onBusy, onChanged, linkKey
   }, [open, address, bus, linkKey]); // eslint-disable-line react-hooks/exhaustive-deps
   if (address === null || !bus) return null;
 
-  const disabled = locked || busy !== null;
+  // its own action, or another write holding the section (`locks.ts`)
+  const disabled = actLocked(busy !== null, !!locked);
   const line = view ? markerLine(view, t) : null;
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">

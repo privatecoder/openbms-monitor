@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
@@ -354,7 +355,8 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   const learnedUnder = learnedSoc !== null ? belowSocProtection(learnedSoc, p79) : null;
   // the next parameter write (also a name) puts it back to P58
   const backToRated = learnedRaw !== null && rated !== null && rated !== undefined && capacityResets(learnedRaw / 100, Math.round(rated * 100));
-  const disabled = busy !== null || locked;
+  // its own action, or another write holding the section (`locks.ts`)
+  const disabled = actLocked(busy !== null, !!locked);
   // over the CAN socket a lock seen in the last state holds restart and on/off back (Group0 bit 3)
   const powerHeld = can && powerLocked === true;
   const yesNo = (free: boolean) => <span className={free ? "text-ok" : "text-discharge"}>{t(free ? "ctl.state.free" : "ctl.state.blocked")}</span>;
@@ -384,13 +386,13 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {offers("restart") && <Button size="sm" disabled={disabled || powerHeld} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>}
-            {offers("power-on-off") && <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
+            {offers("restart") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>}
+            {offers("power-on-off") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked || !st} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
               title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>}
             {relock && offers("power-on-off") && (
-              <Button size="sm" disabled={disabled || powerHeld || !st} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>
+              <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked || !st} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>
                 {t("ctl.cutoff.offConfirm")}
               </Button>
             )}

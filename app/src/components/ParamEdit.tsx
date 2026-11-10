@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { actLocked } from "../locks";
 import { PenLine, TriangleAlert } from "lucide-react";
 import type { Parameters } from "../params";
 import { parseNumber } from "../calibration";
@@ -137,20 +138,20 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
         <span className="flex items-center gap-1.5 font-medium"><PenLine className="h-4 w-4" aria-hidden />
           {changes.length ? t("pw.count", { count: changes.length, pack }) : t("pw.none", { pack })}<InfoIcon id="topic.paramWrite" />
         </span>
-        <select value="" disabled={busy || held || !sources.length} onChange={(ev) => ev.target.value && onTakeOver(ev.target.value)} aria-label={t("pw.takeOver")}
+        <select value="" disabled={actLocked(!!busy, !!held) || !sources.length} onChange={(ev) => ev.target.value && onTakeOver(ev.target.value)} aria-label={t("pw.takeOver")}
           className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
           <option value="">{t("pw.takeOver")}</option>
           {sources.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
         </select>
         <label className="flex cursor-pointer items-center gap-2" title={t("pw.seriesHint")}>
-          <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={e.seriesUnlocked} disabled={busy || held}
+          <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={e.seriesUnlocked} disabled={actLocked(!!busy, !!held)}
             onChange={(ev) => onChange((x) => ({ ...x, seriesUnlocked: ev.target.checked }))} />
           {t("pw.unlockSeries")}
         </label>
         <span className="ml-auto flex gap-2">
           {more}
           <Button variant="primary" size="sm" disabled={!canWrite} onClick={onWrite}>{busy ? t("pw.writing") : writeLabel ?? t("pw.write", { pack })}</Button>
-          <Button variant="ghost" size="sm" disabled={busy || held} onClick={onDiscard}>{t("pw.discard")}</Button>
+          <Button variant="ghost" size="sm" disabled={actLocked(!!busy, !!held)} onClick={onDiscard}>{t("pw.discard")}</Button>
         </span>
       </div>
 
@@ -181,7 +182,7 @@ export function EditBar({ e, pack, changes, blockers, sheet, full, note, refused
         : resets && (
           <p className="flex flex-wrap items-center gap-2 text-discharge">
             <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden />{capacityLine(e.raws[RATED_INDEX])}
-            <Button size="sm" disabled={busy || held} onClick={() => onChange((x) => {
+            <Button size="sm" disabled={actLocked(!!busy, !!held)} onClick={() => onChange((x) => {
               const text = { ...x.text };
               delete text[RATED_INDEX];
               return { ...x, text, raws: x.raws.map((r, k) => (k === RATED_INDEX ? ratedFor(fullAh!) : r)) };
@@ -217,7 +218,7 @@ export function RefusedPanel({ refused, fullAh, busy, locked, pack, onRestore }:
       ) : <p className="text-muted">{t("pw.noLiveSwitches")}</p>}
       <p>{t("pw.pendingBlock")}</p>
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={busy || locked} onClick={() => onRestore(refused.stored)}>{busy ? t("pw.writing") : t("pw.restore")}</Button>
+        <Button size="sm" disabled={actLocked(!!busy, !!locked)} onClick={() => onRestore(refused.stored)}>{busy ? t("pw.writing") : t("pw.restore")}</Button>
         <span className="text-muted">{t("pw.restartHint")}</span>
       </div>
       {fullAh !== null && capacityResets(fullAh, rated) && (

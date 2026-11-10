@@ -59,7 +59,10 @@ export function BmsHistory({ connected, bus, packs: livePacks, installation }: {
   // read-capability bit 0 (from its own 64/03 on this link)
   const channel = channelOf(bus);
   const caps = useReadCaps(connected && bus === "can" && !isDemo ? address : null, null, linkNow());
-  const usable = connected && address !== null && livePacks.includes(address) && (isDemo || (!!channel && offerable("read-history", channel, factsOf({ caps }))));
+  // what may be done now (`locks.ts`): the read needs the direct connection, the chosen pack answering and the catalog's way
+  const hfBase: UiFacts = { source: null, chosen: null, connected, address, answering: address !== null && livePacks.includes(address),
+    offered: isDemo || (!!channel && offerable("read-history", channel, factsOf({ caps }))) };
+  const usable = !decideUi("bmsHistory.read", hfBase).locked;
   const canRead = bus === "can" && usable && !isDemo;
   const { read: clock } = useBmsClock(address, usable);
   const diff = readDiff(clock);
@@ -125,7 +128,7 @@ export function BmsHistory({ connected, bus, packs: livePacks, installation }: {
     : null;
 
   // what may be done now (`locks.ts`)
-  const hf: UiFacts = { source: null, chosen: null, offered: usable && address !== null, reading: !!reading };
+  const hf: UiFacts = { ...hfBase, reading, entries: all.length > 0 };
   return (
     <div className="space-y-6">
       <Panel className="space-y-3 p-5">
@@ -138,8 +141,8 @@ export function BmsHistory({ connected, bus, packs: livePacks, installation }: {
             </select>
           )}
           <Button variant="primary" {...lockProps(decideUi("bmsHistory.read", hf), t)} onClick={start}><HistoryIcon className="h-4 w-4" />{t("bmsh.read")}</Button>
-          {reading && <Button variant="ghost" onClick={() => void api.bmsHistoryCancel()}><X className="h-4 w-4" />{t("bmsh.cancel")}</Button>}
-          {all.length > 0 && !reading && <Button className="ml-auto" onClick={save}><Download className="h-4 w-4" />{t("bmsh.save")}</Button>}
+          {decideUi("bmsHistory.cancel", hf).visible && <Button variant="ghost" onClick={() => void api.bmsHistoryCancel()}><X className="h-4 w-4" />{t("bmsh.cancel")}</Button>}
+          {decideUi("bmsHistory.save", hf).visible && <Button className="ml-auto" onClick={save}><Download className="h-4 w-4" />{t("bmsh.save")}</Button>}
         </div>
         <p className={cn("text-sm", bus === "can" && connected && !isDemo && !canRead ? "text-discharge" : "text-muted")}>
           {reading ? t(canRead ? "bmsh.readingCan" : "bmsh.reading", { n: (progress ?? 0) + 1 })

@@ -129,7 +129,7 @@ function RecordingSheet({ open, onOpenChange, rec, scope, packs, systemAvailable
             {err && <p className="mt-2 text-sm text-alarm">{err}</p>}
             <div className="mt-4 flex flex-wrap gap-2">
               <Button variant="secondary" onClick={onOpenHistory}><ChartLine className="h-4 w-4" />{t("rec.openHistory")}</Button>
-              {!isDemo && <Button variant="ghost" onClick={() => api.revealHistory(s.path)}><FolderOpen className="h-4 w-4" />{t("rec.reveal")}</Button>}
+              {decideUi("history.reveal", { source: null, chosen: null, demo: isDemo }).visible && <Button variant="ghost" onClick={() => api.revealHistory(s.path)}><FolderOpen className="h-4 w-4" />{t("rec.reveal")}</Button>}
               <Button variant="ghost" onClick={onOpenStorage}><HardDrive className="h-4 w-4" />{t("rec.storage")}</Button>
             </div>
             {opts.enabled && !connected && <p className="mt-2 text-sm text-muted">{t("rec.needConnection")}</p>}
@@ -245,7 +245,7 @@ function NotifySection({ scope }: { scope: string | null }) {
       {n.enabled && scope && status?.installation === scope && status.none_confirmed && (
         <p className="text-sm text-discharge">{t("notify.packsWaiting")}</p>
       )}
-      {!isDemo && (
+      {decideUi("notifications.test", { source: null, chosen: scope, demo: isDemo }).visible && (
         <div className="flex flex-wrap items-center gap-3">
           <Button variant="ghost" size="sm" onClick={test}>{t("notify.test")}</Button>
           {note && <span className={cn("text-sm", note.failed ? "text-alarm" : "text-muted")}>{note.text}</span>}

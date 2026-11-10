@@ -182,9 +182,9 @@ describe("asking a BMS directly", () => {
 describe("the rest: BMS history, notifications, capture, recording export", () => {
   const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: null, chosen: "A", ...f });
   it("BMS history: read only where offered and not twice; the picker waits for a read", () => {
-    expect(s("bmsHistory.read", { offered: true })).toBe("open");
-    expect(s("bmsHistory.read", { offered: false })).toBe("locked:lock.notOffered");
-    expect(s("bmsHistory.read", { offered: true, reading: true })).toBe("locked:lock.reading");
+    expect(s("bmsHistory.read", { connected: true, address: 1, answering: true, offered: true })).toBe("open");
+    expect(s("bmsHistory.read", { connected: true, address: 1, answering: true, offered: false })).toBe("locked:lock.notOffered");
+    expect(s("bmsHistory.read", { connected: true, address: 1, answering: true, offered: true, reading: true })).toBe("locked:lock.reading");
     expect(s("bmsHistory.pick", { reading: true })).toBe("locked:lock.reading");
   });
   it("notifications belong to an installation; thresholds only while they are on", () => {
@@ -207,5 +207,57 @@ describe("the rest: BMS history, notifications, capture, recording export", () =
     expect(s("history.export", { entries: true })).toBe("open");
     expect(s("history.export", { entries: true, demo: true })).toBe("locked:lock.demo");
     expect(s("history.import", { chosen: null })).toBe("locked:lock.noInstallation");
+  });
+});
+
+describe("the rest, completed: connection actions, bank check, sections, views", () => {
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { source: null, chosen: "A", ...f });
+  it("connect: not while connecting or the port is held, once loaded and the form is complete; reconnect while open", () => {
+    expect(s("connection.connect", { linkPhase: "idle", ready: true })).toBe("open");
+    expect(s("connection.connect", { linkPhase: "open", ready: true })).toBe("open");
+    expect(s("connection.connect", { linkPhase: "connecting", ready: true })).toBe("locked:lock.connecting");
+    expect(s("connection.connect", { linkPhase: "idle", ready: true, portHeld: true })).toBe("locked:lock.portHeld");
+    expect(s("connection.connect", { linkPhase: "idle", ready: true, loaded: false })).toBe("locked:lock.loading");
+    expect(s("connection.connect", { linkPhase: "idle", ready: false })).toBe("locked:lock.formIncomplete");
+  });
+  it("cancel while connecting or waiting; disconnect once open or lost and not connecting", () => {
+    expect(s("connection.cancel", { linkPhase: "connecting" })).toBe("open");
+    expect(s("connection.cancel", { linkPhase: "idle", waiting: true })).toBe("open");
+    expect(s("connection.cancel", { linkPhase: "open" })).toBe("hidden");
+    expect(s("connection.disconnect", { linkPhase: "open" })).toBe("open");
+    expect(s("connection.disconnect", { linkPhase: "lost", portHeld: true })).toBe("locked:lock.portHeld");
+    expect(s("connection.disconnect", { linkPhase: "connecting" })).toBe("hidden");
+    expect(s("connection.disconnect", { linkPhase: "idle" })).toBe("hidden");
+  });
+  it("bank check and profile re-check wait for the port and their own action", () => {
+    expect(s("bank.adopt", {})).toBe("open");
+    expect(s("bank.adopt", { busy: true })).toBe("locked:lock.busy");
+    expect(s("bank.leave", { linkPhase: "connecting" })).toBe("locked:lock.connecting");
+    expect(s("bank.leave", { portHeld: true })).toBe("locked:lock.portHeld");
+    expect(s("profile.recheck", { busy: true })).toBe("locked:lock.busy");
+  });
+  it("sections and pack power: own action, another write, the CAN socket's power lock", () => {
+    expect(s("section.act", {})).toBe("open");
+    expect(s("section.act", { busy: true })).toBe("locked:lock.busy");
+    expect(s("section.act", { held: true })).toBe("locked:lock.writeRunning");
+    expect(s("pack.power", { powerHeld: true })).toBe("locked:lock.powerLocked");
+    expect(s("pack.power", {})).toBe("open");
+  });
+  it("Firmware and Diagnosis only away from the add-on's feed (also without a connection)", () => {
+    expect(s("view.busTools", { source: null })).toBe("open");
+    expect(s("view.busTools", { source: "bus" })).toBe("open");
+    expect(s("view.busTools", { source: "mqtt" })).toBe("hidden");
+  });
+  it("BMS history from raw facts; preview-only rules", () => {
+    const h = { connected: true, address: 2, answering: true, offered: true };
+    expect(s("bmsHistory.read", h)).toBe("open");
+    expect(s("bmsHistory.read", { ...h, connected: false })).toBe("locked:lock.notConnected");
+    expect(s("bmsHistory.read", { ...h, address: null })).toBe("locked:lock.noTarget");
+    expect(s("bmsHistory.read", { ...h, answering: false })).toBe("locked:lock.notOffered");
+    expect(s("bmsHistory.cancel", { reading: true })).toBe("open");
+    expect(s("bmsHistory.save", { entries: true, reading: true })).toBe("hidden");
+    expect(s("history.reveal", { demo: true })).toBe("hidden");
+    expect(s("notifications.test", { demo: false })).toBe("open");
+    expect(s("history.enable", { demo: true })).toBe("locked:lock.demo");
   });
 });

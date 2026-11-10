@@ -574,7 +574,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
 
 
   // the connection's fields and what of them is shown (`locks.ts`)
-  const facts: UiFacts = { source: getSource(), chosen: maint.installation, way: src, linkPhase: connected ? "open" : lost ? "lost" : busy ? "connecting" : "idle", portHeld: locked };
+  const facts: UiFacts = { source: getSource(), chosen: maint.installation, way: src, linkPhase: busy ? "connecting" : connected ? "open" : lost ? "lost" : "idle", portHeld: locked };
   const fixed = decideUi("connection.editFields", facts).locked;
   const picker = decideUi("connection.packsPicker", facts);
   const packsText = decideUi("connection.packsText", facts);
@@ -786,12 +786,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           </>
         )}
         <div className="flex gap-2">
-          <Button variant="primary" className="flex-1" disabled={busy || (src === "mqtt" ? mqLoading || !mq.host || !mq.base || !mq.port : !target || packsLoading) || locked} onClick={() => connect()}>
+          <Button variant="primary" className="flex-1" {...lockProps(decideUi("connection.connect", { ...facts,
+            ready: src === "mqtt" ? !!mq.host && !!mq.base && !!mq.port : !!target, loaded: src === "mqtt" ? !mqLoading : !packsLoading }), t)} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
-          {waiting ? <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>
-            : busy && <Button variant="ghost" onClick={cancelConnect}>{t("conn.cancel")}</Button>}
-          {(connected || lost) && !busy && <Button variant="ghost" disabled={locked} onClick={disconnect}>{t("conn.disconnect")}</Button>}
+          {decideUi("connection.cancel", { ...facts, waiting }).visible && <Button variant="ghost" onClick={waiting ? stopWaiting : cancelConnect}>{t("conn.cancel")}</Button>}
+          {decideUi("connection.disconnect", facts).visible && <Button variant="ghost" {...lockProps(decideUi("connection.disconnect", facts), t)} onClick={disconnect}>{t("conn.disconnect")}</Button>}
         </div>
         {/* fixed room for three lines, so the block does not jump when a status or error appears; long texts are clamped, the full text is the tooltip */}
         <div className="min-h-[3.75rem] space-y-0.5">
@@ -826,11 +826,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             <div className="space-y-1 pt-1">
               <p className="text-sm text-alarm">{t("bank.foreign", { count: line.packs.length, packs: packList(line.packs), other: line.other.name })}</p>
               <div className="flex flex-wrap gap-1">
-                <Button variant="secondary" size="sm" disabled={locked || busy} onClick={() => void disconnect()}>{t("bank.disconnect")}</Button>
-                <Button variant="secondary" size="sm" disabled={locked || busy} onClick={() => void connectWith(line.other.id)}>{t("bank.connectOther", { other: line.other.name })}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.leave", facts), t)} onClick={() => void disconnect()}>{t("bank.disconnect")}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.leave", facts), t)} onClick={() => void connectWith(line.other.id)}>{t("bank.connectOther", { other: line.other.name })}</Button>
               </div>
               {!line.hint && line.confirm.length > 0 && (
-                <button className="text-xs text-muted underline hover:text-ink disabled:opacity-60" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>
+                <button className="text-xs text-muted underline hover:text-ink disabled:opacity-60" {...lockProps(decideUi("bank.adopt", { ...facts, busy: confirming }), t)} onClick={() => void confirm(line.confirm)}>
                   {t("bank.adoptAnyway", { name: instName })}
                 </button>
               )}
@@ -842,9 +842,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
                 {t("bank.new", { count: line.packs.length, packs: packList(line.packs), name: instName })}
               </p>
               <div className="flex flex-wrap gap-1">
-                <Button variant="secondary" size="sm" disabled={confirming || locked} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
+                <Button variant="secondary" size="sm" {...lockProps(decideUi("bank.adopt", { ...facts, busy: confirming }), t)} onClick={() => void confirm(line.confirm)}>{t("bank.adopt")}</Button>
                 {/* not this installation: nothing is adopted, the connection ends (another installation is chosen above) */}
-                <Button variant="ghost" size="sm" disabled={confirming || locked || busy} onClick={() => void disconnect()}>{t("bank.notOurs")}</Button>
+                <Button variant="ghost" size="sm" {...lockProps(decideUi("bank.leave", { ...facts, busy: confirming }), t)} onClick={() => void disconnect()}>{t("bank.notOurs")}</Button>
               </div>
             </div>
           )}
@@ -901,7 +901,7 @@ function FirmwareProfileLine({ locked }: { locked: boolean }) {
         <span className="min-w-0 truncate" title={line.title ?? line.text}>{line.text}</span><InfoIcon id="topic.firmwareProfile" />
       </p>
       {recheckable(p) && (
-        <button className="text-xs text-ink underline disabled:opacity-40" disabled={locked || checking} onClick={() => void recheck()}>{t("profile.recheck")}</button>
+        <button className="text-xs text-ink underline disabled:opacity-40" {...lockProps(decideUi("profile.recheck", { source: null, chosen: null, portHeld: locked, busy: checking }), t)} onClick={() => void recheck()}>{t("profile.recheck")}</button>
       )}
     </div>
   );

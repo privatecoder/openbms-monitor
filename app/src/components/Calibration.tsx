@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Crosshair, Network } from "lucide-react";
 import { api, type DeviceInfo, type PackLive } from "../api";
@@ -80,12 +81,12 @@ export function CanProtocolLine({ address, usable, locked, onBusy }: WriteProps)
         : "error" in device && <StatusLine tone="error">{t("can.readError", { err: device.error })}</StatusLine>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {device !== null && !("error" in device) && <span>{t("can.current", { name: protocolName(device.can_protocol) || "–" })}</span>}
-        <select value={choice ?? ""} onChange={(e) => setChoice(e.target.value ? Number(e.target.value) : null)} disabled={busy || locked} aria-label={t("can.choose")}
+        <select value={choice ?? ""} onChange={(e) => setChoice(e.target.value ? Number(e.target.value) : null)} disabled={actLocked(!!busy, !!locked)} aria-label={t("can.choose")}
           className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-charge">
           {choice === null && <option value="">{t("can.choose")}</option>}
           {CAN_PROTOCOLS.map((p) => <option key={p.n} value={p.n}>{p.n} · {p.name}</option>)}
         </select>
-        <Button size="sm" disabled={busy || locked || choice === null} onClick={set}>{busy ? t("can.setting") : t("can.set")}</Button>
+        <Button size="sm" disabled={actLocked(!!busy, !!locked) || choice === null} onClick={set}>{busy ? t("can.setting") : t("can.set")}</Button>
       </div>
       {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}
       <StatusLine>{t("can.hint")}</StatusLine>
@@ -186,7 +187,7 @@ export function CalibrationSection({ address, usable, locked, onBusy, linkKey }:
 
           <Block title={t("cal.zero.title")} guide={t("cal.zero.guide")}>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <Button size="sm" disabled={!!busy || locked} onClick={() => run({ kind: "zero_point" })}>{busy === "zero_point" ? t("cal.running") : t("cal.zero.button")}</Button>
+              <Button size="sm" disabled={actLocked(!!busy, !!locked)} onClick={() => run({ kind: "zero_point" })}>{busy === "zero_point" ? t("cal.running") : t("cal.zero.button")}</Button>
               {tel && <span className="tabular-nums text-muted">{t("cal.bmsCurrent", { a: nf(2).format(tel.current) })}</span>}
               {flagLine("zero_point")}
             </div>
@@ -203,7 +204,7 @@ export function CalibrationSection({ address, usable, locked, onBusy, linkKey }:
               {diff !== null && <span className={cn("tabular-nums", Math.abs(diff) >= 3 ? "text-alarm" : "text-muted")}>{t("cal.current.diff", { d: nf(2).format(diff) })}</span>}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <Button size="sm" disabled={!!busy || locked || !currentAllowed(measured, tel?.current)} onClick={() => measured !== null && run({ kind: "current", centi_amps: centiAmps(measured) })} className="tabular-nums">
+              <Button size="sm" disabled={actLocked(!!busy, !!locked) || !currentAllowed(measured, tel?.current)} onClick={() => measured !== null && run({ kind: "current", centi_amps: centiAmps(measured) })} className="tabular-nums">
                 {busy === "current" ? t("cal.running") : measured !== null ? t("cal.current.button", { a: nf(2).format(measured) }) : t("cal.current.buttonEmpty")}
               </Button>
               {measured !== null && tel && !currentAllowed(measured, tel.current) && <span className="text-discharge">{t("cal.current.needs", { min: MIN_CURRENT_A })}</span>}
@@ -230,7 +231,7 @@ export function CalibrationSection({ address, usable, locked, onBusy, linkKey }:
               ) : <span className="text-muted">{t("cal.reading")}</span>}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <Button size="sm" disabled={!!busy || locked || mv === null} onClick={() => mv !== null && run({ kind: "voltage", cell_mv: mv })} className="tabular-nums">
+              <Button size="sm" disabled={actLocked(!!busy, !!locked) || mv === null} onClick={() => mv !== null && run({ kind: "voltage", cell_mv: mv })} className="tabular-nums">
                 {busy === "voltage" ? t("cal.running") : mv !== null ? t("cal.voltage.button", { v: nf(3).format(mv / 1000) }) : t("cal.voltage.buttonEmpty")}
               </Button>
               {flagLine("voltage")}

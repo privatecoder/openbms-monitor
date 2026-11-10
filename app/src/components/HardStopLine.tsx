@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { OctagonPause } from "lucide-react";
 import type { Parameters } from "../params";
@@ -45,8 +46,8 @@ export function HardStopLine({ address, read, known, connected, linkKey, locked,
       {!choice ? <StatusLine>{t("hs.unread")}</StatusLine> : (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span>{t(choice.enabled ? "hs.on" : "hs.off")}{choice.inherited ? ` ${t("hs.inherited")}` : ""}</span>
-          <Button size="sm" disabled={busy || locked} onClick={() => set(!choice.enabled, false)}>{busy ? t("hs.writing") : t(choice.enabled ? "hs.turnOff" : "hs.turnOn")}</Button>
-          {pending !== null && <Button size="sm" variant="ghost" disabled={busy || locked} onClick={() => set(pending, true)}>{t("hs.anyway")}</Button>}
+          <Button size="sm" disabled={actLocked(!!busy, !!locked)} onClick={() => set(!choice.enabled, false)}>{busy ? t("hs.writing") : t(choice.enabled ? "hs.turnOff" : "hs.turnOn")}</Button>
+          {pending !== null && <Button size="sm" variant="ghost" disabled={actLocked(!!busy, !!locked)} onClick={() => set(pending, true)}>{t("hs.anyway")}</Button>}
         </div>
       )}
       {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Tag } from "lucide-react";
 import { api } from "../api";
@@ -84,18 +85,18 @@ export function NameLine({ address, usable, locked, onBusy, linkKey, read, pendi
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="w-32 text-muted">{t("nmw.current")}</span>
         <span className="min-w-56 font-mono text-xs">{read ? read.device_name || t("nmw.empty") : t("nmw.notRead")}</span>
-        <input value={input} onChange={(e) => { setInput(e.target.value); setAsk(null); }} maxLength={12} disabled={busy || locked || !read}
+        <input value={input} onChange={(e) => { setInput(e.target.value); setAsk(null); }} maxLength={12} disabled={actLocked(!!busy, !!locked) || !read}
           placeholder={t("nmw.placeholder")} aria-label={t("nmw.placeholder")}
           className={`h-8 w-40 rounded-md border bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-charge ${name && !nameInputOk(name) ? "border-alarm" : "border-line"}`} />
-        <Button size="sm" disabled={busy || locked || !ok} onClick={() => void write(false)}>{busy ? t("nmw.writing") : t("nmw.write")}</Button>
+        <Button size="sm" disabled={actLocked(!!busy, !!locked) || !ok} onClick={() => void write(false)}>{busy ? t("nmw.writing") : t("nmw.write")}</Button>
         {name !== "" && !nameInputOk(name) && <span className="text-alarm">{t("nmw.invalid")}</span>}
       </div>
       {ask && (
         <div className="flex flex-wrap items-center gap-2">
           <StatusLine tone="warn">{ask.full === null ? t("nmw.capacityUnknown", { rated: nf.format(ask.rated / 100) })
             : t("nmw.capacityResets", { full: nf.format(ask.full), rated: nf.format(ask.rated / 100) })}</StatusLine>
-          <Button size="sm" disabled={busy || locked || pending} onClick={() => void write(true)}>{t("nmw.writeAnyway")}</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setAsk(null)}>{t("ctl.cancel")}</Button>
+          <Button size="sm" disabled={actLocked(!!busy, !!locked) || pending} onClick={() => void write(true)}>{t("nmw.writeAnyway")}</Button>
+          <Button size="sm" variant="ghost" disabled={actLocked(!!busy, false)} onClick={() => setAsk(null)}>{t("ctl.cancel")}</Button>
         </div>
       )}
       {pending && <StatusLine tone="warn">{t("nmw.pending")}</StatusLine>}

@@ -351,7 +351,7 @@ function Empty({ site }: { site: string | null }) {
       {!site ? t("hist.chooseInstallation") : s && !s.settings.enabled ? (
         <>
           <span>{t("hist.emptyOff")}</span>
-          <Button disabled={isDemo} onClick={() => void rec.save({ ...s.settings, enabled: true })}>{t("hist.enableRecording")}</Button>
+          <Button {...lockProps(decideUi("history.enable", { source: null, chosen: site, demo: isDemo }), t)} onClick={() => void rec.save({ ...s.settings, enabled: true })}>{t("hist.enableRecording")}</Button>
         </>
       ) : t("hist.emptyOn")}
     </div>

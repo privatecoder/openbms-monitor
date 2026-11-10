@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Microscope } from "lucide-react";
 import { api, type CalPageRead, type SocStoreRead } from "../api";
@@ -36,8 +37,8 @@ export function RemoteDiagnosis({ address, known, connected, locked, linkKey }: 
     <div className="space-y-2 border-t border-line pt-3 text-sm">
       <SectionHead icon={Microscope} title={t("rdiag.title")} help="topic.remoteDiagnosis" />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        {calOk && <Button size="sm" disabled={busy !== null || locked} onClick={() => void run("cal", () => api.packCalibration(address), setCal)}>{busy === "cal" ? t("rdiag.reading") : t("rdiag.cal.read")}</Button>}
-        {socOk && <Button size="sm" disabled={busy !== null || locked} onClick={() => void run("soc", () => api.packSocStore(address), setSoc)}>{busy === "soc" ? t("rdiag.reading") : t("rdiag.soc.read")}</Button>}
+        {calOk && <Button size="sm" disabled={actLocked(busy !== null, !!locked)} onClick={() => void run("cal", () => api.packCalibration(address), setCal)}>{busy === "cal" ? t("rdiag.reading") : t("rdiag.cal.read")}</Button>}
+        {socOk && <Button size="sm" disabled={actLocked(busy !== null, !!locked)} onClick={() => void run("soc", () => api.packSocStore(address), setSoc)}>{busy === "soc" ? t("rdiag.reading") : t("rdiag.soc.read")}</Button>}
       </div>
       {cal && ("error" in cal ? <StatusLine tone="error">{cal.error}</StatusLine> : <CalTable pages={cal} />)}
       {soc && ("error" in soc ? <StatusLine tone="error">{soc.error}</StatusLine> : <SocLines read={soc} full />)}
@@ -126,7 +127,7 @@ export function RowSocNote({ port, address, disabled }: { port: string; address:
   };
   return (
     <div className="space-y-1">
-      <Button variant="ghost" size="sm" disabled={disabled || reading || !port} onClick={() => void ask()}>{reading ? t("rdiag.reading") : t("fw.soc.read")}</Button>
+      <Button variant="ghost" size="sm" disabled={decideUi("firmware.readTarget", { source: null, chosen: null, portHeld: disabled, busy: reading, port: !!port }).locked} onClick={() => void ask()}>{reading ? t("rdiag.reading") : t("fw.soc.read")}</Button>
       {read === null && <StatusLine>{t("fw.soc.unavailable")}</StatusLine>}
       {read && <SocLines read={read} />}
     </div>
