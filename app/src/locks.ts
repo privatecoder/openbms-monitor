@@ -48,7 +48,26 @@ export type UiAction =
   /** the banner's release of a marker or discard of a latent one */
   | "marker.release"
   /** the banner's „cleared by hand“ of a pending bootloader record */
-  | "pending.clear";
+  | "pending.clear"
+  // Parameters view: one write at a time (`writes`); the pack picker stays put while one runs
+  /** „Parameter lesen“ (all packs, or one column's) */
+  | "params.read"
+  /** „Leeren“: drop the read columns */
+  | "params.clear"
+  /** open a pack column's editor */
+  | "params.editStart"
+  /** a cell or switch of the open editor; „Weitere Packs …“ and its picker */
+  | "params.editField"
+  /** write the edited block back as it was stored (`restore`), per pack */
+  | "params.restore"
+  /** read one pack again (e.g. after its lock bit changed) */
+  | "params.reread"
+  /** one of the single-pack sections (clock, CAN protocol, Hard-Stop, serials, name, calibration, control, marker,
+   *  diagnosis reads): `section` names it */
+  | "params.section";
+
+/** The writes of the Parameters view; one runs at a time. */
+export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
 
 export interface UiFacts {
   /** the source of the open connection: "bus" (RS485), "mqtt" (the add-on's feed), null: none */
@@ -79,6 +98,22 @@ export interface UiFacts {
   quiet?: boolean;
   /** a pack row's flash: everything `flashBlocked` weighs (image, quiet, busy, running, address, master, pending, port) */
   flash?: Parameters<typeof flashBlocked>[0];
+  /** Parameters: the writes running now */
+  writes?: Partial<Record<WriteKind, boolean>>;
+  /** Parameters: a read of the parameters runs */
+  reading?: boolean;
+  /** Parameters: the pack whose column is being edited (null: none) */
+  editing?: number | null;
+  /** Parameters: the section asked about (`params.section`; none: a read-only section, locked by any write) */
+  section?: WriteKind;
+  /** Parameters: the connection can read parameters (connected, a bus that has them, packs listed) */
+  canReadParams?: boolean;
+  /** Parameters: this column can be edited (parameter writes offered on this channel, the column is a pack's read) */
+  columnWritable?: boolean;
+  /** Parameters: the pack at a pause of a run to several packs (its restore is free then) */
+  pausedAt?: number | null;
+  /** Parameters: the pack a decision is about (restore, Hard-Stop vs. the open editor) */
+  address?: number | null;
 }
 
 export interface UiReason { key: string; params?: Record<string, unknown> }
@@ -96,6 +131,10 @@ const fieldsLock = (f: UiFacts): UiDecision =>
 // what a flash is started with stays as it was while one runs or a check holds the panel
 const inputsLock = (f: UiFacts): UiDecision | null =>
   f.flashRunning ? lock("lock.flashRunning") : f.busy ? lock("lock.busy") : null;
+
+// a write other than the ones named runs
+const otherWrite = (f: UiFacts, ...own: WriteKind[]) => Object.entries(f.writes ?? {}).some(([k, on]) => on && !own.includes(k as WriteKind));
+const paramsWrite = (f: UiFacts) => !!f.writes?.params || !!f.writes?.multi;
 
 export function decideUi(action: UiAction, f: UiFacts): UiDecision {
   const own = f.subject != null && f.subject === f.chosen;
@@ -165,6 +204,36 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     // the manual clearing of a pending record stays reachable whatever else is locked by it
     case "pending.clear":
       return f.busy ? lock("lock.busy") : show();
+    case "params.read":
+      if (!f.canReadParams) return lock("lock.notConnected");
+      if (f.reading) return lock("lock.reading");
+      if (f.editing != null) return lock("lock.editOpen");
+      return paramsWrite(f) || f.writes?.ctl ? lock("lock.writeRunning") : show();
+    case "params.clear":
+      if (f.reading) return lock("lock.reading");
+      if (f.editing != null) return lock("lock.editOpen");
+      return paramsWrite(f) ? lock("lock.writeRunning") : show();
+    case "params.editStart":
+      if (!f.columnWritable) return lock("lock.notWritable");
+      if (f.editing != null) return lock("lock.editOpen");
+      if (f.reading) return lock("lock.reading");
+      return otherWrite(f) ? lock("lock.writeRunning") : show();
+    case "params.editField":
+      return paramsWrite(f) ? lock("lock.writeRunning") : show();
+    case "params.restore":
+      // at a pause the paused pack's restore is free; everything else waits for the run
+      return otherWrite(f, ...(f.address != null && f.pausedAt === f.address ? ["params", "multi"] as WriteKind[] : ["params"] as WriteKind[])) ? lock("lock.writeRunning") : show();
+    case "params.reread":
+      if (f.reading) return lock("lock.reading");
+      return paramsWrite(f) ? lock("lock.writeRunning") : show();
+    case "params.section":
+      if (f.section === undefined) return otherWrite(f) ? lock("lock.writeRunning") : show();
+      if (otherWrite(f, f.section)) return lock("lock.writeRunning");
+      // the pack's name comes from a parameter read: not while one runs
+      if (f.section === "name" && f.reading) return lock("lock.reading");
+      // Hard-Stop writes parameters of the pack whose editor is open
+      if (f.section === "hs" && f.editing != null && f.editing === f.address) return lock("lock.editOpen");
+      return show();
   }
 }
 

@@ -122,3 +122,40 @@ describe("firmware and maintenance", () => {
     expect(s("marker.release", { flashRunning: true })).toBe("locked:lock.flashRunning");
   });
 });
+
+describe("parameters: one write at a time", () => {
+  const pf: UiFacts = { source: null, chosen: null, canReadParams: true, editing: null };
+  const s = (a: UiAction, f: Partial<UiFacts>) => state(a, { ...pf, ...f });
+  it("read: connected with packs, not while reading, editing, or writing parameters or a control", () => {
+    expect(s("params.read", {})).toBe("open");
+    expect(s("params.read", { canReadParams: false })).toBe("locked:lock.notConnected");
+    expect(s("params.read", { reading: true })).toBe("locked:lock.reading");
+    expect(s("params.read", { editing: 0 })).toBe("locked:lock.editOpen");
+    for (const k of ["params", "multi", "ctl"] as const) expect(s("params.read", { writes: { [k]: true } })).toBe("locked:lock.writeRunning");
+    // a clock write does not hold the read
+    expect(s("params.read", { writes: { clock: true } })).toBe("open");
+  });
+  it("an editor opens only on a writable column with nothing else running", () => {
+    expect(s("params.editStart", { columnWritable: true })).toBe("open");
+    expect(s("params.editStart", { columnWritable: false })).toBe("locked:lock.notWritable");
+    expect(s("params.editStart", { columnWritable: true, editing: 2 })).toBe("locked:lock.editOpen");
+    expect(s("params.editStart", { columnWritable: true, writes: { clock: true } })).toBe("locked:lock.writeRunning");
+    expect(s("params.editField", { writes: { multi: true } })).toBe("locked:lock.writeRunning");
+    expect(s("params.editField", { writes: { clock: true } })).toBe("open");
+  });
+  it("sections: each waits for the others; name for a read, Hard-Stop for the editor of its pack", () => {
+    expect(s("params.section", { section: "clock", writes: { clock: true } })).toBe("open");
+    expect(s("params.section", { section: "clock", writes: { serial: true } })).toBe("locked:lock.writeRunning");
+    expect(s("params.section", { writes: { clock: true } })).toBe("locked:lock.writeRunning");
+    expect(s("params.section", {})).toBe("open");
+    expect(s("params.section", { section: "name", reading: true })).toBe("locked:lock.reading");
+    expect(s("params.section", { section: "hs", editing: 3, address: 3 })).toBe("locked:lock.editOpen");
+    expect(s("params.section", { section: "hs", editing: 3, address: 4 })).toBe("open");
+  });
+  it("restore: free for the paused pack of a run, else only beside the parameter write", () => {
+    expect(s("params.restore", { address: 2, writes: { params: true } })).toBe("open");
+    expect(s("params.restore", { address: 2, writes: { multi: true } })).toBe("locked:lock.writeRunning");
+    expect(s("params.restore", { address: 2, pausedAt: 2, writes: { multi: true } })).toBe("open");
+    expect(s("params.restore", { address: 3, pausedAt: 2, writes: { multi: true } })).toBe("locked:lock.writeRunning");
+  });
+});

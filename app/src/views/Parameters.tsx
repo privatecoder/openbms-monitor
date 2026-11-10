@@ -1,3 +1,4 @@
+import { decideUi, type UiAction, type UiFacts, type WriteKind } from "../locks";
 import { AccessMatrix } from "../components/AccessMatrix";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -124,8 +125,6 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
   const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, marker: false, multi: false, hs: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
-  const lockedBut = (...ks: (keyof typeof writing)[]) => Object.entries(writing).some(([o, b]) => !ks.includes(o as keyof typeof writing) && b);
-  const paramsBusy = writing.params || writing.multi;
 
   // one pack column is edited at a time; its write runs under the same lock as the other writes
   const [edit, setEdit] = useState<Edit | null>(null);
@@ -137,12 +136,17 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const [note, setNote] = useState<{ address: number; note: Note } | null>(null);
   // packs a write went to without a serial to check the bank with (this connection)
   const unchecked = useUnchecked();
-  const canRead = connected && (bus === "pack" || bus === "can" || isDemo) && packs.length > 0 && !reading && !edit && !paramsBusy && !writing.ctl;
   // the edit to further packs: the packs picked, the run's confirmation and its progress and result
   const [picking, setPicking] = useState(false);
   const [targets, setTargets] = useState<number[]>([]);
   const [confirm, setConfirm] = useState<{ plans: TargetPlan[]; skipped: Row[]; capacity: { resets: number[]; unknown: number[] } | null; reading: number | null } | null>(null);
   const [runState, setRunState] = useState<{ rows: Row[]; current: number | null; paused: number | null; end: SeriesEnd | null } | null>(null);
+  // what may be done now (`locks.ts`): one write at a time, nothing while a read or an edit runs where it would collide
+  const pf: UiFacts = { source: null, chosen: null, writes: writing, reading: !!reading, editing: edit?.address ?? null, pausedAt: runState?.paused ?? null,
+    canReadParams: connected && (bus === "pack" || bus === "can" || isDemo) && packs.length > 0 };
+  const lockedFor = (a: UiAction, more: Partial<UiFacts> = {}) => decideUi(a, { ...pf, ...more }).locked;
+  const section = (k?: WriteKind) => lockedFor("params.section", { section: k, address: chosen });
+  const canRead = !lockedFor("params.read");
   const prepTicket = useRef(0);
   const cancelled = useRef(false);
   const resume = useRef<((goOn: boolean) => void) | null>(null);
@@ -602,11 +606,11 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     : selfLock(editPatch, edit.baseSwitches[0], edit.switches[0])
       ? `${t("pw.gate.selfLock")}${(edit.address === 0 ? (edit.switches[0] & 4) === 0 : getProfile()?.gates?.start === false) ? ` ${t("pw.gate.selfLockBoth")}` : ""}`
     : null;
-  const editable = (c: Source) => paramWritable && c.kind === "pack" && !!c.read && !edit && !reading && !lockedBut("params") && !writing.params;
+  const editable = (c: Source) => !lockedFor("params.editStart", { columnWritable: paramWritable && c.kind === "pack" && !!c.read });
   const candidates = edit ? packs.filter((a) => a !== edit.address).map((a) => ({ address: a, readable: !!targetRead(a) })) : [];
   const chosenTargets = targets.filter((a) => candidates.some((c) => c.address === a && c.readable));
   // at a pause the paused pack's restore is free; everything else waits for the run
-  const restoreLocked = (a: number) => (runState?.paused === a ? lockedBut("params", "multi") : lockedBut("params"));
+  const restoreLocked = (a: number) => lockedFor("params.restore", { address: a });
   return (
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
@@ -622,7 +626,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           <Button disabled={!installation || isDemo} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".toml,application/toml,text/plain" multiple className="hidden" onChange={(e) => open(e.target.files)} />
-          {cols.some((c) => !c.notRead) && <Button variant="ghost" disabled={!!reading || !!edit || paramsBusy} onClick={() => { setSources(() => withPlaceholders([], packs, readsBus)); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
+          {cols.some((c) => !c.notRead) && <Button variant="ghost" disabled={lockedFor("params.clear")} onClick={() => { setSources(() => withPlaceholders([], packs, readsBus)); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm" title={diffUsable ? t("par.onlyDiffHint") : t("par.onlyDiffNeeds")}>
             <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={filtered} onChange={(e) => setOnlyDiff(e.target.checked)} disabled={!diffUsable} />
             <span className={cn(!diffUsable && "text-muted")}>{t("par.onlyDiff")}</span>
@@ -637,23 +641,23 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         </p>
         {storedNote && <p className="text-sm text-muted">{storedNote}</p>}
         {chosen !== null && unchecked.has(chosen) && <p className="flex items-center gap-1.5 text-sm text-discharge">{t("bank.unchecked", { pack: packNo(chosen) })}<InfoIcon id="topic.installations" /></p>}
-        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={lockedBut("clock")} onBusy={busyFor("clock")}
+        <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={section("clock")} onBusy={busyFor("clock")}
           installation={!!installation} firmware={fwOf} powerLock={lockOf} />
-        <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={lockedBut("can")} onBusy={busyFor("can")} />
+        <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={section("can")} onBusy={busyFor("can")} />
         <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined}
-          connected={connected && !!installation && !isDemo} linkKey={link} locked={lockedBut("hs") || (edit !== null && edit.address === chosen)} onBusy={busyFor("hs")} write={writeHardStop} />
-        <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={lockedBut()} />
-        <RemoteDiagnosis address={chosen} known={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} connected={connected && !isDemo} linkKey={link} locked={lockedBut()} />
-        <SerialLine address={chosen} usable={offers("write-serials")} locked={lockedBut("serial")} onBusy={busyFor("serial")} linkKey={link} />
-        <NameLine address={chosen} usable={offers("write-name")} locked={lockedBut("name") || reading !== null} onBusy={busyFor("name")} linkKey={link}
+          connected={connected && !!installation && !isDemo} linkKey={link} locked={section("hs")} onBusy={busyFor("hs")} write={writeHardStop} />
+        <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
+        <RemoteDiagnosis address={chosen} known={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
+        <SerialLine address={chosen} usable={offers("write-serials")} locked={section("serial")} onBusy={busyFor("serial")} linkKey={link} />
+        <NameLine address={chosen} usable={offers("write-name")} locked={section("name")} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
-        <CalibrationSection address={chosen} usable={offers("calibrate")} locked={lockedBut("cal")} onBusy={busyFor("cal")} linkKey={link} />
+        <CalibrationSection address={chosen} usable={offers("calibrate")} locked={section("cal")} onBusy={busyFor("cal")} linkKey={link} />
         <PackControlSection address={chosen} usable={ctlMode !== null} mode={ctlMode ?? "full"} offers={offers} powerLocked={chosen !== null ? lockOf(chosen) : null}
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} positive={chosen !== null && posOf(chosen)} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
-          locked={lockedBut("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
+          locked={section("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link}
           readCaps={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} />
-        <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={lockedBut("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
+        <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={section("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
         {chosen !== null && controlHint(where) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
         )}
@@ -743,10 +747,10 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
               sources={takeOverSources}
               writeLabel={chosenTargets.length ? t("pw.multi.write", { pack: packNo(edit.address), count: chosenTargets.length }) : undefined}
               more={candidates.length > 0 && (
-                <Button variant="ghost" size="sm" disabled={paramsBusy} onClick={() => setPicking((p) => !p)} aria-expanded={picking}>{t("pw.multi.more")}</Button>
+                <Button variant="ghost" size="sm" disabled={lockedFor("params.editField")} onClick={() => setPicking((p) => !p)} aria-expanded={picking}>{t("pw.multi.more")}</Button>
               )}
               extra={<>
-                {picking && <TargetPicker candidates={candidates} chosen={chosenTargets} disabled={paramsBusy} onChange={setTargets} />}
+                {picking && <TargetPicker candidates={candidates} chosen={chosenTargets} disabled={lockedFor("params.editField")} onChange={setTargets} />}
                 {confirm && <MultiConfirm changes={editChanges} packs={[edit.address, ...confirm.plans.map((p) => p.address)]} skipped={confirm.skipped}
                   capacity={confirm.capacity} reading={confirm.reading} onConfirm={run} onCancel={cancelPrepare} />}
               </>}
@@ -794,7 +798,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
                     </th>
                   )}
                   {cols.map((c) => (
-                    <ColumnHead key={c.id} c={c} onRead={c.kind === "pack" && c.address !== undefined && canRead && packs.includes(c.address) ? () => void readOne(c.address!) : undefined} twin={c.kind === "pack" && !!c.read && !c.lockUnclear && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={!!reading || paramsBusy} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
+                    <ColumnHead key={c.id} c={c} onRead={c.kind === "pack" && c.address !== undefined && canRead && packs.includes(c.address) ? () => void readOne(c.address!) : undefined} twin={c.kind === "pack" && !!c.read && !c.lockUnclear && c.link === linkNow() && cols.some((x) => x.kind === "stored" && x.address === c.address)} busy={lockedFor("params.reread")} onSave={() => save(c)} onRemove={() => setSources((s) => s.filter((x) => x.id !== c.id))}
                       onConfirmPatch={c.kind === "pack" && c.path === "uart1" && !c.read?.patch && c.read?.bms_serial && installation && c.link === linkNow() ? () => void confirmPatch(c) : undefined}
                       onRevokePatch={c.kind === "pack" && installation && (c.read?.patch?.source === "flash" || c.read?.patch?.source === "user") ? () => void revokePatch(c) : undefined}
                       onEdit={editable(c) ? () => startEdit(c) : undefined} onPrevious={editable(c) && c.previous ? () => startEdit(c, c.previous) : undefined} />
@@ -817,7 +821,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
                             </td>
                           )}
                           {cols.map((c, ci) => c.id === editId && edit ? (
-                            <EditCell key={c.id} e={edit} i={i} level={findings[ci].get(i)} disabled={paramsBusy || (i === SERIES_INDEX && !edit.seriesUnlocked)}
+                            <EditCell key={c.id} e={edit} i={i} level={findings[ci].get(i)} disabled={lockedFor("params.editField") || (i === SERIES_INDEX && !edit.seriesUnlocked)}
                               onChange={(f) => setEdit((e) => e && f(e))} />
                           ) : (
                             <ValueCell key={c.id} c={c} off={diffParams[i].has(ci)} level={findings[ci].get(i)} missed={c.notTaken?.params.has(i)}
@@ -874,14 +878,14 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
                                   <ValueCell key={c.id} c={c} off={false} title={t("par.lockUnclearTip")}>
                                     <span className="text-discharge">{t("par.lockUnclear")}</span>{" "}
                                     {c.address !== undefined && c.link === linkNow() && (
-                                      <button className="text-xs underline disabled:opacity-40" disabled={paramsBusy || !!reading} onClick={() => rereadPack(c.address!)}>{t("par.lockReread")}</button>
+                                      <button className="text-xs underline disabled:opacity-40" disabled={lockedFor("params.reread")} onClick={() => rereadPack(c.address!)}>{t("par.lockReread")}</button>
                                     )}
                                   </ValueCell>
                                 );
                                 // bits 4 and 5 of an unproven column: raw, also in the edit (never an on/off box)
                                 if (c.id === editId && edit && b >= 4 && gate && !gate.named) return <ValueCell key={c.id} c={c} off={false} title={why}><span className="text-muted">{t("par.rawBit", { v: (edit.switches[g] >> b) & 1 })}</span></ValueCell>;
                                 return c.id === editId && edit ? (
-                                  <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={paramsBusy || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
+                                  <EditSwitch key={c.id} e={edit} g={g} b={b} disabled={lockedFor("params.editField") || !!fixed} title={why} onChange={(f) => setEdit((e) => e && f(e))} />
                                 ) : (
                                   <ValueCell key={c.id} c={c} off={off.has(ci)} missed={c.notTaken?.switches.has(g)} title={why}>{!c.switches ? null : cut?.cutoff === false || (gate && rawGate(c)) || (b >= 4 && gate && !gate.named)
                                     // a build without the cutoff, a stored or file column without a proof, bits 4/5 unproven: the raw bit, no on/off meaning

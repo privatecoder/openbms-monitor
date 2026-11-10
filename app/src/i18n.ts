@@ -790,6 +790,11 @@ const resources = {
         noImage: "Erst ein Firmware-Image wählen.",
         noTarget: "Erst eine Platine wählen.",
         oneBoard: "Erst bestätigen, dass nur diese eine Platine am Anschluss hängt.",
+        notConnected: "Nur mit einer direkten RS485-Verbindung, an der Packs antworten.",
+        reading: "Die Parameter werden gerade gelesen.",
+        editOpen: "Erst die geöffnete Bearbeitung abschließen oder verwerfen.",
+        writeRunning: "Ein Schreibvorgang läuft noch; die App schreibt immer nur eins zur Zeit.",
+        notWritable: "Für diese Spalte bietet die Verbindung kein Schreiben an.",
       },
       wiring: {
         label: "Wechselrichter angeschlossen über",
@@ -2048,6 +2053,11 @@ const resources = {
         noImage: "Choose a firmware image first.",
         noTarget: "Choose a board first.",
         oneBoard: "First confirm that only this one board is on the port.",
+        notConnected: "Only with a direct RS485 connection where packs answer.",
+        reading: "The parameters are being read.",
+        editOpen: "Finish or discard the open edit first.",
+        writeRunning: "A write is still running; the app writes one thing at a time.",
+        notWritable: "The connection offers no write for this column.",
       },
       wiring: {
         label: "Inverter connected via",
