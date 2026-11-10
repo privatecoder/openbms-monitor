@@ -137,6 +137,7 @@ pub struct SettingsView {
     devices: Value,
     wiring: Value,
     mqtt: Value,
+    packs: Value,
 }
 
 fn parse(t: Option<String>) -> Value {
@@ -159,6 +160,7 @@ pub async fn installation_settings(state: State<'_, AppState>, installation: Str
         devices: parse(s.devices),
         wiring: parse(s.wiring),
         mqtt: parse(s.mqtt),
+        packs: parse(s.packs),
     })
 }
 
@@ -173,7 +175,8 @@ pub async fn set_installation_cell_types(state: State<'_, AppState>, installatio
     .map_err(maint::store_refusal)
 }
 
-/// Store one setting the UI edits as a whole: "groups", "pairs", "diagnosis", "notifications", "devices" or "wiring"; null
+/// Store one setting the UI edits as a whole: "groups", "pairs", "diagnosis", "notifications", "devices", "wiring", "mqtt"
+/// or "packs"; null
 /// removes it.
 #[tauri::command]
 pub async fn set_installation_setting(state: State<'_, AppState>, installation: String, key: String, value: Value) -> Result<(), MaintError> {
@@ -191,6 +194,7 @@ pub async fn set_installation_setting(state: State<'_, AppState>, installation: 
             "devices" => s.set_devices(&installation, text.as_deref()),
             "wiring" => s.set_wiring(&installation, text.as_deref()),
             "mqtt" => s.set_mqtt(&installation, text.as_deref()),
+            "packs" => s.set_packs(&installation, text.as_deref()),
             other => Err(format!("unknown setting {other}")),
         }
     })

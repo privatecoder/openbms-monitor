@@ -327,8 +327,10 @@ export interface Installation { id: string; name: string; endpoints: string[]; c
 /** Settings an installation owns (JSON each, null: none). */
 export interface InstallationSettings { cell_types: Record<string, unknown>; groups: unknown; pairs: unknown; diagnosis: unknown; notifications: unknown; devices: unknown; wiring: unknown;
   /** the Home Assistant (MQTT) broker, without password */
-  mqtt?: { host: string; port: number; user: string; tls: boolean; base: string } | null }
-export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices" | "wiring" | "mqtt";
+  mqtt?: { host: string; port: number; user: string; tls: boolean; base: string } | null;
+  /** which packs a direct RS485 connection polls (`connCheck.packsOf`) */
+  packs?: unknown }
+export type SettingKey = "cell_types" | "groups" | "pairs" | "diagnosis" | "notifications" | "devices" | "wiring" | "mqtt" | "packs";
 /** One slice of the balancer timeline (ms per state; time without a row is in none). External balancer computed:
  *  active / inactive / unknown / unassigned. BMS as reported: bal (a minute row by its share) / idle / no_status;
  *  cells: most cells at once in a single answer; minutes: minute rows that balanced (only their share is known). */

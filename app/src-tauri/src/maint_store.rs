@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS bootloader_pending(id INTEGER PRIMARY KEY, endpoint T
 ";
 
 /// Migrations after SCHEMA, in order. The SQL is frozen as it was written: later changes are new steps.
-const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings, bms_records, mqtt_settings];
+const MIGRATIONS: &[crate::migrate::Step] = &[installation_data, moved_data, board_currency, notification_settings, pack_port_first, device_settings, pending_serial, board_provenance, patch_proof, hard_stop_seen, snapshot_patch, wiring_settings, bms_records, mqtt_settings, pack_settings];
 
 /// 1: the tables of installations that own their data.
 fn installation_data(db: &Connection) -> rusqlite::Result<()> {
@@ -200,6 +200,24 @@ fn bms_records(db: &Connection) -> rusqlite::Result<()> {
 /// stays in the app data's `mqtt.json`, `mqtt_source.rs`).
 fn mqtt_settings(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE mqtt(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
+}
+
+/// 15: which packs a direct RS485 connection of the installation polls (JSON: {"mode":"search"},
+/// {"mode":"count","n":1..=16} or {"mode":"address","k":0..=DIP_MAX}; `valid_packs`).
+fn pack_settings(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch("CREATE TABLE packs(installation TEXT PRIMARY KEY, data TEXT NOT NULL);")
+}
+
+/// A pack selection as the UI stores it: search, a count 1..=16 (addresses 0..n-1) or one address 0..=DIP_MAX.
+pub fn valid_packs(text: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return false };
+    let num = |k: &str| v.get(k).and_then(|x| x.as_u64());
+    match v.get("mode").and_then(|m| m.as_str()) {
+        Some("search") => v.as_object().is_some_and(|o| o.len() == 1),
+        Some("count") => v.as_object().is_some_and(|o| o.len() == 2) && num("n").is_some_and(|n| (1..=16).contains(&n)),
+        Some("address") => v.as_object().is_some_and(|o| o.len() == 2) && num("k").is_some_and(|k| k <= openbms_proto::address::DIP_MAX as u64),
+        _ => false,
+    }
 }
 
 fn mark_version(db: &Connection, n: usize) -> rusqlite::Result<()> {
@@ -649,6 +667,7 @@ impl Store {
                 "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM wiring WHERE installation = ?1",
                 "DELETE FROM mqtt WHERE installation = ?1",
+                "DELETE FROM packs WHERE installation = ?1",
                 "DELETE FROM param_snapshots WHERE installation = ?1",
                 "DELETE FROM bms_records WHERE installation = ?1",
                 "DELETE FROM patch_proof WHERE installation = ?1",
@@ -964,6 +983,9 @@ pub struct Settings {
     /// the Home Assistant (MQTT) broker, without password; absent in exports of earlier versions
     #[serde(default)]
     pub mqtt: Option<String>,
+    /// which packs a direct RS485 connection polls (`valid_packs`); absent in exports of earlier versions
+    #[serde(default)]
+    pub packs: Option<String>,
 }
 
 /// A stored parameter block and which board it belongs to: "current" (the newest board at the place), "previous"
@@ -1454,7 +1476,7 @@ impl Store {
     pub fn settings(&self, inst: &str) -> Result<Settings, String> {
         let (groups, pairs) = self.layout(inst)?;
         Ok(Settings { cell_types: self.cell_types(inst)?.into_iter().collect(), groups, pairs, diagnosis: self.diagnosis(inst)?, notifications: self.notifications(inst)?,
-            devices: self.devices(inst)?, wiring: self.wiring(inst)?, mqtt: self.mqtt(inst)?,
+            devices: self.devices(inst)?, wiring: self.wiring(inst)?, mqtt: self.mqtt(inst)?, packs: self.packs(inst)?,
         })
     }
 
@@ -1510,6 +1532,13 @@ impl Store {
             self.set_mqtt(inst, add.mqtt.as_deref())?;
         }
         kept.mqtt = k;
+        // an export's value only when it is well-formed; a malformed one is neither taken nor named
+        let theirs = add.packs.clone().filter(|t| valid_packs(t));
+        let (take, k) = pick(&have.packs, &theirs);
+        if take {
+            self.set_packs(inst, theirs.as_deref())?;
+        }
+        kept.packs = k;
         // devices by content, as `devices_conflict` sees them: a stored but empty value takes the source's
         match (devices_content(&have.devices), devices_content(&add.devices)) {
             (None, Some(_)) => self.set_devices(inst, add.devices.as_deref())?,
@@ -1653,6 +1682,7 @@ impl Store {
                 "DELETE FROM devices WHERE installation = ?1",
                 "DELETE FROM wiring WHERE installation = ?1",
                 "DELETE FROM mqtt WHERE installation = ?1",
+                "DELETE FROM packs WHERE installation = ?1",
                 // a version proof and a halted master's slave count belong to the source's places and master: not taken
                 "DELETE FROM patch_proof WHERE installation = ?1",
                 "DELETE FROM maint_expected WHERE installation = ?1",
@@ -1843,6 +1873,21 @@ impl Store {
         .map_err(e)
     }
 
+    /// Refuses a malformed selection (`valid_packs`).
+    pub fn set_packs(&self, inst: &str, data: Option<&str>) -> Result<(), String> {
+        match data {
+            Some(d) if !valid_packs(d) => return Err(format!("invalid pack selection {d}")),
+            Some(d) => self.db.execute("INSERT OR REPLACE INTO packs(installation, data) VALUES (?1, ?2)", params![inst, d]),
+            None => self.db.execute("DELETE FROM packs WHERE installation = ?1", [inst]),
+        }
+        .map(|_| ())
+        .map_err(e)
+    }
+
+    pub fn packs(&self, inst: &str) -> Result<Option<String>, String> {
+        self.db.query_row("SELECT data FROM packs WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
+    }
+
     pub fn mqtt(&self, inst: &str) -> Result<Option<String>, String> {
         self.db.query_row("SELECT data FROM mqtt WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
     }
@@ -1965,6 +2010,34 @@ mod tests {
         assert_eq!((s.mqtt(&b.id).unwrap().as_deref(), kept.mqtt.as_deref()), (Some(broker), Some(other)));
         s.delete_installation(&a.id).unwrap();
         assert_eq!(s.mqtt(&a.id).unwrap(), None);
+    }
+
+    #[test]
+    fn the_pack_selection_belongs_to_the_installation_and_only_well_formed() {
+        let s = Store::open(&temp("packs")).unwrap();
+        let a = s.create_installation("A", None, vec![]).unwrap();
+        let b = s.create_installation("B", None, vec![]).unwrap();
+        for ok in [r#"{"mode":"search"}"#, r#"{"mode":"count","n":1}"#, r#"{"mode":"count","n":16}"#, r#"{"mode":"address","k":0}"#, r#"{"mode":"address","k":15}"#] {
+            assert!(valid_packs(ok), "{ok}");
+        }
+        for bad in [r#"{"mode":"count","n":0}"#, r#"{"mode":"count","n":17}"#, r#"{"mode":"address","k":16}"#, r#"{"mode":"address","k":-1}"#,
+            r#"{"mode":"search","n":3}"#, r#"{"mode":"all"}"#, "12", "x"] {
+            assert!(!valid_packs(bad), "{bad}");
+            assert!(s.set_packs(&a.id, Some(bad)).is_err(), "{bad}");
+        }
+        let twelve = r#"{"mode":"count","n":12}"#;
+        s.set_packs(&a.id, Some(twelve)).unwrap();
+        assert_eq!(s.settings(&a.id).unwrap().packs.as_deref(), Some(twelve));
+        // merge like the other settings; a malformed export value is dropped
+        let kept = s.add_settings(&b.id, &Settings { packs: Some("{\"mode\":\"count\",\"n\":99}".into()), ..Settings::default() }).unwrap();
+        assert_eq!((s.packs(&b.id).unwrap(), kept.packs), (None, None));
+        let kept = s.add_settings(&b.id, &s.settings(&a.id).unwrap()).unwrap();
+        assert_eq!((s.packs(&b.id).unwrap().as_deref(), kept.packs), (Some(twelve), None));
+        let other = r#"{"mode":"address","k":7}"#;
+        let kept = s.add_settings(&b.id, &Settings { packs: Some(other.into()), ..Settings::default() }).unwrap();
+        assert_eq!((s.packs(&b.id).unwrap().as_deref(), kept.packs.as_deref()), (Some(twelve), Some(other)));
+        s.delete_installation(&a.id).unwrap();
+        assert_eq!(s.packs(&a.id).unwrap(), None);
     }
 
     #[test]
@@ -2321,6 +2394,7 @@ mod tests {
                  DROP TABLE wiring;
                  DROP TABLE bms_records;
                  DROP TABLE mqtt;
+                 DROP TABLE packs;
                  ALTER TABLE bootloader_pending DROP COLUMN bms_serial;",
             )
             .unwrap();

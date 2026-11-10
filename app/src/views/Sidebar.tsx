@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { BatteryCharging, Building2, Cpu, Database, Gauge, Languages, LayoutDashboard, Moon, Network, RefreshCw, SlidersHorizontal, Sun, Usb, ChartLine, Download, Info, Wrench } from "lucide-react";
 import { api, isDemo, type Bus, type Connected, type DeviceInfo, type Endpoint, type IdentityView, type MqttSettings, type SerialNumbers } from "../api";
 import { feedText, getSource, useFeed } from "../source";
-import { useSettingsRevision } from "../installData";
+import { loadedSettings, useSettings, useSettingsRevision } from "../installData";
+import { decideUi, lockProps, type UiFacts } from "../locks";
 import { patched, profileLine, recheckable, setProfile, useProfile } from "../profile";
 import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from "../bank";
 import type { Maint } from "../maintStore";
@@ -18,7 +19,7 @@ import { readMark } from "../bmsMemory";
 import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
 import { useUpdate } from "../update";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, profileLoadNeeded, targetsForInstallation, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, profileLoadNeeded, targetsForInstallation, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, packsLine, packsOf, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -96,8 +97,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   // 0 = search addresses 0..15; n = packs at addresses 0..n-1, polled right away without a search
   // which packs are polled: search, a count, or one fixed address (migrated from the old stored count)
   // stored under the old key: "search" / "count:n" / "address:k", or the old plain count
-  const [packSel, setPackSel] = useState<PackSel>(() => { const v = localStorage.getItem("conn.packs"); return parseSel(v, v); });
-  const fixedAddrs = selAddresses(packSel) ?? [];
+  // „Nur ansehen“ keeps its own selection here; with an installation its setting „packs“ counts (Installations → Ports)
+  const [viewSel, setViewSel] = useState<PackSel>(() => { const v = localStorage.getItem("conn.packs"); return parseSel(v, v); });
+  const instSettings = useSettings(maint.installation);
+  const packSel: PackSel = maint.installation ? packsOf(instSettings.settings.packs) ?? { mode: "search" } : viewSel;
+  // a connect with an installation waits for its setting (never a search instead of a stored count)
+  const packsLoading = !!maint.installation && !instSettings.loaded;
   const [ports, setPorts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -236,6 +241,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     running.current = p;
     try { await connectOnce(retry, useBus, inst); } finally { if (running.current === p) running.current = null; done(); }
   };
+  const selFor = async (inst: string | null): Promise<PackSel> => {
+    if (!inst) return viewSel;
+    const st = loadedSettings(inst) ?? await api.installationSettings(inst).catch(() => null);
+    return packsOf(st?.packs) ?? { mode: "search" };
+  };
   const connectOnce = async (retry: boolean, useBus: Bus, inst?: string | null) => {
     cancelRef.current = false;
     serialGen.current += 1;
@@ -248,6 +258,9 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const bus = useBus;
     setBusy(true); setFailed(false); setOffer(null); setGap(null); if (!retry) { setMsg(null); setLost(false); setTries(0); }
     setLastTry(Date.now());
+    // the packs this connection polls, fixed for its whole run: the setting of the installation it is for, as stored now
+    const sel = await selFor(connInst.current);
+    const addrsFixed = selAddresses(sel) ?? [];
     try {
       localStorage.setItem("conn.source", src);
       if (src === "mqtt") {
@@ -271,17 +284,17 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         return;
       }
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
-      localStorage.setItem("conn.packs", selText(packSel));
+      if (!connInst.current) localStorage.setItem("conn.packs", selText(sel));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
-      const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, fixedAddrs);
+      const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, addrsFixed);
       linkOpen.current = true;
       stopIfCancelled();
       if (connInst.current && !retry) saveLastWay(connInst.current, kind);
       // the choice changed while connecting: this link belongs to the earlier one, it is closed again
       if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
-      if (connInst.current) saveLastConn(connInst.current, { kind, target, bus, sel: selText(packSel) });
+      if (connInst.current) saveLastConn(connInst.current, { kind, target, bus });
       // another port stored for this bus: offer to replace it (never stored without „Speichern“)
       const owner = maint.installations.find((i) => i.id === connInst.current) ?? null;
       const ask = owner && { inst: owner.id, name: owner.name, bus, kind, target };
@@ -300,17 +313,18 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         if (sys) { onConnected([], bus); setSince(Date.now()); setLost(false); }
         const m = profile.master;
         // the master's slave count goes into the answered note, and only when it has slaves
-        if (patched(m) && m.marker === "off" && m.slaves !== null) { addrs = range(m.slaves + 1); if (m.slaves > 0) answeredNote = t("conn.answeredSlaves", { addr: padAddress(answered), count: m.slaves }); }
-        else if (patched(m) && m.marker === "on") note = t("conn.maintActive");
+        // only when searching: a count or an address the user set counts as set
+        if (sel.mode === "search" && patched(m) && m.marker === "off" && m.slaves !== null) { addrs = range(m.slaves + 1); if (m.slaves > 0) answeredNote = t("conn.answeredSlaves", { addr: padAddress(answered), count: m.slaves }); }
+        else if (sel.mode === "search" && patched(m) && m.marker === "on") note = t("conn.maintActive");
       }
       stopIfCancelled();
       // a fixed count polls 0..n-1 at once, unless the connect check answered outside them: then the normal search
       let fixedMissed = "";
       let fixedNote = "";
-      if (!addrs && fixedAddrs.length) {
-        if (fixedFallback(fixedAddrs, answered, null) === "keep") {
-          addrs = fixedAddrs;
-          note = fixedNote = packSel.mode === "address" ? t("conn.fixedAddress", { addr: padAddress(packSel.k) }) : t("conn.fixed", { count: fixedAddrs.length });
+      if (!addrs && addrsFixed.length) {
+        if (fixedFallback(addrsFixed, answered, null) === "keep") {
+          addrs = addrsFixed;
+          note = fixedNote = sel.mode === "address" ? t("conn.fixedAddress", { addr: padAddress(sel.k) }) : t("conn.fixed", { count: addrsFixed.length });
         } else fixedMissed = t("conn.fixedOutside", { addr: padAddress(answered) });
       }
       if (addrs) {
@@ -330,7 +344,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           // a fixed count whose addresses all stay silent: the normal search, and the message says so
           const got = found.map(([a]) => a);
           // „Anzahl n“ searches when any expected address is missing, a fixed address only when it does not answer
-          if (fixedCount && fixedFallback(addrs, answered, got, packSel.mode === "address" ? "address" : "count") === "search") {
+          if (fixedCount && fixedFallback(addrs, answered, got, sel.mode === "address" ? "address" : "count") === "search") {
             const all = await api.scan(undefined, true);
             if (gen !== serialGen.current) return;
             const at = all.map(([a]) => a);
@@ -378,7 +392,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         if (kind === "serial") {
           setMsg(t("conn.check.probing", { baud: BAUD[otherBus(bus)] }));
           const other = { refused: null as string | null };
-          const probe = await api.probeOtherBus(target, bus, fixedAddrs).catch((pe) => { other.refused = refusalOf(pe); return null; });
+          const probe = await api.probeOtherBus(target, bus, addrsFixed).catch((pe) => { other.refused = refusalOf(pe); return null; });
           if (cancelRef.current) { await api.disconnect().catch(() => {}); setFailed(false); setMsg(t("conn.connectCancelled")); return; }
           // the bus rule kept the other bus silent: say so, not „nothing answered there“
           if (other.refused) { setMsg(`${firstLine(bus, n, t)} ${t(`wiring.refused.${other.refused}`)}`); return; }
@@ -485,7 +499,6 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     setTargets((cur) => ({ ...cur, [f.kind]: f.target }));
     if (f.kind === "tcp") asked.current = f.target.trim().toLowerCase();
     setBus(f.bus);
-    if (f.packs !== null) setPackSel(f.packs);
   };
   const cur = maint.installations.find((i) => i.id === maint.installation) ?? null;
   const storedPorts = JSON.stringify([cur?.control ?? null, cur?.endpoints ?? []]);
@@ -549,7 +562,11 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
-  const fixed = connected || lost || busy || locked;
+  // the connection's fields and what of them is shown (`locks.ts`)
+  const facts: UiFacts = { source: getSource(), chosen: maint.installation, way: src, linkPhase: connected ? "open" : lost ? "lost" : busy ? "connecting" : "idle", portHeld: locked };
+  const fixed = decideUi("connection.editFields", facts).locked;
+  const picker = decideUi("connection.packsPicker", facts);
+  const packsText = decideUi("connection.packsText", facts);
   const line = connected ? bankLine(ids) : null;
   const noSerial = connected ? noSerialPacks(ids) : [];
   const instName = maint.current?.name ?? "";
@@ -720,31 +737,42 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
             )}
           </>
         )}
+        {picker.visible && (
         <label className="flex items-center justify-between gap-3 text-sm text-muted">
           {t("conn.packs")}
           <span className="flex gap-1">
-            <select className={cn(input, "w-28")} value={packSel.mode} disabled={fixed} aria-label={t("conn.packsMode")}
-              onChange={(e) => setPackSel(e.target.value === "count" ? { mode: "count", n: 1 } : e.target.value === "address" ? { mode: "address", k: 0 } : { mode: "search" })}>
+            <select className={cn(input, "w-28")} value={viewSel.mode} {...lockProps(picker, t)} aria-label={t("conn.packsMode")}
+              onChange={(e) => setViewSel(e.target.value === "count" ? { mode: "count", n: 1 } : e.target.value === "address" ? { mode: "address", k: 0 } : { mode: "search" })}>
               <option value="search">{t("conn.packsAuto")}</option>
               <option value="count">{t("conn.packsCount")}</option>
               <option value="address">{t("conn.packsAddress")}</option>
             </select>
-            {packSel.mode === "count" && (
-              <select className={cn(input, "w-16")} value={packSel.n} disabled={fixed} aria-label={t("conn.packsCount")} onChange={(e) => setPackSel({ mode: "count", n: Number(e.target.value) })}>
+            {viewSel.mode === "count" && (
+              <select className={cn(input, "w-16")} value={viewSel.n} {...lockProps(picker, t)} aria-label={t("conn.packsCount")} onChange={(e) => setViewSel({ mode: "count", n: Number(e.target.value) })}>
                 {Array.from({ length: DIP_MAX + 1 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             )}
-            {packSel.mode === "address" && (
-              <select className={cn(input, "w-16")} value={packSel.k} disabled={fixed} aria-label={t("conn.packsAddress")} onChange={(e) => setPackSel({ mode: "address", k: Number(e.target.value) })}>
+            {viewSel.mode === "address" && (
+              <select className={cn(input, "w-16")} value={viewSel.k} {...lockProps(picker, t)} aria-label={t("conn.packsAddress")} onChange={(e) => setViewSel({ mode: "address", k: Number(e.target.value) })}>
                 {Array.from({ length: DIP_MAX + 1 }, (_, i) => i).map((k) => <option key={k} value={k}>{padAddress(k)}</option>)}
               </select>
             )}
           </span>
         </label>
+        )}
+        {packsText.visible && (
+          <div className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="text-muted">{t("conn.packs")}</span>
+            <span className="text-right">
+              {packsLoading ? t("lock.loading") : packsLine(packSel, t)}
+              {!fixed && <button className="ml-2 text-xs text-muted underline hover:text-ink" onClick={() => setView("installations")}>{t("conn.editPorts")}</button>}
+            </span>
+          </div>
+        )}
           </>
         )}
         <div className="flex gap-2">
-          <Button variant="primary" className="flex-1" disabled={busy || (src === "mqtt" ? mqLoading || !mq.host || !mq.base || !mq.port : !target) || locked} onClick={() => connect()}>
+          <Button variant="primary" className="flex-1" disabled={busy || (src === "mqtt" ? mqLoading || !mq.host || !mq.base || !mq.port : !target || packsLoading) || locked} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {waiting ? <Button variant="ghost" onClick={stopWaiting}>{t("conn.cancel")}</Button>

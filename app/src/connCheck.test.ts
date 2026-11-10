@@ -81,25 +81,25 @@ describe("sidebar fields after a change of installation or bus", () => {
   const can = { kind: "tcp" as const, addr: "192.0.2.10:4196" };
   const both = { control: can, endpoints: ["serial:/dev/cu.test"] };
   const last = (bus: "can" | "pack", kind: "tcp" | "serial" = "tcp", target = "192.0.2.99:4196") => ({ kind, target, bus, packs: 4 });
-  it("the stored port of the chosen bus wins over the remembered connection; that gives bus and pack count", () => {
-    expect(fillFields(both, "can", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: null });
-    expect(fillFields(both, "can", last("pack"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack", packs: { mode: "count", n: 4 } });
-    expect(fillFields(both, "pack", last("can"), "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: { mode: "count", n: 4 } });
+  it("the stored port of the chosen bus wins over the remembered connection; that gives the bus", () => {
+    expect(fillFields(both, "can", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
+    expect(fillFields(both, "can", last("pack"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.test", bus: "pack" });
+    expect(fillFields(both, "pack", last("can"), "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
   });
   it("the remembered address only where no port is stored for that bus", () => {
     const canOnly = { control: can, endpoints: [] };
-    expect(fillFields(canOnly, "can", last("pack", "serial", "/dev/cu.other"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: { mode: "count", n: 4 } });
-    // a bus change takes the remembered address of that bus only, never its pack count
-    expect(fillFields(canOnly, "pack", last("pack", "serial", "/dev/cu.other"), "bus")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack", packs: null });
-    expect(fillFields(canOnly, "pack", last("can"), "bus")).toEqual({ kind: "serial", target: "", bus: "pack", packs: null });
+    expect(fillFields(canOnly, "can", last("pack", "serial", "/dev/cu.other"), "installation")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack" });
+    // a bus change takes the remembered address of that bus only
+    expect(fillFields(canOnly, "pack", last("pack", "serial", "/dev/cu.other"), "bus")).toEqual({ kind: "serial", target: "/dev/cu.other", bus: "pack" });
+    expect(fillFields(canOnly, "pack", last("can"), "bus")).toEqual({ kind: "serial", target: "", bus: "pack" });
   });
   it("without a stored port or a remembered one: an empty USB field (a new installation takes its CAN socket)", () => {
     const none = { control: null, endpoints: [] };
-    expect(fillFields(none, "pack", null, "installation")).toEqual({ kind: "serial", target: "", bus: "pack", packs: null });
-    expect(fillFields(none, "can", null, "bus")).toEqual({ kind: "serial", target: "", bus: "can", packs: null });
-    expect(fillFields({ control: can, endpoints: [] }, "pack", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can", packs: null });
+    expect(fillFields(none, "pack", null, "installation")).toEqual({ kind: "serial", target: "", bus: "pack" });
+    expect(fillFields(none, "can", null, "bus")).toEqual({ kind: "serial", target: "", bus: "can" });
+    expect(fillFields({ control: can, endpoints: [] }, "pack", null, "installation")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
     // the RS485-1/2 port by the shared rule: the first endpoint that is not the CAN socket, also a gateway
-    expect(fillFields({ control: can, endpoints: ["tcp:192.0.2.10:4196", "tcp:192.0.2.11:4196"] }, "pack", null, "bus")).toEqual({ kind: "tcp", target: "192.0.2.11:4196", bus: "pack", packs: null });
+    expect(fillFields({ control: can, endpoints: ["tcp:192.0.2.10:4196", "tcp:192.0.2.11:4196"] }, "pack", null, "bus")).toEqual({ kind: "tcp", target: "192.0.2.11:4196", bus: "pack" });
     // „Nur ansehen“: nothing changes
     expect(fillFields(null, "pack", null, "installation")).toBeNull();
   });
@@ -174,11 +174,47 @@ describe("which packs a connection polls", () => {
     expect(fixedFallback([1], 1, [1], "address")).toBe("keep");
     expect(fixedSearchedLine([1], [3], i18n.getFixedT("de"))).toBe("Keine Antwort an Adresse 01; gesucht: Pack 03 gefunden.");
   });
-  it("a remembered connection gives its selection, also an old one with a count", async () => {
-    const { fillFields } = await import("./connCheck");
-    const inst = { control: null, endpoints: [] };
-    expect(fillFields(inst, "pack", { kind: "serial", target: "/dev/x", bus: "pack", sel: "address:1" }, "installation")?.packs).toEqual({ mode: "address", k: 1 });
-    expect(fillFields(inst, "pack", { kind: "serial", target: "/dev/x", bus: "pack", packs: 2 }, "installation")?.packs).toEqual({ mode: "count", n: 2 });
+  it("an installation's stored selection is read strictly, and shown as one line", async () => {
+    const { packsOf, packsLine } = await import("./connCheck");
+    const { default: i18n } = await import("./i18n");
+    expect(packsOf({ mode: "search" })).toEqual({ mode: "search" });
+    expect(packsOf({ mode: "count", n: 12 })).toEqual({ mode: "count", n: 12 });
+    expect(packsOf({ mode: "address", k: 7 })).toEqual({ mode: "address", k: 7 });
+    for (const bad of [null, "count:12", { mode: "count", n: 0 }, { mode: "count", n: 17 }, { mode: "address", k: 16 }, { mode: "count", n: 2.5 }, { mode: "x" }]) expect(packsOf(bad)).toBeNull();
+    const de = i18n.getFixedT("de");
+    expect(packsLine({ mode: "count", n: 12 }, de)).toBe("12 Packs · Adressen 00–11");
+    expect(packsLine({ mode: "count", n: 1 }, de)).toBe("1 Pack · Adresse 00");
+    expect(packsLine({ mode: "address", k: 7 }, de)).toBe("Pack an Adresse 07");
+    expect(packsLine({ mode: "search" }, de)).toBe("Packs suchen");
+  });
+  it("the selection remembered per installation moves once into its setting, never over a stored one", async () => {
+    const { lastConn, movePackSelections, saveLastConn } = await import("./connCheck");
+    const store = new Map<string, string>();
+    globalThis.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) } as Storage;
+    saveLastConn("a", { kind: "tcp", target: "192.0.2.10:4196", bus: "can", sel: "count:12" });
+    saveLastConn("b", { kind: "tcp", target: "192.0.2.11:4196", bus: "can", packs: 3 });
+    saveLastConn("c", { kind: "tcp", target: "192.0.2.12:4196", bus: "can", sel: "address:4" });
+    saveLastConn("d", { kind: "tcp", target: "192.0.2.13:4196", bus: "can", sel: "search" });
+    saveLastConn("e", { kind: "tcp", target: "192.0.2.14:4196", bus: "can" });
+    const stored: Record<string, unknown> = { c: { mode: "count", n: 2 } };
+    const saved: Record<string, unknown> = {};
+    const fail = new Set(["d"]);
+    const ok = await movePackSelections(["a", "b", "c", "d", "e"], {
+      stored: async (id) => stored[id] ?? null,
+      save: async (id, sel) => { if (fail.has(id)) throw new Error("store"); saved[id] = sel; },
+    });
+    expect(ok).toBe(true);
+    // c keeps its stored setting; e had nothing to move; d failed and is tried again
+    expect(saved).toEqual({ a: { mode: "count", n: 12 }, b: { mode: "count", n: 3 } });
+    expect(lastConn("a")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
+    expect(lastConn("c")).toEqual({ kind: "tcp", target: "192.0.2.12:4196", bus: "can" });
+    expect(lastConn("d")?.sel).toBe("search");
+    fail.clear();
+    // the next start: only d is left (a was moved and its old copy dropped)
+    const again: Record<string, unknown> = {};
+    await movePackSelections(["a", "d"], { stored: async (id) => stored[id] ?? null, save: async (id, sel) => { again[id] = sel; } });
+    expect(again).toEqual({ d: { mode: "search" } });
+    expect(lastConn("d")).toEqual({ kind: "tcp", target: "192.0.2.13:4196", bus: "can" });
   });
 });
 

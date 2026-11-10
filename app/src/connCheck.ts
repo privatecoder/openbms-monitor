@@ -128,8 +128,9 @@ export function parseSel(stored: string | null, legacyCount?: string | number | 
   return Number.isInteger(n) && n >= 1 && n <= 16 ? { mode: "count", n } : { mode: "search" };
 }
 
-/** The last connection that worked for an installation, kept in this browser's storage (`packs`: the old pack count,
- *  read when `sel` is missing). */
+/** The last connection that worked for an installation, kept in this browser's storage. `sel` / `packs` (the older
+ *  pack count): the pack selection earlier versions kept here; it moves once into the installation's setting
+ *  (`movePackSelections`) and is not written any more. */
 export interface LastConn { kind: "tcp" | "serial"; target: string; bus: Bus; sel?: string; packs?: number }
 
 const lastKey = (installation: string) => `conn.last.${installation}`;
@@ -143,26 +144,61 @@ export function lastConn(installation: string): LastConn | null {
   try {
     const v = JSON.parse(localStorage.getItem(lastKey(installation)) ?? "null");
     if (v && (v.kind === "tcp" || v.kind === "serial") && typeof v.target === "string" && v.target
-      && (v.bus === "pack" || v.bus === "can") && (typeof v.sel === "string" || (Number.isInteger(v.packs) && v.packs >= 0 && v.packs <= 16))) return v;
+      && (v.bus === "pack" || v.bus === "can") && (v.sel === undefined || typeof v.sel === "string")
+      && (v.packs === undefined || (Number.isInteger(v.packs) && v.packs >= 0 && v.packs <= 16))) return v;
   } catch { /* not JSON */ }
   return null;
 }
 
 /** The sidebar's connection fields after the installation (`on: "installation"`) or the bus changed. The installation's
- *  stored port for the chosen bus wins; the remembered last connection gives the bus and the pack count, and its
+ *  stored port for the chosen bus wins; the remembered last connection gives the bus (the packs are the installation's
+ *  setting, `packsOf`), and its
  *  address/port only where no port is stored for that bus. A new installation without a remembered connection whose
  *  current bus has no port takes its CAN socket. Without either: an empty USB field, so no port of another
  *  installation stays. null for „Nur ansehen“: the fields stay as they are. */
-export function fillFields(inst: Pick<Installation, "control" | "endpoints"> | null, bus: Bus, last: LastConn | null, on: "installation" | "bus"): { kind: "tcp" | "serial"; target: string; bus: Bus; packs: PackSel | null } | null {
+export function fillFields(inst: Pick<Installation, "control" | "endpoints"> | null, bus: Bus, last: LastConn | null, on: "installation" | "bus"): { kind: "tcp" | "serial"; target: string; bus: Bus } | null {
   if (!inst) return null;
   const remembered = on === "installation" ? last : null;
   let b = remembered?.bus ?? bus;
   let stored = storedPort(inst, b);
   if (on === "installation" && !last && !stored && inst.control) { b = "can"; stored = storedPort(inst, b); }
-  const packs = remembered ? parseSel(remembered.sel ?? null, remembered.packs) : null;
-  if (stored) return { ...stored, bus: b, packs };
-  if (last && last.bus === b) return { kind: last.kind, target: last.target, bus: b, packs };
-  return { kind: "serial", target: "", bus: b, packs };
+  if (stored) return { ...stored, bus: b };
+  if (last && last.bus === b) return { kind: last.kind, target: last.target, bus: b };
+  return { kind: "serial", target: "", bus: b };
+}
+
+/** An installation's stored pack selection (setting "packs", `maint_store::valid_packs`); null: none or malformed. */
+export function packsOf(v: unknown): PackSel | null {
+  const o = v as { mode?: unknown; n?: unknown; k?: unknown } | null;
+  if (!o || typeof o !== "object") return null;
+  if (o.mode === "search") return { mode: "search" };
+  if (o.mode === "count" && Number.isInteger(o.n) && (o.n as number) >= 1 && (o.n as number) <= 16) return { mode: "count", n: o.n as number };
+  if (o.mode === "address" && Number.isInteger(o.k) && (o.k as number) >= 0 && (o.k as number) <= DIP_MAX) return { mode: "address", k: o.k as number };
+  return null;
+}
+
+/** „12 Packs · Adressen 00–11“, „Pack an Adresse 07“, „Packs suchen“. */
+export function packsLine(sel: PackSel, t: TFunction): string {
+  if (sel.mode === "count") return sel.n === 1 ? t("conn.packsLine.one") : t("conn.packsLine.count", { count: sel.n, last: pad(sel.n - 1) });
+  if (sel.mode === "address") return t("conn.packsLine.address", { addr: pad(sel.k) });
+  return t("conn.packsLine.search");
+}
+
+/** Once per installation: the pack selection its last connection used (kept in this browser by earlier versions)
+ *  becomes its stored setting if it has none yet, then the old copy is dropped; a stored setting is never replaced.
+ *  What fails is tried again at the next start. Resolves to whether anything was saved. */
+export async function movePackSelections(ids: string[], o: { stored: (id: string) => Promise<unknown>; save: (id: string, sel: PackSel) => Promise<unknown> }): Promise<boolean> {
+  let saved = false;
+  for (const id of ids) {
+    const last = lastConn(id);
+    if (!last || (last.sel === undefined && last.packs === undefined)) continue;
+    try {
+      if (packsOf(await o.stored(id)) === null) { await o.save(id, parseSel(last.sel ?? null, last.packs)); saved = true; }
+      const { sel: _sel, packs: _packs, ...rest } = last;
+      saveLastConn(id, rest);
+    } catch (e) { console.error("pack selection move:", e); }
+  }
+  return saved;
 }
 
 export { BAUD, other as otherBus, pad as padAddress };

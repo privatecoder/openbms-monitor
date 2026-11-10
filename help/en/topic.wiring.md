@@ -1,6 +1,6 @@
 ---
 title: Inverter connection
-short: Only one device may poll an RS485 bus. Under Installations you say per installation where the inverter is connected; the app never sends on the bus it polls, and on RS485-1/2 it listens before a connection's first request. Without the setting it sends nothing for that installation.
+short: Only one device may poll an RS485 bus. Under Installations you say per installation where the inverter is connected; the app never sends on the bus it polls, and on RS485-1/2 it listens before a connection's first request. While the installation is connected over RS485 the setting stays fixed (the app takes it when connecting); over Home Assistant it can be changed and applies from the next direct connection. Without the setting it sends nothing for that installation.
 related: topic.buses, topic.connection, topic.installations
 ---
 - **CAN-H/L of the CAN socket:** the usual setup. With several packs pack 00 is master (DIP 5–8 = number of slaves) and polls the slaves on RS485-1/2; the app reads via the CAN socket's RS485 pair, RS485-1/2 only after the master's maintenance stop. A single pack is reachable on both buses.

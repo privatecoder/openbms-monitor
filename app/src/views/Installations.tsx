@@ -6,10 +6,13 @@ import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon } from "../help";
 import { cn } from "../lib/utils";
-import { editBroker } from "../connCheck";
+import { editBroker, packsOf, type PackSel } from "../connCheck";
+import { DIP_MAX } from "../access";
+import { decideUi, lockProps, type UiFacts } from "../locks";
+import { useSource } from "../source";
 import { errorKey, keyLabel, mergeSuggestion, nameCheck, packIsCanAdapter, packPortOf, storedPort, controlKey } from "../maint";
 import type { Maint } from "../maintStore";
-import { reloadSettings } from "../installData";
+import { reloadSettings, useSettings } from "../installData";
 import { INVERTERS, useWiring, type Inverter } from "../wiring";
 import { useCellDb } from "../cells/store";
 import { cellName } from "./CellAssign";
@@ -96,8 +99,10 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
   const others = maint.installations.filter((o) => o.id !== inst.id);
   const suggestion = mergeSuggestion(inst, maint.installations);
   const chosen = maint.installation === inst.id;
-  // the connected installation cannot be merged away or deleted: its answers still arrive
-  const live = chosen && connected;
+  const source = useSource();
+  // what may be done with this installation now (`locks.ts`): e.g. the connected one is not merged away or deleted
+  const facts: UiFacts = { source: connected ? source : null, chosen: maint.installation, subject: inst.id, busy };
+  const may = (a: Parameters<typeof decideUi>[0]) => lockProps(decideUi(a, facts), t);
   const date = (ms: number) => new Date(ms).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" });
 
   const load = () => api.installationOverview(inst.id).then(setView).catch((e) => setError(String(e)));
@@ -144,19 +149,19 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {!chosen && !connected && <Button size="sm" variant="secondary" onClick={() => void maint.switchTo(inst.id)}>{t("inst.choose")}</Button>}
+          {decideUi("installation.choose", facts).visible && <Button size="sm" variant="secondary" onClick={() => void maint.switchTo(inst.id)}>{t("inst.choose")}</Button>}
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRenaming(inst.name)} title={t("inst.rename")} aria-label={t("inst.rename")}><Pencil className="h-4 w-4" /></Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => api.installationArchive(inst.id, !inst.archived))} title={t(inst.archived ? "inst.unarchive" : "inst.archive")} aria-label={t(inst.archived ? "inst.unarchive" : "inst.archive")}>
             {inst.archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
           </Button>
-          <Button size="sm" variant="ghost" disabled={busy || live} onClick={() => setDeleting(!deleting)} title={t("inst.delete")} aria-label={t("inst.delete")}><Trash2 className="h-4 w-4" /></Button>
+          <Button size="sm" variant="ghost" {...may("installation.delete")} onClick={() => setDeleting(!deleting)} title={t("inst.delete")} aria-label={t("inst.delete")}><Trash2 className="h-4 w-4" /></Button>
         </div>
       </div>
 
       {suggestion && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-discharge p-3 text-sm">
           <p className="flex-1">{t("inst.suggest", { endpoint: inst.legacy, name: suggestion.name })}</p>
-          <Button size="sm" variant="secondary" disabled={busy || live} onClick={() => merge(suggestion)}><Merge className="h-4 w-4" />{t("inst.mergeWith", { name: suggestion.name })}</Button>
+          <Button size="sm" variant="secondary" {...may("installation.mergeAway")} onClick={() => merge(suggestion)}><Merge className="h-4 w-4" />{t("inst.mergeWith", { name: suggestion.name })}</Button>
         </div>
       )}
 
@@ -184,17 +189,17 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
 
       {expanded && (
         <div className="space-y-3">
-          <Ports inst={inst} maint={maint} />
-          <WiringSetting id={inst.id} live={live} />
+          <Ports inst={inst} maint={maint} facts={facts} />
+          <WiringSetting id={inst.id} facts={facts} />
           {view && <DevicesPanel installation={inst.id} places={view.places.map((p) => p.address)} />}
           {others.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-muted">{t("inst.mergeInto")}</span>
-              <select className={input} value={target} disabled={busy || live} onChange={(e) => setTarget(e.target.value)}>
+              <select className={input} value={target} {...may("installation.mergeAway")} onChange={(e) => setTarget(e.target.value)}>
                 <option value="">{t("inst.mergePick")}</option>
                 {others.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
-              <Button size="sm" variant="secondary" disabled={busy || live || !target} onClick={() => { const to = others.find((o) => o.id === target); if (to) void merge(to); }}>
+              <Button size="sm" variant="secondary" disabled={may("installation.mergeAway").disabled || !target} title={may("installation.mergeAway").title} onClick={() => { const to = others.find((o) => o.id === target); if (to) void merge(to); }}>
                 <Merge className="h-4 w-4" />{t("inst.merge")}
               </Button>
               <InfoIcon id="topic.installations" />
@@ -212,27 +217,30 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
 }
 
 /** „Wechselrichter angeschlossen über“: where the inverter polls (`wiring.ts`); the app never sends on that bus. Fixed
- *  while connected with this installation: the rule is bound when connecting. */
-function WiringSetting({ id, live }: { id: string; live: boolean }) {
+ *  while this installation is connected over RS485 (the rule is bound when connecting); over MQTT it may change, for the
+ *  next direct connection (`locks.ts`). */
+function WiringSetting({ id, facts }: { id: string; facts: UiFacts }) {
   const { t } = useTranslation();
   const w = useWiring(id);
+  const d = decideUi("installation.editWiring", { ...facts, loaded: w.loaded });
+  const why = d.locked ? d.reason : d.note;
   return (
     <div className="space-y-1 text-sm">
       <span className="flex items-center gap-1.5 text-muted">{t("wiring.label")}<InfoIcon id="topic.wiring" /></span>
-      <select className={input} value={w.inverter ?? ""} disabled={live || !w.loaded} aria-label={t("wiring.label")}
+      <select className={input} value={w.inverter ?? ""} {...lockProps(d, t)} aria-label={t("wiring.label")}
         onChange={(e) => { void w.setInverter(e.target.value as Inverter); }}>
         {!w.inverter && <option value="">{t("wiring.choose")}</option>}
         {INVERTERS.map((i) => <option key={i} value={i}>{t(`wiring.opt.${i}`)}</option>)}
       </select>
       <p className={cn("text-xs", w.inverter ? "text-muted" : "text-discharge")}>{w.inverter ? t(`wiring.note.${w.inverter}`) : t("wiring.unset")}</p>
-      {live && <p className="text-xs text-muted">{t("wiring.whileLive")}</p>}
+      {why && w.loaded && <p className="text-xs text-muted">{t(why.key, why.params)}</p>}
     </div>
   );
 }
 
 /** „Anschlüsse“: the CAN socket and the RS485-1/2 port, read-only until „Ändern“ opens the editor. The sidebar fills
  *  its fields from them; maintenance and flashing use RS485-1/2. */
-function Ports({ inst, maint }: { inst: Installation; maint: Maint }) {
+function Ports({ inst, maint, facts }: { inst: Installation; maint: Maint; facts: UiFacts }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const show = (p: ReturnType<typeof storedPort>) => (p ? `${t(`conn.${p.kind}`)} · ${p.target}` : t("inst.ports.none"));
@@ -260,7 +268,46 @@ function Ports({ inst, maint }: { inst: Installation; maint: Maint }) {
           {more.length > 0 && <><dt className="text-muted">{t("inst.ports.more")}</dt><dd>{more.map(keyLabel).join(", ")}</dd></>}
         </dl>
       )}
+      <PacksSetting id={inst.id} facts={facts} />
       <MqttPort inst={inst} />
+    </div>
+  );
+}
+
+/** „Pack-Abfrage über RS485“: which packs a direct connection of this installation polls (search, a count from address
+ *  00, or one address). The sidebar shows it as text; it applies from the next connection. Over MQTT the add-on's
+ *  packs are shown, whatever this says. */
+function PacksSetting({ id, facts }: { id: string; facts: UiFacts }) {
+  const { t } = useTranslation();
+  const { settings, loaded, save } = useSettings(id);
+  const [error, setError] = useState<string | null>(null);
+  const sel: PackSel = packsOf(settings.packs) ?? { mode: "search" };
+  const d = decideUi("installation.editPacks", { ...facts, loaded });
+  const props = lockProps(d, t);
+  const set = (next: PackSel) => { setError(null); void save("packs", next).then((e) => { if (e !== null) setError(String(e)); }); };
+  return (
+    <div className="space-y-1 pt-1">
+      <span className="flex items-center gap-1.5 text-muted">{t("inst.packsSel.title")}<InfoIcon id="topic.buses" /></span>
+      <div className="flex gap-1">
+        <select className={cn(input, "w-36")} value={sel.mode} {...props} aria-label={t("conn.packsMode")}
+          onChange={(e) => set(e.target.value === "count" ? { mode: "count", n: 1 } : e.target.value === "address" ? { mode: "address", k: 0 } : { mode: "search" })}>
+          <option value="search">{t("conn.packsAuto")}</option>
+          <option value="count">{t("conn.packsCount")}</option>
+          <option value="address">{t("conn.packsAddress")}</option>
+        </select>
+        {sel.mode === "count" && (
+          <select className={cn(input, "w-16")} value={sel.n} {...props} aria-label={t("conn.packsCount")} onChange={(e) => set({ mode: "count", n: Number(e.target.value) })}>
+            {Array.from({ length: DIP_MAX + 1 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        )}
+        {sel.mode === "address" && (
+          <select className={cn(input, "w-16")} value={sel.k} {...props} aria-label={t("conn.packsAddress")} onChange={(e) => set({ mode: "address", k: Number(e.target.value) })}>
+            {Array.from({ length: DIP_MAX + 1 }, (_, i) => i).map((k) => <option key={k} value={k}>{packNo(k)}</option>)}
+          </select>
+        )}
+      </div>
+      <p className="text-xs text-muted">{t(`inst.packsSel.hint.${sel.mode}`)}{d.note ? ` ${t(d.note.key, d.note.params)}` : ""}</p>
+      {error && <p className="text-xs text-alarm">{error}</p>}
     </div>
   );
 }

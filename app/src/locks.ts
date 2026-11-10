@@ -1,0 +1,91 @@
+import type { Source } from "./api";
+
+/** One place for when a field or action of the UI is shown, offered or locked, and why. Components gather the facts
+ *  (`UiFacts`) and render the decision; they do not phrase their own `disabled={…}` rules for what is decided here.
+ *  The backend still checks every request itself (source, bus rule, reservations, pending, firmware): a decision here
+ *  only keeps the UI from offering what does not fit and says why. Pure, so the rules are tested as a table. */
+
+export type UiAction =
+  // Installations view, per installation card (`subject`)
+  | "installation.choose"
+  | "installation.editWiring"
+  | "installation.editPacks"
+  | "installation.delete"
+  /** merge this installation into another one (it goes away) */
+  | "installation.mergeAway"
+  // Sidebar connection
+  /** installation, source tabs, ports, bus: the fields a connection is opened with */
+  | "connection.editFields"
+  /** the pack selection fields (search / count / address): only without an installation („Nur ansehen“) */
+  | "connection.packsPicker"
+  /** the installation's pack selection as text, changed under Installations */
+  | "connection.packsText";
+
+export interface UiFacts {
+  /** the source of the open connection: "bus" (RS485), "mqtt" (the add-on's feed), null: none */
+  source: Source | null;
+  /** the installation chosen in the sidebar (the one a connection belongs to); null: „Nur ansehen“ */
+  chosen: string | null;
+  /** the installation a control belongs to (a card in Installations) */
+  subject?: string | null;
+  /** the sidebar's source tab */
+  way?: "bus" | "mqtt";
+  /** the sidebar is connecting, connected, or retrying a lost connection: its fields stay as the connection was opened */
+  linkPhase?: "idle" | "connecting" | "open" | "lost";
+  /** another action holds the port (a flash, a maintenance action, a pack check) */
+  portHeld?: boolean;
+  /** a local action of the component runs (a rename, merge, save …) */
+  busy?: boolean;
+  /** the subject's settings are loaded (nothing is saved over settings not read yet) */
+  loaded?: boolean;
+}
+
+export interface UiReason { key: string; params?: Record<string, unknown> }
+/** `note`: a hint shown with an offered control (e.g. „gilt ab der nächsten Verbindung“). */
+export interface UiDecision { visible: boolean; locked: boolean; reason?: UiReason; note?: UiReason }
+
+const show = (note?: UiReason): UiDecision => ({ visible: true, locked: false, ...(note ? { note } : {}) });
+const lock = (key: string): UiDecision => ({ visible: true, locked: true, reason: { key } });
+const hide: UiDecision = { visible: false, locked: true };
+
+// the sidebar's fields stay as the running connection was opened (a change would only count with the next connect)
+const fieldsLock = (f: UiFacts): UiDecision =>
+  f.linkPhase && f.linkPhase !== "idle" ? lock("lock.connectionOpen") : f.portHeld ? lock("lock.portHeld") : show();
+
+export function decideUi(action: UiAction, f: UiFacts): UiDecision {
+  const own = f.subject != null && f.subject === f.chosen;
+  // the subject's connection is open (either source): its answers are recorded under it
+  const ownLive = own && f.source !== null;
+  switch (action) {
+    case "installation.choose":
+      return own || f.source !== null ? hide : show();
+    case "installation.editWiring":
+      if (f.loaded === false) return lock("lock.loading");
+      // the bus rule is bound when an RS485 connection opens; over MQTT nothing is sent to a BMS
+      if (own && f.source === "bus") return lock("lock.wiringLive");
+      if (ownLive) return show({ key: "lock.nextBus" });
+      return show();
+    case "installation.editPacks":
+      if (f.loaded === false) return lock("lock.loading");
+      if (f.busy) return lock("lock.busy");
+      if (own && f.source === "bus") return show({ key: "lock.nextConnect" });
+      return show();
+    case "installation.delete":
+    case "installation.mergeAway":
+      if (f.busy) return lock("lock.busy");
+      if (ownLive) return lock("lock.connectedInstallation");
+      return show();
+    case "connection.editFields":
+      return fieldsLock(f);
+    case "connection.packsPicker":
+      if (f.way !== "bus" || f.chosen !== null) return hide;
+      return fieldsLock(f);
+    case "connection.packsText":
+      return f.way === "bus" && f.chosen !== null ? show() : hide;
+  }
+}
+
+/** For JSX: the `disabled` of a control and its title (the reason, translated). */
+export function lockProps(d: UiDecision, t: (key: string, params?: Record<string, unknown>) => string): { disabled: boolean; title?: string } {
+  return d.locked ? { disabled: true, ...(d.reason ? { title: t(d.reason.key, d.reason.params) } : {}) } : { disabled: false };
+}

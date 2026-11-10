@@ -1,6 +1,6 @@
 ---
 title: Wechselrichter-Anschluss
-short: Auf einem RS485-Bus darf nur ein Gerät abfragen. Unter Anlagen gibt man je Anlage an, wo der Wechselrichter angeschlossen ist; die App sendet nie auf dem Bus, den er abfragt, und hört auf RS485-1/2 vor der ersten Anfrage einer Verbindung mit. Ohne Angabe sendet sie für diese Anlage nichts.
+short: Auf einem RS485-Bus darf nur ein Gerät abfragen. Unter Anlagen gibt man je Anlage an, wo der Wechselrichter angeschlossen ist; die App sendet nie auf dem Bus, den er abfragt, und hört auf RS485-1/2 vor der ersten Anfrage einer Verbindung mit. Solange die Anlage über RS485 verbunden ist, bleibt die Angabe fest (die App übernimmt sie beim Verbinden); über Home Assistant lässt sie sich ändern und gilt ab der nächsten direkten Verbindung. Ohne Angabe sendet sie für diese Anlage nichts.
 related: topic.buses, topic.connection, topic.installations
 ---
 - **CAN-H/L der CAN-Buchse:** der übliche Aufbau. Bei mehreren Packs ist Pack 00 Master (DIP 5–8 = Zahl der Slaves) und fragt die Slaves auf RS485-1/2 ab; die App liest über das RS485-Paar der CAN-Buchse, RS485-1/2 erst nach dem Wartungsstopp des Masters. Ein einzelnes Pack ist auf beiden Bussen erreichbar.

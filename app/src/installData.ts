@@ -127,6 +127,10 @@ export async function resyncCellTypes(q: CellQueue, reload: () => Promise<Record
   await reload().then((s) => { q.stale = false; restore(s); }, (r) => console.error("cell types read back:", r));
 }
 
+/** The settings of an installation as loaded now (null: not loaded yet), for code outside a render, e.g. a connect for
+ *  an installation chosen a moment ago. */
+export const loadedSettings = (scope: string | null): InstallationSettings | null => cache.get(keyOf(scope)) ?? null;
+
 /** After a merge, an import, the move of the old data or a change of the MQTT broker: read again from the backend. */
 let revision = 0;
 export function reloadSettings() { revision += 1; cache.clear(); changed(); }

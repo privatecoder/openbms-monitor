@@ -95,26 +95,33 @@ pub fn settle() {
 }
 
 /// Right after a connect for `installation` reserved the bus (so no other action holds the rule), before its first
-/// request: the rule must be that installation's, not the one the UI showed before (its update may still be on its
-/// way). A waiting change of this installation is taken; another installation's rule is replaced by the stored setting
-/// of this one, without a pause; without an installation only the brief listen applies (`permit`). A connect refused
-/// for a busy bus never gets here, so it never changes a running action's rule.
+/// request: the rule must be that installation's as stored now, not the one the UI showed before (its update may still
+/// be on its way, and a change made meanwhile, e.g. while connected over MQTT, must count even for the same
+/// installation). The inverter is always read from the store; only the session's pause is kept, and only from a rule of
+/// this installation. Without an installation only the brief listen applies (`permit`). A connect refused for a busy
+/// bus never gets here, so it never changes a running action's rule.
 pub fn bind(state: &crate::AppState, installation: Option<&str>) {
-    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    if pending.as_ref().is_some_and(|p| p.scope.as_deref() == installation) {
-        *now = pending.take().expect("checked");
-        return;
-    }
-    drop(pending);
-    if now.scope.as_deref() == installation {
-        return;
-    }
-    let inverter = installation
+    let stored = installation
         .and_then(|id| crate::maint::with_store(state, |s| s.wiring(id)).ok().flatten())
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .and_then(|v| serde_json::from_value(v["inverter"].clone()).ok());
-    *now = Rule { scope: installation.map(String::from), wiring: Wiring { inverter, paused: false } };
+    let mut now = NOW.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    rebind(&mut now, &mut pending, installation, stored);
+}
+
+/// `bind` without the store: the stored inverter, the pause of a waiting or current rule of the same installation; a
+/// waiting change of this installation is used up, one of another is left.
+fn rebind(now: &mut Rule, pending: &mut Option<Rule>, installation: Option<&str>, stored: Option<Inverter>) {
+    let same = |r: &Rule| r.scope.as_deref() == installation;
+    let paused = match pending.as_ref() {
+        Some(p) if same(p) => p.wiring.paused,
+        _ => same(now) && now.wiring.paused,
+    };
+    if pending.as_ref().is_some_and(same) {
+        *pending = None;
+    }
+    *now = Rule { scope: installation.map(String::from), wiring: Wiring { inverter: stored, paused } };
 }
 
 /// The rule of this app, once at start-up: an action holds the bus while a flash runs, the port is reserved or a pack
@@ -170,6 +177,29 @@ mod tests {
         for old in ["uart1-master", "uart1-each"] {
             assert_eq!(serde_json::from_value::<Inverter>(serde_json::json!(old)).unwrap(), Inverter::Uart1);
         }
+    }
+
+    #[test]
+    fn a_connect_binds_the_stored_inverter_even_for_the_same_installation() {
+        let rule = |scope: Option<&str>, inverter, paused| Rule { scope: scope.map(String::from), wiring: Wiring { inverter, paused } };
+        // same installation, changed meanwhile (e.g. over MQTT): the stored value counts, the session's pause stays
+        let mut now = rule(Some("A"), Some(Inverter::Uart1), true);
+        let mut pending = None;
+        rebind(&mut now, &mut pending, Some("A"), Some(Inverter::Can));
+        assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (Some("A"), Some(Inverter::Can), true));
+        // another installation: no pause carried over
+        rebind(&mut now, &mut pending, Some("B"), Some(Inverter::Uart0));
+        assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (Some("B"), Some(Inverter::Uart0), false));
+        // a waiting change of this installation gives its pause and is used up; one of another stays
+        pending = Some(rule(Some("B"), Some(Inverter::Uart1), true));
+        rebind(&mut now, &mut pending, Some("B"), Some(Inverter::Uart0));
+        assert_eq!((now.wiring.inverter, now.wiring.paused, pending.is_none()), (Some(Inverter::Uart0), true, true));
+        pending = Some(rule(Some("C"), Some(Inverter::Can), true));
+        rebind(&mut now, &mut pending, Some("B"), None);
+        assert_eq!((now.wiring.inverter, now.wiring.paused, pending.as_ref().and_then(|p| p.scope.as_deref())), (None, true, Some("C")));
+        // no installation: nothing stored, no pause
+        rebind(&mut now, &mut pending, None, None);
+        assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (None, None, false));
     }
 
     #[test]
