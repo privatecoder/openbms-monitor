@@ -458,8 +458,6 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     if state.flashing.load(Ordering::SeqCst) {
         return Err(FLASHING.into());
     }
-    // the bus is ours now: the rule of exactly this installation, before the first request
-    let bound = wiring::bind(&state, installation.as_deref());
     // a merge, delete, export or import of this installation runs to its end first
     let ids: Vec<&str> = installation.as_deref().into_iter().collect();
     let _inst = control::reserve_installations(&state.ops, &ids, "connect").map_err(|e| serde_json::to_string(&e).unwrap_or_default())?;
@@ -478,6 +476,10 @@ async fn connect(state: State<'_, AppState>, endpoint: EndpointArg, installation
     };
     // close the previous link first: a serial port can be open only once, so reconnecting to the same port would fail with "busy"
     lock(&state.conn)?.take();
+    // the bus is ours and the previous link gone: the rule of exactly this installation, before the first request. Not
+    // earlier: a connect refused before this point (installation busy or gone) leaves a running link and its bound rule
+    // as they are.
+    let bound = wiring::bind(&state, installation.as_deref());
     // an MQTT source ends here too (its session at the add-on's clock, below)
     mqtt_source::stop(&state);
     *state.source.lock().map_err(|e| e.to_string())? = None;

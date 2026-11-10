@@ -284,7 +284,7 @@ function PacksSetting({ id, facts }: { id: string; facts: UiFacts }) {
   const sel: PackSel = packsOf(settings.packs) ?? { mode: "search" };
   const d = decideUi("installation.editPacks", { ...facts, loaded });
   const props = lockProps(d, t);
-  const set = (next: PackSel) => { setError(null); void save("packs", next).then((e) => { if (e !== null) setError(String(e)); }); };
+  const set = (next: PackSel) => { setError(null); void save("packs", next).then((e) => { if (e !== null) { const k = errorKey(e); setError(t(k.key, k.params)); } }); };
   return (
     <div className="space-y-1 pt-1">
       <span className="flex items-center gap-1.5 text-muted">{t("inst.packsSel.title")}<InfoIcon id="topic.buses" /></span>

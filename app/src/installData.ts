@@ -29,10 +29,13 @@ function load(scope: string | null) {
   if (loading.has(k)) return;
   if (!stored(scope)) { cache.set(k, EMPTY); return; }
   loading.add(k);
-  api.installationSettings(scope).then((s) => cache.set(k, s), (e) => {
+  // a read that started before `reloadSettings` describes the settings before it: dropped, and read again
+  const rev = revision;
+  let again = false;
+  api.installationSettings(scope).then((s) => { if (rev === revision) cache.set(k, s); else again = true; }, (e) => {
     console.error("installation settings:", e);
     setTimeout(() => load(scope), 5000);
-  }).finally(() => { loading.delete(k); changed(); });
+  }).finally(() => { loading.delete(k); if (again) load(scope); changed(); });
 }
 
 /** One write in flight at a time: a value given meanwhile waits, and of those waiting only the latest is written (each
@@ -132,13 +135,23 @@ export async function resyncCellTypes(q: CellQueue, reload: () => Promise<Record
   await reload().then((s) => { q.stale = false; restore(s); }, (r) => console.error("cell types read back:", r));
 }
 
+/** Tests only: the load a mounted `useSettings` starts. */
+export const __loadForTest = (scope: string | null) => load(scope);
+
 /** The settings of an installation as loaded now (null: not loaded yet), for code outside a render, e.g. a connect for
  *  an installation chosen a moment ago. */
 export const loadedSettings = (scope: string | null): InstallationSettings | null => cache.get(keyOf(scope)) ?? null;
 
 /** After a merge, an import, the move of the old data or a change of the MQTT broker: read again from the backend. */
 let revision = 0;
-export function reloadSettings() { revision += 1; cache.clear(); changed(); }
+export function reloadSettings() {
+  revision += 1;
+  // what was loaded is read again at once: the components showing it mounted long ago and do not load it themselves
+  const shown = [...cache.keys()];
+  cache.clear();
+  for (const k of shown) load(k || null);
+  changed();
+}
 
 /** Counts `reloadSettings`: what reads an installation's settings outside this cache (the sidebar's broker) reads
  *  them again when it changes. */
