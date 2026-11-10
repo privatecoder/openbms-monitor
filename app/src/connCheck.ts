@@ -136,7 +136,10 @@ export interface LastConn { kind: "tcp" | "serial"; target: string; bus: Bus; se
 const lastKey = (installation: string) => `conn.last.${installation}`;
 
 export function saveLastConn(installation: string, c: LastConn) {
-  try { localStorage.setItem(lastKey(installation), JSON.stringify(c)); } catch { /* storage full or off */ }
+  // an old pack selection not moved yet (`movePackSelections`) stays until it is
+  const prev = lastConn(installation);
+  const old = { ...(prev?.sel !== undefined ? { sel: prev.sel } : {}), ...(prev?.packs !== undefined ? { packs: prev.packs } : {}) };
+  try { localStorage.setItem(lastKey(installation), JSON.stringify({ ...c, ...old })); } catch { /* storage full or off */ }
 }
 
 /** What `saveLastConn` stored, if it is still well-formed. */
@@ -185,20 +188,23 @@ export function packsLine(sel: PackSel, t: TFunction): string {
 }
 
 /** Once per installation: the pack selection its last connection used (kept in this browser by earlier versions)
- *  becomes its stored setting if it has none yet, then the old copy is dropped; a stored setting is never replaced.
- *  What fails is tried again at the next start. Resolves to whether anything was saved. */
-export async function movePackSelections(ids: string[], o: { stored: (id: string) => Promise<unknown>; save: (id: string, sel: PackSel) => Promise<unknown> }): Promise<boolean> {
-  let saved = false;
+ *  becomes its stored setting if it has none yet (`init`: the backend stores it only then, in one step, so a value saved
+ *  meanwhile is never replaced), then the old fields are dropped from the remembered connection as it is now. What
+ *  fails is tried again at the next start. Resolves to whether any installation was asked. */
+export async function movePackSelections(ids: string[], init: (id: string, sel: PackSel) => Promise<unknown>): Promise<boolean> {
+  let asked = false;
   for (const id of ids) {
     const last = lastConn(id);
     if (!last || (last.sel === undefined && last.packs === undefined)) continue;
     try {
-      if (packsOf(await o.stored(id)) === null) { await o.save(id, parseSel(last.sel ?? null, last.packs)); saved = true; }
-      const { sel: _sel, packs: _packs, ...rest } = last;
-      saveLastConn(id, rest);
+      await init(id, parseSel(last.sel ?? null, last.packs));
+      asked = true;
+      // the connection remembered now (a connect may have stored another one meanwhile), without the old fields
+      const now = lastConn(id);
+      if (now) { const { sel: _sel, packs: _packs, ...rest } = now; try { localStorage.setItem(lastKey(id), JSON.stringify(rest)); } catch { /* off */ } }
     } catch (e) { console.error("pack selection move:", e); }
   }
-  return saved;
+  return asked;
 }
 
 export { BAUD, other as otherBus, pad as padAddress };

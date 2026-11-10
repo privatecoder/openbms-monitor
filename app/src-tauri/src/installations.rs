@@ -175,6 +175,18 @@ pub async fn set_installation_cell_types(state: State<'_, AppState>, installatio
     .map_err(maint::store_refusal)
 }
 
+/// The pack selection an earlier version remembered in the browser for this installation: stored only if it has none
+/// yet (`Store::init_packs`); the selection in force comes back.
+#[tauri::command]
+pub async fn installation_packs_init(state: State<'_, AppState>, installation: String, value: Value) -> Result<Value, MaintError> {
+    with_store(&state, |s| {
+        s.installation(&installation)?;
+        s.init_packs(&installation, &value.to_string())
+    })
+    .map(parse)
+    .map_err(maint::store_refusal)
+}
+
 /// Store one setting the UI edits as a whole: "groups", "pairs", "diagnosis", "notifications", "devices", "wiring", "mqtt"
 /// or "packs"; null
 /// removes it.

@@ -241,11 +241,14 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     running.current = p;
     try { await connectOnce(retry, useBus, inst); } finally { if (running.current === p) running.current = null; done(); }
   };
+  // a failed read of the installation's settings is an error, never taken as „search“
   const selFor = async (inst: string | null): Promise<PackSel> => {
     if (!inst) return viewSel;
-    const st = loadedSettings(inst) ?? await api.installationSettings(inst).catch(() => null);
-    return packsOf(st?.packs) ?? { mode: "search" };
+    const st = loadedSettings(inst) ?? await api.installationSettings(inst);
+    return packsOf(st.packs) ?? { mode: "search" };
   };
+  // the selection the running RS485 connection started with (the setting may change meanwhile, for the next one)
+  const [runSel, setRunSel] = useState<PackSel | null>(null);
   const connectOnce = async (retry: boolean, useBus: Bus, inst?: string | null) => {
     cancelRef.current = false;
     serialGen.current += 1;
@@ -258,9 +261,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
     const bus = useBus;
     setBusy(true); setFailed(false); setOffer(null); setGap(null); if (!retry) { setMsg(null); setLost(false); setTries(0); }
     setLastTry(Date.now());
-    // the packs this connection polls, fixed for its whole run: the setting of the installation it is for, as stored now
-    const sel = await selFor(connInst.current);
-    const addrsFixed = selAddresses(sel) ?? [];
+    // the packs this connection polls (RS485 only), fixed for its whole run: the setting of the installation it is for,
+    // as stored now (`selFor`, read below)
+    let sel: PackSel = { mode: "search" };
+    let addrsFixed: number[] = [];
     try {
       localStorage.setItem("conn.source", src);
       if (src === "mqtt") {
@@ -283,6 +287,12 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         setMsg([t("conn.mqtt.connected", { host: used.host }), note].filter(Boolean).join(" "));
         return;
       }
+      sel = await selFor(connInst.current);
+      addrsFixed = selAddresses(sel) ?? [];
+      // cancelled, or the choice changed, while the setting was read: nothing is opened
+      stopIfCancelled();
+      if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
+      setRunSel(sel);
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       if (!connInst.current) localStorage.setItem("conn.packs", selText(sel));
       const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
@@ -764,7 +774,10 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
           <div className="flex items-baseline justify-between gap-3 text-sm">
             <span className="text-muted">{t("conn.packs")}</span>
             <span className="text-right">
-              {packsLoading ? t("lock.loading") : packsLine(packSel, t)}
+              {packsLoading ? t("lock.loading") : fixed && runSel ? packsLine(runSel, t) : packsLine(packSel, t)}
+              {fixed && runSel && !packsLoading && selText(runSel) !== selText(packSel) && (
+                <span className="block text-xs text-muted">{t("conn.packsLine.next", { line: packsLine(packSel, t) })}</span>
+              )}
               {!fixed && <button className="ml-2 text-xs text-muted underline hover:text-ink" onClick={() => setView("installations")}>{t("conn.editPorts")}</button>}
             </span>
           </div>

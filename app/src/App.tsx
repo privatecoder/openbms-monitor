@@ -53,10 +53,7 @@ export default function App() {
   const ids = maint.installations.map((i) => i.id).join(",");
   useEffect(() => {
     if (isDemo || !maint.loaded || !ids) return;
-    void movePackSelections(ids.split(","), {
-      stored: (id) => api.installationSettings(id).then((s) => s.packs ?? null),
-      save: (id, sel) => api.setInstallationSetting(id, "packs", sel),
-    }).then((saved) => { if (saved) reloadSettings(); });
+    void movePackSelections(ids.split(","), (id, sel) => api.installationPacksInit(id, sel)).then((asked) => { if (asked) reloadSettings(); });
   }, [maint.loaded, ids]);
   usePollPairsSync(scope);
   const [connected, setConnected] = useState(false);

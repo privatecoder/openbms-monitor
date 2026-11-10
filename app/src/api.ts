@@ -702,6 +702,8 @@ const tauriApi = {
   installationsMigrate: (local: Record<string, LegacyLocal>) => invoke<string[]>("installations_migrate", { local }),
   installationSettings: (installation: string) => invoke<InstallationSettings>("installation_settings", { installation }),
   setInstallationSetting: (installation: string, key: Exclude<SettingKey, "cell_types">, value: unknown) => invoke<void>("set_installation_setting", { installation, key, value }),
+  /** the pack selection of an earlier version, stored only if the installation has none; the one in force comes back */
+  installationPacksInit: (installation: string, value: unknown) => invoke<unknown>("installation_packs_init", { installation, value }),
   /** the cell types of the changed places (null removes one); the others stay */
   setInstallationCellTypes: (installation: string, changes: Record<number, unknown>) => invoke<void>("set_installation_cell_types", { installation, changes }),
   installationOverview: (installation: string) => invoke<InstallationOverview>("installation_overview", { installation }),
@@ -1046,6 +1048,7 @@ function demoApi(): typeof tauriApi {
     installationsMigrate: async () => [],
     installationSettings: async () => ({ cell_types: {}, groups: null, pairs: null, diagnosis: null, notifications: null, devices: null, wiring: null }),
     setInstallationSetting: async () => {},
+    installationPacksInit: async (_i: string, value: unknown) => value,
     setInstallationCellTypes: async () => {},
     installationOverview: async () => { throw new Error("desktop app only"); },
     installationMerge: async () => { throw new Error("desktop app only"); },

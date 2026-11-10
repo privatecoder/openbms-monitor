@@ -110,17 +110,16 @@ pub fn bind(state: &crate::AppState, installation: Option<&str>) {
     rebind(&mut now, &mut pending, installation, stored);
 }
 
-/// `bind` without the store: the stored inverter, the pause of a waiting or current rule of the same installation; a
-/// waiting change of this installation is used up, one of another is left.
+/// `bind` without the store: the stored inverter, the pause of a waiting or current rule of the same installation. Every
+/// waiting change is used up: one of this installation gave its pause, one of another (a late update of the
+/// installation shown before) must not replace this connection's rule once the port is free.
 fn rebind(now: &mut Rule, pending: &mut Option<Rule>, installation: Option<&str>, stored: Option<Inverter>) {
     let same = |r: &Rule| r.scope.as_deref() == installation;
     let paused = match pending.as_ref() {
         Some(p) if same(p) => p.wiring.paused,
         _ => same(now) && now.wiring.paused,
     };
-    if pending.as_ref().is_some_and(same) {
-        *pending = None;
-    }
+    *pending = None;
     *now = Rule { scope: installation.map(String::from), wiring: Wiring { inverter: stored, paused } };
 }
 
@@ -190,13 +189,22 @@ mod tests {
         // another installation: no pause carried over
         rebind(&mut now, &mut pending, Some("B"), Some(Inverter::Uart0));
         assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (Some("B"), Some(Inverter::Uart0), false));
-        // a waiting change of this installation gives its pause and is used up; one of another stays
+        // a waiting change of this installation gives its pause and is used up
         pending = Some(rule(Some("B"), Some(Inverter::Uart1), true));
         rebind(&mut now, &mut pending, Some("B"), Some(Inverter::Uart0));
         assert_eq!((now.wiring.inverter, now.wiring.paused, pending.is_none()), (Some(Inverter::Uart0), true, true));
+        // one of another installation is dropped: freeing the port later never puts it in force, nor its pause
+        now.wiring.paused = false;
         pending = Some(rule(Some("C"), Some(Inverter::Can), true));
-        rebind(&mut now, &mut pending, Some("B"), None);
-        assert_eq!((now.wiring.inverter, now.wiring.paused, pending.as_ref().and_then(|p| p.scope.as_deref())), (None, true, Some("C")));
+        rebind(&mut now, &mut pending, Some("B"), Some(Inverter::Uart1));
+        // what `settle` does once the port is free: take a waiting change (none is left)
+        if let Some(r) = pending.take() {
+            now = r;
+        }
+        assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (Some("B"), Some(Inverter::Uart1), false));
+        assert_eq!(decide(now.wiring, Bus::CanSocketBus), Err("bus-inverter".into()));
+        let mut now = rule(Some("B"), Some(Inverter::Uart1), false);
+        let mut pending = None;
         // no installation: nothing stored, no pause
         rebind(&mut now, &mut pending, None, None);
         assert_eq!((now.scope.as_deref(), now.wiring.inverter, now.wiring.paused), (None, None, false));

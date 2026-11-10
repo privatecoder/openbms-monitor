@@ -191,30 +191,29 @@ describe("which packs a connection polls", () => {
     const { lastConn, movePackSelections, saveLastConn } = await import("./connCheck");
     const store = new Map<string, string>();
     globalThis.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) } as Storage;
-    saveLastConn("a", { kind: "tcp", target: "192.0.2.10:4196", bus: "can", sel: "count:12" });
-    saveLastConn("b", { kind: "tcp", target: "192.0.2.11:4196", bus: "can", packs: 3 });
-    saveLastConn("c", { kind: "tcp", target: "192.0.2.12:4196", bus: "can", sel: "address:4" });
-    saveLastConn("d", { kind: "tcp", target: "192.0.2.13:4196", bus: "can", sel: "search" });
-    saveLastConn("e", { kind: "tcp", target: "192.0.2.14:4196", bus: "can" });
-    const stored: Record<string, unknown> = { c: { mode: "count", n: 2 } };
-    const saved: Record<string, unknown> = {};
+    // what earlier versions stored (with the old fields)
+    const old = (id: string, v: object) => store.set(`conn.last.${id}`, JSON.stringify({ kind: "tcp", target: `${id}.example:4196`, bus: "can", ...v }));
+    old("a", { sel: "count:12" }); old("b", { packs: 3 }); old("c", { sel: "address:4" }); old("d", { sel: "search" }); old("e", {});
+    // the backend's init: stores only where nothing is (c has a value already)
+    const db: Record<string, unknown> = { c: { mode: "count", n: 2 } };
     const fail = new Set(["d"]);
-    const ok = await movePackSelections(["a", "b", "c", "d", "e"], {
-      stored: async (id) => stored[id] ?? null,
-      save: async (id, sel) => { if (fail.has(id)) throw new Error("store"); saved[id] = sel; },
-    });
-    expect(ok).toBe(true);
-    // c keeps its stored setting; e had nothing to move; d failed and is tried again
-    expect(saved).toEqual({ a: { mode: "count", n: 12 }, b: { mode: "count", n: 3 } });
-    expect(lastConn("a")).toEqual({ kind: "tcp", target: "192.0.2.10:4196", bus: "can" });
-    expect(lastConn("c")).toEqual({ kind: "tcp", target: "192.0.2.12:4196", bus: "can" });
+    const init = async (id: string, sel: unknown) => { if (fail.has(id)) throw new Error("store"); db[id] ??= sel; return db[id]; };
+    // a connect meanwhile stores another port for a: kept, and a's old selection is not lost by it
+    saveLastConn("a", { kind: "serial", target: "/dev/new-adapter", bus: "pack" });
+    expect(lastConn("a")?.sel).toBe("count:12");
+    expect(await movePackSelections(["a", "b", "c", "d", "e"], init)).toBe(true);
+    expect(db).toEqual({ a: { mode: "count", n: 12 }, b: { mode: "count", n: 3 }, c: { mode: "count", n: 2 } });
+    expect(lastConn("a")).toEqual({ kind: "serial", target: "/dev/new-adapter", bus: "pack" });
+    expect(lastConn("c")).toEqual({ kind: "tcp", target: "c.example:4196", bus: "can" });
+    // d failed: its old field stays for the next start, also across a connect
+    saveLastConn("d", { kind: "tcp", target: "d.example:4196", bus: "pack" });
     expect(lastConn("d")?.sel).toBe("search");
     fail.clear();
-    // the next start: only d is left (a was moved and its old copy dropped)
-    const again: Record<string, unknown> = {};
-    await movePackSelections(["a", "d"], { stored: async (id) => stored[id] ?? null, save: async (id, sel) => { again[id] = sel; } });
-    expect(again).toEqual({ d: { mode: "search" } });
-    expect(lastConn("d")).toEqual({ kind: "tcp", target: "192.0.2.13:4196", bus: "can" });
+    const asked: string[] = [];
+    await movePackSelections(["a", "d"], async (id, sel) => { asked.push(id); return init(id, sel); });
+    expect(asked).toEqual(["d"]);
+    expect(db.d).toEqual({ mode: "search" });
+    expect(lastConn("d")).toEqual({ kind: "tcp", target: "d.example:4196", bus: "pack" });
   });
 });
 

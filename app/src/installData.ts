@@ -58,26 +58,31 @@ export function serialWriter<V>(write: (v: V) => Promise<unknown>, idle: () => v
   });
 }
 
-// `devices` keeps revisions in time: two writes racing could store an older whole value last. Per installation one write
-// at a time, and after the last one the stored value is read back into the cache.
-const deviceWriters = new Map<string, (v: unknown) => Promise<unknown>>();
-function deviceWriter(scope: string) {
-  let w = deviceWriters.get(scope);
+// `devices` keeps revisions in time, `packs` is changed in quick steps (count, then its number): two writes racing could
+// store an older whole value last. Per installation and setting one write at a time, and after the last one the stored
+// value is read back into the cache (so a failed earlier write never stays shown either).
+type Serial = "devices" | "packs";
+const SERIAL: readonly Serial[] = ["devices", "packs"];
+const serialWriters = new Map<string, (v: unknown) => Promise<unknown>>();
+export function settingWriter(scope: string, key: Serial, o: { write: (v: unknown) => Promise<unknown>; read: () => Promise<unknown>; put: (v: unknown) => void }) {
+  let w = serialWriters.get(`${key}:${scope}`);
   if (!w) {
     // a change given while the stored value is read back wins over it
     let calls = 0;
-    const write = serialWriter((v: unknown) => api.setInstallationSetting(scope, "devices", v), () => {
+    const write = serialWriter(o.write, () => {
       const at = calls;
-      api.installationSettings(scope).then((s) => {
-        const cur = cache.get(scope);
-        if (cur && at === calls) { cache.set(scope, { ...cur, devices: s.devices }); changed(); }
-      }, (e) => console.error("devices read back:", e));
+      o.read().then((v) => { if (at === calls) o.put(v); }, (e) => console.error(`${key} read back:`, e));
     });
     w = (v: unknown) => { calls++; return write(v); };
-    deviceWriters.set(scope, w);
+    serialWriters.set(`${key}:${scope}`, w);
   }
   return w;
 }
+const writerOf = (scope: string, key: Serial) => settingWriter(scope, key, {
+  write: (v) => api.setInstallationSetting(scope, key, v),
+  read: () => api.installationSettings(scope).then((s) => s[key] ?? null),
+  put: (v) => { const cur = cache.get(scope); if (cur) { cache.set(scope, { ...cur, [key]: v }); changed(); } },
+});
 
 /** A cell type write: null when it went through; else its error, after `restore` got the cell types from before the
  *  change (`before`) and then, if it can be read, the stored state (read back fresh). */
@@ -157,9 +162,9 @@ export function useSettings(scope: string | null) {
     cache.set(k, { ...cur, [key]: value });
     changed();
     if (!stored(scope)) return null;
-    if (key === "devices") {
-      const err = await deviceWriter(scope)(value);
-      if (err !== null) console.error("setting devices:", err);
+    if ((SERIAL as readonly string[]).includes(key)) {
+      const err = await writerOf(scope, key as Serial)(value);
+      if (err !== null) console.error(`setting ${key}:`, err);
       return err;
     }
     try {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectLegacy, legacyKeys, queueCellTypes, serialWriter, writeCellTypes, type CellQueue } from "./installData";
+import { collectLegacy, legacyKeys, queueCellTypes, serialWriter, settingWriter, writeCellTypes, type CellQueue } from "./installData";
 import { parseGroups } from "./groups";
 import { parsePairs } from "./pairs";
 import { parseAssignments } from "./cells/packCheck";
@@ -126,4 +126,37 @@ describe("an unresolved cell type cache", () => {
     expect(shown).toBe("stored");
     expect(reads).toBe(2);
   });
+});
+
+describe("quick changes of one setting (packs: count, then its number)", () => {
+  // a store whose writes finish when told: in order, or the first one failing
+  function harness(failFirst: boolean) {
+    let db: unknown = null;
+    let shown: unknown = null;
+    const waits: (() => void)[] = [];
+    let n = 0;
+    const w = settingWriter(`t${Math.random()}`, "packs", {
+      write: (v) => { const i = n++; return new Promise((ok, no) => waits.push(() => { if (failFirst && i === 0) no(new Error("store")); else { db = v; ok(undefined); } })); },
+      read: async () => db,
+      put: (v) => { shown = v; },
+    });
+    return { w, waits, db: () => db, shown: () => shown };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  for (const failFirst of [false, true]) {
+    it(`the last choice is stored and shown${failFirst ? " also when the first write fails" : ""}`, async () => {
+      const h = harness(failFirst);
+      const first = h.w({ mode: "count", n: 1 });
+      const second = h.w({ mode: "count", n: 12 });
+      // only one write in flight: the second waits for the first
+      expect(h.waits.length).toBe(1);
+      h.waits[0](); await flush();
+      expect(h.waits.length).toBe(2);
+      h.waits[1](); await flush(); await flush();
+      expect(await second).toBeNull();
+      expect(await first).toEqual(failFirst ? expect.any(Error) : null);
+      expect(h.db()).toEqual({ mode: "count", n: 12 });
+      expect(h.shown()).toEqual({ mode: "count", n: 12 });
+    });
+  }
 });

@@ -1884,6 +1884,16 @@ impl Store {
         .map_err(e)
     }
 
+    /// The pack selection an earlier version remembered, stored only if the installation has none yet (one statement,
+    /// so a value saved meanwhile is never replaced). The selection in force comes back.
+    pub fn init_packs(&self, inst: &str, data: &str) -> Result<Option<String>, String> {
+        if !valid_packs(data) {
+            return Err(format!("invalid pack selection {data}"));
+        }
+        self.db.execute("INSERT OR IGNORE INTO packs(installation, data) VALUES (?1, ?2)", params![inst, data]).map_err(e)?;
+        self.packs(inst)
+    }
+
     pub fn packs(&self, inst: &str) -> Result<Option<String>, String> {
         self.db.query_row("SELECT data FROM packs WHERE installation = ?1", [inst], |r| r.get(0)).optional().map_err(e)
     }
@@ -2036,6 +2046,11 @@ mod tests {
         let other = r#"{"mode":"address","k":7}"#;
         let kept = s.add_settings(&b.id, &Settings { packs: Some(other.into()), ..Settings::default() }).unwrap();
         assert_eq!((s.packs(&b.id).unwrap().as_deref(), kept.packs.as_deref()), (Some(twelve), Some(other)));
+        // the one-time move of an old selection never replaces a stored one
+        assert_eq!(s.init_packs(&b.id, r#"{"mode":"count","n":2}"#).unwrap().as_deref(), Some(twelve));
+        let c = s.create_installation("C", None, vec![]).unwrap();
+        assert_eq!(s.init_packs(&c.id, r#"{"mode":"count","n":2}"#).unwrap().as_deref(), Some(r#"{"mode":"count","n":2}"#));
+        assert!(s.init_packs(&c.id, "12").is_err());
         s.delete_installation(&a.id).unwrap();
         assert_eq!(s.packs(&a.id).unwrap(), None);
     }

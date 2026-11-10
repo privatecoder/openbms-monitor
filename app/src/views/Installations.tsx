@@ -181,7 +181,7 @@ function Card({ inst, maint, connected, expanded, onToggle, onParameters }: {
           ) : <p className="text-muted">{t("hist.loading")}</p>}
           <p className="text-muted">{t("inst.deleteKeeps")}</p>
           <div className="flex gap-2">
-            <Button size="sm" variant="primary" disabled={busy || !view} onClick={() => act(() => api.installationDelete(inst.id)).then(() => setDeleting(false))}>{t("inst.deleteYes")}</Button>
+            <Button size="sm" variant="primary" disabled={may("installation.delete").disabled || !view} title={may("installation.delete").title} onClick={() => act(() => api.installationDelete(inst.id)).then(() => setDeleting(false))}>{t("inst.deleteYes")}</Button>
             <Button size="sm" variant="secondary" onClick={() => setDeleting(false)}>{t("maint.setup.cancel")}</Button>
           </div>
         </div>
