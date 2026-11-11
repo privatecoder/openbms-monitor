@@ -43,6 +43,9 @@ python3 tools/gen_help.py      # regenerate help/ after editing the help tables
 - Every value or feature that needs explaining gets a help topic in `gen_help.py` and an `InfoIcon` next to it. Help explains relationships and what to do, not only definitions.
 - Content is generic: help texts, examples, code comments and test names never cite a particular installation (no dates, pack numbers or readings from someone's bank). Use neutral examples ("pack A / pack B, 40 mV at 10 A").
 - No private files in the repo (own parameter exports, poll logs, recordings). Tests use synthetic data.
+- Nothing personal in the repo, commits or release notes: no user or account names, no home-directory paths, no IP addresses of real gateways or brokers. Examples use documentation addresses (`192.0.2.x`) and neutral names.
+- Language: answers to the user in German; code, comments, docs, commit messages and `CHANGELOG.md` in English (UI strings in both, see above).
+- Work here may touch sibling repos (the Seplos MQTT add-on, the protocol docs, the knowledge base): they have their own rules. Ask before committing or pushing there, and stage only explicit paths, never the user's own uncommitted changes.
 - No documentation of modified firmware here; that lives elsewhere.
 - Databases with user data change only by migrations (`app/src-tauri/src/migrate.rs`): numbered steps counted in `user_version` (`maintenance.sqlite`) or `meta.migration` (`history.sqlite`, whose `user_version` stays 1 so older builds do not move it aside), each in one transaction after a copy `<file>.bak-<n>`, idempotent, every row kept. SQL of a released step is frozen; changes are new steps. Only a file of an unknown layout is moved aside.
 - Match the surrounding code: short comments that explain why, compact components, Tailwind tokens from `index.css` (`text-muted`, `bg-sunken`, `text-alarm`, …).
