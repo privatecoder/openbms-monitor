@@ -29,7 +29,7 @@ pub const PRE_READ: &str = "pre-read: String 2 could not be read before the writ
 
 pub(crate) const PACK_BUS_ONLY: &str = "this command exists only on RS485-1/2";
 /// The refusal of a history read over the CAN socket of a build without read-capability bit 0 (the UI names it).
-pub const HISTORY_NO_CAP: &str = "history-no-cap: over the CAN socket only with MAINT 1.5.4/1.6.4 or later; RS485-1/2 reads every pack";
+pub const HISTORY_NO_CAP: &str = "history-no-cap: over the CAN socket only with EMU1101-EXT Light 1.5.4 / Full 1.6.4 or later; RS485-1/2 reads every pack";
 const CAN_SOCKET_ONLY: &str = "this command exists only on the CAN socket";
 
 /// The UART a bus reaches the packs on.
@@ -56,13 +56,13 @@ pub(crate) fn flows(action: Action) -> &'static [Channel] {
         // RS485-1/2 only: the name rides in the 169-byte ASCII A1, the serial strings and the history have their own
         // frames and checks there, the bootloader listens there
         A::WriteName | A::WriteSerials | A::Flash => &[Channel::Uart0],
-        // the history: RS485-1/2, and the CAN socket of a build with read-capability bit 0 (MNT format 5)
+        // the history: RS485-1/2, and the CAN socket of a build with read-capability bit 0 (EXT05)
         A::ReadHistory => BOTH,
         // RS485-1/2 with image flag bit 4: „Wartungs-Marker“ (`marker.rs`) and „Platine flashen“ (`bench.rs`)
         A::ReadIdentity | A::MaintStatus | A::MaintStop => BOTH,
         // the memory diagnosis (`diagnosis.rs`)
         A::ReadDiagnosis => BOTH,
-        // the calibration pages and the stored SOC records / live energy (`diagnosis.rs`, MNT format 5)
+        // the calibration pages and the stored SOC records / live energy (`diagnosis.rs`, EXT05)
         A::ReadCalibration | A::ReadSocStore => BOTH,
         A::MaintStart | A::ReadSystem => &[Channel::Uart1],
         A::DisplayTunnel => &[],
@@ -426,7 +426,7 @@ pub(crate) fn uart1_sent(r: openbms_transport::Result<()>) -> Sent {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ParamWrite {
     /// The pack changed a value the user did not touch since the edit's read: nothing was written; `fresh` is the
-    /// pack now. `lock_changed`: its lock state (Group0 bit 5, MAINT 1.6) is among the changes.
+    /// pack now. `lock_changed`: its lock state (Group0 bit 5, Full) is among the changes.
     Stale { fresh: Parameters, lock_changed: bool },
     /// Written; the block read back, or why that read failed. `unanswered`: the BMS's answer to the write was missing
     /// or broken, the fresh read showed the values sent. `before` (CAN socket only): the read right before the write,

@@ -5,16 +5,17 @@
 use super::policy::Master;
 use super::Clock;
 use crate::{link::Link, Error, Result};
-use openbms_proto::{frame, InfoAnswer, MaintInfo, MaintState, MarkerWord};
+use openbms_proto::{frame, InfoAnswer, ExtInfo, MaintState, MarkerWord};
 use openbms_transport::timing;
 use std::time::Duration;
 
 /// What the master at address 0 answered to `03`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Probe {
-    /// the format-2 or format-3 identity (any patch version; `policy::Master` decides what it offers)
-    Info(MaintInfo),
-    /// `MNT` with another format or length (the historic 22-byte format 1), or RTN 05: a patch the app does not support
+    /// the `EXT05` identity (TEMP(maint-1.6): or an `MNT` format 3; any patch version; `policy::Master` decides what it
+    /// offers)
+    Info(ExtInfo),
+    /// `EXT` or `MNT` with another format or length, or RTN 05: a patch the app does not support
     OtherPatch,
     /// RTN 04: the firmware does not know 0x64 (original or another build; RTN 04 does not prove which)
     No0x64,
@@ -63,9 +64,11 @@ pub enum DialogError {
 /// Minimum time after `stop` when the slave count does not change (N = 0): one full master cycle.
 pub const ZERO_SLAVES_SETTLE: Duration = timing::ZERO_SLAVES_SETTLE;
 
-/// Which answers belong to the request sent: `03` gets 17, 18 or 19 bytes (or the historic 22, to name an unknown patch) or RTN
-/// 04/05; `02`, start and stop get five bytes or a rejection. A late answer to an earlier request (other length), our own
-/// echo (CID2 0x64 in the RTN field) and foreign traffic do not.
+/// Which answers belong to the request sent (VER 20, CID1 46, the address asked): `03` gets an identity-shaped INFO
+/// (`ExtInfo::identity_shaped`: `EXT05` with 21 bytes, TEMP(maint-1.6) `MNT` format 3, or an unknown format to name an
+/// unknown patch) or RTN 04/05; `02`, start and stop get five bytes or a rejection. A late answer to an earlier request
+/// (e.g. 0x51, whose device name may start with `EXT`), our own echo (CID2 0x64 in the RTN field) and foreign traffic do
+/// not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bound {
     Info,
@@ -76,10 +79,12 @@ enum Bound {
 impl Bound {
     fn accepts(self, f: &frame::Frame) -> bool {
         let address = if let Bound::Status(a) = self { a } else { 0 };
-        f.address == address
+        f.version == 0x20
+            && f.cid1 == 0x46
+            && f.address == address
             && f.rtn != 0x64
             && match self {
-                Bound::Info => (f.rtn == 0x00 && [MaintInfo::LEN, MaintInfo::LEN3, MaintInfo::LEN4, 22].contains(&f.info.len())) || f.rtn == 0x04 || f.rtn == 0x05,
+                Bound::Info => (f.rtn == 0x00 && ExtInfo::identity_shaped(&f.info)) || f.rtn == 0x04 || f.rtn == 0x05,
                 Bound::Status(_) => (f.rtn == 0x00 && f.info.len() == MaintState::LEN) || (0x01..=0x0F).contains(&f.rtn),
             }
     }
@@ -136,10 +141,10 @@ fn status_read_at(link: &mut impl Link, clock: &impl Clock, address: u8, b: Budg
 
 /// Read the identity (`03` only). `Err` only for a link failure; a missing or malformed answer is `Failed`.
 pub fn probe(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Probe> {
-    let request = MaintInfo::request()?;
+    let request = ExtInfo::request()?;
     Ok(match exchange(link, clock, &request, Bound::Info, b.answer)? {
         None => Probe::Failed,
-        Some(f) if f.rtn == 0x00 => match MaintInfo::classify(&f.info) {
+        Some(f) if f.rtn == 0x00 => match ExtInfo::classify(&f.info) {
             InfoAnswer::Known(i) => Probe::Info(i),
             InfoAnswer::OtherFormat => Probe::OtherPatch,
             InfoAnswer::Broken => Probe::Failed,
@@ -153,17 +158,18 @@ pub fn probe(link: &mut impl Link, clock: &impl Clock, b: Budgets) -> Result<Pro
 /// What the pack at an address answered to its own `03` (no `02` follows; that is the master's alone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackAnswer {
-    /// a format-2 (17 bytes) or format-3 (18 bytes) identity
-    Info(MaintInfo),
-    /// any other valid `MNT` answer (another format or length, e.g. the historic 22-byte format 1)
-    OtherMnt,
-    /// silence, an error RTN (04, 05 or any other), or an answer without `MNT`: says nothing
+    /// the `EXT05` identity (TEMP(maint-1.6): or an `MNT` format 3)
+    Info(ExtInfo),
+    /// any other valid `EXT` or `MNT` answer (another format or length)
+    OtherIdentity,
+    /// silence, an error RTN (04, 05 or any other), or an answer without `EXT`/`MNT`: says nothing
     Undecided,
 }
 
-/// Which frame is the answer to the addressed `03`: VER 20, CID1 46, the address asked, RTN 00 and `MNT` in the INFO
-/// (classified, whatever its length), or an error RTN (undecided). Our echo (CID2 0x64 in that field), foreign traffic,
-/// other addresses and INFO without `MNT` are not.
+/// Which frame is the answer to the addressed `03`: VER 20, CID1 46, the address asked, RTN 00 and an identity-shaped INFO
+/// (`ExtInfo::identity_shaped`, classified whatever its length), or an error RTN (undecided). Our echo (CID2 0x64 in that
+/// field), foreign traffic, other addresses and other INFO (e.g. a late 0x51 whose device name starts with `EXT`) are
+/// not.
 fn pack_answer_of(f: &frame::Frame, address: u8) -> Option<PackAnswer> {
     if f.version != 0x20 || f.cid1 != 0x46 || f.address != address || f.rtn == 0x64 {
         return None;
@@ -171,18 +177,18 @@ fn pack_answer_of(f: &frame::Frame, address: u8) -> Option<PackAnswer> {
     if f.rtn != 0x00 {
         return Some(PackAnswer::Undecided);
     }
-    if !f.info.starts_with(b"MNT") {
+    if !ExtInfo::identity_shaped(&f.info) {
         return None;
     }
-    Some(match MaintInfo::classify(&f.info) {
+    Some(match ExtInfo::classify(&f.info) {
         InfoAnswer::Known(i) => PackAnswer::Info(i),
-        _ => PackAnswer::OtherMnt,
+        _ => PackAnswer::OtherIdentity,
     })
 }
 
 /// Ask the pack at `address` for its identity (`03` only) and wait at most `timeout`. `Err` only for a link failure.
 pub fn probe_pack(link: &mut impl Link, clock: &impl Clock, address: u8, timeout: Duration) -> Result<PackAnswer> {
-    let request = MaintInfo::request_at(address)?;
+    let request = ExtInfo::request_at(address)?;
     link.clear_input()?;
     link.write_raw(&request)?;
     let deadline = clock.now() + timeout;
@@ -323,17 +329,16 @@ mod tests {
     use crate::maint::Clock;
     use openbms_proto::frame;
 
-    /// The 17 INFO bytes of a format-2 identity.
-    /// A format-4 identity with flags 3A; 1.5 and 1.6 as their supported revisions 1.5.3 and 1.6.3.
-    fn mnt(patch: [u8; 2], id: [u8; 8]) -> Vec<u8> {
-        let rev = match patch { [1, 5] => 3, [1, 6] => 3, _ => 0 };
-        let mut v = b"MNT".to_vec();
-        v.extend_from_slice(&[4, 16, 6, 13, patch[0], patch[1], rev]);
+    /// An `EXT05` identity with flags 3A and mask 000F; 1.5 and 1.6 as their supported revisions 1.5.4 and 1.6.4.
+    fn ext(patch: [u8; 2], id: [u8; 8]) -> Vec<u8> {
+        let rev = match patch { [1, 5] | [1, 6] => 4, _ => 0 };
+        let mut v = b"EXT".to_vec();
+        v.extend_from_slice(&[5, 16, 6, 13, patch[0], patch[1], rev]);
         v.extend_from_slice(&id);
-        v.push(0x3A);
+        v.extend_from_slice(&[0x3A, 0x00, 0x0F]);
         v
     }
-    /// a 1.5.3 build (not listed)
+    /// a Light 1.5.4 build (not listed)
     const ID15: [u8; 8] = [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA];
 
     fn state(marker: bool, slaves: u8) -> Vec<u8> {
@@ -362,7 +367,7 @@ mod tests {
             }
             let a = self.addr;
             match f.info.as_slice() {
-                [0x03] => return vec![(now + ms(40), answer(a, 0x00, &mnt([1, 5], ID15)))],
+                [0x03] => return vec![(now + ms(40), answer(a, 0x00, &ext([1, 5], ID15)))],
                 [0x02] if self.polls_silent && !self.active && self.dip > 0 => return vec![],
                 [0x02] => {}
                 [1, 0xC3, 0x5A] if self.refuse_start => return vec![(now + ms(40), answer(a, 0x05, &[]))],
@@ -486,11 +491,11 @@ mod tests {
         let m = read(&mut link, &t, Budgets::default()).unwrap();
         assert_eq!((m.marker(), m.effective_slaves()), (Some(MarkerWord::Off), Some(3)));
         assert!(m.may_halt());
-        assert_eq!(link.sent, vec![MaintInfo::request().unwrap(), MaintState::request().unwrap()]);
+        assert_eq!(link.sent, vec![ExtInfo::request().unwrap(), MaintState::request().unwrap()]);
     }
 
     #[test]
-    fn a_format_3_identity_is_bound_and_read_then_02() {
+    fn the_temp_format_3_identity_is_bound_and_read_then_02() {
         let t = VTime::default();
         // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF) is the supported format-3 build; flags 07 with the hard stop
         let mut id3 = b"MNT".to_vec();
@@ -505,7 +510,7 @@ mod tests {
         let m = read(&mut link, &t, Budgets::default()).unwrap();
         assert!(matches!(m, Master::Patched { patch, .. } if patch.info.hard_stop == Some(true) && patch.info.format == 3));
         assert_eq!(m.effective_slaves(), Some(2));
-        // format 4 with 18 bytes: unknown patch, no 02
+        // the old MNT format 4 (18 bytes here): unknown patch, no 02
         let mut id4 = b"MNT".to_vec();
         id4.extend_from_slice(&[4, 16, 6, 13, 1, 5, 1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 1]);
         let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(40), answer(0, 0x00, &id4))]);
@@ -513,6 +518,7 @@ mod tests {
         assert_eq!(link.sent.len(), 1);
     }
 
+    /// An `MNT` format 3 identity (TEMP(maint-1.6): the one old layout still decoded).
     fn mnt3(patch: [u8; 2], flags: u8) -> Vec<u8> {
         let mut v = b"MNT".to_vec();
         v.extend_from_slice(&[3, 16, 6, 13, patch[0], patch[1], 1, 2, 3, 4, 5, 6, 7, 8, flags]);
@@ -533,10 +539,10 @@ mod tests {
         let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &mnt3([1, 5], 1)))]);
         let r = probe_pack(&mut link, &t, 7, ms(600)).unwrap();
         assert!(matches!(r, PackAnswer::Info(i) if i.hard_stop == Some(true) && i.format == 3));
-        assert_eq!(link.sent, vec![MaintInfo::request_at(7).unwrap()]);
-        // MNT04 with 19 bytes
-        let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &mnt([1, 5], ID15)))]);
-        assert!(matches!(probe_pack(&mut link, &t, 3, ms(600)).unwrap(), PackAnswer::Info(i) if i.format == 4 && i.diagnostics()));
+        assert_eq!(link.sent, vec![ExtInfo::request_at(7).unwrap()]);
+        // EXT05 with 21 bytes
+        let (mut link, t) = pack_link(|a| vec![(ms(40), answer(a, 0x00, &ext([1, 5], ID15)))]);
+        assert!(matches!(probe_pack(&mut link, &t, 3, ms(600)).unwrap(), PackAnswer::Info(i) if i.format == 5 && i.diagnostics() && i.supported()));
     }
 
     #[test]
@@ -545,25 +551,27 @@ mod tests {
         let (mut link, t) = pack_link(move |a| if a == 1 { vec![(ms(40), measured.clone())] } else { vec![] });
         let PackAnswer::Info(i) = probe_pack(&mut link, &t, 1, ms(600)).unwrap() else { panic!() };
         assert_eq!((i.format, i.base, i.patch, i.build_id_hex().as_str(), i.hard_stop), (3, [16, 6, 13], [1, 5], "297f9f2aa8402e9f", Some(false)));
-        // MAINT 1.5 is no longer supported: shown, its functions not used
+        // the old MAINT 1.5 (MNT format 3) is not supported: shown, its functions not used
         assert!(matches!(super::super::policy::PackFinding::of(PackAnswer::Info(i)), super::super::policy::PackFinding::Negative(Some(_))));
         // the same answer does not belong to address 2
         assert_eq!(probe_pack(&mut link, &t, 2, ms(600)).unwrap(), PackAnswer::Undecided);
     }
 
     #[test]
-    fn another_valid_mnt_is_classified_errors_and_silence_are_undecided() {
-        // the historic 22-byte format 1, format 4, MNT03 with a wrong length: classified as another MNT
+    fn another_identity_is_classified_errors_and_silence_are_undecided() {
+        // the historic 22-byte MNT format 1, MNT format 4, MNT03 with a wrong length, EXT format 4: another identity
         let mut f1 = b"MNT".to_vec();
         f1.extend_from_slice(&[1, 16, 6, 13, 1, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0]);
         let mut f4 = mnt3([1, 5], 0);
         f4[3] = 4;
         let short = mnt3([1, 5], 0)[..17].to_vec();
-        for info in [f1, f4, short] {
+        let mut e4 = ext([1, 5], ID15);
+        e4[3] = 4;
+        for info in [f1, f4, short, e4] {
             let (mut link, t) = pack_link(move |a| vec![(ms(40), answer(a, 0x00, &info))]);
-            assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::OtherMnt);
+            assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::OtherIdentity);
         }
-        // RTN 04, RTN 05, another error, silence, INFO without MNT: undecided
+        // RTN 04, RTN 05, another error, silence, INFO without EXT/MNT: undecided
         for rtn in [0x04, 0x05, 0x02] {
             let (mut link, t) = pack_link(move |a| vec![(ms(40), answer(a, rtn, &[]))]);
             assert_eq!(probe_pack(&mut link, &t, 5, ms(600)).unwrap(), PackAnswer::Undecided);
@@ -578,12 +586,74 @@ mod tests {
     #[test]
     fn only_the_address_asked_and_never_our_echo_answers() {
         // another address's answer first, our echo, then ours
-        let (mut link, t) = pack_link(|a| vec![(ms(10), answer(a + 1, 0x00, &mnt3([1, 5], 0))), (ms(20), MaintInfo::request_at(a).unwrap()), (ms(60), answer(a, 0x00, &mnt3([1, 5], 0)))]);
+        let (mut link, t) = pack_link(|a| vec![(ms(10), answer(a + 1, 0x00, &mnt3([1, 5], 0))), (ms(20), ExtInfo::request_at(a).unwrap()), (ms(60), answer(a, 0x00, &mnt3([1, 5], 0)))]);
         assert!(matches!(probe_pack(&mut link, &t, 4, ms(600)).unwrap(), PackAnswer::Info(_)));
         // only another address answers: undecided
         let (mut link, t) = pack_link(|a| vec![(ms(10), answer(a + 1, 0x00, &mnt3([1, 5], 0)))]);
         assert_eq!(probe_pack(&mut link, &t, 4, ms(600)).unwrap(), PackAnswer::Undecided);
         assert!(probe_pack(&mut link, &t, 22, ms(600)).is_err(), "address beyond 21");
+    }
+
+    /// A valid 0x51 answer (device info, 32 bytes) named `name`, padded with `pad`: 10 name bytes, the OEM version, CAN
+    /// text.
+    fn info51_named(name: &[u8], pad: u8) -> Vec<u8> {
+        let mut v = name.to_vec();
+        v.resize(10, pad);
+        v.extend_from_slice(&[16, 6]);
+        v.extend_from_slice(&[b' '; 20]);
+        v
+    }
+    fn info51() -> Vec<u8> {
+        info51_named(b"EXT-PACK", 0)
+    }
+
+    #[test]
+    fn a_late_0x51_with_an_ext_name_never_stands_for_the_identity() {
+        let real = ext([1, 6], ID15);
+        for (name, pad) in [(&b"EXT"[..], 0u8), (b"MNT", 0), (b"EXT", b' '), (b"EXT-PACK", b' ')] {
+            assert_eq!(openbms_proto::DeviceInfo::parse(&info51_named(name, pad)).map(|d| d.device_name).ok().as_deref(), std::str::from_utf8(name).ok(), "a valid 0x51");
+            let t = VTime::default();
+            let (late, r) = (info51_named(name, pad), real.clone());
+            let mut link = FakeLink::new(t.clone(), move |req, now| match frame::parse(req) {
+                Ok(f) if f.info == [0x03] => vec![(now + ms(10), answer(0, 0x00, &late)), (now + ms(60), answer(0, 0x00, &r))],
+                Ok(f) if f.info == [0x02] => vec![(now + ms(40), answer(0, 0x00, &state(false, 2)))],
+                _ => vec![],
+            });
+            assert!(matches!(read(&mut link, &t, Budgets::default()).unwrap(), Master::Patched { .. }), "{name:?}");
+            let late = info51_named(name, pad);
+            let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(10), answer(0, 0x00, &late))]);
+            assert_eq!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Failed, "{name:?}");
+            let (late, r) = (info51_named(name, pad), real.clone());
+            let (mut link, t) = pack_link(move |a| vec![(ms(10), answer(a, 0x00, &late)), (ms(60), answer(a, 0x00, &r))]);
+            assert!(matches!(probe_pack(&mut link, &t, 6, ms(600)).unwrap(), PackAnswer::Info(_)), "{name:?}");
+            let late = info51_named(name, pad);
+            let (mut link, t) = pack_link(move |a| vec![(ms(10), answer(a, 0x00, &late))]);
+            assert_eq!(probe_pack(&mut link, &t, 6, ms(600)).unwrap(), PackAnswer::Undecided, "{name:?}");
+        }
+        // master: the late 0x51 first, then the real identity
+        let t = VTime::default();
+        let (late, r) = (info51(), real.clone());
+        let mut link = FakeLink::new(t.clone(), move |req, now| match frame::parse(req) {
+            Ok(f) if f.info == [0x03] => vec![(now + ms(10), answer(0, 0x00, &late)), (now + ms(60), answer(0, 0x00, &r))],
+            Ok(f) if f.info == [0x02] => vec![(now + ms(40), answer(0, 0x00, &state(false, 2)))],
+            _ => vec![],
+        });
+        assert!(matches!(read(&mut link, &t, Budgets::default()).unwrap(), Master::Patched { patch, .. } if patch.info.format == 5));
+        // only the 0x51: no identity, nothing negative
+        let late = info51();
+        let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(10), answer(0, 0x00, &late))]);
+        assert_eq!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Failed);
+        // a pack: the same
+        let r = real.clone();
+        let (mut link, t) = pack_link(move |a| vec![(ms(10), answer(a, 0x00, &info51())), (ms(60), answer(a, 0x00, &r))]);
+        assert!(matches!(probe_pack(&mut link, &t, 6, ms(600)).unwrap(), PackAnswer::Info(i) if i.format == 5));
+        let (mut link, t) = pack_link(|a| vec![(ms(10), answer(a, 0x00, &info51()))]);
+        assert_eq!(probe_pack(&mut link, &t, 6, ms(600)).unwrap(), PackAnswer::Undecided);
+        // an unknown identity format still names an unknown patch
+        let mut e9 = real.clone();
+        e9[3] = 9;
+        let (mut link, t) = pack_link(move |a| vec![(ms(10), answer(a, 0x00, &e9))]);
+        assert_eq!(probe_pack(&mut link, &t, 6, ms(600)).unwrap(), PackAnswer::OtherIdentity);
     }
 
     #[test]
@@ -595,8 +665,8 @@ mod tests {
         let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(40), answer(0, 0x00, &f1))]);
         assert_eq!(read(&mut link, &t, Budgets::default()).unwrap(), Master::UnknownPatch(None));
         assert_eq!(link.sent.len(), 1);
-        // format 2 with patch 1.4: unknown patch
-        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(40), answer(0, 0x00, &mnt([1, 4], [7; 8])))]);
+        // EXT05 with patch 1.4: unknown patch
+        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(40), answer(0, 0x00, &ext([1, 4], [7; 8])))]);
         assert!(matches!(read(&mut link, &t, Budgets::default()).unwrap(), Master::UnknownPatch(Some(_))));
         assert_eq!(link.sent.len(), 1);
         // RTN 05 to 03: a patch that knows 0x64 but not this identity
@@ -619,7 +689,7 @@ mod tests {
     #[test]
     fn a_malformed_03_answer_is_failed_not_another_image() {
         let t = VTime::default();
-        let mut bad = mnt([1, 5], ID15);
+        let mut bad = ext([1, 5], ID15);
         bad[0] = b'X';
         let mut link = FakeLink::new(t.clone(), move |_, now| vec![(now + ms(40), answer(0, 0x00, &bad))]);
         assert_eq!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Failed);
@@ -629,13 +699,13 @@ mod tests {
     fn answers_of_the_wrong_length_are_not_bound() {
         // a delayed five-byte state (the answer to an earlier 02) arrives first: ignored, the identity counts
         let t = VTime::default();
-        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(10), answer(0, 0x00, &state(false, 3))), (now + ms(80), answer(0, 0x00, &mnt([1, 5], ID15)))]);
+        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(10), answer(0, 0x00, &state(false, 3))), (now + ms(80), answer(0, 0x00, &ext([1, 5], ID15)))]);
         assert!(matches!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Info(_)));
         // only the state: no answer to 03
         let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(10), answer(0, 0x00, &state(false, 3)))]);
         assert_eq!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Failed);
         // an identity or an old two-byte status during a 02 read is not a state
-        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(10), answer(0, 0x00, &mnt([1, 5], ID15))), (now + ms(20), answer(0, 0x00, &[0, 3]))]);
+        let mut link = FakeLink::new(t.clone(), |_, now| vec![(now + ms(10), answer(0, 0x00, &ext([1, 5], ID15))), (now + ms(20), answer(0, 0x00, &[0, 3]))]);
         assert!(matches!(dialog(&mut link, &t, Action::Status, Budgets::default()), Err(DialogError::NoAnswer)));
     }
 
@@ -650,7 +720,7 @@ mod tests {
     #[test]
     fn an_echo_of_the_request_is_not_taken_as_the_answer() {
         let t = VTime::default();
-        let mut link = FakeLink::new(t.clone(), |req, now| vec![(now, req.to_vec()), (now + ms(40), answer(0, 0, &mnt([1, 5], ID15)))]);
+        let mut link = FakeLink::new(t.clone(), |req, now| vec![(now, req.to_vec()), (now + ms(40), answer(0, 0, &ext([1, 5], ID15)))]);
         assert!(matches!(probe(&mut link, &t, Budgets::default()).unwrap(), Probe::Info(i) if i.patch == [1, 5]));
         let mut link = FakeLink::new(t.clone(), |req, now| vec![(now, req.to_vec()), (now + ms(40), answer(0, 0, &state(false, 3)))]);
         assert_eq!(dialog(&mut link, &t, Action::Status, Budgets::default()).unwrap(), st(false, 3));

@@ -4,7 +4,7 @@ import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
 const tr = (key: string, params?: Record<string, unknown>) => (params ? `${key} ${JSON.stringify(params)}` : key);
-const master = (patch: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...patch });
+const master = (patch: Partial<MasterView>): MasterView => ({ kind: "patched", version: "EMU1101-EXT Light 1.5.4", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "EMU1101-EXT Light 1.5.4", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...patch });
 const image = (kind: FirmwareImage["kind"]): FirmwareImage => ({ release: "16.06.13", device: "EMU1101", bytes: 1, blocks: 1, sha256: "ab", kind, custom: kind !== "original" });
 const pending = (pack: number, endpoint = "serial:/dev/p"): Pending => ({ id: pack, endpoint, pack, release: "16.06.13", since: 0 });
 
@@ -167,14 +167,14 @@ describe("live status", () => {
     expect(masterLine(master({ marker: "foreign", marker_word: "12345678" }), tr).tone).toBe("alarm");
     expect(masterLine(master({ kind: "unknown-patch", caps: null, may_halt: false }), tr).tone).toBe("alarm");
     // not listed, same capabilities: named by its version and base
-    expect(masterLine(master({ listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" }), tr).text).toContain('profile.unlisted {"patch":"1.6","base":"16.07.02"}');
+    expect(masterLine(master({ listed: null, version: "EMU1101-EXT Full 1.6.6", patch: "1.6", base: "16.07.02" }), tr).text).toContain('profile.unlisted {"name":"EMU1101-EXT Full 1.6.6","base":"16.07.02"}');
     expect(masterLine(master({ kind: "unknown" }), tr).text).toBe("maint.live.masterUnknown");
   });
 });
 
 describe("flash per pack", () => {
   it("shows the master's full maintenance build, else the 0x51 version", () => {
-    expect(packVersion(0, "16.06", master({}))).toBe("16.06.13 MAINT 1.5");
+    expect(packVersion(0, "16.06", master({}))).toBe("EMU1101-EXT Light 1.5.4");
     expect(packVersion(1, "16.06", master({}))).toBe("16.06");
     expect(packVersion(0, "16.06", master({ kind: "unknown-patch", caps: null }))).toBe("16.06");
     expect(packVersion(0, "16.06", master({ kind: "no-0x64", version: null }))).toBe("16.06");
@@ -224,11 +224,11 @@ describe("the pack list's version", () => {
     const { packVersionText } = await import("./maint");
     const { default: i18n } = await import("./i18n");
     const de = (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng: "de" });
-    const proven = { gen: 1, address: 1, state: "proven" as const, version: "16.06.13 MAINT 1.5", listed: "16.06.13 MAINT 1.5", build_id: "297f9f2aa8402e9f", hard_stop: false };
-    expect(packVersionText("16.06", proven, de)).toBe("Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop aus)");
-    expect(packVersionText("16.06", { ...proven, listed: null, hard_stop: null }, de)).toBe("Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop unbekannt)");
+    const proven = { gen: 1, address: 1, state: "proven" as const, version: "EMU1101-EXT Light 1.5.4", base: "16.06.13", listed: "EMU1101-EXT Light 1.5.4", build_id: "297f9f2aa8402e9f", hard_stop: false };
+    expect(packVersionText("16.06", proven, de)).toBe("Firmware 16.06.13 · EMU1101-EXT Light 1.5.4 (Build 297f9f2a…, Hard-Stop aus)");
+    expect(packVersionText("16.06", { ...proven, listed: null, hard_stop: null }, de)).toBe("Firmware 16.06.13 · EMU1101-EXT Light 1.5.4 (Build 297f9f2a…, Hard-Stop unbekannt)");
     expect(packVersionText("16.06", { ...proven, state: "negative", listed: null }, de)).toBe("Firmware 16.06 · ohne Patch-Funktionen (64/03)");
-    // another MNT format: maybe a patch this app does not know, so not „without“
+    // another identity format: maybe a patch this app does not know, so not „without“
     expect(packVersionText("16.06", { ...proven, state: "negative", listed: null, version: null, build_id: null, hard_stop: null }, de)).toBe("Firmware 16.06 · Patch-Funktionen von dieser App nicht belegt (Format unbekannt)");
     expect(packVersionText("16.06", { ...proven, state: "undecided", version: null, listed: null, build_id: null, hard_stop: null }, de)).toBe("Firmware 16.06 · Patch nicht geprüft");
     expect(packVersionText("16.06", undefined, de)).toBe("Firmware 16.06 · Patch nicht geprüft");

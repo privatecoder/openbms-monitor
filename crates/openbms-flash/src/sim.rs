@@ -26,9 +26,9 @@ pub struct BootSim {
     answers: Vec<(u8, Vec<u8>, Vec<u8>)>,
     /// time of each ASCII request by CID2
     asked: Vec<(u8, Duration)>,
-    /// MAINT 1.6.3: the time the SOC save takes before the reset; the bootloader listens only after it
+    /// EMU1101-EXT Full: the time the SOC save takes before the reset; the bootloader listens only after it
     soc_save: Duration,
-    /// answer the reset with this RTN and do not restart (1.6.3: RTN 08, the SOC could not be saved)
+    /// answer the reset with this RTN and do not restart (Full: RTN 08, the SOC could not be saved)
     refuse_reset: Option<u8>,
     resets: usize,
     /// the board starts in its bootloader (no application): it answers R F L at any time

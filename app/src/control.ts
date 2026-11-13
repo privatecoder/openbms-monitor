@@ -39,8 +39,8 @@ export function offOutcome(s: Status): "off" | "on" | "unclear" {
 
 /** The confirmation „Aus“ gets, from Group0 read fresh right before it (`g0`, undefined: not readable). CAN socket
  *  (`mode` "power"): only with the pack cutoff proven on this connection (`cutoff`), bit 4 at 0 the stored lock, else the
- *  soft off. RS485-1/2: every pack (any may have MAINT 1.6, whatever the app knows of its patch), bit 4 at 0 the stored
- *  lock („falls das Pack MAINT 1.6 hat“ unless the proof names it), else the soft off. "unread": no command offered. */
+ *  soft off. RS485-1/2: every pack (any may be a Full build, whatever the app knows of its patch), bit 4 at 0 the stored
+ *  lock („falls das Pack EMU1101-EXT Full hat“ unless the proof names it), else the soft off. "unread": no command offered. */
 export function offKind(mode: "full" | "power", cutoff: boolean, patch: PackPatch | null | undefined, g0: number | undefined): "cutoff" | "cutoffMaybe" | "soft" | "unread" {
   if (mode === "power" && !cutoff) return "soft";
   if (g0 === undefined) return "unread";
@@ -62,7 +62,7 @@ export function cutoffOutcome(on: boolean, g0: number | undefined, s: Status | n
  *  with a fresh 0x47 right before sending (`cutoff-changed`). */
 export const offExpect = (g0: number | undefined): { expect?: boolean } => (g0 === undefined ? {} : { expect: (g0 & CUTOFF_BIT) === 0 });
 
-/** The result line of „Aus“ where the pack may store a cutoff (`maybe`: RS485-1/2, only if it has MAINT 1.6): locked
+/** The result line of „Aus“ where the pack may store a cutoff (`maybe`: RS485-1/2, only if it is a Full build): locked
  *  (never „Laden möglich“), Group0 not readable afterwards (the charge path unclear), or null for the usual soft-off
  *  texts. */
 export function offCutoffText(cut: ReturnType<typeof cutoffOutcome>, maybe: boolean): string | null {
@@ -72,9 +72,9 @@ export function offCutoffText(cut: ReturnType<typeof cutoffOutcome>, maybe: bool
 }
 
 /** A pack already off (soft off) without a lock, whose last Group0 shows the extended off on (bit 4 at 0, bit 5 at 1):
- *  „Ausschalten und sperren“ sends the addressed off again, which stores the lock in MAINT 1.6 without switching on
+ *  „Ausschalten und sperren“ sends the addressed off again, which stores the lock in a Full build without switching on
  *  first. CAN socket only with the cutoff proven on this connection (`cutoff`); RS485-1/2 any pack (confirmed „falls
- *  MAINT 1.6“ unless proven). */
+ *  EMU1101-EXT Full hat“ unless proven). */
 export const relockable = (off: boolean, lock: ReturnType<typeof lockState>, can: boolean, cutoff: boolean, g0: number | undefined) =>
   off && lock !== "active" && (!can || cutoff) && g0 !== undefined && (g0 & CUTOFF_BIT) === 0 && (g0 & LOCK_BIT) !== 0;
 
@@ -92,7 +92,7 @@ export function relockAsk(kind: ReturnType<typeof offKind>, g0: number | undefin
 export const shownOff = (s: Status | null, lock: ReturnType<typeof lockState>) => (s ? commandedOff(s) : false) || lock === "active";
 
 /** The lock line of the state: with the proven cutoff „aktiv“ or „keine“; on RS485-1/2 (`maybe`) only a set bit 5, as
- *  „aktiv, falls MAINT 1.6“, an uncertainty that never drives the buttons; else nothing. */
+ *  „aktiv, falls EMU1101-EXT Full“, an uncertainty that never drives the buttons; else nothing. */
 export function lockState(cutoff: boolean, maybe: boolean, g0: number | undefined): "active" | "none" | "maybeActive" | null {
   if (g0 === undefined) return null;
   const locked = (g0 & LOCK_BIT) === 0;
@@ -252,7 +252,7 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   if (sw) return t(`uart1.${sw.error}`);
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
-  // the reads of MNT format 5 on a pack whose own 64/03 does not announce them (`diagnosis.rs`, `bms_memory.rs`)
+  // the reads of the read-capability bits on a pack whose own 64/03 does not announce them (`diagnosis.rs`, `bms_memory.rs`)
   if (typeof e === "string" && e.startsWith("history-no-cap:")) return t("bmsh.canBus");
   if (typeof e === "string" && e.startsWith("no-cap:")) return t("rdiag.noCap");
   const b = packBusy(e);

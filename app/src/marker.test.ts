@@ -4,12 +4,12 @@ import i18n from "./i18n";
 import { markerError, markerLine } from "./marker";
 
 const t = (key: string, params?: Record<string, unknown>) => i18n.t(key, { lng: "de", ...params });
-const v = (o: Partial<MarkerView>): MarkerView => ({ gen: 1, address: 0, bus: "can", kind: "patched", version: "16.06.13 MAINT 1.6.1", marker: "off", slaves: 0, may_set: true, may_clear: false, ...o });
+const v = (o: Partial<MarkerView>): MarkerView => ({ gen: 1, address: 0, bus: "can", kind: "patched", version: "EMU1101-EXT Full 1.6.5", marker: "off", slaves: 0, may_set: true, may_clear: false, ...o });
 
 describe("maintenance marker", () => {
   it("shows the build, the marker and the slaves polled", () => {
-    expect(markerLine(v({ slaves: 3 }), t).text).toBe("16.06.13 MAINT 1.6.1 · Marker gelöscht · fragt 3 Slaves ab");
-    expect(markerLine(v({}), t).text).toBe("16.06.13 MAINT 1.6.1 · Marker gelöscht");
+    expect(markerLine(v({ slaves: 3 }), t).text).toBe("EMU1101-EXT Full 1.6.5 · Marker gelöscht · fragt 3 Slaves ab");
+    expect(markerLine(v({}), t).text).toBe("EMU1101-EXT Full 1.6.5 · Marker gelöscht");
     expect(markerLine(v({ marker: "on" }), t).text).toContain("Marker gesetzt");
     expect(markerLine(v({ marker: "foreign" }), t).tone).toBe("warn");
   });

@@ -183,7 +183,7 @@ const HEADER = [
   "OpenBMS Monitor parameter file: the parameters (0x47) and function switches of one pack.",
   "Values are read by their key; the order and every comment are ignored when the file is opened again. Units are fixed per parameter (shown in the comments). Numbers use a decimal point.",
   "Warning = reports and may change limits (e.g. the charge limit), but does not open a MOSFET by itself. Protection = the MOSFET opens.",
-  "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware MAINT 1.5.3/1.6.3 also uses bits 0 and 2-7 (releases, pack lock, hard stop). Taking a file over sets only bit 1 of group 0; the other bits stay as the target pack has them, so a file fits original firmware and MAINT alike.",
+  "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware EMU1101-EXT also uses bits 0 and 2-7 (releases, pack lock, hard stop). Taking a file over sets only bit 1 of group 0; the other bits stay as the target pack has them, so a file fits original firmware and EMU1101-EXT alike.",
 ];
 
 /** The app's parameter file (TOML, UTF-8, LF): head (format, version, device; the proven firmware as a comment), then

@@ -1,5 +1,7 @@
 # Maintenance Mode, Stage 1 (local) Implementation Plan
 
+> **Historical design.** The patched firmware this document calls MAINT is now **EMU1101-EXT** (Light 1.5.x, Full 1.6.x; identity signature `EXT`, format 05). The app supports Light from 1.5.4 and Full from 1.6.4; the MAINT formats and versions below are history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Flash any pack of a multi-pack bank from the app with USB adapters on both buses (UART1 control, UART0 work). The master's polling is stopped either by maintenance mode of the patched master (CID2 0x64) or by DIP 5–8 OFF. Every risky action is unlocked only after a fresh measurement, and an open maintenance session stays visible until it has been ended and verified.

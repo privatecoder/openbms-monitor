@@ -18,13 +18,15 @@ export function accessRows(decisions: AccessDecision[]): { action: string; cells
 
 const rank = { ready: 0, unknown: 1, blocked: 2, "not-implemented": 3 } as const;
 /** The state a cell shows: its best way. */
-export const bestState = (ds: AccessDecision[]) => ds.reduce((b, d) => (rank[d.state] < rank[b] ? d.state : b), ds[0].state);
+export const bestState = (ds: AccessDecision[]) => bestDecision(ds).state;
+/** The way a cell shows: its best one (the first of equals), whose firmware need the cell names. */
+export const bestDecision = (ds: AccessDecision[]): AccessDecision => ds.reduce((b, d) => (rank[d.state] < rank[b.state] ? d : b), ds[0]);
 
 /** One reason as text (`acc.reason.*`). */
 export function reasonText(t: TFunction, r: AccessReason): string {
   switch (r.id) {
     case "firmware": return r.need.kind === "patch-from"
-      ? t(`acc.fw.patch.${r.known}`, { v: r.need.version.join(".") })
+      ? t(`acc.fw.patch.${r.known}`, { v: extName(LINE_FROM[r.need.version.join(".")] ?? r.need.version) })
       : r.need.kind === "read-cap"
       ? t(`acc.fw.cap.${r.known}`, { name: t(`acc.fw.capName.m${r.need.mask}`, { defaultValue: t("acc.fw.flagName.other") }) })
       : t(`acc.fw.flag.${r.known}`, { bit: r.need.bit, name: t(`acc.fw.flagName.b${r.need.bit}`, { defaultValue: t("acc.fw.flagName.other") }) });
@@ -68,17 +70,17 @@ type State = AccessDecision["state"];
 export const ROUTES = CATALOG.routes as Route[];
 /** the highest DIP address (`openbms_proto::address::DIP_MAX`): packs 0..=DIP_MAX */
 export const DIP_MAX = CATALOG.dip_max;
-export const MAINT_MIN = CATALOG.maint_min as [number, number];
+export const EXT_MIN = CATALOG.ext_min as [number, number];
 export const CUTOFF_MIN = CATALOG.cutoff_min as [number, number];
 const B = CATALOG.bits;
 /** Image flag bits ways depend on today (`access::FLAG_*`). */
 export const FLAG_POWER = CATALOG.flags.power;
-/** Image flag bit 3: Group0 bits 3/4 positive (MAINT 1.6.1 and the positive 1.6 build): bit 3 at 1 allows power and
+/** Image flag bit 3: the Group0 bits 3/4 enable at 1 (every EMU1101-EXT): bit 3 at 1 allows power and
  *  clock over the CAN socket, bit 4 at 1 switches the extended off on. */
 export const FLAG_POSITIVE = CATALOG.flags.positive;
 /** Whether the image flag byte announces the positive bits 3/4 (null: not known). */
 export const positiveOf = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << FLAG_POSITIVE)) !== 0;
-/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3 (MAINT 1.5.3, 1.6.3); without known
+/** `access::positive_build`: bit 3 at 1 allows power and clock: image flag bit 3 (every EMU1101-EXT); without known
  *  flags (a stored proof) every supported build. TEMP(maint-1.6): the first 1.6 (flags 06) keeps bit 3 at 0. */
 export const positiveBuild = (patch: Patch, flags: number | null | undefined): boolean =>
   positiveOf(flags) || (flags == null && patch.kind === "version");
@@ -90,7 +92,7 @@ export const FLAG_CUTOFF = CATALOG.flags.cutoff;
 export const G0 = { write: 1 << B.g0_write, start: 1 << B.g0_start, powerLock: 1 << B.g0_power_lock, extendedOff: 1 << B.g0_extended_off, lockState: 1 << B.g0_lock_state,
   hardStop: 1 << B.g0_hard_stop, hardStopInherit: 1 << B.g0_hard_stop_inherit };
 
-/** MAINT 1.6.3 (image flag bit 7): the hard stop at a recharge pause is chosen by Group0 bits 6/7. */
+/** EMU1101-EXT Full (image flag bit 7): the hard stop at a recharge pause is chosen by Group0 bits 6/7. */
 export const hardStopConfigurable = (flags: number | null | undefined): boolean => flags != null && (flags & (1 << CATALOG.flags.hard_stop)) !== 0;
 /** The hard stop a Group0 chooses: bit 7 at 1 takes the build's default (image flag bit 0), else bit 6 (explicit). */
 export function hardStopChoice(group0: number, flags: number): { enabled: boolean; inherited: boolean } {
@@ -102,17 +104,17 @@ export const withHardStop = (group0: number, enabled: boolean): number => (group
 const NEEDS_INSTALLATION = new Set(CATALOG.needs_installation);
 
 type V3 = [number, number, number];
-/** The first supported build of a patch line (1.5 → 1.5.3, 1.6 → 1.6.3) and the first one carrying an image flag, from
+/** The first supported build of a patch line (1.5 → Light 1.5.4, 1.6 → Full 1.6.4) and the first one carrying an image flag, from
  *  the catalog (`maint::SUPPORTED_15/16`, `access::FLAG_SINCE`). */
 const LINE_FROM = CATALOG.lines as unknown as Record<string, V3>;
 const FLAG_FROM = CATALOG.flag_since as unknown as Record<string, V3>;
 const CAP_FROM = CATALOG.cap_since as unknown as Record<string, V3>;
-/** Read-capability bits of MNT format 5 (`maint::CAP_*`). */
+/** Read-capability bits of the EXT05 identity (`maint::CAP_*`). */
 export const CAP = CATALOG.caps;
 /** The first build carrying any bit of a read-capability mask. */
 const capFrom = (mask: number): V3 | undefined => Object.entries(CAP_FROM).find(([bit]) => (mask & (1 << Number(bit))) !== 0)?.[1];
 
-/** The firmware a way needs at least, for the matrix: the first supported MAINT build (`patch`), the OEM base (`base`).
+/** The firmware a way needs at least, for the matrix: the first supported EMU1101-EXT build (`patch`), the OEM base (`base`).
  *  Null where the original firmware is enough. */
 export interface RouteNeed { patch: V3 | null; base: V3 | null }
 export function routeNeed(r: Pick<Route, "firmware" | "needs">): RouteNeed | null {
@@ -127,11 +129,17 @@ export function routeNeed(r: Pick<Route, "firmware" | "needs">): RouteNeed | nul
   return patch || base ? { patch, base } : null;
 }
 
-/** „ab MAINT 1.5.3“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
+/** „Light 1.5.4“, „Full 1.6.4“ (another line: „1.7.0“): an EMU1101-EXT version with its line. */
+export function extName(v: readonly number[]): string {
+  const line = v[0] === 1 && v[1] === 5 ? "Light " : v[0] === 1 && v[1] === 6 ? "Full " : "";
+  return line + v.join(".");
+}
+
+/** „ab EMU1101-EXT Light 1.5.4“, „ab OEM 16.06.04“ (texts from `acc.need.*`); "" where nothing is needed. */
 export function needText(t: TFunction, n: RouteNeed | null): string {
   if (!n) return "";
   return [
-    n.patch && t("acc.need.patch", { v: n.patch.join(".") }),
+    n.patch && t("acc.need.patch", { v: extName(n.patch) }),
     n.base && t("acc.need.base", { v: n.base.map((x) => String(x).padStart(2, "0")).join(".") }),
   ].filter(Boolean).join(" · ");
 }

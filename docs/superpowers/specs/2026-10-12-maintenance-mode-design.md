@@ -1,5 +1,7 @@
 # Maintenance mode for firmware and parameters: design
 
+> **Historical design.** The patched firmware this document calls MAINT is now **EMU1101-EXT** (Light 1.5.x, Full 1.6.x; identity signature `EXT`, format 05). The app supports Light from 1.5.4 and Full from 1.6.4; the MAINT formats and versions below are history.
+
 Status: stage 1 implemented (local: control channel, maintenance mode, DIP way, guards). Stage 2 (remote flashing through the gateway) is pending bench tests. Design reviewed (five rounds with a second model, no open blocking or high findings), 2026-10-12. Superseded in parts by `2026-10-13-simple-flash-flow.md` (2026-10-13).
 
 ## Goal

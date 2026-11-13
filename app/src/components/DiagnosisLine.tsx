@@ -12,7 +12,7 @@ import { SectionHead, StatusLine } from "./Section";
 const CUTOFF = 0x04;
 const DIAGNOSIS = 0x20;
 
-/** „Speicherdiagnose“ (0x64/04, MAINT 1.5.3/1.6.3): asked on demand, never in the background; changes nothing. Shown
+/** „Speicherdiagnose“ (0x64/04, EMU1101-EXT): asked on demand, never in the background; changes nothing. Shown
  *  where the pack's image flags (this connection's, else its own 64/03) announce it (bit 5). The lock fields as
  *  supported where the flags say the build stores a pack lock (bit 2), „not supported“ where they say it does not; the
  *  cache only with its identifier (bit 2 of `cache`). An answer belongs to the pack and link it was asked for. */

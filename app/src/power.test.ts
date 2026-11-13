@@ -11,14 +11,14 @@ const reported = (power: boolean | null | undefined, cutoff: boolean | null | un
 });
 const withReport = (c: PatchCaps | null) => (c ? { ...reported(c.power_rtc, c.pack_cutoff), ...c } : c);
 const master = (m: Partial<MasterView>): MasterView => {
-  const v: MasterView = { kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "0011223344556677",
+  const v: MasterView = { kind: "patched", version: "EMU1101-EXT Light 1.5.4", patch: "1.5", base: "16.06.13", build_id: "0011223344556677",
     listed: null, caps: caps(true), hard_stop: false, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m };
   return { ...v, caps: withReport(v.caps) };
 };
 const profile = (m: Partial<MasterView> = {}, bus: "can" | "pack" = "can", power: boolean | null = null): ProfileView =>
   ({ gen: 4, bus, endpoint: "tcp:gw:4196", master: master(m), gates: power === null ? null : { write: true, start: true, power }, at: 0 });
 const probe = (p: Partial<PackProbeView>): PackProbeView => {
-  const v: PackProbeView = { gen: 4, address: 3, state: "proven", version: "16.06.13 MAINT 1.5", listed: null, build_id: null, hard_stop: false, power_rtc: true, ...p };
+  const v: PackProbeView = { gen: 4, address: 3, state: "proven", version: "EMU1101-EXT Light 1.5.4", listed: null, build_id: null, hard_stop: false, power_rtc: true, ...p };
   const r = reported(v.power_rtc, v.pack_cutoff);
   return v.state === "proven" ? { patch_version: r.version, flags: r.flags, ...v } : v;
 };
@@ -115,7 +115,7 @@ describe("power and clock over the CAN socket", () => {
   });
 });
 
-describe("the stored pack cutoff of a pack (MAINT 1.6)", () => {
+describe("the stored pack cutoff of a pack (EMU1101-EXT Full)", () => {
   it("counts only as this connection proved it for exactly this pack", () => {
     expect(packCutoff(0, profile({ caps: { ...caps(true), pack_cutoff: true } }), undefined)).toBe(true);
     expect(packCutoff(0, profile({ caps: { ...caps(true), pack_cutoff: false } }), undefined)).toBe(false);

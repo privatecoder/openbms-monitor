@@ -7,25 +7,25 @@
 
 use super::dialog::Probe;
 use crate::known::{self, Caps, ImageKind, PatchBuild};
-use openbms_proto::{MaintInfo, MaintState, MarkerWord};
+use openbms_proto::{ExtInfo, MaintState, MarkerWord};
 
 /// A recognised patched master: its identity, what it offers and its listed name (None: build not listed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Patch {
-    pub info: MaintInfo,
+    pub info: ExtInfo,
     pub caps: Caps,
     pub listed: Option<&'static str>,
 }
 
 impl Patch {
     /// The identity against `table`: capabilities of a supported build (None: not a supported patch), the name if listed.
-    pub fn recognise_in(table: &'static [PatchBuild], info: MaintInfo) -> Option<Self> {
+    pub fn recognise_in(table: &'static [PatchBuild], info: ExtInfo) -> Option<Self> {
         let caps = known::caps_of(&info)?;
         let listed = known::patch_in(table, info.format, info.base, info.patch, &info.build_id_hex()).map(|b| b.name);
         Some(Self { info, caps, listed })
     }
 
-    pub fn recognise(info: MaintInfo) -> Option<Self> {
+    pub fn recognise(info: ExtInfo) -> Option<Self> {
         Self::recognise_in(known::PATCH_BUILDS, info)
     }
 }
@@ -33,11 +33,11 @@ impl Patch {
 /// The master as read over the CAN socket bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Master {
-    /// a supported patch (format 2, patch version with the patch functions); `state`: its `02` answer (None: not read)
+    /// a supported patch (EXT05 with a supported version; TEMP(maint-1.6): the first MAINT 1.6); `state`: its `02` answer (None: not read)
     Patched { patch: Patch, state: Option<MaintState> },
-    /// a patch the app does not support: format 1 or another layout, RTN 05 to `03`, or format 2 below the supported
-    /// patch version (then with its identity); shown, never started or stopped, no patch functions
-    UnknownPatch(Option<MaintInfo>),
+    /// a patch the app does not support: another identity layout, RTN 05 to `03`, or an identity below the supported
+    /// version (then with it); shown, never started or stopped, no patch functions
+    UnknownPatch(Option<ExtInfo>),
     /// RTN 04: no 0x64 (original or another build; the firmware is not proven)
     No0x64,
     /// no valid answer, or no CAN socket endpoint
@@ -113,10 +113,10 @@ impl Master {
 /// What a pack's own `03` says about its patch, for this connection only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackFinding {
-    /// a format-2/3 identity with a supported patch version: its capabilities and its listed name (None: not listed)
-    Proven { info: MaintInfo, caps: known::PackCaps, listed: Option<&'static str> },
-    /// any other valid `MNT`, or a patch below the supported one: no patch functions; overrides a stored proof
-    Negative(Option<MaintInfo>),
+    /// an identity with a supported patch version: its capabilities and its listed name (None: not listed)
+    Proven { info: ExtInfo, caps: known::PackCaps, listed: Option<&'static str> },
+    /// any other valid `EXT`/`MNT` answer, or a patch below the supported one: no patch functions; overrides a stored proof
+    Negative(Option<ExtInfo>),
     /// silence or an error: says nothing; a stored proof keeps holding
     Undecided,
 }
@@ -133,7 +133,7 @@ impl PackFinding {
                 Some(caps) => PackFinding::Proven { info, caps, listed: known::patch_in(table, info.format, info.base, info.patch, &info.build_id_hex()).map(|b| b.name) },
                 None => PackFinding::Negative(Some(info)),
             },
-            PackAnswer::OtherMnt => PackFinding::Negative(None),
+            PackAnswer::OtherIdentity => PackFinding::Negative(None),
             PackAnswer::Undecided => PackFinding::Undecided,
         }
     }
@@ -150,26 +150,26 @@ pub fn release_first(master: &Master, image: ImageKind) -> bool {
 mod tests {
     use super::*;
 
-    /// A format-4 identity; 1.5 and 1.6 as their supported revisions 1.5.3 and 1.6.3, any other version with revision 0.
-    fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> MaintInfo {
-        let patch_rev = match patch { [1, 5] => 3, [1, 6] => 3, _ => 0 };
-        MaintInfo { format: 4, base, patch, build_id, hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0x20, read_caps: 0, patch_rev, uart0: true }
+    /// An `EXT05` identity; 1.5 and 1.6 as their releases 1.5.5 and 1.6.5, any other version with revision 0.
+    fn info(base: [u8; 3], patch: [u8; 2], build_id: [u8; 8]) -> ExtInfo {
+        let patch_rev = match patch { [1, 5] | [1, 6] => 5, _ => 0 };
+        ExtInfo { format: 5, base, patch, build_id, hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0x20, read_caps: 0, patch_rev, uart0: true }
     }
     fn state(word: u32, slaves: u8) -> Option<MaintState> {
         Some(MaintState { marker_word: word, effective_slaves: slaves })
     }
-    /// the build ID of the listed 1.6.3
-    const LISTED: [u8; 8] = [0xBA, 0xA0, 0x1E, 0xCD, 0x5A, 0xF4, 0xEB, 0x28];
+    /// the build ID of the listed Full 1.6.5
+    const LISTED: [u8; 8] = [0x13, 0x46, 0x4F, 0xC9, 0x1A, 0x6E, 0x6A, 0x20];
     const OTHER: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
-    fn patched(i: MaintInfo, s: Option<MaintState>) -> Master {
+    fn patched(i: ExtInfo, s: Option<MaintState>) -> Master {
         Master::of(Some(Probe::Info(i))).with_state(s)
     }
 
     #[test]
     fn the_listed_build_is_named_and_trusted() {
         let m = patched(info([16, 6, 13], [1, 6], LISTED), state(u32::MAX, 3));
-        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.6.3"), .. }, .. }));
+        assert!(matches!(m, Master::Patched { patch: Patch { listed: Some("EMU1101-EXT Full 1.6.5"), .. }, .. }));
         assert!(m.trusted() && m.may_halt() && !m.may_release());
         assert_eq!(m.caps(), Some(known::PROOF_CAPS));
     }
@@ -188,28 +188,28 @@ mod tests {
     #[test]
     fn a_second_listed_entry_is_configured_like_the_first() {
         static TABLE: [PatchBuild; 2] = [
-            PatchBuild { name: "16.06.13 MAINT 1.6.3", base: [16, 6, 13], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, read_caps: 0, build_id: "baa01ecd5af4eb28", code_sha256: "a", ehex_sha256: "b" },
-            PatchBuild { name: "16.06.14 MAINT 1.6.3", base: [16, 6, 14], patch: [1, 6], patch_rev: 3, mnt_format: 4, flags: 0xFE, read_caps: 0, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
+            PatchBuild { name: "EMU1101-EXT Full 1.6.5", base: [16, 6, 13], patch: [1, 6], patch_rev: 5, ext_format: 5, flags: 0xFE, read_caps: 0x000F, build_id: "13464fc91a6e6a20", code_sha256: "a", ehex_sha256: "b" },
+            PatchBuild { name: "EMU1101-EXT Full 1.6.5 (16.06.14)", base: [16, 6, 14], patch: [1, 6], patch_rev: 5, ext_format: 5, flags: 0xFE, read_caps: 0x000F, build_id: "0102030405060708", code_sha256: "c", ehex_sha256: "d" },
         ];
         let first = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 13], [1, 6], LISTED)))).with_state(state(0, 0));
         let second = Master::of_in(&TABLE, Some(Probe::Info(info([16, 6, 14], [1, 6], OTHER)))).with_state(state(0, 0));
-        assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("16.06.14 MAINT 1.6.3"), .. }, .. }));
+        assert!(matches!(second, Master::Patched { patch: Patch { listed: Some("EMU1101-EXT Full 1.6.5 (16.06.14)"), .. }, .. }));
         assert_eq!((second.caps(), second.may_release(), second.may_halt()), (first.caps(), first.may_release(), first.may_halt()));
     }
 
     #[test]
     fn an_older_build_offers_nothing() {
-        // 1.5.1, 1.5.2 and 1.6.2 (format 4), 1.5 (format 3): shown as a patch the app does not use
-        for i in [MaintInfo { patch_rev: 1, ..info([16, 6, 13], [1, 5], OTHER) }, MaintInfo { patch_rev: 2, ..info([16, 6, 13], [1, 5], OTHER) }, MaintInfo { patch_rev: 2, ..info([16, 6, 13], [1, 6], OTHER) },
-            MaintInfo { format: 3, patch_rev: 0, ..info([16, 6, 13], [1, 5], OTHER) }] {
+        // 1.5.3 and 1.6.3 (below the first EXT05 builds), 1.5 (MNT format 3): shown as a patch the app does not use
+        for i in [ExtInfo { patch_rev: 3, ..info([16, 6, 13], [1, 5], OTHER) }, ExtInfo { patch_rev: 3, ..info([16, 6, 13], [1, 6], OTHER) }, ExtInfo { patch_rev: 1, ..info([16, 6, 13], [1, 6], OTHER) },
+            ExtInfo { format: 3, patch_rev: 0, ..info([16, 6, 13], [1, 5], OTHER) }] {
             let m = patched(i, state(u32::MAX, 3));
             assert!(matches!(m, Master::UnknownPatch(Some(_))), "{m:?}");
             assert!(!m.trusted() && m.caps().is_none());
         }
         // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF, flags 06) is supported, by its build
         let id = openbms_proto::maint::temp16::BUILD_ID;
-        let temp = patched(MaintInfo { format: 3, patch_rev: 0, reserved_flags: 0, pack_cutoff: true, ..info([16, 6, 13], [1, 6], id) }, state(u32::MAX, 3));
-        assert_eq!(temp.caps(), Some(Caps { mnt_format: 3, ..known::PROOF_CAPS }));
+        let temp = patched(ExtInfo { format: 3, patch_rev: 0, reserved_flags: 0, pack_cutoff: true, ..info([16, 6, 13], [1, 6], id) }, state(u32::MAX, 3));
+        assert_eq!(temp.caps(), Some(Caps { ext_format: 3, ..known::PROOF_CAPS }));
         assert!(matches!(temp, Master::Patched { patch: Patch { listed: Some("16.06.13 MAINT 1.6"), .. }, .. }));
     }
 
@@ -239,9 +239,9 @@ mod tests {
         use super::super::dialog::PackAnswer;
         let p = PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 6], OTHER)));
         assert!(matches!(p, PackFinding::Proven { caps, listed: None, .. } if caps.write_gate_bit0 && caps.uart1_identity));
-        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 6], LISTED))), PackFinding::Proven { listed: Some("16.06.13 MAINT 1.6.3"), .. }));
+        assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 6], LISTED))), PackFinding::Proven { listed: Some("EMU1101-EXT Full 1.6.5"), .. }));
         assert!(matches!(PackFinding::of(PackAnswer::Info(info([16, 6, 13], [1, 4], OTHER))), PackFinding::Negative(Some(_))));
-        assert_eq!(PackFinding::of(PackAnswer::OtherMnt), PackFinding::Negative(None));
+        assert_eq!(PackFinding::of(PackAnswer::OtherIdentity), PackFinding::Negative(None));
         assert_eq!(PackFinding::of(PackAnswer::Undecided), PackFinding::Undecided);
     }
 

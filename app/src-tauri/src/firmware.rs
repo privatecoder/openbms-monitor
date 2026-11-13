@@ -32,8 +32,11 @@ pub struct ImageInfo {
     power_rtc: bool,
     /// a listed patched build with the stored pack cutoff (Group0 bit 4 extended off, bit 5 the lock, taken over unchanged)
     pack_cutoff: bool,
-    /// a listed patched build whose Group0 bit 3 at 1 allows power and clock (image flag bit 3: 1.5.3, 1.6.3)
+    /// a listed patched build whose Group0 bit 3 at 1 allows power and clock (image flag bit 3: every EMU1101-EXT)
     positive: bool,
+    /// a listed patched build: its OEM base ("16.06.13"), which its name no longer carries; the 0x51 answer after the
+    /// flash is checked against it
+    base: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -205,6 +208,7 @@ pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(eh
         power_rtc: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.power_rtc()),
         pack_cutoff: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.pack_cutoff()),
         positive: known::patch_by_code(&image.code_sha256).is_some_and(|b| b.info().positive()),
+        base: known::patch_by_code(&image.code_sha256).map(|b| b.info().base_text()),
     };
     Ok((image, info))
 }
@@ -281,7 +285,7 @@ const FLASHING_TEXT: &str = "a firmware update is running";
 /// master's serial number matches (right bank) and the target's String 2 is the board stored for its address (when both
 /// are known). Without one („Platine flashen“) the board is known by its String 2 alone: the proof and hard-stop sighting
 /// of every place where it is the current board end, and the board's marker is checked over RS485-1/2 where its build
-/// shows it there (MAINT 1.5.1/1.6.1) and cleared before an image without the maintenance functions; the board must be
+/// shows it there (image flag bit 4) and cleared before an image without the maintenance functions; the board must be
 /// the one the search showed (`expected`, its String 2). Quiet bus and the target's
 /// 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals reach the UI as a JSON
 /// string of `MaintError`.
@@ -326,7 +330,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // the UI is told, so it shows "not connected" instead of counting a lost connection
     stop_monitor_and_tell(&state, &app)?;
     let mut link = open_port(&key, l)?;
-    // `found_before`: the identity the board shows over RS485-1/2 before (MAINT 1.5.1/1.6.1), for the comparison and
+    // `found_before`: the identity the board shows over RS485-1/2 before (image flag bit 4), for the comparison and
     // the bench marker; read on a quiet bus only
     let (bank, target, marker, found_before) = match &inst {
         Some(i) => {
@@ -466,6 +470,7 @@ pub async fn firmware_recovery_probe(app: AppHandle, state: State<'_, AppState>,
 /// RS485-1/2 port `port`. The operator has confirmed that exactly one board is on the line: the bootloader has no pack
 /// address. The same image checks and progress/done events as a flash; afterwards the application is looked for at
 /// every DIP address, and a pending record of that board at that address is cleared.
+#[allow(clippy::too_many_arguments)] // each argument is one value from the UI
 #[tauri::command]
 pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>, port: String, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<(), String> {
     let l = self::lang(&lang);
@@ -603,8 +608,8 @@ mod tests {
     #[test]
     fn the_master_marker_is_checked_for_the_installation_whatever_endpoint() {
         use openbms_flash::maint::policy::Patch;
-        use openbms_proto::{MaintInfo, MaintState};
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 3, uart0: false };
+        use openbms_proto::{ExtInfo, MaintState};
+        let info = ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         let with = |word: u32| Master::Patched { patch: Patch::recognise(info).unwrap(), state: Some(MaintState { marker_word: word, effective_slaves: 0 }) };
         let (on, off) = (with(0), with(u32::MAX));
         let (orig, maint) = (known::ImageKind::Original, known::ImageKind::Maintenance);
@@ -642,7 +647,7 @@ mod tests {
         assert_eq!(proof_serial(Some("SYN-3"), Some("SYN-B".into())), None);
         assert_eq!(proof_serial(Some("SYN-3"), None), None);
         // only images with the patch functions set it
-        assert_eq!(known::patch_image("fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f"), Some("16.06.13 MAINT 1.6.3"));
+        assert_eq!(known::patch_image("20e26bf8a0a0cd9d9b21c9018fc2c5b4e2325cf510f0c01b48c72da1c684265d"), Some("EMU1101-EXT Full 1.6.5"));
         assert_eq!(known::patch_image(known::RELEASES[5].code_sha256), None);
     }
 

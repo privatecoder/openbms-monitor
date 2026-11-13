@@ -1,4 +1,4 @@
-//! Binary parameter and identity service of the patched firmware (16.06.13 MAINT 1.5 and later) on the CAN socket bus
+//! Binary parameter and identity service of the EMU1101-EXT firmware on the CAN socket bus
 //! (UART1, 9600 baud): `55 ADR CMD LEN DATA[LEN] CRC_HI CRC_LO AA`, CRC-16/XMODEM over ADR..DATA, big endian.
 //!
 //! CMD 0x47 (LEN 0) reads, the answer carries the 0x47 INFO without its first byte (168 bytes: markers, P0..P86, the
@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn serial_requests_and_answers_of_maint_1_3() {
+    fn serial_requests_and_answers_of_the_binary_service() {
         assert_eq!(serial_request(1, CMD_STRING1).unwrap(), hex("55 01 A2 00 4C 2C AA"));
         assert_eq!(serial_request(1, CMD_STRING2).unwrap(), hex("55 01 A4 00 E6 8A AA"));
         assert_eq!(serial_request(11, CMD_STRING2).unwrap(), hex("55 0B A4 00 21 4B AA"));

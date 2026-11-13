@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
 import { Archive, Eraser, FolderOpen, HardDrive, Trash2 } from "lucide-react";
 import { api, type InstallationData, type StorageOverview } from "../api";
 import { Panel } from "../components/ui/card";
@@ -122,6 +121,7 @@ function DeleteDialog({ kind, overview: o, onClose, onDone }: {
     try {
       let folder: string | null = null;
       if (backup) {
+        const { open } = await import("@tauri-apps/plugin-dialog");
         const picked = await open({ directory: true, multiple: false, title: t("about.storage.d.pick") });
         if (typeof picked !== "string") { setWorking(false); return; }
         folder = picked;

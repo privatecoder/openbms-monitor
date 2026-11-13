@@ -1,4 +1,4 @@
-/** Ein/aus, restart and the clock over the CAN socket (MAINT 1.5 with image flag bit 1): what the Parameters view offers
+/** Ein/aus, restart and the clock over the CAN socket (EMU1101-EXT, image flag bit 1): what the Parameters view offers
  *  for one pack. Pure logic; the backend checks identity, flag and lock again before every command (`power.rs`). */
 import type { Bus, Channel, PackProbeView, ProfileView } from "./api";
 import { CUTOFF_MIN, factsOf, firmwareKnown, FLAG_CUTOFF, FLAG_POWER, G0, offerable, positiveBuild, type Facts } from "./access";
@@ -15,7 +15,7 @@ export function packFirmware(address: number | null, profile: ProfileView | null
   if (address === 0) {
     const m = profile.master;
     if (m.kind === "patched" && m.caps?.version) return { patch: { kind: "version", version: m.caps.version }, flags: m.caps.flags ?? null, caps: m.caps.read_caps ?? null };
-    // another or an older MNT, or no 64/03 at all: no supported patch
+    // another identity or an older patch, or no 64/03 at all: no supported patch
     return m.kind === "unknown-patch" || m.kind === "no-0x64" ? NONE : UNKNOWN;
   }
   if (probe?.gen !== profile.gen) return UNKNOWN;

@@ -244,6 +244,7 @@ pub struct MetaPackView {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // short-lived, one per feed message; boxing buys nothing here
 pub enum Effect {
     /// a pack answer: the UI update, and the row for the recorder (`read_at` = 0x42 time, `t` = status time)
     Pack { ui: PackUpdate, record_t: i64, record: Value },

@@ -57,12 +57,12 @@ describe("maintenance texts", () => {
   });
   it("status lines in both languages", () => {
     const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
-    const m: MasterView = { kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "16.06.13 MAINT 1.5",
+    const m: MasterView = { kind: "patched", version: "EMU1101-EXT Light 1.5.4", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b", listed: "EMU1101-EXT Light 1.5.4",
       caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false };
-    expect(masterLine(m, tr("de")).text).toBe("16.06.13 MAINT 1.5 · Marker aus · fragt 3 Slaves ab");
-    expect(masterLine({ ...m, listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" }, tr("de")).text).toBe("MAINT 1.6 (Basis 16.07.02, Build nicht gelistet) · Marker aus · fragt 3 Slaves ab");
-    expect(masterLine({ ...m, marker: "foreign", marker_word: "12345678" }, tr("en"))).toEqual({ tone: "alarm", text: "16.06.13 MAINT 1.5 · marker sector with unknown content (12345678) · polls 3 slaves" });
-    expect(masterLine({ ...m, kind: "unknown-patch", caps: null, version: "16.06.13 MAINT 1.4" }, tr("de")).text).toBe("Unbekannte Patch-Firmware 16.06.13 MAINT 1.4: keine Patch-Funktionen");
+    expect(masterLine(m, tr("de")).text).toBe("EMU1101-EXT Light 1.5.4 · Marker aus · fragt 3 Slaves ab");
+    expect(masterLine({ ...m, listed: null, version: "EMU1101-EXT Full 1.6.6", patch: "1.6", base: "16.07.02" }, tr("de")).text).toBe("EMU1101-EXT Full 1.6.6 (Basis 16.07.02, Build nicht gelistet) · Marker aus · fragt 3 Slaves ab");
+    expect(masterLine({ ...m, marker: "foreign", marker_word: "12345678" }, tr("en"))).toEqual({ tone: "alarm", text: "EMU1101-EXT Light 1.5.4 · marker sector with unknown content (12345678) · polls 3 slaves" });
+    expect(masterLine({ ...m, kind: "unknown-patch", caps: null, version: "EMU1101-EXT 1.4.0" }, tr("de")).text).toBe("Unbekannte Patch-Firmware EMU1101-EXT 1.4.0: keine Patch-Funktionen");
     expect(masterLine({ ...m, kind: "no-0x64", marker: null, slaves: null }, tr("de")).text).toBe("0x64 nicht unterstützt, Firmwarestand nicht belegt");
     expect(busLine({ bus: "polling", polled: [1, 2], bus_error: null, master: null, master_error: null }, false, tr("en")).text).toBe("Master polls 2 slaves");
     expect(busLine(null, false, tr("de")).text).toBe("Prüfe den RS485-1/2-Bus …");

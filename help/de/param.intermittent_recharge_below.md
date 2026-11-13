@@ -4,4 +4,4 @@ short: Nach 100 % ist Laden gesperrt, bis der SOC auf diesen Wert fällt. Sind a
 related: topic.params
 ---
 Meldung: Event 6 Bit 1 (Freigabe Funktionsschalter 5, Bit 1). Fordert ein Pack Heizung an, hebt das die Ladegrenze 0 auf den Heizungs-Mindeststrom. Über diesem Wert driftet der SOC im Standby zusätzlich um 0,2 A.
-Original-Firmware: Der wartende Pack selbst sperrt seinen Lade-MOSFET nicht, nur der Master senkt die Ladegrenze. Patch-Firmware mit Hard-Stop öffnet den Lade-MOSFET des wartenden Packs (bei MAINT 1.6.3 per Funktionsschalter 0, Bit 6/7 wählbar).
+Original-Firmware: Der wartende Pack selbst sperrt seinen Lade-MOSFET nicht, nur der Master senkt die Ladegrenze. Patch-Firmware mit Hard-Stop öffnet den Lade-MOSFET des wartenden Packs (bei EMU1101-EXT Full per Funktionsschalter 0, Bit 6/7 wählbar).

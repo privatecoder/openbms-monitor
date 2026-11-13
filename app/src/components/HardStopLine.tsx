@@ -11,7 +11,7 @@ import { SectionHead, StatusLine } from "./Section";
 /** `confirm`: the write did not go out, the note says why (the learned full capacity); „trotzdem“ sends it. */
 type Note = { text: string; error: boolean; confirm?: boolean } | null;
 
-/** „Hard-Stop bei Nachladepause“ (MAINT 1.6.3, image flag bit 7: this connection's flags, else the pack's own 64/03):
+/** „Hard-Stop bei Nachladepause“ (EMU1101-EXT Full, image flag bit 7: this connection's flags, else the pack's own 64/03):
  *  one switch over Group0 bits 6/7 of the pack's last read. `write` sends the block of that read with only bits 6/7
  *  changed (the parameter write reads the pack again first) and says what came of it; first it names the learned full
  *  capacity an A1 resets. A note belongs to the pack and link it was made for. */

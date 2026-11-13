@@ -103,16 +103,24 @@ jobs:
           tag="$GITHUB_REF_NAME"
           version="$(node -p "require('./app/package.json').version")"
           assets="$(gh release view "$tag" --json assets -q '.assets')"
+          # every step reports its failure itself: errexit does not reach into a command substitution
           entry() { # platform key, asset name suffix
-            local name url sig
-            name="$(jq -r --arg s "$2" '[.[] | select(.name | endswith($s))][0].name // empty' <<<"$assets")"
-            [ -n "$name" ] || { echo "no asset *$2" >&2; exit 1; }
-            url="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .url' <<<"$assets")"
-            gh release download "$tag" -p "$name.sig" -O sig.txt --clobber
-            sig="$(cat sig.txt)"
+            local name url sig file="sig-$1.txt"
+            name="$(jq -r --arg s "$2" '[.[] | select(.name | endswith($s))][0].name // empty' <<<"$assets")" || return 1
+            [ -n "$name" ] || { echo "no asset *$2" >&2; return 1; }
+            url="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .url' <<<"$assets")" || return 1
+            [ -n "$url" ] || { echo "no url for $name" >&2; return 1; }
+            rm -f "$file"
+            gh release download "$tag" -p "$name.sig" -O "$file" || { echo "no signature for $name" >&2; return 1; }
+            sig="$(cat "$file")" || return 1
+            [ -n "$sig" ] || { echo "empty signature for $name" >&2; return 1; }
             jq -n --arg k "$1" --arg u "$url" --arg s "$sig" '{($k): {url: $u, signature: $s}}'
           }
-          platforms="$( { entry darwin-aarch64 .app.tar.gz; entry windows-x86_64 _x64-setup.exe; entry windows-aarch64 _arm64-setup.exe; } | jq -s 'add')"
+          mac="$(entry darwin-aarch64 .app.tar.gz)"
+          x64="$(entry windows-x86_64 _x64-setup.exe)"
+          arm="$(entry windows-aarch64 _arm64-setup.exe)"
+          platforms="$(printf '%s\n%s\n%s\n' "$mac" "$x64" "$arm" | jq -s 'add')"
+          [ "$(jq 'keys | length' <<<"$platforms")" = 3 ] || { echo "latest.json needs three platforms" >&2; exit 1; }
           jq -n --arg v "$version" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg n "$(tools/release_notes.sh "$version")" --argjson p "$platforms" \
             '{version: $v, notes: $n, pub_date: $d, platforms: $p}' > latest.json
           gh release upload "$tag" latest.json --clobber

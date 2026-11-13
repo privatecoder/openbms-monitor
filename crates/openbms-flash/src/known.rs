@@ -2,7 +2,7 @@
 //! CRLF/LF conversion while the strict parser still validates every record and the header.
 
 use crate::{ehex::Image, Error, Result};
-use openbms_proto::MaintInfo;
+use openbms_proto::ExtInfo;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Release {
@@ -37,13 +37,12 @@ pub const RELEASES: &[Release] = &[
     },
 ];
 
-/// What a patched master or pack offers. Every supported build (`MaintInfo::supported`) has all of these; functions
+/// What an EMU1101-EXT master or pack offers. Every supported build (`ExtInfo::supported`) has all of these; functions
 /// that differ between builds come from the image flags. The app asks these, never a version number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
-    /// layout of the `0x64/03` identity (3: 18 bytes with image flags; 4: 19 bytes with a third patch byte; no runtime
-    /// state)
-    pub mnt_format: u8,
+    /// format of the `0x64/03` identity (5: `EXT05`, 21 bytes; TEMP(maint-1.6): 3, the `MNT` format 3; no runtime state)
+    pub ext_format: u8,
     /// `0x64/02` and start/stop answer with the 5-byte state (marker word, effective slaves)
     pub status_split: bool,
     /// binary 0x47/0xA1 on the CAN socket
@@ -85,13 +84,13 @@ impl Caps {
 }
 
 /// The pack capabilities of a `0x64/03` identity read at any address (None: not a supported build).
-pub fn pack_caps_of(info: &MaintInfo) -> Option<PackCaps> {
+pub fn pack_caps_of(info: &ExtInfo) -> Option<PackCaps> {
     caps_of(info).map(|c| c.pack())
 }
 
-/// The lowest patch version the app knows functions of (`openbms_proto::access::MAINT_MIN`); which builds are supported
-/// decides `MaintInfo::supported`.
-pub const MIN_PATCH: [u8; 2] = openbms_proto::access::MAINT_MIN;
+/// The lowest patch version the app knows functions of (`openbms_proto::access::EXT_MIN`); which builds are supported
+/// decides `ExtInfo::supported`.
+pub const MIN_PATCH: [u8; 2] = openbms_proto::access::EXT_MIN;
 
 /// From this patch version on, image flag bit 2 announces the stored pack cutoff (Group0 bit 4 extended off, bit 5 the
 /// lock state). Below it the bits are not read that way, whatever the flag says.
@@ -100,38 +99,32 @@ pub const PACK_CUTOFF_MIN: [u8; 2] = openbms_proto::access::CUTOFF_MIN;
 /// The stored pack cutoff of an identity with patch `patch` and image flag bit 2 `flag`: both needed.
 pub use openbms_proto::access::pack_cutoff_of;
 
-/// The `0x64/03` formats the app decodes; all carry the same identity fields (format 3 adds the image flags, format 4 a
-/// third patch byte, format 5 the read-capability mask). Only formats 4 and 5 can be supported (TEMP(maint-1.6): and the
-/// first 1.6 in format 3, `maint::temp16`); formats 2 and 3 stay decoded after it, so older patch builds show as
-/// unsupported instead of unknown.
-pub const MNT_FORMATS: [u8; 4] = [2, 3, 4, 5];
-
-/// The capabilities of a supported `0x64/03` identity (`MaintInfo::supported`): every supported build has them all;
+/// The capabilities of a supported `0x64/03` identity (`ExtInfo::supported`): every supported build has them all;
 /// None for another or an older build (its patch functions are not used).
-pub fn caps_of(info: &MaintInfo) -> Option<Caps> {
-    info.supported().then_some(PROOF_CAPS).map(|c| Caps { mnt_format: info.format, ..c })
+pub fn caps_of(info: &ExtInfo) -> Option<Caps> {
+    info.supported().then_some(PROOF_CAPS).map(|c| Caps { ext_format: info.format, ..c })
 }
 
 /// The capabilities a stored proof stands for (a supported build; it carries no format or image flags).
-pub const PROOF_CAPS: Caps = Caps { mnt_format: 4, status_split: true, uart1_params: true, uart1_identity: true, write_gate_bit0: true, start_gate_bit2: true };
+pub const PROOF_CAPS: Caps = Caps { ext_format: 5, status_split: true, uart1_params: true, uart1_identity: true, write_gate_bit0: true, start_gate_bit2: true };
 
-/// A listed patched build: modified firmware, accepted only like custom images; listed so a flash image is recognised
+/// A listed EMU1101-EXT build: modified firmware, accepted only like custom images; listed so a flash image is recognised
 /// (code hash) and the master's build shown by name. Capabilities come from its identity (`caps_of`), not from the
 /// listing.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PatchBuild {
-    /// shown name, also the release a flash records
+    /// shown name („EMU1101-EXT Full 1.6.5“, `ExtInfo::version`), also the release a flash records
     pub name: &'static str,
     /// base firmware major, minor, patch as `0x64/03` reports it
     pub base: [u8; 3],
-    /// patch version major, minor and (format 4) revision as `0x64/03` reports it
+    /// patch version major, minor and (format 5) revision as `0x64/03` reports it
     pub patch: [u8; 2],
     pub patch_rev: u8,
     /// the `0x64/03` format of this build (builds are told apart by format and build ID)
-    pub mnt_format: u8,
+    pub ext_format: u8,
     /// the image flag byte of its `0x64/03`
     pub flags: u8,
-    /// format 5: the read-capability mask of its `0x64/03`; 0 before
+    /// format 5: the read-capability mask of its `0x64/03`; 0 with format 3
     pub read_caps: u16,
     /// the build ID of `0x64/03`, 16 lower-case hex digits
     pub build_id: &'static str,
@@ -143,22 +136,22 @@ pub struct PatchBuild {
 
 impl PatchBuild {
     /// The `0x64/03` identity this build answers.
-    pub fn info(&self) -> MaintInfo {
-        let mut v = b"MNT".to_vec();
-        v.push(self.mnt_format);
+    pub fn info(&self) -> ExtInfo {
+        // TEMP(maint-1.6): the MNT format 3 has no third patch byte and no mask
+        let ext = self.ext_format == 5;
+        let mut v = if ext { b"EXT".to_vec() } else { b"MNT".to_vec() };
+        v.push(self.ext_format);
         v.extend_from_slice(&self.base);
         v.extend_from_slice(&self.patch);
-        if self.mnt_format >= 4 {
+        if ext {
             v.push(self.patch_rev);
         }
         v.extend((0..8).map(|i| u8::from_str_radix(&self.build_id[2 * i..2 * i + 2], 16).unwrap_or(0)));
-        if self.mnt_format != 2 {
-            v.push(self.flags);
-        }
-        if self.mnt_format == 5 {
+        v.push(self.flags);
+        if ext {
             v.extend_from_slice(&self.read_caps.to_be_bytes());
         }
-        MaintInfo::parse(&v).expect("a listed build has a valid identity")
+        ExtInfo::parse(&v).expect("a listed build has a valid identity")
     }
 
     pub fn caps(&self) -> Option<Caps> {
@@ -176,83 +169,83 @@ impl PatchBuild {
     }
 }
 
-/// The listed patched builds (the supported ones). A later build: append one entry.
+/// The listed builds (the supported ones): the four EMU1101-EXT releases, all on OEM 16.06.13 with soft stop as default
+/// and read caps 000F, and the TEMP(maint-1.6) build (no read caps). A later build: append one entry. .4 and .5 (the atomic scheduler fix) differ only by version and build ID.
 pub const PATCH_BUILDS: &[PatchBuild] = &[
-    // MAINT 1.5.3 DIAGNOSTICS_POSITIVE, MNT format 4 with image flags 3A: power and clock (bit 3 at 1 allows, as 1.6.3),
-    // RS485-1/2 marker and identity, the 64/04 diagnosis; fixed soft stop (56016 app bytes, 220 update blocks)
+    // EMU1101-EXT Light 1.5.4: flags 3A (power and clock with Group0 bit 3 at 1, RS485-1/2 marker and identity, the 64/04
+    // diagnosis, fixed soft stop)
     PatchBuild {
-        name: "16.06.13 MAINT 1.5.3",
+        name: "EMU1101-EXT Light 1.5.4",
         base: [16, 6, 13],
         patch: [1, 5],
-        patch_rev: 3,
-        mnt_format: 4,
+        patch_rev: 4,
+        ext_format: 5,
         flags: 0x3A,
-        read_caps: 0,
-        build_id: "2b89286ed6c14604",
-        code_sha256: "27be05dc5f9ab0f648861e2d8e9feaffc4685ce98d59c02cccb7a3d114a38cd0",
-        ehex_sha256: "dee768334ad4227999b41efd0c4232c0b5c9f323c973cd392b5651a1b5f29325",
+        read_caps: 0x000F,
+        build_id: "ffe3acf7e52bed80",
+        code_sha256: "927e178e0b4140185e974a786525091b49a37f5618e86729981697f4f90d5003",
+        ehex_sha256: "6b4549fa89145db7755dde90b72511501b2b5425006028e5f6968e8bac530c1c",
     },
-    // MAINT 1.6.3 CUTOFF_POSITIVE, MNT format 4 with image flags FE: positive bits 3/4, stored pack cutoff, diagnosis,
-    // SOC checkpoint before a planned restart, configurable hard stop with soft as default (57948 app bytes, 228 blocks)
+    // EMU1101-EXT Light 1.5.5: 1.5.4 plus the atomic scheduler fix
     PatchBuild {
-        name: "16.06.13 MAINT 1.6.3",
+        name: "EMU1101-EXT Light 1.5.5",
+        base: [16, 6, 13],
+        patch: [1, 5],
+        patch_rev: 5,
+        ext_format: 5,
+        flags: 0x3A,
+        read_caps: 0x000F,
+        build_id: "082cb731c006aac5",
+        code_sha256: "a6bd1f959b4fd7baaf84ed2c65207a54f6225203c86e0257953e4d486c42d8fd",
+        ehex_sha256: "20ee87a808314781479821a107dbad350e165db6a63c88241bec444e02556911",
+    },
+    // EMU1101-EXT Full 1.6.4: flags FE (Light plus the stored pack cutoff, the SOC checkpoint before a planned restart and
+    // the configurable hard stop with soft as default)
+    PatchBuild {
+        name: "EMU1101-EXT Full 1.6.4",
         base: [16, 6, 13],
         patch: [1, 6],
-        patch_rev: 3,
-        mnt_format: 4,
+        patch_rev: 4,
+        ext_format: 5,
         flags: 0xFE,
-        read_caps: 0,
-        build_id: "baa01ecd5af4eb28",
-        code_sha256: "fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f",
-        ehex_sha256: "99ea2cc5496358ec127300b55a4ca718acb1c4f6ee16f13edbe346f7aa4db062",
+        read_caps: 0x000F,
+        build_id: "4f4d2715c9ee553c",
+        code_sha256: "b3ab4856a2be678801cf1c7061c6daacb8f9b44b6f6a5aee1020ad64a4c4424a",
+        ehex_sha256: "bfd2ef0bd7a47f02d9dcd11aac88a34a7095d4f5f4286ba7c89cbbcb946e1172",
+    },
+    // EMU1101-EXT Full 1.6.5: 1.6.4 plus the atomic scheduler fix
+    PatchBuild {
+        name: "EMU1101-EXT Full 1.6.5",
+        base: [16, 6, 13],
+        patch: [1, 6],
+        patch_rev: 5,
+        ext_format: 5,
+        flags: 0xFE,
+        read_caps: 0x000F,
+        build_id: "13464fc91a6e6a20",
+        code_sha256: "20e26bf8a0a0cd9d9b21c9018fc2c5b4e2325cf510f0c01b48c72da1c684265d",
+        ehex_sha256: "fae20016130c950ee12e9a90ad0aa0e042b41eda3e46aef1f95469378d800b2f",
     },
     // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF), MNT format 3 with image flags 06: power and clock (bit 3 at 0
-    // allows, as 1.5.2), the stored pack cutoff; hard stop off. Supported until the installation runs 1.6.3, then remove
-    // this entry.
+    // allows), the stored pack cutoff; hard stop off. Supported until the installation runs EMU1101-EXT Full, then
+    // remove this entry.
     PatchBuild {
         name: "16.06.13 MAINT 1.6",
         base: [16, 6, 13],
         patch: openbms_proto::maint::temp16::PATCH,
         patch_rev: 0,
-        mnt_format: openbms_proto::maint::temp16::FORMAT,
+        ext_format: openbms_proto::maint::temp16::FORMAT,
         flags: openbms_proto::maint::temp16::FLAGS,
         read_caps: 0,
         build_id: openbms_proto::maint::temp16::BUILD,
         code_sha256: "be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d",
         ehex_sha256: "32f27f3f128a591759bd2e205579b2dfdccf50c3717e50c7092c1e30f44d146f",
     },
-    // MAINT 1.5.4 DIAGNOSTICS_POSITIVE: 1.5.3 plus MNT format 5 with the read capabilities 000F (history over the CAN
-    // socket, calibration pages, stored SOC records, full-width energy; 57304 app bytes, 225 update blocks)
-    PatchBuild {
-        name: "16.06.13 MAINT 1.5.4",
-        base: [16, 6, 13],
-        patch: [1, 5],
-        patch_rev: 4,
-        mnt_format: 5,
-        flags: 0x3A,
-        read_caps: 0x000F,
-        build_id: "80112d861b8329c4",
-        code_sha256: "0e10295aac3f3c88ea5f77f1deaf431a67f6f720c7e82a7e805bf4e1ecb34ef3",
-        ehex_sha256: "bc1442ed075d94f10fcd08d2ce322c9e1eb23748ee0459894f1bf74cb3b18382",
-    },
-    // MAINT 1.6.4 CUTOFF_POSITIVE: 1.6.3 plus MNT format 5 with the read capabilities 000F (59236 app bytes, 233 blocks)
-    PatchBuild {
-        name: "16.06.13 MAINT 1.6.4",
-        base: [16, 6, 13],
-        patch: [1, 6],
-        patch_rev: 4,
-        mnt_format: 5,
-        flags: 0xFE,
-        read_caps: 0x000F,
-        build_id: "a8676b52bae281ff",
-        code_sha256: "cd4ce64e20bf04c37e81da37daa170be53cf9380a589dd3d76c12972374d2f14",
-        ehex_sha256: "3a5ebf37197320ef6ba0ef5aba85daa981fe829ef312d9d84fc5ac0062c6bf3f",
-    },
 ];
 
 /// The entry `0x64/03` describes in `table`: format, base, patch and build ID all match.
 pub fn patch_in<'a>(table: &'a [PatchBuild], format: u8, base: [u8; 3], patch: [u8; 2], build_id: &str) -> Option<&'a PatchBuild> {
-    table.iter().find(|b| b.mnt_format == format && b.base == base && b.patch == patch && b.build_id == build_id)
+    table.iter().find(|b| b.ext_format == format && b.base == base && b.patch == patch && b.build_id == build_id)
 }
 
 /// `patch_in` over the listed builds.
@@ -274,13 +267,13 @@ pub fn patch_image(code_sha256: &str) -> Option<&'static str> {
 pub enum ImageKind {
     /// unmodified vendor release (allowlist above)
     Original,
-    /// a known patched build (`PATCH_BUILDS`)
+    /// a known EMU1101-EXT build (`PATCH_BUILDS`)
     Maintenance,
     /// anything else that passes the format checks
     Custom,
 }
 
-/// The kind of an image and its name (a vendor release or a patched build).
+/// The kind of an image and its name (a vendor release or an EMU1101-EXT build).
 pub fn kind_of_hash(code_sha256: &str) -> (ImageKind, Option<&'static str>) {
     if let Some(r) = RELEASES.iter().find(|r| r.code_sha256 == code_sha256) {
         return (ImageKind::Original, Some(r.name));
@@ -311,79 +304,80 @@ pub fn identify(image: &Image) -> Result<&'static Release> {
 mod tests {
     use super::*;
 
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+    }
+
     #[test]
-    fn kind_of_hash_tells_originals_patched_builds_and_custom_apart() {
+    fn kind_of_hash_tells_originals_ext_builds_and_custom_apart() {
         assert_eq!(kind_of_hash(RELEASES[0].code_sha256), (ImageKind::Original, Some(RELEASES[0].name)));
-        assert_eq!(kind_of_hash("fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6.3")));
+        assert_eq!(kind_of_hash("20e26bf8a0a0cd9d9b21c9018fc2c5b4e2325cf510f0c01b48c72da1c684265d"), (ImageKind::Maintenance, Some("EMU1101-EXT Full 1.6.5")));
         // TEMP(maint-1.6)
         assert_eq!(kind_of_hash("be2ecc7549c7ee16d46eed1f10c256d7231cc5ed961ec90f0bae87e0cfc40d2d"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.6")));
         assert_eq!(kind_of_hash(&"0".repeat(64)), (ImageKind::Custom, None));
-        // older patch builds (1.5, 1.5.1, 1.5.2, the positive 1.6, 1.6.1) are custom images now
+        // the builds before the EXT signature (1.5 … 1.5.4, the positive 1.6, 1.6.1 … 1.6.4 with MNT) are custom images now
         for old in ["5cd0f08fdbed8adce2a340b8ca842a02f4f2de61eee3f6bdb5b268fa5ec78c12", "58f45b854822d1f06eabb663fb2cd8f55d41485dd003eb6d52c2585477d0ca7a",
             "619cdf77811e05b085d37e997b3c469f35e83ddd5dd351fcf2ab6fd63b3a0437", "010ac5446b644a739611ccaffda85542365dbfccbe5753ede1c1e6b2bc776ae8",
-            "fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f", "9c1d8a912222d6f8ec9329a17b332776803f5d2a955a6028ae17e3cf0f1d1e1f"] {
+            "fec91208a5553726bb5c4da905dc5fadb0955011eb6f337b05b67ffefe62437f", "9c1d8a912222d6f8ec9329a17b332776803f5d2a955a6028ae17e3cf0f1d1e1f",
+            "27be05dc5f9ab0f648861e2d8e9feaffc4685ce98d59c02cccb7a3d114a38cd0", "fe04ff9a3263ee0fea0340a71d741c770c4056f10ceb534546fcb9b0181cf33f",
+            "0e10295aac3f3c88ea5f77f1deaf431a67f6f720c7e82a7e805bf4e1ecb34ef3", "cd4ce64e20bf04c37e81da37daa170be53cf9380a589dd3d76c12972374d2f14"] {
             assert_eq!(kind_of_hash(old), (ImageKind::Custom, None));
         }
     }
 
     #[test]
-    fn the_listed_builds_are_recognised_by_their_exact_identity_and_carry_their_flags() {
-        let b = patch_build(4, [16, 6, 13], [1, 6], "baa01ecd5af4eb28").unwrap();
-        assert_eq!((b.name, b.info().patch_text(), b.info().image_flags()), ("16.06.13 MAINT 1.6.3", "1.6.3".to_string(), 0xFE));
-        assert_eq!((b.power_rtc(), b.pack_cutoff(), b.info().checkpoint(), b.info().hard_stop_configurable()), (true, true, true, true));
-        let a = patch_build(4, [16, 6, 13], [1, 5], "2b89286ed6c14604").unwrap();
-        assert_eq!((a.name, a.info().patch_text(), a.info().image_flags()), ("16.06.13 MAINT 1.5.3", "1.5.3".to_string(), 0x3A));
-        assert_eq!((a.power_rtc(), a.pack_cutoff(), a.info().positive(), a.info().diagnostics(), a.info().checkpoint(), a.info().hard_stop), (true, false, true, true, false, Some(false)));
-        assert_eq!(kind_of_hash("27be05dc5f9ab0f648861e2d8e9feaffc4685ce98d59c02cccb7a3d114a38cd0"), (ImageKind::Maintenance, Some("16.06.13 MAINT 1.5.3")));
-        // 1.5.2 is no longer listed
-        assert!(patch_build(4, [16, 6, 13], [1, 5], "89d85c61b40e03da").is_none());
-        assert!(patch_build(3, [16, 6, 13], [1, 6], "baa01ecd5af4eb28").is_none(), "other format");
-        assert!(patch_build(4, [16, 6, 12], [1, 6], "baa01ecd5af4eb28").is_none(), "other base");
-        assert!(patch_build(4, [16, 6, 13], [1, 6], "0000000000000000").is_none(), "other build");
-        assert_eq!(patch_image(b.code_sha256), Some("16.06.13 MAINT 1.6.3"));
+    fn the_listed_builds_answer_exactly_their_release_identity() {
+        for (name, info_hex, code) in [
+            ("EMU1101-EXT Light 1.5.4", "4558540510060D010504FFE3ACF7E52BED803A000F", "927e178e0b4140185e974a786525091b49a37f5618e86729981697f4f90d5003"),
+            ("EMU1101-EXT Light 1.5.5", "4558540510060D010505082CB731C006AAC53A000F", "a6bd1f959b4fd7baaf84ed2c65207a54f6225203c86e0257953e4d486c42d8fd"),
+            ("EMU1101-EXT Full 1.6.4", "4558540510060D0106044F4D2715C9EE553CFE000F", "b3ab4856a2be678801cf1c7061c6daacb8f9b44b6f6a5aee1020ad64a4c4424a"),
+            ("EMU1101-EXT Full 1.6.5", "4558540510060D01060513464FC91A6E6A20FE000F", "20e26bf8a0a0cd9d9b21c9018fc2c5b4e2325cf510f0c01b48c72da1c684265d"),
+        ] {
+            let b = PATCH_BUILDS.iter().find(|b| b.name == name).unwrap();
+            let live = ExtInfo::parse(&hex(info_hex)).unwrap();
+            assert_eq!(b.info(), live, "{name}");
+            assert_eq!(live.version(), name, "the display name is the name the identity gives");
+            assert_eq!((b.code_sha256, patch_image(code)), (code, Some(name)));
+            assert_eq!(patch_build(5, live.base, live.patch, &live.build_id_hex()).map(|b| b.name), Some(name));
+            assert_eq!(b.caps(), Some(Caps { ext_format: 5, ..PROOF_CAPS }));
+        }
+        let full = PATCH_BUILDS.iter().find(|b| b.name == "EMU1101-EXT Full 1.6.5").unwrap();
+        assert_eq!((full.power_rtc(), full.pack_cutoff(), full.info().checkpoint(), full.info().hard_stop_configurable()), (true, true, true, true));
+        let light = PATCH_BUILDS.iter().find(|b| b.name == "EMU1101-EXT Light 1.5.5").unwrap();
+        assert_eq!((light.power_rtc(), light.pack_cutoff(), light.info().positive(), light.info().diagnostics(), light.info().checkpoint(), light.info().hard_stop), (true, false, true, true, false, Some(false)));
+        assert!(patch_build(3, [16, 6, 13], [1, 6], "13464fc91a6e6a20").is_none(), "other format");
+        assert!(patch_build(5, [16, 6, 12], [1, 6], "13464fc91a6e6a20").is_none(), "other base");
+        assert!(patch_build(5, [16, 6, 13], [1, 6], "0000000000000000").is_none(), "other build");
         // every listed build is supported
         assert!(PATCH_BUILDS.iter().all(|b| b.caps().is_some()));
-        // the format-5 builds answer exactly their release identity
-        let hex = |s: &str| (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<u8>>();
-        for (name, info_hex) in [("16.06.13 MAINT 1.5.4", "4D4E540510060D01050480112D861B8329C43A000F"), ("16.06.13 MAINT 1.6.4", "4D4E540510060D010604A8676B52BAE281FFFE000F")] {
-            let b = PATCH_BUILDS.iter().find(|b| b.name == name).unwrap();
-            assert_eq!(b.info(), MaintInfo::parse(&hex(info_hex)).unwrap(), "{name}");
-            assert_eq!(patch_image(b.code_sha256), Some(name));
-            assert_eq!(b.caps(), Some(Caps { mnt_format: 5, ..PROOF_CAPS }));
-        }
     }
 
     #[test]
     fn capabilities_come_with_a_supported_build_only() {
-        let info = |format: u8, patch: [u8; 2], patch_rev: u8, flags: u8| MaintInfo::parse(&{
-            let mut v = b"MNT".to_vec();
-            v.extend_from_slice(&[format, 16, 6, 13, patch[0], patch[1]]);
-            if format == 4 {
-                v.push(patch_rev);
-            }
+        let info = |patch: [u8; 2], patch_rev: u8, flags: u8| ExtInfo::parse(&{
+            let mut v = b"EXT".to_vec();
+            v.extend_from_slice(&[5, 16, 6, 13, patch[0], patch[1], patch_rev]);
             v.extend_from_slice(&[1; 8]);
-            if format > 2 {
-                v.push(flags);
-            }
+            v.extend_from_slice(&[flags, 0, 0x0F]);
             v
         }).unwrap();
-        assert_eq!(caps_of(&info(4, [1, 5], 3, 0x3A)), Some(PROOF_CAPS), "1.5.3, not listed yet");
-        assert_eq!(caps_of(&info(4, [1, 5], 2, 0x32)), None, "1.5.2");
-        assert_eq!(caps_of(&info(4, [1, 6], 3, 0xFE)), Some(PROOF_CAPS));
-        assert_eq!(caps_of(&info(4, [1, 7], 0, 0xFE)), Some(PROOF_CAPS), "a later version");
-        assert_eq!(caps_of(&info(4, [1, 5], 1, 0x12)), None, "1.5.1");
-        assert_eq!(caps_of(&info(4, [1, 6], 2, 0x7E)), None, "1.6.2");
-        assert_eq!(caps_of(&info(3, [1, 5], 0, 0x02)), None, "1.5");
-        assert_eq!(caps_of(&info(2, [1, 5], 0, 0)), None, "1.5 format 2");
+        assert_eq!(caps_of(&info([1, 5], 4, 0x3A)), Some(PROOF_CAPS), "Light 1.5.4 with another build ID");
+        assert_eq!(caps_of(&info([1, 6], 5, 0xFE)), Some(PROOF_CAPS));
+        assert_eq!(caps_of(&info([1, 7], 0, 0xFE)), Some(PROOF_CAPS), "a later version");
+        assert_eq!(caps_of(&info([1, 5], 3, 0x3A)), None, "below Light 1.5.4");
+        assert_eq!(caps_of(&info([1, 6], 3, 0xFE)), None, "below Full 1.6.4");
         // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF) by its build, not another format-3 1.6 (not the positive one)
-        assert_eq!(PATCH_BUILDS[2].caps(), Some(Caps { mnt_format: 3, ..PROOF_CAPS }));
-        assert_eq!(caps_of(&info(3, [1, 6], 0, 0x06)), None);
-        assert_eq!(caps_of(&info(3, [1, 6], 0, 0x0E)), None);
+        let temp = PATCH_BUILDS.iter().find(|b| b.name == "16.06.13 MAINT 1.6").unwrap();
+        assert_eq!(temp.caps(), Some(Caps { ext_format: 3, ..PROOF_CAPS }));
+        assert_eq!(temp.info().version(), "16.06.13 MAINT 1.6");
+        let f3 = |flags: u8| ExtInfo::parse(&[b"MNT".as_slice(), &[3, 16, 6, 13, 1, 6], &[1; 8], &[flags]].concat()).unwrap();
+        assert_eq!(caps_of(&f3(0x06)), None);
+        assert_eq!(caps_of(&f3(0x0E)), None);
         let c = PROOF_CAPS;
         assert_eq!(c.pack(), PackCaps { uart1_params: true, uart1_identity: true, write_gate_bit0: true, keeps_start_bit2: true });
         assert_eq!(c.master(), MasterCaps { status_split: true, start_gate_bit2: true });
-        assert_eq!(pack_caps_of(&info(4, [1, 5], 3, 0x3A)), Some(c.pack()));
-        assert_eq!(pack_caps_of(&info(4, [1, 5], 1, 0x12)), None);
+        assert_eq!(pack_caps_of(&info([1, 5], 4, 0x3A)), Some(c.pack()));
+        assert_eq!(pack_caps_of(&info([1, 5], 3, 0x3A)), None);
         // the flag alone is not enough for the pack cutoff, nor the version alone
         assert!(pack_cutoff_of([1, 6], true));
         assert!(!pack_cutoff_of([1, 5], true));
@@ -392,10 +386,10 @@ mod tests {
 
     #[test]
     fn a_later_build_is_one_more_table_entry() {
-        let later = PatchBuild { name: "16.06.14 MAINT 1.6.4", base: [16, 6, 14], patch_rev: 4, build_id: "0123456789abcdef", code_sha256: "c0de", ehex_sha256: "f11e", ..PATCH_BUILDS[1] };
-        let table = [PatchBuild { ..PATCH_BUILDS[1] }, later];
-        let found = patch_in(&table, 4, [16, 6, 14], [1, 6], "0123456789abcdef").unwrap();
-        assert_eq!((found.name, found.caps()), ("16.06.14 MAINT 1.6.4", PATCH_BUILDS[1].caps()));
+        let later = PatchBuild { name: "EMU1101-EXT Full 1.6.6", patch_rev: 6, build_id: "0123456789abcdef", code_sha256: "c0de", ehex_sha256: "f11e", ..PATCH_BUILDS[3] };
+        let table = [PatchBuild { ..PATCH_BUILDS[3] }, later];
+        let found = patch_in(&table, 5, [16, 6, 13], [1, 6], "0123456789abcdef").unwrap();
+        assert_eq!((found.name, found.caps()), ("EMU1101-EXT Full 1.6.6", PATCH_BUILDS[3].caps()));
     }
 
     #[test]

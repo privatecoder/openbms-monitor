@@ -1,7 +1,7 @@
 //! Serial numbers: CID2 0xA2 (battery serial number, "Battery_SN") and 0xA4 (BMS serial number, "BMS_SN").
 //!
-//! Both are persistent 30-byte ASCII strings, right-padded with spaces (older images: NUL). The two commands
-//! exist only on RS485-1/2. On the CAN socket bus the master exposes the first 22 characters of the battery
+//! Both are persistent 30-byte ASCII strings, right-padded with spaces (older images: NUL). The two ASCII commands
+//! exist only on RS485-1/2; EMU1101-EXT also answers them as binary A2/A4 on the CAN socket (`uart1`). On the CAN socket bus the master exposes the first 22 characters of the battery
 //! serial number in Modbus input registers 0x0000.. (FC04, count exactly 21; firmware before 16.06.11 answers
 //! with an exception).
 //!

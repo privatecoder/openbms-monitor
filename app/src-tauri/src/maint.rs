@@ -257,7 +257,7 @@ fn control_dialog(state: &AppState, inst: &Installation, action: Action) -> Resu
 pub struct MasterView {
     /// "patched" (a supported patch) | "unknown-patch" | "no-0x64" | "unknown"
     pub kind: &'static str,
-    /// what the master reports, e.g. "16.06.13 MAINT 1.5"
+    /// what the master reports, e.g. "EMU1101-EXT Full 1.6.5"
     pub version: Option<String>,
     /// patch version "1.5" and base "16.06.13" as reported
     pub patch: Option<String>,
@@ -265,8 +265,8 @@ pub struct MasterView {
     pub build_id: Option<String>,
     /// the listed build's name (None: not listed)
     pub listed: Option<String>,
-    /// format 3: the hard-stop patch is compiled into the image (an image property, apart from the maintenance state, the
-    /// release bits and the MOSFETs); None: not reported (format 2) or no identity
+    /// the hard-stop patch is compiled into the image (an image property, apart from the maintenance state, the release
+    /// bits and the MOSFETs); None: configurable (Full) or no identity
     pub hard_stop: Option<bool>,
     pub caps: Option<crate::profile::CapsView>,
     /// "off" | "on" | "foreign"
@@ -1010,7 +1010,7 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action, con
 mod tests {
     use super::*;
     use openbms_flash::maint::policy::Patch;
-    use openbms_proto::MaintInfo;
+    use openbms_proto::ExtInfo;
 
     fn refused_with(r: Result<impl std::fmt::Debug, MaintError>, key: &str) -> bool {
         matches!(r, Err(MaintError::Refused { reason }) if reason == key)
@@ -1218,26 +1218,26 @@ mod tests {
 
     #[test]
     fn the_master_view_names_version_marker_and_actions() {
-        let info = |patch: [u8; 2], id: [u8; 8]| MaintInfo { format: 4, base: [16, 6, 13], patch, build_id: id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 3, uart0: false };
+        let info = |patch: [u8; 2], id: [u8; 8]| ExtInfo { format: 5, base: [16, 6, 13], patch, build_id: id, hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         let st = |word: u32| Some(MaintState { marker_word: word, effective_slaves: 0 });
-        let listed = [0xBA, 0xA0, 0x1E, 0xCD, 0x5A, 0xF4, 0xEB, 0x28];
-        let patched = |i: MaintInfo, s| Master::Patched { patch: Patch::recognise(i).unwrap(), state: s };
+        let listed = [0x4F, 0x4D, 0x27, 0x15, 0xC9, 0xEE, 0x55, 0x3C];
+        let patched = |i: ExtInfo, s| Master::Patched { patch: Patch::recognise(i).unwrap(), state: s };
         let v = master_view(&patched(info([1, 6], listed), st(0)));
-        assert_eq!((v.kind, v.version.as_deref(), v.listed.as_deref(), v.marker, v.marker_word.as_deref()), ("patched", Some("16.06.13 MAINT 1.6.3"), Some("16.06.13 MAINT 1.6.3"), Some("on"), Some("00000000")));
+        assert_eq!((v.kind, v.version.as_deref(), v.listed.as_deref(), v.marker, v.marker_word.as_deref()), ("patched", Some("EMU1101-EXT Full 1.6.4"), Some("EMU1101-EXT Full 1.6.4"), Some("on"), Some("00000000")));
         assert!(v.may_release && !v.may_halt && v.caps.is_some_and(|c| c.start_gate));
         let v = master_view(&patched(info([1, 5], listed), st(0x0102_0304)));
         assert_eq!((v.marker, v.may_release, v.may_halt), (Some("foreign"), false, false));
         // not listed, same patch version: same configuration, no name
         let v = master_view(&patched(info([1, 5], [0; 8]), st(0)));
-        assert_eq!((v.kind, v.listed, v.may_release, v.patch.as_deref(), v.base.as_deref()), ("patched", None, true, Some("1.5.3"), Some("16.06.13")));
+        assert_eq!((v.kind, v.listed, v.may_release, v.patch.as_deref(), v.base.as_deref()), ("patched", None, true, Some("1.5.4"), Some("16.06.13")));
         let v = master_view(&Master::UnknownPatch(Some(info([1, 4], [0; 8]))));
         assert_eq!((v.kind, v.may_release, v.caps), ("unknown-patch", false, None));
         let v = master_view(&Master::No0x64);
         assert_eq!((v.kind, v.marker, v.version, v.hard_stop), ("no-0x64", None, None, None));
-        // format 3: the hard stop of the image; an unknown OEM revision
-        let i3 = MaintInfo { format: 4, base: [16, 6, 0xFF], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 3, uart0: false };
+        // the fixed hard stop of the image; an unknown OEM revision
+        let i3 = ExtInfo { format: 5, base: [16, 6, 0xFF], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         let v = master_view(&patched(i3, st(u32::MAX)));
-        assert_eq!((v.kind, v.hard_stop, v.base.as_deref(), v.version.as_deref(), v.may_halt), ("patched", Some(false), Some("16.06.?"), Some("16.06.? MAINT 1.5.3"), true));
+        assert_eq!((v.kind, v.hard_stop, v.base.as_deref(), v.version.as_deref(), v.may_halt), ("patched", Some(false), Some("16.06.?"), Some("EMU1101-EXT Light 1.5.4"), true));
         assert_eq!(master_view(&patched(info([1, 5], listed), st(0))).hard_stop, None);
     }
 
@@ -1295,14 +1295,14 @@ mod tests {
     fn a_version_proof_is_per_place_replaced_cleared_and_gone_with_its_installation() {
         let s = store_at("proof");
         let a = s.create_installation("A", None, vec![]).unwrap();
-        s.set_patch_proof(&a.id, 3, "SYN-3", "16.06.13 MAINT 1.5", "flash", 1).unwrap();
+        s.set_patch_proof(&a.id, 3, "SYN-3", "EMU1101-EXT Light 1.5.4", "flash", 1).unwrap();
         assert_eq!(s.patch_proof(&a.id, 3).unwrap().map(|p| (p.bms_serial, p.source)), Some(("SYN-3".into(), "flash".into())));
         assert_eq!(s.patch_proof(&a.id, 4).unwrap(), None);
-        s.set_patch_proof(&a.id, 3, "SYN-3B", "MAINT ≥ 1.5", "user", 2).unwrap();
+        s.set_patch_proof(&a.id, 3, "SYN-3B", "EMU1101-EXT ≥ 1.5.4", "user", 2).unwrap();
         assert_eq!(s.patch_proof(&a.id, 3).unwrap().map(|p| p.bms_serial), Some("SYN-3B".into()));
         s.clear_patch_proof(&a.id, 3).unwrap();
         assert_eq!(s.patch_proof(&a.id, 3).unwrap(), None);
-        s.set_patch_proof(&a.id, 3, "SYN-3", "16.06.13 MAINT 1.5", "flash", 3).unwrap();
+        s.set_patch_proof(&a.id, 3, "SYN-3", "EMU1101-EXT Light 1.5.4", "flash", 3).unwrap();
         s.set_expected_slaves(&a.id, None, 2, 3).unwrap();
         s.delete_installation(&a.id).unwrap();
         assert_eq!(s.patch_proof(&a.id, 3).unwrap(), None);
@@ -1314,7 +1314,7 @@ mod tests {
     fn a_flash_start_writes_its_pending_record_and_ends_the_proof_together() {
         let s = store_at("pending-with");
         let a = s.create_installation("A", None, vec![]).unwrap();
-        s.set_patch_proof(&a.id, 0, "SYN-0", "16.06.13 MAINT 1.5", "flash", 1).unwrap();
+        s.set_patch_proof(&a.id, 0, "SYN-0", "EMU1101-EXT Light 1.5.4", "flash", 1).unwrap();
         // the second step fails: no pending record stays behind, the proof is untouched
         assert!(s.add_pending_with("serial:/dev/p", 0, "16.06.13", Some("SYN-0"), 2, |_| Err("disk I/O error".into())).is_err());
         assert!(s.all_pending().unwrap().is_empty());
@@ -1339,7 +1339,7 @@ mod tests {
 
     #[test]
     fn a_confirmed_release_with_its_slave_count_unread_clears_the_marker_and_keeps_no_count() {
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: None, power_rtc: false, pack_cutoff: false, reserved_flags: 0, read_caps: 0, patch_rev: 3, uart0: false };
+        let info = ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: None, power_rtc: false, pack_cutoff: false, reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         let state = AppState::default();
         *state.maint.lock().unwrap() = Some(store_at("released-unread"));
         let a = with_store(&state, |s| s.create_installation("A", None, vec![])).unwrap();
@@ -1355,7 +1355,7 @@ mod tests {
 
     #[test]
     fn a_lost_02_never_clears_a_stored_marker_and_the_flash_stays_refused() {
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 3, uart0: false };
+        let info = ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 5], build_id: [0x89, 0xD8, 0x5C, 0x61, 0xB4, 0x0E, 0x03, 0xDA], hard_stop: None, power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         let patched = |state| Master::Patched { patch: Patch::recognise(info).unwrap(), state };
         let on = patched(Some(MaintState { marker_word: 0, effective_slaves: 0 }));
         let off = patched(Some(MaintState { marker_word: u32::MAX, effective_slaves: 3 }));
@@ -1427,7 +1427,7 @@ mod tests {
     fn the_pack_list_asks_64_03_fresh_after_a_matching_string_2() {
         use openbms_flash::maint::dialog::PackAnswer;
         use openbms_flash::maint::policy::PackFinding;
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 3, uart0: false };
+        let info = ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 5], build_id: [1; 8], hard_stop: Some(false), power_rtc: false, pack_cutoff: false , reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         let fresh = PackFinding::of(PackAnswer::Info(info));
         let never = || -> Result<PackFinding, ()> { panic!("no 64/03 without a matching String 2 or after a cancel") };
         // another board on the CAN side, or none readable: no 64/03

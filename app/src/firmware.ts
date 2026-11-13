@@ -30,7 +30,7 @@ export function benchPick(packs: BenchPack[]): number | null {
 }
 
 /** „Platine flashen“: what the app can say about the chosen board's marker before the flash (null: nothing to say). Set
- *  and shown over RS485-1/2: cleared before an image without the maintenance functions. Not shown there (an older MAINT
+ *  and shown over RS485-1/2: cleared before an image without the maintenance functions. Not shown there (an older patch
  *  build or the original), at a master: the way over the CAN socket. */
 export function benchMarkerKey(pack: BenchPack | null, image: FirmwareImage | null): string | null {
   if (!pack || image?.kind === "maintenance") return null;
@@ -48,14 +48,16 @@ export function progressFraction(p: FirmwareProgress | null): number {
 
 /** The version line of a result. 0x51 reports only major.minor ("16.06"), so "from" is what the pack reported
  *  (before the flash, else at "check pack") and "to" the flashed image's release in full ("16.06.13",
- *  "16.06.13 MAINT 1.1"). A pack that reports another version afterwards, or a custom image, says what it reports. */
+ *  "EMU1101-EXT Full 1.6.5"). A pack that reports another version afterwards, or a custom image, says what it reports. */
 export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, checked: string | null, image: FirmwareImage | null, t: T): { from: string; to: string } {
   const from = done.before?.firmware_version ?? checked ?? "?";
   const after = done.after?.firmware_version ?? null;
   if (!image) return { from, to: after ?? "?" };
   if (image.kind === "custom") return { from, to: after ? `${t("fw.customName")} (${t("fw.reports", { v: after })})` : t("fw.customName") };
-  // "16.06" fits "16.06.13" but not "16.06.1x" of another minor: compare whole parts
-  const fits = !after || image.release === after || image.release.startsWith(`${after}.`) || image.release.startsWith(`${after} `);
+  // "16.06" fits "16.06.13" but not "16.06.1x" of another minor: compare whole parts. An EMU1101-EXT name carries no
+  // OEM base: the listed build's base (`image.base`) stands for it; without one the answer is always named.
+  const ref = image.release.startsWith("EMU1101-EXT") ? image.base ?? null : image.release;
+  const fits = !after || (ref !== null && (ref === after || ref.startsWith(`${after}.`) || ref.startsWith(`${after} `)));
   return { from, to: fits ? image.release : `${image.release} (${t("fw.reports", { v: after })})` };
 }
 

@@ -33,7 +33,7 @@ import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, inverseG0, keepMask, positivePatch, TAKE_OVER_KEEP, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { channelOf, controlHint, controlMode, controlOffers, packCutoff, packFirmware, powerLocked } from "../power";
-import { factsOf, MAINT_MIN, offerable, positiveBuild } from "../access";
+import { factsOf, EXT_MIN, offerable, positiveBuild } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -104,7 +104,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   // socket's parameter service needs the patch (each column's proof and the backend's identity check before every write
   // decide per pack)
   const channel = channelOf(bus);
-  const paramWritable = connected && (isDemo || (!!channel && offerable("write-parameters", channel, factsOf({ installation: !!installation, patch: { kind: "version", version: MAINT_MIN }, address: 1 }))));
+  const paramWritable = connected && (isDemo || (!!channel && offerable("write-parameters", channel, factsOf({ installation: !!installation, patch: { kind: "version", version: EXT_MIN }, address: 1 }))));
   const path = bus === "can" && !isDemo ? "uart1" as const : undefined;
   // the chosen pack's firmware as this connection proved it (over the CAN socket the master by the profile, a slave by
   // its own 64/03), with the lock bit of the newest state seen: what the catalog offers for it
@@ -219,7 +219,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     try {
       const p = await api.parameters(address);
       if (linkNow() !== l) return null;
-      // over the CAN socket only a block of an identified board is stored (MAINT 1.3), so only then is there a last write
+      // over the CAN socket only a block of an identified board is stored (EMU1101-EXT), so only then is there a last write
       const next = packCol(p, address, l, path); seen(address, p); if (!path || p.bms_serial) void loadHistory(address);
       return next;
     } catch (e) {
@@ -339,7 +339,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const takeOverFrom = (id: string) => {
     const src = sources.find((x) => x.id === id);
     if (!src?.values || !src.switches) return;
-    // Group0: only bit 1 (the original firmware's) comes from the source; the MAINT bits stay as the pack has them
+    // Group0: only bit 1 (the original firmware's) comes from the source; the EMU1101-EXT bits stay as the pack has them
     setEdit((e) => {
       if (!e) return e;
       const keep = TAKE_OVER_KEEP;

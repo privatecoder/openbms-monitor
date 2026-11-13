@@ -23,10 +23,15 @@ export function useProfile(): ProfileView | null {
 /** The master offers the patch functions (by its capabilities, never by a version number). */
 export const patched = (m: MasterView | null | undefined): boolean => m?.kind === "patched" && !!m.caps;
 
-/** The name of a recognised patch: the listed build, else „MAINT x.y (Basis a.b.c, Build nicht gelistet)“. */
+/** A build's name without its OEM base in front: „EMU1101-EXT Full 1.6.5“; TEMP(maint-1.6): „16.06.13 MAINT 1.6“ →
+ *  „MAINT 1.6“. */
+export const buildName = (version: string, base: string | null | undefined): string =>
+  base && version.startsWith(`${base} `) ? version.slice(base.length + 1) : version;
+
+/** The name of a recognised patch: the listed build, else „EMU1101-EXT Full 1.6.6 (Basis a.b.c, Build nicht gelistet)“. */
 export function patchName(m: MasterView, t: T): string {
   if (m.listed) return m.listed;
-  return t("profile.unlisted", { patch: m.patch ?? "?", base: m.base ?? "?" });
+  return t("profile.unlisted", { name: buildName(m.version ?? "?", m.base), base: m.base ?? "?" });
 }
 
 /** The profile line of the sidebar: tone and text by the master's class. RS485-1/2 knows no 0x64: nothing to say. */
@@ -44,7 +49,7 @@ export function profileLine(p: ProfileView | null, t: T): { tone: "ok" | "warn" 
 }
 
 /** „Hard-Stop: …“ of one pack: the image's own flag wins (`flag` true/false: fixed in the build); a build where it is
- *  chosen by the parameters (`flags` with bit 7, MAINT 1.6.3) says so with its default; else a stored sighting in the
+ *  chosen by the parameters (`flags` with bit 7, EMU1101-EXT Full) says so with its default; else a stored sighting in the
  *  pack's behaviour (`seen`: waiting for recharge with the charge MOSFET off, no other visible block) shows „an
  *  (beobachtet am …)“; else unknown. Never from a version number or a flash, and never „not seen“. */
 export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSeen | undefined, t: T, lang = "de", flags?: number | null): string {
@@ -56,10 +61,12 @@ export function hardStopLine(flag: boolean | null | undefined, seen: HardStopSee
   return t("profile.hardStop", { state });
 }
 
-/** The firmware a pack header names: the version its own 64/03 proves on this connection (`proven`, e.g. „16.06.13
- *  MAINT 1.5“) instead of the short one of 0x51 (`reported`, „16.06“) when that fits it; both when they differ. */
+/** The firmware a pack header names: the build its own 64/03 proves on this connection (`proven`) with the short OEM
+ *  version of 0x51 (`reported`, „16.06“): „16.06 · EMU1101-EXT Full 1.6.5“. TEMP(maint-1.6): a name with its base
+ *  („16.06.13 MAINT 1.6“) replaces the short version when that fits it; both when they differ. */
 export function firmwareText(reported: string | null | undefined, proven: string | null | undefined): string | null {
   if (!proven) return reported || null;
+  if (proven.startsWith("EMU1101-EXT")) return reported ? `${reported} · ${proven}` : proven;
   if (!reported || proven === reported || proven.startsWith(`${reported}.`) || proven.startsWith(`${reported} `)) return proven;
   return `${reported} (${proven})`;
 }
@@ -105,17 +112,17 @@ export function writeLocked(patch: PackPatch | null | undefined, uart1: boolean,
   return uart1 && need !== 0 && group0 !== undefined && (group0 & need) !== need;
 }
 
-/** MAINT 1.6, Group0 bit 4: 0 switches the extended off with the stored pack cutoff on. */
+/** EMU1101-EXT Full, Group0 bit 4: 1 switches the extended off with the stored pack cutoff on. */
 export const CUTOFF_BIT = G0.extendedOff;
 /** Group0 bit 3 at 1 allows power and clock in this proven build (`access::positive_build`: image flag bit 3 or a
  *  build from 1.6); not proven: as 1.5 (bit 3 at 0 allows). */
 export const positivePatch = (patch: PackPatch | null | undefined): boolean =>
   !!patch && positiveBuild(patch.caps.version ? { kind: "version", version: patch.caps.version } : { kind: "unknown" }, patch.caps.flags);
 /** Group0 as the helpers here read it (written for bits 3/4 acting at 0): bit 4 flipped always (the extended off acts at
- *  1, as in MAINT 1.6.1), bit 3 flipped in a positive build (`positive`). Never sent: the backend compares raw values. */
+ *  1, as in EMU1101-EXT), bit 3 flipped in a positive build (`positive`). Never sent: the backend compares raw values. */
 export const inverseG0 = (g0: number | undefined, positive: boolean): number | undefined =>
   g0 === undefined ? g0 : g0 ^ G0.extendedOff ^ (positive ? G0.powerLock : 0);
-/** MAINT 1.6, Group0 bit 5: 0 shows a stored individual pack cutoff. Status only, never written. */
+/** EMU1101-EXT Full, Group0 bit 5: 0 shows a stored individual pack cutoff. Status only, never written. */
 export const LOCK_BIT = G0.lockState;
 
 /** Group0 bits 4 and 5 of a parameter column: `cutoff` the pack's proven pack cutoff (image flag bit 2 with 1.6; null not
@@ -143,9 +150,9 @@ export function keepMask(patch: PackPatch | null | undefined, uart1: boolean, gr
 export const G0_OEM = 1 << 1;
 
 /** The Group0 bits a take-over (from a file or another column) keeps from the target pack: every bit but bit 1, the
- *  original firmware's only one. The MAINT bits (releases, extended off, pack lock, hard stop) are the target pack's own
- *  access settings: whether the source had MAINT, which version, or no proof at all, they stay as the target has them,
- *  so a file goes between original firmware and MAINT 1.5.3/1.6.3 either way. They are set in the table directly. */
+ *  original firmware's only one. The EMU1101-EXT bits (releases, extended off, pack lock, hard stop) are the target pack's own
+ *  access settings: whether the source had EMU1101-EXT, which version, or no proof at all, they stay as the target has them,
+ *  so a file goes between original firmware and EMU1101-EXT either way. They are set in the table directly. */
 export const TAKE_OVER_KEEP = 0xff & ~G0_OEM;
 
 /** The label of the shared rows of bits 4 and 5: by their function only when every column with switches has a proof

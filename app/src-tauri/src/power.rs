@@ -1,14 +1,14 @@
-//! Ein/aus, restart and the clock over the CAN socket (MAINT 1.5 with image flag bit 1): the same ASCII 0x45/0x4D/0x4E
+//! Ein/aus, restart and the clock over the CAN socket (EMU1101-EXT, image flag bit 1): the same ASCII 0x45/0x4D/0x4E
 //! as on RS485-1/2, answered by a patched pack at its own address. Offered only where this connection proved the flag for
 //! exactly this pack (`profile::power_rtc`), never from a stored proof or a test send.
 //!
 //! A command that changes something first runs the identity check of a parameter write (`uart1_id::identity`, with the
-//! installation's current board at the address as the expected String 2), then a fresh binary 0x47: Group0 bit 3 set
-//! (locked) sends nothing. Identity, lock and command run in one port session under the pack's reservation with host
+//! installation's current board at the address as the expected String 2), then a fresh binary 0x47: Group0 bit 3 at 0
+//! (locked; TEMP(maint-1.6): at 1 in the first MAINT 1.6) sends nothing. Identity, lock and command run in one port session under the pack's reservation with host
 //! polling held. Reading the clock needs neither. A restart is sent once, never repeated; its comeback is watched after
 //! the session (`control::pack_restart`).
 //!
-//! MAINT 1.6 keeps the same 0x45: with Group0 bit 4 at 0 an addressed off stores the pack cutoff, an addressed on clears
+//! Full keeps the same 0x45: with Group0 bit 4 at 1 (extended off) an addressed off stores the pack cutoff, an addressed on clears
 //! it (whatever bit 4). RTN 08 to ein/aus then means the lock could not be stored or verified (`switch_error`); the UI
 //! reads 0x47 and the status again after every ein/aus.
 
@@ -137,7 +137,7 @@ pub(crate) fn power_error(e: openbms_transport::Error) -> String {
     }
 }
 
-/// A refused restart: RTN 08 is MAINT 1.6.3's „the SOC could not be saved first, no restart“ (never retried); every
+/// A refused restart: RTN 08 is the Full line's „the SOC could not be saved first, no restart“ (never retried); every
 /// other error as `power_error`.
 pub(crate) fn restart_error(e: openbms_transport::Error) -> String {
     match e {
@@ -146,7 +146,7 @@ pub(crate) fn restart_error(e: openbms_transport::Error) -> String {
     }
 }
 
-/// Ein/aus of a build with the stored pack cutoff (MAINT 1.6) answers RTN 08 when storing or verifying the lock failed
+/// Ein/aus of a build with the stored pack cutoff (Full) answers RTN 08 when storing or verifying the lock failed
 /// (`control::cutoff_failed`): never a success or a release. A request that left and then lost its link (gateway
 /// closed, I/O) is open like silence (`power-lost`); every other error as `power_error`.
 pub(crate) fn switch_error(f: openbms_transport::SwitchFailure, on: bool) -> String {
@@ -317,7 +317,7 @@ mod tests {
         }
     }
 
-    /// A pack at address 1 with the power and clock build (MAINT 1.5, image flag bit 1), as this connection proved it.
+    /// A pack at address 1 with the power and clock build (image flag bit 1), as this connection proved it.
     fn fw() -> access::Facts {
         access::Facts {
             patch: access::Patch::Version([1, 5]),
@@ -527,8 +527,8 @@ mod tests {
         assert_eq!(run_err(&state, &link, 3), uart1_refusal("power-unsupported"));
         assert_eq!(clock(&state, &link, 3).unwrap_err(), uart1_refusal("power-unsupported"));
         // a slave whose own 64/03 shows the flag passes this check (and fails later only for the missing store)
-        let flagged = openbms_flash::maint::policy::PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(openbms_proto::MaintInfo {
-            format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0, patch_rev: 3, uart0: false, read_caps: 0,
+        let flagged = openbms_flash::maint::policy::PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(openbms_proto::ExtInfo {
+            format: 5, base: [16, 6, 13], patch: [1, 5], build_id: [7; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false, reserved_flags: 0, patch_rev: 4, uart0: false, read_caps: 0,
         }));
         crate::bank::set_live(&state, link.gen, 3, flagged);
         assert!(crate::profile::power_rtc(&state, &link, 3));

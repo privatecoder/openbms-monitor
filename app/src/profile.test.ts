@@ -5,21 +5,21 @@ import { cutoffBits, cutoffRowLabel, firmwareText, gateBits, gateRowLabel, hardS
 import { flashGateKeys } from "./firmware";
 
 const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
-const master = (m: Partial<MasterView>): MasterView => ({ kind: "patched", version: "16.06.13 MAINT 1.5", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b",
-  listed: "16.06.13 MAINT 1.5", caps, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m });
+const master = (m: Partial<MasterView>): MasterView => ({ kind: "patched", version: "EMU1101-EXT Light 1.5.4", patch: "1.5", base: "16.06.13", build_id: "909a604e60e9225b",
+  listed: "EMU1101-EXT Light 1.5.4", caps, hard_stop: null, marker: "off", marker_word: "FFFFFFFF", slaves: 3, may_halt: true, may_release: false, ...m });
 const profile = (m: Partial<MasterView>, bus: "can" | "pack" = "can"): ProfileView => ({ gen: 1, bus, endpoint: "tcp:gw:4196", master: master(m), gates: null, at: 0 });
 const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
-const proof: PackPatch = { source: "user", release: "MAINT ≥ 1.5", caps, at: 1 };
+const proof: PackPatch = { source: "user", release: "EMU1101-EXT ≥ 1.5.4", caps, at: 1 };
 
 describe("firmware profile of the connection", () => {
   it("names the class the master reports, by capabilities and not by a version number", () => {
-    expect(profileLine(profile({}), tr("de"))).toEqual({ tone: "ok", text: "16.06.13 MAINT 1.5" });
-    expect(profileLine(profile({ marker: "on", slaves: 0 }), tr("en"))?.text).toBe("16.06.13 MAINT 1.5");
+    expect(profileLine(profile({}), tr("de"))).toEqual({ tone: "ok", text: "EMU1101-EXT Light 1.5.4" });
+    expect(profileLine(profile({ marker: "on", slaves: 0 }), tr("en"))?.text).toBe("EMU1101-EXT Light 1.5.4");
     // an unlisted build with the same capabilities: same configuration, named by version and base
-    const later = profile({ listed: null, version: "16.07.02 MAINT 1.6", patch: "1.6", base: "16.07.02" });
-    expect(profileLine(later, tr("de"))).toMatchObject({ text: "16.07.02 MAINT 1.6", title: "MAINT 1.6 (Basis 16.07.02, Build nicht gelistet) · Build 909a604e60e9225b" });
-    expect(patchName(later.master, tr("en"))).toBe("MAINT 1.6 (base 16.07.02, build not listed)");
-    expect(profileLine(profile({ kind: "unknown-patch", caps: null, version: "16.06.13 MAINT 1.4" }), tr("de"))?.text).toBe("Unbekannte Patch-Firmware 16.06.13 MAINT 1.4: nur Original-Funktionen");
+    const later = profile({ listed: null, version: "EMU1101-EXT Full 1.6.6", patch: "1.6", base: "16.07.02" });
+    expect(profileLine(later, tr("de"))).toMatchObject({ text: "EMU1101-EXT Full 1.6.6", title: "EMU1101-EXT Full 1.6.6 (Basis 16.07.02, Build nicht gelistet) · Build 909a604e60e9225b" });
+    expect(patchName(later.master, tr("en"))).toBe("EMU1101-EXT Full 1.6.6 (base 16.07.02, build not listed)");
+    expect(profileLine(profile({ kind: "unknown-patch", caps: null, version: "EMU1101-EXT 1.4.0" }), tr("de"))?.text).toBe("Unbekannte Patch-Firmware EMU1101-EXT 1.4.0: nur Original-Funktionen");
     expect(profileLine(profile({ kind: "no-0x64", caps: null }), tr("de"))?.text).toBe("0x64 nicht unterstützt, Firmwarestand nicht belegt");
     expect(profileLine(profile({ kind: "unknown", caps: null }), tr("en"))?.text).toBe("Firmware not recognised");
     // RS485-1/2 knows no 0x64: nothing to say
@@ -35,7 +35,7 @@ describe("firmware profile of the connection", () => {
     for (const lng of ["de", "en"]) expect(i18n.exists("profile.hardStopNotSeen", { lng })).toBe(false);
     expect(hardStopLine(null, undefined, tr("de"))).toBe("Hard-Stop: unbekannt");
     // an unknown OEM revision shows in the base
-    expect(profileLine(profile({ listed: null, base: "16.06.?", patch: "1.5", version: "16.06.? MAINT 1.5" }), tr("de"))?.text).toBe("16.06.? MAINT 1.5");
+    expect(profileLine(profile({ listed: null, base: "16.06.?", patch: "1.5.4", version: "EMU1101-EXT Light 1.5.4" }), tr("de"))?.text).toBe("EMU1101-EXT Light 1.5.4");
   });
   it("shows the master's release bits separately from its maintenance state", () => {
     // after a write to the master without a read-back: marked old, and „Erneut prüfen“ also for a recognised patch
@@ -94,7 +94,7 @@ describe("release bits of Group0 in a parameter column", () => {
 });
 
 describe("the power and clock lock (Group0 bit 3)", () => {
-  const live = (power_rtc: boolean | null): PackPatch => ({ source: "live", release: "16.06.13 MAINT 1.5", caps: { ...caps, power_rtc }, at: null });
+  const live = (power_rtc: boolean | null): PackPatch => ({ source: "live", release: "EMU1101-EXT Light 1.5.4", caps: { ...caps, power_rtc }, at: null });
   it("changes only via RS485-1/2, and not where the build has no such service", () => {
     expect(gateBits(live(true), false)).toMatchObject({ powerEditable: true, power: true });
     expect(gateBits(live(true), true)).toMatchObject({ powerEditable: false, power: true });
@@ -103,7 +103,7 @@ describe("the power and clock lock (Group0 bit 3)", () => {
   });
 });
 
-describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
+describe("the stored pack cutoff (Group0 bits 4 and 5, EMU1101-EXT Full)", () => {
   const live = (pack_cutoff: boolean | null): PackPatch => ({ source: "live", release: "16.06.13 MAINT 1.6", caps: { ...caps, power_rtc: true, pack_cutoff }, at: null });
   it("reads every bit as it is: 1 = an", () => {
     // FF: extended off locked, no lock (both an); EF: extended off (bit 4 aus); CF: extended off and locked (bits 4 and 5 aus)
@@ -121,7 +121,7 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
     expect(cutoffBits(null, false, 0xff)).toEqual({ cutoff: null, cutoffEditable: false });
   });
   it("takes only Group0 bit 1 from a file or another column, whatever firmware either side has", () => {
-    // OEM file FF onto an unproven MAINT pack E2: E0 (bit 1 from the file); a 1.5.3 source cannot switch on bit 4 of 1.6.3
+    // OEM file FF onto an unproven EMU1101-EXT pack E2: E0 (bit 1 from the file); a Light source cannot switch on bit 4 of a Full pack
     const take = (src: number, target: number) => (src & ~TAKE_OVER_KEEP) | (target & TAKE_OVER_KEEP);
     expect(take(0xff, 0xe2)).toBe(0xe2);
     expect(take(0xff, 0xef)).toBe(0xef);
@@ -165,10 +165,11 @@ describe("the stored pack cutoff (Group0 bits 4 and 5, MAINT 1.6)", () => {
 
 describe("the firmware a pack header names", () => {
   it("takes the version 64/03 proves when 0x51's short one fits it", () => {
-    expect(firmwareText("16.06", "16.06.13 MAINT 1.5")).toBe("16.06.13 MAINT 1.5");
+    expect(firmwareText("16.06", "EMU1101-EXT Light 1.5.4")).toBe("16.06 · EMU1101-EXT Light 1.5.4");
     expect(firmwareText("16.06", null)).toBe("16.06");
-    expect(firmwareText(undefined, "16.06.13 MAINT 1.5")).toBe("16.06.13 MAINT 1.5");
-    expect(firmwareText("16.05", "16.06.13 MAINT 1.5")).toBe("16.05 (16.06.13 MAINT 1.5)");
-    expect(firmwareText("16.06", "16.06.? MAINT 1.5")).toBe("16.06.? MAINT 1.5");
+    expect(firmwareText(undefined, "EMU1101-EXT Light 1.5.4")).toBe("EMU1101-EXT Light 1.5.4");
+    // TEMP(maint-1.6): the MAINT name carries its base
+    expect(firmwareText("16.06", "16.06.13 MAINT 1.6")).toBe("16.06.13 MAINT 1.6");
+    expect(firmwareText("16.05", "16.06.13 MAINT 1.6")).toBe("16.05 (16.06.13 MAINT 1.6)");
   });
 });

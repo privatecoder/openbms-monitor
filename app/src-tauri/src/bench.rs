@@ -1,6 +1,6 @@
 //! Flashing one board outside an installation („Platine flashen“): a search on any RS485-1/2 port, each pack with its
-//! String 2 and, where the build shows it there (MAINT 1.5.1/1.6.1), its maintenance marker. What the app knows about a
-//! board in an installation (patch proof, hard-stop sighting) is found by its String 2, not by a place. An older MAINT
+//! String 2 and, where the build shows it there (image flag bit 4), its maintenance marker. What the app knows about a
+//! board in an installation (patch proof, hard-stop sighting) is found by its String 2, not by a place. An older patch
 //! build shows its marker over the CAN socket only: „Steuern“ clears it there.
 
 use crate::maint::{self, MaintError};
@@ -91,7 +91,7 @@ pub async fn bench_scan(app: AppHandle, state: State<'_, AppState>, port: String
 }
 
 /// What a flash outside an installation does with the board's marker (`f`: its `rs485_marker` read), over RS485-1/2: "unchecked" (the build does not
-/// show it there: an older MAINT build or the original), "checked" (off, or on for an image with the maintenance
+/// show it there: an older patch build or the original), "checked" (off, or on for an image with the maintenance
 /// functions, which starts halted then), "released" (on, cleared before an image without them: an original image
 /// ignores the marker and would keep it hidden for a later patched one).
 pub fn bench_marker(link: &mut Connection, f: &Found, address: u8, image: ImageKind) -> Result<&'static str, MaintError> {
@@ -137,10 +137,10 @@ pub fn places_of(store: &Store, serial: &str) -> Result<Vec<(String, u8)>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openbms_proto::{MaintInfo, MaintState};
+    use openbms_proto::{ExtInfo, MaintState};
 
     fn found(word: Option<u32>, trusted: bool) -> Found {
-        let info = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 6], patch_rev: 1, build_id: [1; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0: true, reserved_flags: 0 , read_caps: 0};
+        let info = ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 6], patch_rev: 1, build_id: [1; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0: true, reserved_flags: 0 , read_caps: 0};
         Found { kind: if trusted { "patched" } else { "no-uart0" }, info: Some(info), state: word.map(|w| MaintState { marker_word: w, effective_slaves: 0 }), trusted, master: openbms_flash::maint::policy::Master::Unknown }
     }
 

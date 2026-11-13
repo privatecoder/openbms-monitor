@@ -19,7 +19,7 @@ const old = {
   keepMask(patch: PackPatch | null, uart1: boolean, group0: number | undefined) {
     const gate = old.gateBits(patch, uart1), cut = old.cutoffBits(patch, uart1, group0);
     const fixed = (gate.writeEditable ? 0 : 1) | (gate.startEditable ? 0 : 4) | (gate.powerEditable ? 0 : 8) | (cut.cutoffEditable ? 0 : 0x10);
-    // bits 6/7 (the hard stop choice) only through their own switch since MAINT 1.6.3
+    // bits 6/7 (the hard stop choice) only through their own switch in EMU1101-EXT Full
     return 0xE0 | (uart1 || gate.named ? fixed : 0);
   },
   writeLocked: (patch: PackPatch | null, uart1: boolean, group0: number | undefined) => uart1 && !!patch?.caps.write_gate && group0 !== undefined && (group0 & 1) === 0,

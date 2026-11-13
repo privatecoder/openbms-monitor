@@ -4,6 +4,16 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+## 0.4.0-beta — 2026-11-13
+
+- The patched firmware is now called EMU1101-EXT: Light (1.5.x) and Full (1.6.x). The app reads its identity with the signature `EXT` (format 05, 21 bytes) and supports Light from 1.5.4 and Full from 1.6.4, plus for now the first MAINT 1.6; the original firmware releases stay supported. The four releases Light 1.5.4/1.5.5 and Full 1.6.4/1.6.5 are listed by checksum; builds before them (MAINT 1.5.3, 1.6.3 and older) count as unknown patch firmware. Names, help and texts use the new wording throughout. A stored proof that names an older MAINT build no longer counts; the pack's live identity proves it again.
+- A late device-info answer whose name starts with `EXT` or `MNT` is no longer taken for the firmware identity.
+- A malformed answer with an odd number of data digits (ASCII) or an odd byte count (Modbus) is an error instead of stopping the poll.
+- Access matrix: a cell with several ways names the firmware need of the way its state comes from (e.g. the master's Modbus serial number from OEM 16.06.11 next to the binary one of EMU1101-EXT).
+- Flash result: for an EMU1101-EXT image the version the pack reports afterwards is compared with the image's OEM base; a different one is named.
+- Help and hints: the CAN socket's functions with EMU1101-EXT (clock, on/off, restart, serial numbers, diagnostics), the restart with Full's SOC save and its RTN 08 refusal, the flash sequence, the bootloader recovery for a pack that hangs in its bootloader, and the function switch 0 bits are described as they are now.
+- Release workflow: `latest.json` is written only with a signature of its own for each of the three platforms.
+
 ## 0.3.9-beta — 2026-11-10
 
 - 0.3.8-beta could keep "Connect" locked as "loading" on its first start: taking over the pack selection remembered on this computer emptied the installation settings and nothing read them again (until another installation was chosen). Settings are read again at once now, and a read started before is not taken.
@@ -57,7 +67,7 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 - About view: version, links to the repository, releases, protocol docs and license, the data folder, and this changelog.
 - BMS history archive: every history read is stored per installation and board (checked before and after the read), deduplicated, shown without a connection, exported as CSV and carried in the installation export (`bms-history.jsonl`).
-- MAINT 1.5.4/1.6.4: the firmware identity reports read capabilities (format MNT05); the BMS history is read via the CAN socket where reported; remote diagnosis reads the calibration (active and both stored copies), the stored capacity and SOC against the live values, and the full-width energy counters.
+- EMU1101-EXT Light 1.5.4 / Full 1.6.4: the firmware identity reports read capabilities (format 05); the BMS history is read via the CAN socket where reported; remote diagnosis reads the calibration (active and both stored copies), the stored capacity and SOC against the live values, and the full-width energy counters.
 - Reconnect also runs while the window is hidden, with growing pauses (1, 2, 4, 8, 16 min, then every 30 min, ten attempts).
 - Release workflow: release notes come from this changelog; the temporary `.app.tar.gz` is removed after the upload.
 

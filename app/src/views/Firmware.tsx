@@ -361,7 +361,7 @@ function FlashCompare({ c, image }: { c: FlashComparison; image: FirmwareImage |
   );
 }
 
-/** Before a flash: the target's stored state against its live one (0x64/06, MNT format 5), read on demand on the flash
+/** Before a flash: the target's stored state against its live one (0x64/06, read-capability bits), read on demand on the flash
  *  target itself (its port and address, quiet bus), bound to them by the key above. Only information: a flash restarts the
  *  board, which starts from its stored state; nothing here is a condition for flashing. */
 function FlashSocNote({ port, address, locked }: { port: string; address: number; locked: boolean }) {

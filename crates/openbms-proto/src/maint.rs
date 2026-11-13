@@ -1,17 +1,16 @@
-//! CID2 0x64: identity and maintenance mode of a patched master firmware (16.06.13 `_MAINT`), over the CAN socket bus;
-//! builds with image flag bit 4 (MNT format 4, MAINT 1.5.1/1.6.1) also answer status, clear and identity over RS485-1/2
-//! at their own address.
+//! CID2 0x64: identity and maintenance mode of the EMU1101-EXT firmware (Light 1.5.x, Full 1.6.x on OEM 16.06.13), over
+//! the CAN socket bus; with image flag bit 4 also status, clear and identity over RS485-1/2 at the pack's own address.
 //!
 //! The patch keeps a persistent marker in flash. While it is set, the master treats its slave count as 0: it stops
 //! polling the pack bus (RS485-1/2) and answers there itself, so its parameters can be read and it can be updated.
-//! Original firmware answers 0x64 with RTN 04 (unknown command); slaves never answer 0x64.
+//! Original firmware answers 0x64 with RTN 04 (unknown command). Over the CAN socket status, start and stop answer only
+//! at the master (address 0); identity and the reads 04–06 at every pack's own address.
 //!
-//! `INFO=03` reads the identity ([`MaintInfo`], no runtime state; newer builds answer it at every pack's own address, the
-//! address only in the frame): format 2 with 17 bytes, format 3 with 18 bytes and
-//! an image flag byte (bit 0: the hard-stop patch is compiled in), format 4 with 19 bytes (a third patch byte) or format 5 with
-//! 21 bytes (format 4 plus a big-endian read-capability mask, MAINT 1.5.4/1.6.4). `INFO=02` reads the state
-//! ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout holds only once a format-2
-//! identity of a supported build was read on the same connection.
+//! `INFO=03` reads the identity ([`ExtInfo`], no runtime state; answered at every pack's own address, the address only
+//! in the frame): signature `EXT`, format 05, 21 bytes (OEM base, patch version, build ID, image flags, big-endian
+//! read-capability mask). TEMP(maint-1.6): the first MAINT 1.6 answers signature `MNT`, format 3 with 18 bytes.
+//! `INFO=02` reads the state ([`MaintState`], 5 bytes); start and stop answer with the same 5 bytes. The 5-byte layout
+//! holds only once the identity of a supported build was read on the same connection.
 
 use crate::access::{FLAG_CHECKPOINT, FLAG_CUTOFF, FLAG_DIAGNOSIS, FLAG_HARD_STOP, FLAG_HARD_STOP_ON, FLAG_POSITIVE, FLAG_POWER, FLAG_UART0};
 use crate::error::{Error, Result};
@@ -20,7 +19,9 @@ use serde::Serialize;
 
 /// Release value that guards start and stop against accidental frames (not an authentication).
 const TOKEN: [u8; 2] = [0xC3, 0x5A];
-const SIGNATURE: &[u8; 3] = b"MNT";
+const SIGNATURE: &[u8; 3] = b"EXT";
+/// TEMP(maint-1.6): the signature of the first MAINT 1.6 (`temp16`)
+const SIGNATURE_MNT: &[u8; 3] = b"MNT";
 
 /// The raw marker word, as read from flash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -98,7 +99,7 @@ fn check_address(address: u8) -> Result<()> {
     Ok(())
 }
 
-/// Answer to `0x64 INFO=04` (MAINT 1.5.3/1.6.3, image flag bit 5): the stored parameter and SOC copies as read straight
+/// Answer to `0x64 INFO=04` (image flag bit 5): the stored parameter and SOC copies as read straight
 /// from flash, nothing repaired or changed. Two valid copies that differ do not tell which is newer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MemoryDiagnosis {
@@ -158,25 +159,27 @@ impl MemoryDiagnosis {
     }
 }
 
-/// The lowest supported build of the 1.5 line and of the 1.6 line and later (major, minor, revision).
-pub const SUPPORTED_15: [u8; 3] = [1, 5, 3];
-pub const SUPPORTED_16: [u8; 3] = [1, 6, 3];
+/// The lowest supported build of the Light line (1.5) and of the Full line (1.6) and later (major, minor, revision):
+/// the first EXT05 builds.
+pub const SUPPORTED_15: [u8; 3] = [1, 5, 4];
+pub const SUPPORTED_16: [u8; 3] = [1, 6, 4];
 
-/// Whether the app supports a patch version (major, minor, revision): from 1.5.3 in the 1.5 line, from 1.6.3 on. One
-/// rule for a live identity (`MaintInfo::supported`) and a stored proof's release name (`profile::release_patch`).
+/// Whether the app supports a patch version (major, minor, revision): from Light 1.5.4, from Full 1.6.4 on. One
+/// rule for a live identity (`ExtInfo::supported`) and a stored proof's release name (`profile::release_patch`).
 pub fn supported_version(v: [u8; 3]) -> bool {
     v >= SUPPORTED_16 || (SUPPORTED_15 <= v && v < [1, 6, 0])
 }
 
 /// TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF), the one build below the support boundary the app still supports,
-/// until the installation runs 1.6.3. Every exception for it asks here. To drop it: this module and its uses, its entry
+/// until the installation runs EMU1101-EXT Full. Every exception for it asks here. To drop it: this module and its uses, its entry
 /// in `openbms_flash::known::PATCH_BUILDS` and every place marked TEMP(maint-1.6) (tests, doc comments, the help texts in
-/// `tools/gen_help.py` and `tools/param_help.py`). The format-3 decoding stays: it shows older builds as unsupported.
+/// `tools/gen_help.py` and `tools/param_help.py`). With it go the `MNT` signature and the format-3 decoding
+/// (`ExtInfo::classify`).
 pub mod temp16 {
-    use super::MaintInfo;
+    use super::ExtInfo;
 
     /// MNT format, patch version, build ID and image flags (06: power/clock and the pack cutoff; bit 3 at 0 allows power
-    /// and clock, unlike 1.5.3/1.6.3)
+    /// and clock, unlike EMU1101-EXT)
     pub const FORMAT: u8 = 3;
     pub const PATCH: [u8; 2] = [1, 6];
     pub const BUILD: &str = "18daf61d8a93671d";
@@ -184,7 +187,7 @@ pub mod temp16 {
     pub const FLAGS: u8 = 0x06;
 
     /// This build's live identity, by its build ID (no other format-3 1.6).
-    pub fn is(info: &MaintInfo) -> bool {
+    pub fn is(info: &ExtInfo) -> bool {
         info.format == FORMAT && info.patch == PATCH && info.build_id == BUILD_ID
     }
 
@@ -194,35 +197,36 @@ pub mod temp16 {
     }
 }
 
-/// Format-2, -3, -4 or -5 answer to `0x64 INFO=03`: which build the master runs. No runtime state.
+/// The `EXT05` answer to `0x64 INFO=03` (TEMP(maint-1.6): or the `MNT` format 3): which build the pack runs. No runtime
+/// state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MaintInfo {
+pub struct ExtInfo {
     pub format: u8,
     /// OEM base major, minor, revision (16.06.13 = `[0x10, 0x06, 0x0D]`; revision `FF`: unknown)
     pub base: [u8; 3],
     /// patch version major, minor
     pub patch: [u8; 2],
-    /// formats 4 and 5: the third patch byte (MAINT 1.6.1 → 1); 0 with formats 2 and 3
+    /// format 5: the third patch byte (Full 1.6.5 → 5); 0 with format 3
     pub patch_rev: u8,
     /// identifies the build (not an authentication of the device)
     pub build_id: [u8; 8],
-    /// image flag bit 0: the hard-stop patch is compiled in, fixed by the image; None with format 2 (not reported) and
-    /// with a configurable hard stop (flag bit 7, format 4: bit 0 is then only the default, `hard_stop_default`)
+    /// image flag bit 0: the hard-stop patch is compiled in, fixed by the image; None with a configurable hard stop (flag
+    /// bit 7, format 5: bit 0 is then only the default, `hard_stop_default`)
     pub hard_stop: Option<bool>,
-    /// format 3, image flag bit 1: ein/aus, restart and the clock over the CAN socket (0x45/0x4D/0x4E) with the shared
-    /// lock Group0 bit 3 are compiled in; false with format 2 (no such build)
+    /// image flag bit 1: on/off, restart and the clock over the CAN socket (0x45/0x4D/0x4E) with the shared lock Group0
+    /// bit 3 are compiled in
     pub power_rtc: bool,
-    /// format 3, image flag bit 2: the stored pack cutoff of MAINT 1.6 (Group0 bit 4 extended off, bit 5 the lock state)
-    /// is compiled in; a capability, never the lock itself; false with format 2
+    /// image flag bit 2: the stored pack cutoff of the Full line (Group0 bit 4 extended off, bit 5 the lock state) is
+    /// compiled in; a capability, never the lock itself
     pub pack_cutoff: bool,
-    /// image flag bit 4 (format 4): status `02`, clear `00` and identity `03` also over RS485-1/2 (UART0) at the pack's
+    /// image flag bit 4 (format 5): status `02`, clear `00` and identity `03` also over RS485-1/2 (UART0) at the pack's
     /// own address; the start stays on the CAN socket
     pub uart0: bool,
     /// image flag bits 3 and 5–7 as reported, and bit 0 where it is only the default of a configurable hard stop (bit 3:
-    /// the positive Group0 bits 3/4; format 4: bit 5 the 64/04 diagnosis, bit 6 the SOC checkpoint before a planned
-    /// restart, bit 7 the configurable hard stop; read through the methods below); 0 with format 2
+    /// the Group0 bits 3/4 enable at 1; format 5: bit 5 the 64/04 diagnosis, bit 6 the SOC checkpoint before a planned
+    /// restart, bit 7 the configurable hard stop; read through the methods below)
     pub reserved_flags: u8,
-    /// format 5: the read-capability mask (bit n = `CAP_*`), only known bits (`CAPS_KNOWN`); 0 with formats 2–4
+    /// format 5: the read-capability mask (bit n = `CAP_*`), only known bits (`CAPS_KNOWN`); 0 with format 3
     pub read_caps: u16,
 }
 
@@ -238,23 +242,19 @@ pub const CAPS_KNOWN: u16 = 0x000F;
 /// What an RTN 00 answer to `0x64 INFO=03` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoAnswer {
-    /// the 17-byte format-2, the 18-byte format-3, the 19-byte format-4 or the 21-byte format-5 identity
-    Known(MaintInfo),
-    /// `MNT` with another format or length (e.g. the historic 22-byte format 1), or a format-5 mask with unknown bits:
-    /// a patch the app does not
-    /// know, never decoded
+    /// the 21-byte `EXT05` identity (TEMP(maint-1.6): or the 18-byte `MNT` format 3)
+    Known(ExtInfo),
+    /// `EXT` (or `MNT`) with another format or length, or a mask with unknown bits: a patch the app does not know, never
+    /// decoded
     OtherFormat,
-    /// no `MNT` signature: not an identity
+    /// no `EXT` or `MNT` signature: not an identity
     Broken,
 }
 
-impl MaintInfo {
-    /// format 2: 17 bytes; format 3: 18 bytes (the image flags after the build ID); format 4: 19 bytes (a third patch
-    /// byte before the build ID)
-    pub const LEN: usize = 17;
+impl ExtInfo {
+    /// `EXT05`: 21 bytes; TEMP(maint-1.6): `MNT` format 3, 18 bytes (no third patch byte, no mask)
+    pub const LEN: usize = 21;
     pub const LEN3: usize = 18;
-    pub const LEN4: usize = 19;
-    pub const LEN5: usize = 21;
     /// the revision byte of an unknown OEM revision
     pub const REVISION_UNKNOWN: u8 = 0xFF;
 
@@ -270,75 +270,95 @@ impl MaintInfo {
         encode_request(address, 0x64, &[0x03])
     }
 
-    /// Exactly the 17-byte format 2, the 18-byte format 3, the 19-byte format 4 or the 21-byte format 5.
+    /// Exactly the 21-byte `EXT05` (TEMP(maint-1.6): or the 18-byte `MNT` format 3).
     pub fn parse(info: &[u8]) -> Result<Self> {
         match Self::classify(info) {
             InfoAnswer::Known(i) => Ok(i),
-            _ => Err(Error::Layout("0x64/03 answer is none of the MNT formats 2 (17 bytes), 3 (18), 4 (19) or 5 (21)")),
+            _ => Err(Error::Layout("0x64/03 answer is not EXT format 05 with 21 bytes")),
         }
     }
 
+    /// Whether `info` is shaped like a `64/03` identity at all: a signature, a format byte 01–1F and at most
+    /// `IDENTITY_MAX` bytes. Other answers that only start with `EXT`/`MNT` never count as an identity, not even as an
+    /// unknown one: a 0x51 device name has a printable character or NUL padding after them and 32 bytes in all.
+    pub fn identity_shaped(info: &[u8]) -> bool {
+        (4..=Self::IDENTITY_MAX).contains(&info.len()) && (&info[0..3] == SIGNATURE || &info[0..3] == SIGNATURE_MNT) && (0x01..0x20).contains(&info[3])
+    }
+
+    /// The longest INFO an unknown identity format may have to be taken as one (the known ones have 18 and 21 bytes).
+    pub const IDENTITY_MAX: usize = 24;
+
     pub fn classify(info: &[u8]) -> InfoAnswer {
-        if info.len() < 4 || &info[0..3] != SIGNATURE {
+        if info.len() < 3 {
             return InfoAnswer::Broken;
         }
-        // format 4 has a third patch byte, so its build ID and flags sit one byte later; format 5 appends the mask
-        let (rev, id) = match (info[3], info.len()) {
-            (2, Self::LEN) | (3, Self::LEN3) => (0, 9),
-            (4, Self::LEN4) | (5, Self::LEN5) => (info[9], 10),
-            _ => return InfoAnswer::OtherFormat,
+        let sig = &info[0..3];
+        if info.len() == 3 {
+            // a signature without a format byte
+            return if sig == SIGNATURE || sig == SIGNATURE_MNT { InfoAnswer::OtherFormat } else { InfoAnswer::Broken };
+        }
+        // EXT05: a third patch byte, so the build ID starts at 10, the flags at 18, the mask at 19–20
+        let ext = if sig == SIGNATURE && info[3] == 5 && info.len() == Self::LEN {
+            true
+        } else if sig == SIGNATURE_MNT && info[3] == 3 && info.len() == Self::LEN3 {
+            // TEMP(maint-1.6): MNT format 3, build ID at 9, flags at 17
+            false
+        } else if sig == SIGNATURE || sig == SIGNATURE_MNT {
+            return InfoAnswer::OtherFormat;
+        } else {
+            return InfoAnswer::Broken;
         };
-        let read_caps = if info[3] == 5 { u16::from_be_bytes([info[19], info[20]]) } else { 0 };
+        let (rev, id) = if ext { (info[9], 10) } else { (0, 9) };
+        let read_caps = if ext { u16::from_be_bytes([info[19], info[20]]) } else { 0 };
         if read_caps & !CAPS_KNOWN != 0 {
             return InfoAnswer::OtherFormat;
         }
-        let f4 = info[3] >= 4;
-        let flags = if info[3] == 2 { None } else { Some(info[id + 8]) };
-        let bit = |b: u8| flags.is_some_and(|f| f & (1 << b) != 0);
-        // bit 4 only from format 4; bit 3 and 5–7 kept as reported
-        let uart0 = f4 && bit(FLAG_UART0);
-        // a configurable hard stop (from format 4, bit 7) keeps bit 0 as its default, not as a compiled-in hard stop
-        let configurable = f4 && bit(FLAG_HARD_STOP);
-        let reserved_flags = flags.map_or(0, |f| f & if f4 { 0xE8 | u8::from(configurable) } else { 0xF8 });
+        let flags = info[id + 8];
+        let bit = |b: u8| flags & (1 << b) != 0;
+        // bit 4 only in EXT05; bit 3 and 5–7 kept as reported
+        let uart0 = ext && bit(FLAG_UART0);
+        // a configurable hard stop (EXT05, bit 7) keeps bit 0 as its default, not as a compiled-in hard stop
+        let configurable = ext && bit(FLAG_HARD_STOP);
+        let reserved_flags = flags & if ext { 0xE8 | u8::from(configurable) } else { 0xF8 };
         let mut build_id = [0u8; 8];
         build_id.copy_from_slice(&info[id..id + 8]);
         InfoAnswer::Known(Self {
             format: info[3], base: [info[4], info[5], info[6]], patch: [info[7], info[8]], patch_rev: rev, build_id,
-            hard_stop: flags.filter(|_| !configurable).map(|f| f & (1 << FLAG_HARD_STOP_ON) != 0), power_rtc: bit(FLAG_POWER), pack_cutoff: bit(FLAG_CUTOFF), uart0, reserved_flags,
+            hard_stop: (!configurable).then_some(bit(FLAG_HARD_STOP_ON)), power_rtc: bit(FLAG_POWER), pack_cutoff: bit(FLAG_CUTOFF), uart0, reserved_flags,
             read_caps,
         })
     }
 
-    /// The image flag byte as reported (formats 3 and 4); a format-2 identity reports none: 0.
+    /// The image flag byte as reported.
     pub fn image_flags(&self) -> u8 {
         (u8::from(self.hard_stop == Some(true)) << FLAG_HARD_STOP_ON) | (u8::from(self.power_rtc) << FLAG_POWER) | (u8::from(self.pack_cutoff) << FLAG_CUTOFF)
             | (u8::from(self.uart0) << FLAG_UART0)
             | self.reserved_flags
     }
 
-    fn format4_flag(&self, bit: u8) -> bool {
-        self.format >= 4 && self.reserved_flags & (1 << bit) != 0
+    fn ext_flag(&self, bit: u8) -> bool {
+        self.format == 5 && self.reserved_flags & (1 << bit) != 0
     }
 
-    /// Image flag bit 3: Group0 bits 3/4 positive (bit 3 at 1 allows power and clock, bit 4 at 1 the extended off).
+    /// Image flag bit 3: the Group0 bits 3/4 enable at 1 (bit 3 at 1 allows power and clock, bit 4 at 1 the extended off).
     pub fn positive(&self) -> bool {
         self.reserved_flags & (1 << FLAG_POSITIVE) != 0
     }
 
-    /// Format 4, image flag bit 5: the memory diagnosis `0x64/04` over RS485-1/2 and the CAN socket (MAINT 1.5.3/1.6.3).
+    /// Image flag bit 5: the memory diagnosis `0x64/04` over RS485-1/2 and the CAN socket.
     pub fn diagnostics(&self) -> bool {
-        self.format4_flag(FLAG_DIAGNOSIS)
+        self.ext_flag(FLAG_DIAGNOSIS)
     }
 
-    /// Format 4, image flag bit 6: a planned restart (0x45/06) first saves the SOC record verified into both copies; a
-    /// memory error answers RTN 08 and does not restart (MAINT 1.6.3).
+    /// Image flag bit 6 (Full): a planned restart (0x45/06) first saves the SOC record verified into both copies; a
+    /// memory error answers RTN 08 and does not restart.
     pub fn checkpoint(&self) -> bool {
-        self.format4_flag(FLAG_CHECKPOINT)
+        self.ext_flag(FLAG_CHECKPOINT)
     }
 
-    /// Format 4, image flag bit 7: the hard stop at a recharge pause is chosen by Group0 bits 6/7 (MAINT 1.6.3).
+    /// Image flag bit 7 (Full): the hard stop at a recharge pause is chosen by Group0 bits 6/7.
     pub fn hard_stop_configurable(&self) -> bool {
-        self.format4_flag(FLAG_HARD_STOP)
+        self.ext_flag(FLAG_HARD_STOP)
     }
 
     /// The default a configurable hard stop takes while Group0 bit 7 is 1 (image flag bit 0); None: not configurable.
@@ -351,11 +371,11 @@ impl MaintInfo {
         self.read_caps & (1 << bit) != 0
     }
 
-    /// Whether the app supports this build's patch functions: MNT format 4 or 5 from MAINT 1.5.3 in the 1.5 line and
-    /// from 1.6.3 on. Below, the patch is shown but treated like the original firmware.
+    /// Whether the app supports this build's patch functions: EXT05 from Light 1.5.4 and from Full 1.6.4 on. Below, the
+    /// patch is shown but treated like the original firmware.
     pub fn supported(&self) -> bool {
         // TEMP(maint-1.6)
-        temp16::is(self) || (matches!(self.format, 4 | 5) && supported_version([self.patch[0], self.patch[1], self.patch_rev]))
+        temp16::is(self) || (self.format == 5 && supported_version([self.patch[0], self.patch[1], self.patch_rev]))
     }
 
     /// The build ID as 16 lower-case hex digits (as the catalog lists it).
@@ -369,14 +389,30 @@ impl MaintInfo {
         if c == Self::REVISION_UNKNOWN { format!("{a}.{b:02}.?") } else { format!("{a}.{b:02}.{c:02}") }
     }
 
-    /// "1.5", or with format 4 "1.6.1"
+    /// "1.5.5"; TEMP(maint-1.6): the format-3 build "1.6"
     pub fn patch_text(&self) -> String {
-        if self.format >= 4 { format!("{}.{}.{}", self.patch[0], self.patch[1], self.patch_rev) } else { format!("{}.{}", self.patch[0], self.patch[1]) }
+        if self.format == 5 { format!("{}.{}.{}", self.patch[0], self.patch[1], self.patch_rev) } else { format!("{}.{}", self.patch[0], self.patch[1]) }
     }
 
-    /// "16.06.13 MAINT 1.5", "16.06.13 MAINT 1.6.1"
+    /// The display name: "EMU1101-EXT Light 1.5.5", "EMU1101-EXT Full 1.6.5" (another line: "EMU1101-EXT 1.7.0"); the
+    /// OEM base is `base_text`. TEMP(maint-1.6): the `MNT` build keeps "16.06.13 MAINT 1.6".
     pub fn version(&self) -> String {
-        format!("{} MAINT {}", self.base_text(), self.patch_text())
+        if self.format != 5 {
+            return format!("{} MAINT {}", self.base_text(), self.patch_text());
+        }
+        match line_name(self.patch) {
+            Some(line) => format!("EMU1101-EXT {line} {}", self.patch_text()),
+            None => format!("EMU1101-EXT {}", self.patch_text()),
+        }
+    }
+}
+
+/// The line of a patch version: "Light" (1.5), "Full" (1.6); None for another.
+pub fn line_name(patch: [u8; 2]) -> Option<&'static str> {
+    match patch {
+        [1, 5] => Some("Light"),
+        [1, 6] => Some("Full"),
+        _ => None,
     }
 }
 
@@ -384,169 +420,147 @@ impl MaintInfo {
 mod tests {
     use super::*;
 
-    /// The 17 INFO bytes of the documented MAINT 1.5 identity.
-    fn info15() -> Vec<u8> {
-        let mut v = b"MNT".to_vec();
-        v.extend_from_slice(&[0x02, 0x10, 0x06, 0x0D, 0x01, 0x05, 0x90, 0x9A, 0x60, 0x4E, 0x60, 0xE9, 0x22, 0x5B]);
-        v
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
     }
+
+    /// The INFO bytes of the four releases (EMU1101-EXT Light 1.5.4/1.5.5, Full 1.6.4/1.6.5).
+    const LIGHT_154: &str = "4558540510060D010504FFE3ACF7E52BED803A000F";
+    const LIGHT_155: &str = "4558540510060D010505082CB731C006AAC53A000F";
+    const FULL_164: &str = "4558540510060D0106044F4D2715C9EE553CFE000F";
+    const FULL_165: &str = "4558540510060D01060513464FC91A6E6A20FE000F";
+    /// TEMP(maint-1.6): the first MAINT 1.6, MNT format 3
+    const TEMP_16: &str = "4D4E540310060D010618DAF61D8A93671D06";
 
     #[test]
     fn frames_match_the_patch_documentation() {
         assert_eq!(MaintState::request().unwrap(), b"~20004664E00202FD31\r");
         assert_eq!(MaintState::set_request(true).unwrap(), b"~20004664A00601C35AFC46\r");
         assert_eq!(MaintState::set_request(false).unwrap(), b"~20004664A00600C35AFC47\r");
-        assert_eq!(MaintInfo::request().unwrap(), b"~20004664E00203FD30\r");
+        assert_eq!(ExtInfo::request().unwrap(), b"~20004664E00203FD30\r");
     }
 
     #[test]
-    fn the_identity_has_17_bytes_format_2() {
-        let i = MaintInfo::parse(&info15()).unwrap();
-        assert_eq!((i.format, i.base, i.patch), (2, [16, 6, 13], [1, 5]));
-        assert_eq!(i.build_id_hex(), "909a604e60e9225b");
-        assert_eq!(i.version(), "16.06.13 MAINT 1.5");
-        // through a frame: LENGTH C022 carries the 34 hex digits
-        let f = crate::frame::parse(&crate::frame::encode_request(0, 0, &info15()).unwrap()).unwrap();
-        assert_eq!(MaintInfo::classify(&f.info), InfoAnswer::Known(i));
+    fn the_ext05_identity_has_21_bytes() {
+        let a = ExtInfo::parse(&hex(LIGHT_155)).unwrap();
+        assert_eq!((a.format, a.base, a.patch, a.patch_rev), (5, [16, 6, 13], [1, 5], 5));
+        assert_eq!((a.build_id_hex(), a.image_flags(), a.read_caps), ("082cb731c006aac5".to_string(), 0x3A, 0x0F));
+        assert_eq!((a.version(), a.base_text()), ("EMU1101-EXT Light 1.5.5".to_string(), "16.06.13".to_string()));
+        assert_eq!((a.diagnostics(), a.checkpoint(), a.hard_stop_configurable(), a.positive(), a.uart0), (true, false, false, true, true));
+        assert_eq!((a.power_rtc, a.pack_cutoff, a.hard_stop, a.supported()), (true, false, Some(false), true));
+        let b = ExtInfo::parse(&hex(FULL_165)).unwrap();
+        assert_eq!((b.version(), b.build_id_hex(), b.image_flags()), ("EMU1101-EXT Full 1.6.5".to_string(), "13464fc91a6e6a20".to_string(), 0xFE));
+        assert_eq!((b.diagnostics(), b.checkpoint(), b.hard_stop_configurable(), b.hard_stop, b.hard_stop_default()), (true, true, true, None, Some(false)));
+        assert_eq!((b.pack_cutoff, b.positive(), b.supported()), (true, true, true));
+        assert!([CAP_HISTORY, CAP_CALIBRATION, CAP_SOC_STORE, CAP_ENERGY].iter().all(|&c| a.cap(c) && b.cap(c)));
+        // .4 and .5 differ only by version and build ID
+        let (a4, b4) = (ExtInfo::parse(&hex(LIGHT_154)).unwrap(), ExtInfo::parse(&hex(FULL_164)).unwrap());
+        assert_eq!((a4.version(), a4.build_id_hex()), ("EMU1101-EXT Light 1.5.4".to_string(), "ffe3acf7e52bed80".to_string()));
+        assert_eq!((b4.version(), b4.build_id_hex()), ("EMU1101-EXT Full 1.6.4".to_string(), "4f4d2715c9ee553c".to_string()));
+        assert_eq!((a4.image_flags(), a4.read_caps, b4.image_flags(), b4.read_caps), (0x3A, 0x0F, 0xFE, 0x0F));
+        assert!(a4.supported() && b4.supported());
+        // through a frame: LENGTH 402A carries the 42 hex digits, 60 frame bytes in all
+        let frame = crate::frame::encode_request(0, 0, &hex(FULL_165)).unwrap();
+        assert_eq!((&frame[9..13], frame.len()), (&b"402A"[..], 60));
+        assert_eq!(ExtInfo::classify(&crate::frame::parse(&frame).unwrap().info), InfoAnswer::Known(b));
     }
 
     #[test]
-    fn other_layouts_are_never_read_as_format_2() {
-        let good = info15();
-        // the historic 22-byte format 1
-        let mut f1 = b"MNT".to_vec();
-        f1.extend_from_slice(&[1, 16, 6, 13, 1, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0xFE, 0x38, 0x19, 0x85, 0xBF, 0xFF, 0x8A, 0xD0]);
-        assert_eq!(MaintInfo::classify(&f1), InfoAnswer::OtherFormat);
-        assert_eq!(MaintInfo::classify(&good[..16]), InfoAnswer::OtherFormat);
-        assert_eq!(MaintInfo::classify(&[good.clone(), vec![0]].concat()), InfoAnswer::OtherFormat);
-        let mut f3 = good.clone();
-        f3[3] = 3;
-        assert_eq!(MaintInfo::classify(&f3), InfoAnswer::OtherFormat);
-        let mut broken = good.clone();
-        broken[0] = b'X';
-        assert_eq!(MaintInfo::classify(&broken), InfoAnswer::Broken);
-        assert_eq!(MaintInfo::classify(&[]), InfoAnswer::Broken);
-        assert!(MaintInfo::parse(&f1).is_err());
-    }
-
-    /// The 18 INFO bytes of a format-3 identity (the documented example) with image flags `flags`.
-    fn info3(revision: u8, flags: u8) -> Vec<u8> {
-        let mut v = b"MNT".to_vec();
-        v.extend_from_slice(&[0x03, 0x10, 0x06, revision, 0x01, 0x05, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, flags]);
-        v
-    }
-
-    #[test]
-    fn format_3_has_18_bytes_and_reports_the_hard_stop() {
-        let on = MaintInfo::parse(&info3(0x0D, 0x01)).unwrap();
-        assert_eq!((on.format, on.base, on.patch, on.hard_stop), (3, [16, 6, 13], [1, 5], Some(true)));
-        assert_eq!(on.build_id_hex(), "0123456789abcdef");
-        assert_eq!(on.version(), "16.06.13 MAINT 1.5");
-        assert_eq!(MaintInfo::parse(&info3(0x0D, 0x00)).unwrap().hard_stop, Some(false));
-        // other bits do not set it
-        assert_eq!(MaintInfo::parse(&info3(0x0D, 0xFE)).unwrap().hard_stop, Some(false));
-        // format 2 does not report it
-        assert_eq!(MaintInfo::parse(&info15()).unwrap().hard_stop, None);
-        // bit 1: power and clock over the CAN socket, independent of the hard stop
-        assert!(!on.power_rtc);
-        let pr = MaintInfo::parse(&info3(0x0D, 0x02)).unwrap();
-        assert_eq!((pr.hard_stop, pr.power_rtc), (Some(false), true));
-        assert!(MaintInfo::parse(&info3(0x0D, 0x03)).unwrap().power_rtc);
-        assert!(!MaintInfo::parse(&info3(0x0D, 0xFD)).unwrap().power_rtc);
-        assert!(!MaintInfo::parse(&info15()).unwrap().power_rtc);
-        // through a frame: LENGTH A024 carries the 36 hex digits
-        let frame = crate::frame::encode_request(0, 0, &info3(0x0D, 0x01)).unwrap();
-        assert_eq!(&frame[9..13], b"A024");
-        assert_eq!(MaintInfo::classify(&crate::frame::parse(&frame).unwrap().info), InfoAnswer::Known(on));
-    }
-
-    #[test]
-    fn image_flag_bit_2_is_the_pack_cutoff_capability() {
-        // the measured 1.6 identity: 16.06.13, patch 1.6, flags 06 (power and clock, pack cutoff; no hard stop)
-        let raw: Vec<u8> = (0..18).map(|i| u8::from_str_radix(&"4D4E540310060D010618DAF61D8A93671D06"[2 * i..2 * i + 2], 16).unwrap()).collect();
-        let i = MaintInfo::parse(&raw).unwrap();
-        assert_eq!((i.format, i.patch, i.hard_stop, i.power_rtc, i.pack_cutoff), (3, [1, 6], Some(false), true, true));
-        assert_eq!((i.build_id_hex(), i.version()), ("18daf61d8a93671d".to_string(), "16.06.13 MAINT 1.6".to_string()));
-        // with the hard stop 07; other bits do not set it
-        assert!(MaintInfo::parse(&info3(0x0D, 0x07)).unwrap().pack_cutoff);
-        assert!(MaintInfo::parse(&info3(0x0D, 0x04)).unwrap().pack_cutoff);
-        assert!(!MaintInfo::parse(&info3(0x0D, 0xFB)).unwrap().pack_cutoff);
-        assert!(!MaintInfo::parse(&info3(0x0D, 0x02)).unwrap().pack_cutoff);
-        assert!(!MaintInfo::parse(&info15()).unwrap().pack_cutoff, "format 2 has no image flags");
-    }
-
-    #[test]
-    fn an_unknown_oem_revision_shows_as_question_mark() {
-        let i = MaintInfo::parse(&info3(0xFF, 0x00)).unwrap();
-        assert_eq!((i.base_text(), i.version()), ("16.06.?".to_string(), "16.06.? MAINT 1.5".to_string()));
-    }
-
-    #[test]
-    fn wrong_lengths_and_other_formats_are_rejected() {
-        // format 3 with 17 bytes, format 2 with 18 bytes, format 4 with 18 bytes, format 5
-        assert_eq!(MaintInfo::classify(&info3(0x0D, 1)[..17]), InfoAnswer::OtherFormat);
-        assert_eq!(MaintInfo::classify(&[info15(), vec![1]].concat()), InfoAnswer::OtherFormat);
-        let mut f4 = info3(0x0D, 1);
-        f4[3] = 4;
-        assert_eq!(MaintInfo::classify(&f4), InfoAnswer::OtherFormat);
-        assert!(MaintInfo::parse(&f4).is_err());
-        let mut f5 = info4(1, 0x16);
-        f5[3] = 5;
-        assert_eq!(MaintInfo::classify(&f5), InfoAnswer::OtherFormat, "format 5 with 19 bytes");
-        assert_eq!(MaintInfo::classify(&[info4(1, 0x16), vec![0, 0]].concat()), InfoAnswer::OtherFormat, "format 4 with 21 bytes");
-    }
-
-    #[test]
-    fn format_5_appends_the_read_capabilities() {
-        // the 1.5.4 and 1.6.4 releases: the format-4 offsets, then mask 000F
-        let a = MaintInfo::parse(&hex("4D4E540510060D01050480112D861B8329C43A000F")).unwrap();
-        assert_eq!((a.format, a.patch_text(), a.build_id_hex(), a.image_flags(), a.read_caps), (5, "1.5.4".to_string(), "80112d861b8329c4".to_string(), 0x3A, 0x0F));
-        assert_eq!((a.diagnostics(), a.checkpoint(), a.positive(), a.uart0, a.hard_stop, a.supported()), (true, false, true, true, Some(false), true));
-        let b = MaintInfo::parse(&hex("4D4E540510060D010604A8676B52BAE281FFFE000F")).unwrap();
-        assert_eq!((b.patch_text(), b.image_flags(), b.hard_stop_default(), b.checkpoint(), b.supported()), ("1.6.4".to_string(), 0xFE, Some(false), true, true));
-        assert!([CAP_HISTORY, CAP_CALIBRATION, CAP_SOC_STORE, CAP_ENERGY].iter().all(|&c| b.cap(c)));
+    fn the_image_flags_and_the_read_caps_are_read_separately() {
+        // FF: a configurable hard stop with hard as default; the flag byte comes back unchanged
+        let mut ff = hex(FULL_165);
+        ff[18] = 0xFF;
+        let i = ExtInfo::parse(&ff).unwrap();
+        assert_eq!((i.hard_stop_default(), i.image_flags()), (Some(true), 0xFF));
+        // a Light build with a fixed hard stop: 3B
+        let mut l = hex(LIGHT_155);
+        l[18] = 0x3B;
+        assert_eq!(ExtInfo::parse(&l).unwrap().hard_stop, Some(true));
         // a partial mask names only its bits
-        let only = MaintInfo::parse(&hex("4D4E540510060D010604A8676B52BAE281FFFE0005")).unwrap();
+        let mut p = hex(FULL_165);
+        p[20] = 0x05;
+        let only = ExtInfo::parse(&p).unwrap();
         assert_eq!((only.cap(CAP_HISTORY), only.cap(CAP_CALIBRATION), only.cap(CAP_SOC_STORE), only.cap(CAP_ENERGY)), (true, false, true, false));
         // an unknown bit: a format the app does not know, never partly read
-        assert_eq!(MaintInfo::classify(&hex("4D4E540510060D010604A8676B52BAE281FFFE001F")), InfoAnswer::OtherFormat);
-        assert_eq!(MaintInfo::classify(&hex("4D4E540510060D010604A8676B52BAE281FFFE800F")), InfoAnswer::OtherFormat);
-        // below the support boundary format 5 stays unsupported; format 4 has no capabilities
-        assert!(!MaintInfo::parse(&hex("4D4E540510060D010602A8676B52BAE281FFFE000F")).unwrap().supported());
-        assert_eq!(MaintInfo::parse(&hex("4D4E540410060D010603BAA01ECD5AF4EB28FE")).unwrap().read_caps, 0);
-    }
-
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+        for (at, v) in [(20, 0x1F), (19, 0x80)] {
+            let mut u = hex(FULL_165);
+            u[at] = v;
+            assert_eq!(ExtInfo::classify(&u), InfoAnswer::OtherFormat);
+        }
     }
 
     #[test]
-    fn the_1_5_3_and_1_6_3_identities_and_their_new_flags() {
-        // MAINT 1.5.3 (planned, flags 3A): diagnosis, positive bit 3, no checkpoint, fixed soft stop
-        let a = MaintInfo::parse(&hex("4D4E540410060D0105030102030405060708 3A".replace(' ', "").as_str())).unwrap();
-        assert_eq!((a.patch_text(), a.image_flags(), a.hard_stop, a.hard_stop_default()), ("1.5.3".to_string(), 0x3A, Some(false), None));
-        assert_eq!((a.diagnostics(), a.checkpoint(), a.hard_stop_configurable(), a.positive(), a.uart0, a.supported()), (true, false, false, true, true, true));
-        // the published 1.5.2 (flags 32, bit 3 at 0 allows) is no longer supported
-        assert!(!MaintInfo::parse(&hex("4D4E540410060D01050289D85C61B40E03DA32")).unwrap().supported());
-        // MAINT 1.6.3 (flags FE): configurable hard stop with soft as default, checkpoint, positive bits
-        let b = MaintInfo::parse(&hex("4D4E540410060D010603BAA01ECD5AF4EB28FE")).unwrap();
-        assert_eq!((b.patch_text(), b.image_flags(), b.hard_stop, b.hard_stop_default()), ("1.6.3".to_string(), 0xFE, None, Some(false)));
-        assert_eq!((b.diagnostics(), b.checkpoint(), b.hard_stop_configurable(), b.positive(), b.supported()), (true, true, true, true, true));
-        // FF: the default is hard; the flag byte comes back unchanged
-        let mut ff = hex("4D4E540410060D010603BAA01ECD5AF4EB28FF");
-        assert_eq!(MaintInfo::parse(&ff).unwrap().hard_stop_default(), Some(true));
-        assert_eq!(MaintInfo::parse(&ff).unwrap().image_flags(), 0xFF);
-        // older format-4 builds and 1.6.2 are not supported; a later version is
-        ff[9] = 2;
-        assert!(!MaintInfo::parse(&ff).unwrap().supported());
-        assert!(!MaintInfo::parse(&info4(1, 0x1E)).unwrap().supported());
-        ff[8] = 7;
-        ff[9] = 0;
-        assert!(MaintInfo::parse(&ff).unwrap().supported());
-        // TEMP(maint-1.6): the first 1.6 (V1_6_CUTOFF, flags 06) yes, the positive 1.6 (flags 0E) and 1.5 no
-        assert!(MaintInfo::parse(&hex("4D4E540310060D010618DAF61D8A93671D06")).unwrap().supported());
-        assert!(!MaintInfo::parse(&hex("4D4E540310060D010639E0C5D9CCF133960E")).unwrap().supported());
-        assert!(!MaintInfo::parse(&info15()).unwrap().supported());
+    fn only_ext05_with_21_bytes_is_decoded() {
+        let good = hex(LIGHT_155);
+        assert_eq!(ExtInfo::classify(&good[..20]), InfoAnswer::OtherFormat);
+        assert_eq!(ExtInfo::classify(&[good.clone(), vec![0]].concat()), InfoAnswer::OtherFormat);
+        for format in [2, 3, 4, 6] {
+            let mut f = good.clone();
+            f[3] = format;
+            assert_eq!(ExtInfo::classify(&f), InfoAnswer::OtherFormat, "EXT format {format}");
+        }
+        // the old MAINT identities (MNT formats 2, 4 and 5) are not decoded any more
+        for old in ["4D4E540210060D0105909A604E60E9225B", "4D4E540410060D010603BAA01ECD5AF4EB28FE", "4D4E540510060D010604A8676B52BAE281FFFE000F"] {
+            assert_eq!(ExtInfo::classify(&hex(old)), InfoAnswer::OtherFormat, "{old}");
+        }
+        // short answers: no signature is broken, a signature without the rest another format
+        for sig in [b"EXT", b"MNT"] {
+            for n in 0..3 {
+                assert_eq!(ExtInfo::classify(&sig[..n]), InfoAnswer::Broken, "{n} bytes");
+            }
+            assert_eq!(ExtInfo::classify(sig), InfoAnswer::OtherFormat);
+            assert_eq!(ExtInfo::classify(&[sig.as_slice(), &[5]].concat()), InfoAnswer::OtherFormat);
+        }
+        // identity-shaped: a signature and a binary format byte; a device name starting with EXT is not
+        assert!(ExtInfo::identity_shaped(&good) && ExtInfo::identity_shaped(&hex(TEMP_16)));
+        assert!(ExtInfo::identity_shaped(b"EXT\x09"));
+        assert!(!ExtInfo::identity_shaped(b"EXT-PACK\0\0") && !ExtInfo::identity_shaped(b"EXT") && !ExtInfo::identity_shaped(b"MNTX"));
+        // NUL padding after a three-letter name, a format byte 00, a 0x51-sized answer
+        assert!(!ExtInfo::identity_shaped(b"EXT\0\0\0\0\0\0\0") && !ExtInfo::identity_shaped(b"MNT\0"));
+        assert!(!ExtInfo::identity_shaped(&[b"EXT".as_slice(), &[5; 29]].concat()));
+        let mut broken = good.clone();
+        broken[0] = b'X';
+        assert_eq!(ExtInfo::classify(&broken), InfoAnswer::Broken);
+        assert_eq!(ExtInfo::classify(&[]), InfoAnswer::Broken);
+        assert!(ExtInfo::parse(&broken).is_err());
+    }
+
+    #[test]
+    fn the_support_boundary_is_light_1_5_4_and_full_1_6_4() {
+        let at = |minor: u8, rev: u8| {
+            let mut v = hex(FULL_165);
+            v[8] = minor;
+            v[9] = rev;
+            ExtInfo::parse(&v).unwrap()
+        };
+        assert!(at(5, 4).supported() && at(5, 5).supported() && at(6, 4).supported() && at(6, 5).supported());
+        assert!(!at(5, 3).supported() && !at(6, 3).supported() && !at(4, 9).supported());
+        assert!(at(7, 0).supported(), "a later line");
+        assert_eq!(at(7, 0).version(), "EMU1101-EXT 1.7.0");
+        // an unknown OEM revision
+        let mut q = hex(LIGHT_155);
+        q[6] = 0xFF;
+        assert_eq!(ExtInfo::parse(&q).unwrap().base_text(), "16.06.?");
+    }
+
+    #[test]
+    fn temp16_the_first_maint_1_6_is_still_read() {
+        // TEMP(maint-1.6): 16.06.13, patch 1.6, flags 06 (power and clock, pack cutoff; no hard stop)
+        let i = ExtInfo::parse(&hex(TEMP_16)).unwrap();
+        assert_eq!((i.format, i.patch, i.patch_rev, i.hard_stop, i.power_rtc, i.pack_cutoff, i.uart0, i.read_caps), (3, [1, 6], 0, Some(false), true, true, false, 0));
+        assert_eq!((i.build_id_hex(), i.version(), i.supported()), ("18daf61d8a93671d".to_string(), "16.06.13 MAINT 1.6".to_string(), true));
+        assert!(temp16::is(&i));
+        // another format-3 build (flags 0E) is decoded but not supported
+        assert!(!ExtInfo::parse(&hex("4D4E540310060D010639E0C5D9CCF133960E")).unwrap().supported());
+        // bits 4–7 carry no function in format 3; the byte comes back unchanged
+        let mut f = hex(TEMP_16);
+        f[17] = 0xF6;
+        let f = ExtInfo::parse(&f).unwrap();
+        assert_eq!((f.uart0, f.diagnostics(), f.checkpoint(), f.hard_stop_configurable(), f.image_flags()), (false, false, false, false, 0xF6));
+        // format 3 under the EXT signature is not this build
+        let mut e = hex(TEMP_16);
+        e[0..3].copy_from_slice(b"EXT");
+        assert_eq!(ExtInfo::classify(&e), InfoAnswer::OtherFormat);
     }
 
     #[test]
@@ -557,36 +571,11 @@ mod tests {
         let d = MemoryDiagnosis::parse(&hex("01010101010101000006")).unwrap();
         assert_eq!((d.params, d.params_compare, d.soc, d.soc_compare), (["valid", "valid"], "same", ["valid", "valid"], "same"));
         assert_eq!((d.lock, d.cache), ([Some(false), Some(false)], 0x06));
-        // 1.5.3: no lock or cache support (FF FF 00); an empty backup, differing SOC copies
+        // Light: no lock or cache support (FF FF 00); an empty backup, differing SOC copies
         let d = MemoryDiagnosis::parse(&hex("01010000010102FFFF00")).unwrap();
         assert_eq!((d.params[1], d.params_compare, d.soc_compare, d.lock), ("empty", "not-comparable", "different", [None, None]));
         assert!(MemoryDiagnosis::parse(&hex("020101010101010000")).is_err());
         assert!(MemoryDiagnosis::parse(&hex("0201010101010100000600")).is_err());
-    }
-
-    /// The 19 INFO bytes of a format-4 identity: 16.06.13, patch 1.6.`rev`, image flags `flags`.
-    fn info4(rev: u8, flags: u8) -> Vec<u8> {
-        let mut v = b"MNT".to_vec();
-        v.extend_from_slice(&[0x04, 0x10, 0x06, 0x0D, 0x01, 0x06, rev, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, flags]);
-        v
-    }
-
-    #[test]
-    fn format_4_has_19_bytes_a_third_patch_byte_and_the_uart0_flag() {
-        // 1.6.1 with positive bits and the cutoff, power and UART0 marker: flags 0x1E
-        let i = MaintInfo::parse(&info4(1, 0x1E)).unwrap();
-        assert_eq!((i.format, i.base, i.patch, i.patch_rev), (4, [16, 6, 13], [1, 6], 1));
-        assert_eq!((i.hard_stop, i.power_rtc, i.pack_cutoff, i.uart0, i.reserved_flags), (Some(false), true, true, true, 0x08));
-        assert_eq!((i.build_id_hex(), i.version()), ("0123456789abcdef".to_string(), "16.06.13 MAINT 1.6.1".to_string()));
-        assert_eq!(i.image_flags(), 0x1E);
-        assert!(!MaintInfo::parse(&info4(1, 0xEF)).unwrap().uart0);
-        // bit 4 means nothing in format 3
-        let f3 = MaintInfo::parse(&info3(0x0D, 0x10)).unwrap();
-        assert_eq!((f3.uart0, f3.reserved_flags, f3.image_flags()), (false, 0x10, 0x10));
-        // through a frame: LENGTH 8026 carries the 38 hex digits
-        let frame = crate::frame::encode_request(0, 0, &info4(1, 0x1E)).unwrap();
-        assert_eq!(&frame[9..13], b"8026");
-        assert_eq!(MaintInfo::classify(&crate::frame::parse(&frame).unwrap().info), InfoAnswer::Known(i));
     }
 
     #[test]
@@ -601,10 +590,10 @@ mod tests {
 
     #[test]
     fn the_identity_request_is_addressed() {
-        let f = crate::frame::parse(&MaintInfo::request_at(11).unwrap()).unwrap();
+        let f = crate::frame::parse(&ExtInfo::request_at(11).unwrap()).unwrap();
         assert_eq!((f.address, f.cid1, f.rtn, f.info.as_slice()), (11, 0x46, 0x64, &[0x03][..]));
-        assert_eq!(MaintInfo::request().unwrap(), MaintInfo::request_at(0).unwrap());
-        assert!(MaintInfo::request_at(22).is_err());
+        assert_eq!(ExtInfo::request().unwrap(), ExtInfo::request_at(0).unwrap());
+        assert!(ExtInfo::request_at(22).is_err());
     }
 
     #[test]

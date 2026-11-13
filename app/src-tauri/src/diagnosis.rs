@@ -1,4 +1,4 @@
-//! „Speicherdiagnose“: the pack's own memory diagnosis (0x64/04, MAINT 1.5.3/1.6.3, image flag bit 5) over RS485-1/2 or
+//! „Speicherdiagnose“: the pack's own memory diagnosis (0x64/04, image flag bit 5) over RS485-1/2 or
 //! the CAN socket, at any pack's own address. It reads the stored parameter and SOC copies straight from flash and
 //! changes nothing, so it needs no installation and no release.
 
@@ -15,12 +15,12 @@ use tauri::State;
 #[derive(Serialize)]
 pub struct ImageBits {
     pub flags: u8,
-    /// the read-capability mask (MNT format 5; 0 before)
+    /// the read-capability mask of the EXT05 identity (0: none)
     pub read_caps: u16,
 }
 
 /// The image flags and read capabilities of the pack at `address` from its own 0x64/03 on the current link, for the
-/// functions that depend on them (hard stop choice, diagnosis, the reads of MNT format 5) on either bus. None: no answer,
+/// functions that depend on them (hard stop choice, diagnosis, the reads of the read-capability bits) on either bus. None: no answer,
 /// or a build the app does not support.
 #[tauri::command]
 pub async fn pack_image_flags(state: State<'_, AppState>, address: u8) -> Result<Option<ImageBits>, String> {
@@ -36,13 +36,13 @@ pub async fn pack_diagnosis(state: State<'_, AppState>, address: u8) -> Result<M
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| c.memory_diagnosis(address))
 }
 
-/// The read-capability mask of the pack at `address` from its own fresh 0x64/03 (MNT format 5): 0 for an older or an
+/// The read-capability mask of the pack at `address` from its own fresh 0x64/03 (EXT05): 0 for an older or an
 /// unsupported build, an error only when the link fails.
 fn read_caps(c: &mut openbms_transport::Connection, address: u8) -> u16 {
     c.maint_info(address).ok().filter(|i| i.supported()).map_or(0, |i| i.read_caps)
 }
 
-const NO_CAP: &str = "no-cap: the pack did not report this read in its identity (MAINT 1.5.4/1.6.4 or later)";
+const NO_CAP: &str = "no-cap: the pack did not report this read in its identity (EMU1101-EXT Light 1.5.4 / Full 1.6.4 or later)";
 
 /// One page of `pack_calibration`: its value, or why it is missing (the others are still shown).
 #[derive(Serialize)]

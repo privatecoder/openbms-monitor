@@ -94,7 +94,7 @@ describe("CAN socket parameter service errors", () => {
   });
 });
 
-describe("CAN socket identity (MAINT 1.3)", () => {
+describe("CAN socket identity (EMU1101-EXT)", () => {
   it("names the place to sort out and the reasons to take a board over", () => {
     const t = i18n.getFixedT("de");
     const e = JSON.stringify({ kind: "uart1", error: "elsewhere", address: 4, board: 7, at: 5 });
@@ -124,7 +124,7 @@ describe("„Aus“ after its acknowledgement", () => {
   });
 });
 
-describe("the stored pack cutoff in „Steuern“ (MAINT 1.6)", () => {
+describe("the stored pack cutoff in „Steuern“ (EMU1101-EXT Full)", () => {
   const caps = { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true };
   const patch = (pack_cutoff: boolean | null, source: PackPatch["source"] = "live"): PackPatch => ({ source, release: "16.06.13 MAINT 1.6", caps: { ...caps, power_rtc: true, pack_cutoff }, at: null });
   it("asks for the stored lock before „Aus“ by bit 4 of the fresh read, and offers nothing without it", () => {
@@ -135,7 +135,7 @@ describe("the stored pack cutoff in „Steuern“ (MAINT 1.6)", () => {
     // without the cutoff the soft off as before (no read)
     expect(offKind("power", false, patch(null), 0xe7)).toBe("soft");
     expect(offKind("power", false, null, undefined)).toBe("soft");
-    // RS485-1/2: every pack, with or without a proof; bit 4 at 0 „falls MAINT 1.6“, bit 4 at 1 the soft off
+    // RS485-1/2: every pack, with or without a proof; bit 4 at 0 „falls EMU1101-EXT Full“, bit 4 at 1 the soft off
     expect(offKind("full", false, patch(null, "user"), 0xef)).toBe("cutoffMaybe");
     expect(offKind("full", false, null, 0xef)).toBe("cutoffMaybe");
     expect(offKind("full", false, patch(false), 0xcf)).toBe("cutoffMaybe");

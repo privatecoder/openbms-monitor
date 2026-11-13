@@ -26,6 +26,6 @@ function useBits<T>(address: number | null, known: T | null | undefined, linkKey
 export const useImageFlags = (address: number | null, known: number | null | undefined, linkKey: string): number | null =>
   useBits(address, known, linkKey, (b) => b.flags);
 
-/** The read-capability mask (MNT format 5: history over the CAN socket, calibration, stored SOC, energy; 0 before). */
+/** The read-capability mask (EXT05: history over the CAN socket, calibration, stored SOC, energy; 0: none). */
 export const useReadCaps = (address: number | null, known: number | null | undefined, linkKey: string): number | null =>
   useBits(address, known, linkKey, (b) => b.read_caps);

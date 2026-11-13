@@ -264,9 +264,9 @@ fn read_boot(
 }
 
 /// R F L probes after the one reset until the bootloader answers, within `ack_timeout` in all: a next probe only after
-/// `RFL_PROBE` without any byte of a bootloader answer begun (a begun one is collected, never answered twice). A MAINT
-/// 1.6.3 saves the SOC before it resets, so the first probe may come too early. An ASCII answer to the reset with an RTN
-/// other than 00 (1.6.3: RTN 08, the SOC could not be saved, no restart) ends it: nothing is flashed, nothing repeated.
+/// `RFL_PROBE` without any byte of a bootloader answer begun (a begun one is collected, never answered twice). An EMU1101-EXT
+/// Full saves the SOC before it resets, so the first probe may come too early. An ASCII answer to the reset with an RTN
+/// other than 00 (Full: RTN 08, the SOC could not be saved, no restart) ends it: nothing is flashed, nothing repeated.
 fn boot_entry(link: &mut impl Link, address: u8, reset: &[u8], rfl: &[u8], log_file: &mut impl Write, options: Options) -> Result<boot::Frame> {
     let deadline = Instant::now() + options.ack_timeout;
     let mut pending: Vec<u8> = Vec::new();

@@ -1,5 +1,7 @@
 # Installations recognised by the master's serial number
 
+> **Historical design.** The patched firmware this document calls MAINT is now **EMU1101-EXT** (Light 1.5.x, Full 1.6.x; identity signature `EXT`, format 05). The app supports Light from 1.5.4 and Full from 1.6.4; the MAINT formats and versions below are history.
+
 Status: shelved 2026-10-13 (r1–r4 reviewed). Superseded by `2026-10-13-simple-flash-flow.md`: no identity gates; the right-bank check uses the BMS serial (String 2) on the pack bus. Writing String 1 stays an option for later.
 
 ## Why

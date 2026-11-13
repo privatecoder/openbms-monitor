@@ -144,7 +144,7 @@ impl Drop for Bound {
 
 /// Whether a change for `scope` is taken while `bound` (the installation of a running RS485 connection, if any).
 fn accepts(bound: Option<&Option<String>>, scope: Option<&str>) -> bool {
-    bound.map_or(true, |b| b.as_deref() == scope)
+    bound.is_none_or(|b| b.as_deref() == scope)
 }
 
 /// `bind` without the store: the stored inverter, the pause of a waiting or current rule of the same installation. Every

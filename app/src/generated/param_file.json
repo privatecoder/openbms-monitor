@@ -22,7 +22,7 @@
   },
   "cell_overvoltage_protection": {
    "name": "Cell over-voltage protection",
-   "short": "When a cell reaches this value, the charge MOSFET opens and the SOC jumps to 100 %. With a cell 30 mV above it, the master reports a charge limit of 0.",
+   "short": "When a cell reaches this value, the charge MOSFET opens (while charging the SOC is set to 100 %). With a cell 30 mV above it, the master reports a charge limit of 0.",
    "detail": "Message: event 2 bit 1 (enable: function switch 1, bit 1). The protection sets the SOC to 100 % only while charging. Recovery: “Cell over-voltage protection off”. If pack over-voltage protection is masked, this is the only overcharge protection."
   },
   "cell_overvoltage_recovery": {
@@ -343,7 +343,7 @@
   "intermittent_recharge_below": {
    "name": "Recharge only below",
    "short": "After 100 % charging is blocked until the SOC falls to this value. When all packs are there, the master reports a charge limit of 0. Only with function switch 5, bit 1.",
-   "detail": "Message: event 6 bit 1 (enable: function switch 5, bit 1). If a pack requests heating, the charge limit 0 is raised to the heating minimum. Above this value the SOC additionally drifts by 0.2 A in standby.\nOriginal firmware: the waiting pack itself does not lock its charge MOSFET, only the master lowers the charge limit. Patched firmware with hard stop opens the waiting pack's charge MOSFET (selectable with function switch 0, bits 6/7 on MAINT 1.6.3)."
+   "detail": "Message: event 6 bit 1 (enable: function switch 5, bit 1). If a pack requests heating, the charge limit 0 is raised to the heating minimum. Above this value the SOC additionally drifts by 0.2 A in standby.\nOriginal firmware: the waiting pack itself does not lock its charge MOSFET, only the master lowers the charge limit. Patched firmware with hard stop opens the waiting pack's charge MOSFET (selectable with function switch 0, bits 6/7 on EMU1101-EXT Full)."
   },
   "cycle_cumulative_capacity": {
    "name": "Cycle after discharge of",
@@ -353,7 +353,7 @@
   "cell_difference_fault": {
    "name": "Cell difference fault from",
    "short": "Fault when the highest and lowest cell are this far apart. Blocks balancing.",
-   "detail": "Message: event 1 bit 4 (fault), not maskable: the firmware always evaluates it. In the original firmware function switch 0, bit 4 has no influence on it; in MAINT 1.6.3 that bit is the extended off and has nothing to do with the cell difference either. Recovery: “Cell difference fault off below”."
+   "detail": "Message: event 1 bit 4 (fault), not maskable: the firmware always evaluates it. In the original firmware function switch 0, bit 4 has no influence on it; in EMU1101-EXT Full that bit is the extended off and has nothing to do with the cell difference either. Recovery: “Cell difference fault off below”."
   },
   "cell_difference_fault_recovery": {
    "name": "Cell difference fault off below",
@@ -437,7 +437,7 @@
   }
  },
  "groups": {
-  "0": "Not an enable mask. Original firmware: only bit 1 has an effect (temperature sensor check), the other bits are only stored and reported; the button event and the cell difference fault (event 1) are always evaluated. Patched firmware: from MAINT 1.5.3 bits 0, 2 and 3 release writing, maintenance and on/off, restart and clock via the CAN socket; MAINT 1.6.3 adds bit 4 (extended off), bit 5 (pack cutoff status) and bits 6/7 (hard stop choice).",
+  "0": "Not an enable mask. Original firmware: only bit 1 has an effect (temperature sensor check), the other bits are only stored and reported; the button event and the cell difference fault (event 1) are always evaluated. Patched firmware: with EMU1101-EXT bits 0, 2 and 3 release writing, maintenance and on/off, restart and clock via the CAN socket; EMU1101-EXT Full adds bit 4 (extended off), bit 5 (pack cutoff status) and bits 6/7 (hard stop choice).",
   "1": "Enable mask for event 2 (cell and pack voltage). The firmware ANDs the event with this mask right after evaluating it, before the charge lock, discharge lock, SOC, limits or protocols read it; a bit at 0 switches off the message and every reaction that depends on the event. Rules that read the parameter or the voltage directly stay active: the SOC corrections with the cell high- and low-voltage warning (100 % rule, jump at a low cell) keep working.",
   "2": "Enable mask for event 3 (cell temperature while charging and discharging, warning and protection). A bit at 0 switches off the message and every reaction that depends on the event; rules that read a parameter or measured value directly stay active.",
   "3": "Enable mask for event 4: ambient and MOSFET temperature (bits 0–5), plus cell heating (bit 6) and the severe fault message (bit 7). A bit at 0 switches off the message and every reaction that depends on the event; rules that read a parameter or measured value directly stay active.",
@@ -457,27 +457,27 @@
   },
   "0.3": {
    "name": "Allow on/off, restart and clock via the CAN socket",
-   "short": "Patched firmware from MAINT 1.5.3/1.6.3: 1 (on) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."
+   "short": "EMU1101-EXT: 1 (on) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."
   },
   "0.6": {
    "name": "Hard stop at recharge pause",
-   "short": "Patched firmware MAINT 1.6.3: the hard stop choice while bit 7 is 0 (1 on, 0 off). Set only by its own switch under Parameters, never by an edit or a file."
+   "short": "EMU1101-EXT Full: the hard stop choice while bit 7 is 0 (1 on, 0 off). Set only by its own switch under Parameters, never by an edit or a file."
   },
   "0.7": {
    "name": "Hard stop: the build's default",
-   "short": "Patched firmware MAINT 1.6.3: 1 takes the image's default (as with the old value FF), 0 applies bit 6."
+   "short": "EMU1101-EXT Full: 1 takes the image's default (as with the old value FF), 0 applies bit 6."
   },
   "0.4": {
    "name": "Extended off",
-   "short": "Patched firmware with the pack cutoff (from MAINT 1.6.3), applies to a direct off via the RS485-1/2 bus and the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."
+   "short": "Patched firmware with the pack cutoff (EMU1101-EXT Full), applies to a direct off via the RS485-1/2 bus and the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."
   },
   "0.3p": {
    "name": "Release of on/off, restart and clock via the CAN socket",
-   "short": "Patched firmware from MAINT 1.5.3 and 1.6.3 with on/off and the clock via the CAN socket: 1 (on, as with the old value FF) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display."
+   "short": "EMU1101-EXT with on/off and the clock via the CAN socket: 1 (on, as with the old value FF) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display."
   },
   "0.5": {
    "name": "No individual pack cutoff",
-   "short": "Patched firmware with the pack cutoff (MAINT 1.6.3), status only: 1 (on) while no stored lock exists; 0 (off) while the pack is locked, also with the extended off switched off. Never editable; switching this pack on directly releases the lock, parameter imports do not."
+   "short": "Patched firmware with the pack cutoff (EMU1101-EXT Full), status only: 1 (on) while no stored lock exists; 0 (off) while the pack is locked, also with the extended off switched off. Never editable; switching this pack on directly releases the lock, parameter imports do not."
   },
   "0.1": {
    "name": "Temperature sensor check",
@@ -681,7 +681,7 @@
   },
   "7.3": {
    "name": "Display interface",
-   "short": "Binary protocol on RS232/TTL, probably for the LCD display."
+   "short": "Display port (UART2, binary): lets the display or a Bluetooth module on this board read and write parameters. The address in the frame does not choose another pack. The app does not use this port."
   },
   "7.4": {
    "name": "Extended display format",
@@ -689,7 +689,7 @@
   },
   "7.5": {
    "name": "Automatic addressing",
-   "short": "Ignores the DIP address and assigns addresses over a pulse chain."
+   "short": "Ignores the DIP address and assigns addresses over a pulse chain. With EMU1101-EXT the maintenance start (“Halt master”) is refused while it is on."
   },
   "7.6": {
    "name": "Avoid automatic address 0",

@@ -589,7 +589,7 @@ impl Connection {
 
     /// Restart the pack (0x45 type 6; RS485-1/2, and the CAN socket of a pack with the power and clock service). The
     /// board resets before it can answer, so a missing answer is the expected outcome (`RESTART_ANSWER`); RTN 00 counts as
-    /// well, another RTN is an error (MAINT 1.6.3: RTN 08, the SOC could not be saved, no restart). Returns when the request
+    /// well, another RTN is an error (EMU1101-EXT Full: RTN 08, the SOC could not be saved, no restart). Returns when the request
     /// was sent, the start of the silence `await_comeback` measures.
     pub fn restart(&mut self, address: u8) -> Result<Instant> {
         let request = control::restart_request(address)?;
@@ -602,12 +602,12 @@ impl Connection {
     }
 
     /// The pack's own identity (0x64/03; a patched build at its own address, over RS485-1/2 only with image flag bit 4).
-    pub fn maint_info(&mut self, address: u8) -> Result<openbms_proto::MaintInfo> {
-        let f = self.ascii_as(&openbms_proto::MaintInfo::request_at(address)?, address, |i| openbms_proto::MaintInfo::parse(i).is_ok())?;
-        Ok(openbms_proto::MaintInfo::parse(&f.info)?)
+    pub fn maint_info(&mut self, address: u8) -> Result<openbms_proto::ExtInfo> {
+        let f = self.ascii_as(&openbms_proto::ExtInfo::request_at(address)?, address, |i| openbms_proto::ExtInfo::parse(i).is_ok())?;
+        Ok(openbms_proto::ExtInfo::parse(&f.info)?)
     }
 
-    /// The memory diagnosis of the pack at `address` (0x64/04, MAINT 1.5.2/1.6.3; changes nothing).
+    /// The memory diagnosis of the pack at `address` (0x64/04, image flag bit 5; changes nothing).
     pub fn memory_diagnosis(&mut self, address: u8) -> Result<openbms_proto::MemoryDiagnosis> {
         let f = self.ascii_as(&openbms_proto::MemoryDiagnosis::request_at(address)?, address, |i| openbms_proto::MemoryDiagnosis::parse(i).is_ok())?;
         Ok(openbms_proto::MemoryDiagnosis::parse(&f.info)?)
@@ -1485,7 +1485,7 @@ mod tests {
         // silence is what a restart looks like; a refusal is still an error
         let started = Instant::now();
         let sent = c.restart(1).unwrap();
-        // the wait for a refusal (`RESTART_ANSWER`, 1.6.3 saves the SOC first) ends at its limit
+        // the wait for a refusal (`RESTART_ANSWER`, Full saves the SOC first) ends at its limit
         assert!(sent >= started && sent.elapsed() < timing::RESTART_ANSWER + Duration::from_millis(700));
         assert!(matches!(c.restart(2), Err(Error::Proto(openbms_proto::Error::Rtn(0x04)))));
         c.on_off(1, false).unwrap();
@@ -1822,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn serial_numbers_of_maint_1_3_and_the_answer_of_1_2() {
+    fn serial_numbers_over_the_binary_service_and_an_older_answer() {
         let mut raw = b"SYN-0011".to_vec();
         raw.resize(uart1::SERIAL_LEN, b' ');
         let a4 = uart1::serial_request(11, uart1::CMD_STRING2).unwrap();

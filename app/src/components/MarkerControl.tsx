@@ -9,7 +9,7 @@ import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 
 /** „Wartungs-Marker“ next to „Steuern“: read, set and clear the marker of the chosen pack over this connection, also
- *  without an installation (a board on the bench). CAN socket: the master; RS485-1/2: MAINT 1.5.1/1.6.1, clear only. */
+ *  without an installation (a board on the bench). CAN socket: the master; RS485-1/2: image flag bit 4, clear only. */
 export function MarkerSection({ address, bus, locked, onBusy, onChanged, linkKey }: {
   address: number | null; bus: "can" | "pack" | null; locked?: boolean; onBusy?: (busy: boolean) => void;
   /** a read or change at the master: the maintenance banner reloads */

@@ -14,7 +14,7 @@ export function markerLine(v: MarkerView, t: T): { text: string; tone: "ok" | "w
       return { text: t(`mk.state.${v.marker}`, { version, slaves }), tone: v.marker === "foreign" ? "warn" : "muted" };
     }
     case "no-uart0": return { text: t("mk.noUart0", { version }), tone: "warn" };
-    case "unknown-patch": return { text: t("mk.unknownPatch", { version: version || "MNT" }), tone: "warn" };
+    case "unknown-patch": return { text: t("mk.unknownPatch", { version: version || "EMU1101-EXT" }), tone: "warn" };
     case "no-0x64": return { text: t("mk.original"), tone: "muted" };
     default: return { text: t(v.bus === "pack" ? "mk.unknownPack" : "mk.unknownCan"), tone: "warn" };
   }

@@ -1,5 +1,7 @@
 # Simple flash flow (replaces the guided maintenance panel)
 
+> **Historical design.** The patched firmware this document calls MAINT is now **EMU1101-EXT** (Light 1.5.x, Full 1.6.x; identity signature `EXT`, format 05). The app supports Light from 1.5.4 and Full from 1.6.4; the MAINT formats and versions below are history.
+
 Status: approved r2, 2026-10-13 (r1 reviewed: `.orch/reviewer-codex-6-sol-simple-flash-r1.md` in the knowledge base; approved by the user). Replaces the gating parts of `2026-10-12-maintenance-mode-design.md`, `2026-10-13-maintenance-panel-flow.md`, and the not yet implemented drafts `2026-10-13-maint-1-1.md` (gating parts) and `2026-10-13-installation-identity.md` (gate parts).
 
 ## Why

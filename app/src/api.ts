@@ -281,7 +281,9 @@ export interface UpdateProgress { done: number; total: number | null }
 export type AboutLink = "repo" | "releases" | "changelog" | "issues" | "license" | "docs";
 export interface ImportStats { rows: number; skipped: number; from: number | null; to: number | null }
 /** custom = not in the vendor allowlist (only with custom firmware allowed) */
-export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean; pack_cutoff?: boolean; positive?: boolean }
+export interface FirmwareImage { release: string; device: string; bytes: number; blocks: number; sha256: string; kind: "original" | "maintenance" | "custom"; custom: boolean; power_rtc?: boolean; pack_cutoff?: boolean; positive?: boolean;
+  /** a listed patched build: its OEM base („16.06.13“), which an EMU1101-EXT name does not carry */
+  base?: string | null }
 export type FirmwareStage = "preflight" | "bootloader" | "erase" | "block" | "finalize" | "app_restart" | "post_check";
 export interface FirmwareProgress { stage: FirmwareStage; block: number | null; total: number | null }
 /** End of a flash. written = W F E was sent, so after an error the board may have no application; pending = the
@@ -295,7 +297,7 @@ export interface Charge { soc: number; remaining_ah: number; full_ah: number; cy
 export interface FlashSide {
   serial: string | null;
   build: { version: string; format: number; build_id: string; flags: number } | null;
-  /** Group0 bit 3 set allows power/clock over the CAN socket (MAINT 1.6 on); false: clear allows; null: unknown */
+  /** Group0 bit 3 set allows power/clock over the CAN socket (EMU1101-EXT); false: clear allows (TEMP(maint-1.6): the first MAINT 1.6); null: unknown */
   positive: boolean | null;
   switches: number[] | null;
   charge: Charge | null;
@@ -315,7 +317,7 @@ export interface FlashComparison {
  *  without one (the marker last seen was not on). */
 export interface FlashStarted { bank: "match" | "stored" | "unchecked" | "none"; marker?: "checked" | "unchecked" | "latent" | "released" }
 /** One pack found by „Platine flashen“; `serial`: String 2 as read (null: not readable or not set). */
-/** `version`/`marker`: the build's 64/03 and marker over RS485-1/2 (MAINT 1.5.1/1.6.1); null: not shown there. */
+/** `version`/`marker`: the build's 64/03 and marker over RS485-1/2 (image flag bit 4); null: not shown there. */
 export interface BenchPack { address: number; info: DeviceInfo; serial: string | null; version: string | null; marker: "on" | "off" | "foreign" | null }
 /** `traffic` > 0: the port was not quiet, nothing searched. */
 export interface BenchScan { traffic: number; packs: BenchPack[]; cancelled: boolean }
@@ -389,7 +391,7 @@ export interface LegacyLocal { cellTypes?: string; groups?: string; pairs?: stri
 export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1_identity: boolean; write_gate: boolean; start_gate: boolean; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
   /** the patch version reported (a stored proof: the one its release names) and the image flag byte (null: not known) */
   version?: [number, number]; flags?: number | null;
-  /** the read-capability mask of MNT format 5 (0 before; null: not known, a stored proof) */
+  /** the read-capability mask of the EXT05 identity (0: none; null: not known, a stored proof) */
   read_caps?: number | null }
 /** The master as read over the CAN socket bus (0x64/03, then for a supported patch 0x64/02). kind: "patched" (patch
  *  functions by its patch version; `listed`: the build's name, null when the build is not listed), "unknown-patch",
@@ -397,7 +399,7 @@ export interface PatchCaps { status_split: boolean; uart1_params: boolean; uart1
 export interface MasterView {
   kind: "patched" | "unknown-patch" | "no-0x64" | "unknown";
   version: string | null; patch: string | null; base: string | null; build_id: string | null; listed: string | null; caps: PatchCaps | null;
-  /** MNT format 3: the hard-stop patch is compiled into the image; null: not reported (format 2) */
+  /** the hard-stop patch is compiled into the image (fixed); null: configurable (Full) or not reported */
   hard_stop: boolean | null;
   marker: "off" | "on" | "foreign" | null; marker_word: string | null; slaves: number | null;
   may_halt: boolean; may_release: boolean; polling?: "unverified" | "no-slaves";
@@ -413,10 +415,10 @@ export interface ProfileView { gen: number; bus: Bus; endpoint: string; master: 
  *  the user's confirmation) for the board with this String 2. */
 export interface PackPatch { source: "master" | "live" | "flash" | "user"; role?: "master" | "pack"; release: string; caps: PatchCaps; at: number | null }
 /** A pack's own addressed 64/03 on this connection (pack view only, never the master profile): proven (patch ≥ 1.5),
- *  negative (another MNT or an older patch), undecided (silence or an error). */
+ *  negative (another identity format or an older patch), undecided (silence or an error). */
 /** `power_rtc`: image flag bit 1 of a proven pack (ein/aus, restart and the clock over the CAN socket); `pack_cutoff`: its
  *  stored pack cutoff (image flag bit 2, patch 1.6 or later). */
-/** 0x64/04 (MAINT 1.5.3/1.6.3): the stored parameter and SOC copies (primary, backup) as read from flash; `lock`: the
+/** 0x64/04 (EMU1101-EXT, image flag bit 5): the stored parameter and SOC copies (primary, backup) as read from flash; `lock`: the
  *  pack lock stored in each parameter copy (null: unknown or not supported); `cache`: runtime cache flags. */
 export type DiagRecord = "empty" | "valid" | "invalid" | "unknown";
 export type DiagCompare = "not-comparable" | "same" | "different" | "unknown";
@@ -441,7 +443,9 @@ export interface SocStore {
 export type DiagRecordClass = "erased" | "valid" | "invalid" | "unknown";
 export interface SocStoreRead { store: SocStore; records: boolean; energy: boolean; checkpoint: boolean }
 export interface MemoryDiagnosis { params: [DiagRecord, DiagRecord]; params_compare: DiagCompare; soc: [DiagRecord, DiagRecord]; soc_compare: DiagCompare; lock: [boolean | null, boolean | null]; cache: number }
-export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided"; version: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
+export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided";
+  /** the display name („EMU1101-EXT Full 1.6.5“) and the OEM base („16.06.13“) of its 64/03 */
+  version: string | null; base?: string | null; listed: string | null; build_id: string | null; hard_stop: boolean | null; power_rtc?: boolean | null; pack_cutoff?: boolean | null;
   /** the patch version of its 64/03 (also a negative finding's) and, when proven, its image flag byte */
   patch_version?: [number, number] | null; flags?: number | null; read_caps?: number | null }
 /** `marker_read`/`marker_set`: the board's identity and marker on this connection. `kind` "no-uart0": RS485-1/2 with a
@@ -658,7 +662,7 @@ const tauriApi = {
    *  0x47 right before sending (`cutoff-changed`); RS485-1/2 sends no off without it */
   packOnOff: (address: number, on: boolean, expect?: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_on_off", { address, on, installation: chosen, expect: expect ?? null })),
   /** The maintenance marker over this connection, also without an installation: the CAN socket at the master (every
-   *  supported MAINT build; set and clear), RS485-1/2 at the pack's own address (MAINT 1.5.1/1.6.1; read and clear). */
+   *  supported EMU1101-EXT build; set and clear), RS485-1/2 at the pack's own address (image flag bit 4; read and clear). */
   markerRead: (address: number) => invoke<MarkerView>("marker_read", { address, installation: chosen }),
   markerSet: (address: number, on: boolean) => invoke<MarkerView>("marker_set", { address, on, installation: chosen }),
   packHeater: (address: number, on: boolean) => written(address, invoke<{ value: void; unchecked: boolean }>("pack_heater", { address, on, installation: chosen })),

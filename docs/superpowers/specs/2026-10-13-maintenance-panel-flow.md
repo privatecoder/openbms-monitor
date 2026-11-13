@@ -1,5 +1,7 @@
 # Pack bus panel: guided flow
 
+> **Historical design.** The patched firmware this document calls MAINT is now **EMU1101-EXT** (Light 1.5.x, Full 1.6.x; identity signature `EXT`, format 05). The app supports Light from 1.5.4 and Full from 1.6.4; the MAINT formats and versions below are history.
+
 Status: implemented, 2026-10-13; the installation picker in the panel header and the banner for every installation are implemented per `2026-10-13-installation-picker.md` (draft r3 reviewed; r1 review: `.orch/reviewer-codex-6-sol-maint-panel-flow-r1.md` in the knowledge base). Builds on `2026-10-12-maintenance-mode-design.md` (binding) and the stage-1 implementation (`app/src/views/PackBusPanel.tsx`, `Firmware.tsx`, `app/src/maint.ts`, backend `app/src-tauri/src/maint.rs`). Superseded in parts by `2026-10-13-simple-flash-flow.md` (2026-10-13).
 
 ## Why

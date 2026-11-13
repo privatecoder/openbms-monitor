@@ -1,4 +1,4 @@
-//! Addressed read-only diagnostics of builds with MNT format 5 (`MaintInfo::cap`): the calibration pages (0x64/05) and
+//! Addressed read-only diagnostics of EMU1101-EXT builds by their read-capability bits (`ExtInfo::cap`): the calibration pages (0x64/05) and
 //! the stored capacity records with the live energy counters (0x64/06). Both answer at the pack's own address on
 //! RS485-1/2 and the CAN socket and change nothing (no repair, no save). The history over the CAN socket is the
 //! ordinary 0x4B layout (`memory`).

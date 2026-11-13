@@ -314,7 +314,7 @@ pub(crate) fn switch_refusal(error: &str) -> String {
     serde_json::json!({ "kind": "switch", "error": error }).to_string()
 }
 
-/// The error of RTN 08 to ein/aus (both ports): MAINT 1.6 detected a store or verify fault of the pack cutoff. Off: the
+/// The error of RTN 08 to ein/aus (both ports): the Full line detected a store or verify fault of the pack cutoff. Off: the
 /// lock may hold in RAM only; on: not released. Never done, whatever a later read of bit 5 shows.
 pub(crate) fn cutoff_failed(on: bool) -> &'static str {
     if on { "cutoff-on-failed" } else { "cutoff-off-failed" }
@@ -428,7 +428,7 @@ pub async fn pack_restart(state: State<'_, AppState>, address: u8, installation:
             return Ok(RestartDone { outcome: Restart::NotReachable, charge: None });
         }
         let before = if own { charge() } else { None };
-        // RTN 08 (MAINT 1.6.3: the SOC could not be saved, no restart) as on the CAN socket; never retried
+        // RTN 08 (Full: the SOC could not be saved, no restart) as on the CAN socket; never retried
         let sent = match with_link(&conn, &flashing, &links, &link, |c| Ok(c.restart(address)))? {
             Err(e @ openbms_transport::Error::Proto(openbms_proto::Error::Rtn(0x08))) => return Err(crate::power::restart_error(e)),
             r => refusable(r).map_err(|e| e.to_string())?.map_err(refusal_error)?,

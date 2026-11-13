@@ -40,14 +40,14 @@ const RS485_ONLY = ["force-heater", "set-remaining", "set-learned-full", "clear-
  *  CAN socket (`mode` "power") only restart and on/off of a pack with the power and clock service. */
 export function PackControlSection({ address, usable, mode = "full", offers = () => true, powerLocked = null, cutoff = false, positive = false, group0, locked, onBusy, onChanged, p79: p79Shown, rated, linkKey, readCaps }: {
   address: number | null; usable: boolean; locked?: boolean; onBusy?: (busy: boolean) => void;
-  /** the read-capability mask as this connection knows it (MNT format 5): the restart dialog shows the stored state */
+  /** the read-capability mask as this connection knows it (EXT05): the restart dialog shows the stored state */
   readCaps?: number | null;
   mode?: "full" | "power";
   /** whether the catalog offers an action for this pack over this connection (`power.ts` `controlOffers`) */
   offers?: (action: string) => boolean;
   /** CAN socket: Group0 bit 3 as last seen (true: locked, the buttons wait); null: not known, the backend reads it */
   powerLocked?: boolean | null;
-  /** CAN socket: the stored pack cutoff (MAINT 1.6) proven for this pack on this connection */
+  /** CAN socket: the stored pack cutoff (Full) proven for this pack on this connection */
   cutoff?: boolean;
   /** the pack's proven build has the positive Group0 bits 3/4 (image flag bit 3): read here as the inverse builds' */
   positive?: boolean;
@@ -184,7 +184,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
       return undefined;
     }
   };
-  // the pack cutoff matters here: proven over the CAN socket; on RS485-1/2 any pack may have MAINT 1.6, so every ein/aus
+  // the pack cutoff matters here: proven over the CAN socket; on RS485-1/2 any pack may be a Full build, so every ein/aus
   // reads Group0 there (a polling master does not answer RS485-1/2 anyway)
   const aware = can ? cutoff : true;
 
@@ -246,7 +246,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     // cutoff its lock stays its own and the master's charge limit follows only after the next polling
     const slaves = (n: NonNullable<Note>): Note => (masterBroadcast(mode, a)
       ? { text: `${n.text} ${t("ctl.onOff.slaves")}${cutoff ? ` ${t("ctl.cutoff.master")} ${t("ctl.cutoff.ccl")}` : ""}`, tone: n.tone } : n);
-    // RS485-1/2: bit 5 only means a lock if the pack has MAINT 1.6; named where bit 4 or 5 is 0
+    // RS485-1/2: bit 5 only means a lock if the pack is a Full build; named where bit 4 or 5 is 0
     const g = norm(f);
     const both = G0.extendedOff | G0.lockState;
     const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && g !== undefined && (g & both) !== both

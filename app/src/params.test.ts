@@ -13,7 +13,7 @@ const pack: Parameters = {
 };
 
 describe("parameter file", () => {
-  const patchProof = { source: "live", release: "16.06.13 MAINT 1.6.3", caps: {} as never, at: null } as Parameters["patch"];
+  const patchProof = { source: "live", release: "EMU1101-EXT Full 1.6.4", caps: {} as never, at: null } as Parameters["patch"];
 
   it("writes TOML with keys, comments from the help and hex switches, and reads its own file back", () => {
     const toml = toExport(pack);
@@ -33,7 +33,7 @@ describe("parameter file", () => {
     expect(s.switches).toEqual(SWITCHES);
     expect(s.suspectFrom).toBeNull();
     expect(s.device).toBe("1101-SP75");
-    expect(toExport({ ...pack, patch: patchProof })).toContain("# firmware: 16.06.13 MAINT 1.6.3\n");
+    expect(toExport({ ...pack, patch: patchProof })).toContain("# firmware: EMU1101-EXT Full 1.6.4\n");
   });
 
   it("reads by key: order and comments do not matter", () => {

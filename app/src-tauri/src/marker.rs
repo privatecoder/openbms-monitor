@@ -1,6 +1,6 @@
 //! The maintenance marker under „Steuern“: read, set and clear it over the monitor's own connection, also without an
-//! installation (a board on the bench). CAN socket: the master (address 0) of every supported MAINT build, set and
-//! clear. RS485-1/2: a build with image flag bit 4 (MAINT 1.5.1/1.6.1) at the pack's own address, read and clear; the
+//! installation (a board on the bench). CAN socket: the master (address 0) of every supported EMU1101-EXT build, set
+//! and clear. RS485-1/2: a build with image flag bit 4 at the pack's own address, read and clear; the
 //! start exists on the CAN socket only. An older build or the original firmware does not know 0x64 on RS485-1/2.
 
 use crate::bms_memory::bus_of;
@@ -10,7 +10,7 @@ use crate::{link_now, with_link, AppState, Link};
 use openbms_flash::maint::dialog::{self, Action, Budgets, DialogError, PackAnswer, Probe};
 use openbms_flash::maint::policy::{Master, Patch};
 use openbms_flash::maint::SystemClock;
-use openbms_proto::{MaintInfo, MaintState, MarkerWord};
+use openbms_proto::{ExtInfo, MaintState, MarkerWord};
 use openbms_transport::Bus;
 use serde::Serialize;
 use tauri::State;
@@ -25,7 +25,7 @@ pub struct MarkerView {
     /// flag bit 4 (use the CAN socket); "unknown-patch"; "no-0x64": the CAN socket, RTN 04 (original firmware);
     /// "unknown": no valid answer (on RS485-1/2 also RTN 04 of an older build or the original firmware)
     pub kind: &'static str,
-    /// the identity as reported, e.g. "16.06.13 MAINT 1.6.1"
+    /// the identity as reported, e.g. "EMU1101-EXT Full 1.6.5"
     pub version: Option<String>,
     /// "off" | "on" | "foreign"
     pub marker: Option<&'static str>,
@@ -40,7 +40,7 @@ pub struct MarkerView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Found {
     pub kind: &'static str,
-    pub info: Option<MaintInfo>,
+    pub info: Option<ExtInfo>,
     pub state: Option<MaintState>,
     /// set and clear are known to be offered by this build on this bus (`status_split` on the CAN socket, flag bit 4 on
     /// RS485-1/2)
@@ -79,12 +79,12 @@ pub(crate) fn of_master(m: &Master) -> Found {
 }
 
 /// The RS485-1/2 identity: whether this build shows its marker there (supported patch with flag bit 4).
-pub(crate) fn rs485_kind(answer: PackAnswer) -> (&'static str, Option<MaintInfo>) {
+pub(crate) fn rs485_kind(answer: PackAnswer) -> (&'static str, Option<ExtInfo>) {
     match answer {
         PackAnswer::Info(i) if Patch::recognise(i).is_some_and(|p| p.caps.status_split) && i.uart0 => ("patched", Some(i)),
         PackAnswer::Info(i) if Patch::recognise(i).is_some() => ("no-uart0", Some(i)),
         PackAnswer::Info(i) => ("unknown-patch", Some(i)),
-        PackAnswer::OtherMnt => ("unknown-patch", None),
+        PackAnswer::OtherIdentity => ("unknown-patch", None),
         PackAnswer::Undecided => ("unknown", None),
     }
 }
@@ -284,20 +284,20 @@ pub async fn marker_set(state: State<'_, AppState>, address: u8, installation: O
 mod tests {
     use super::*;
 
-    fn info(format: u8, patch: [u8; 2], uart0: bool) -> MaintInfo {
-        MaintInfo { format, base: [16, 6, 13], patch, patch_rev: if format == 4 { 3 } else { 0 },
+    fn info(format: u8, patch: [u8; 2], uart0: bool) -> ExtInfo {
+        ExtInfo { format, base: [16, 6, 13], patch, patch_rev: if format == 5 { 4 } else { 0 },
             // TEMP(maint-1.6): format 3 as the first 1.6 (V1_6_CUTOFF, by its build ID)
             build_id: if format == 3 { openbms_proto::maint::temp16::BUILD_ID } else { [1; 8] },
-            hard_stop: (format > 2).then_some(false), power_rtc: true, pack_cutoff: true, uart0, reserved_flags: 0, read_caps: 0 }
+            hard_stop: Some(false), power_rtc: true, pack_cutoff: true, uart0, reserved_flags: 0, read_caps: 0 }
     }
 
     #[test]
     fn rs485_shows_the_marker_only_with_flag_bit_4() {
-        assert_eq!(rs485_kind(PackAnswer::Info(info(4, [1, 6], true))).0, "patched");
-        assert_eq!(rs485_kind(PackAnswer::Info(info(4, [1, 6], false))).0, "no-uart0");
+        assert_eq!(rs485_kind(PackAnswer::Info(info(5, [1, 6], true))).0, "patched");
+        assert_eq!(rs485_kind(PackAnswer::Info(info(5, [1, 6], false))).0, "no-uart0");
         assert_eq!(rs485_kind(PackAnswer::Info(info(3, [1, 6], false))).0, "no-uart0");
-        assert_eq!(rs485_kind(PackAnswer::Info(info(4, [1, 4], true))).0, "unknown-patch");
-        assert_eq!(rs485_kind(PackAnswer::OtherMnt).0, "unknown-patch");
+        assert_eq!(rs485_kind(PackAnswer::Info(info(5, [1, 4], true))).0, "unknown-patch");
+        assert_eq!(rs485_kind(PackAnswer::OtherIdentity).0, "unknown-patch");
         // RTN 04 of an older build or the original, or silence
         assert_eq!(rs485_kind(PackAnswer::Undecided).0, "unknown");
     }
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn set_only_over_the_can_socket_clear_on_both_never_a_foreign_word() {
         let st = |w: u32| Some(MaintState { marker_word: w, effective_slaves: 0 });
-        let off = Found { kind: "patched", info: Some(info(4, [1, 6], true)), state: st(u32::MAX), trusted: true, master: Master::Unknown };
+        let off = Found { kind: "patched", info: Some(info(5, [1, 6], true)), state: st(u32::MAX), trusted: true, master: Master::Unknown };
         assert!(off.may_set(true) && !off.may_set(false) && !off.may_clear());
         let on = Found { state: st(0), ..off };
         assert!(on.may_clear() && !on.may_set(true));

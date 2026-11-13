@@ -91,7 +91,7 @@ fn from_hex(s: &str) -> Result<Vec<u8>, String> {
     if !s.is_ascii() {
         return Err("invalid hex".into());
     }
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("odd hex length".into());
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| "invalid hex".to_string())).collect()

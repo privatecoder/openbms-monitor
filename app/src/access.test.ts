@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { accessRows, bestState, cellTitle, decide, group0Plan, reasonText, ROUTES, type Facts, type Group0Plan, type Proof } from "./access";
+import { accessRows, bestDecision, bestState, cellTitle, decide, group0Plan, reasonText, ROUTES, type Facts, type Group0Plan, type Proof } from "./access";
 import VECTORS from "./generated/access.vectors.json";
 import type { AccessDecision } from "./api";
 
@@ -14,6 +14,16 @@ describe("access matrix texts", () => {
     // two ways on one channel: the cell shows the better one
     const two = accessRows([d("read-serials", "uart1", "blocked"), d("read-serials", "uart1", "ready")]);
     expect(bestState(two[0].cells.uart1!)).toBe("ready");
+  });
+  it("names the firmware need of the way the cell's state comes from", async () => {
+    const { needText, routeNeed, routeOf } = await import("./access");
+    const de = i18n.getFixedT("de");
+    // the serial numbers on the CAN socket: binary A2/A4 (EMU1101-EXT) blocked, the OEM master's Modbus string ready
+    const [ext, oem] = ROUTES.filter((r) => r.action === "read-serials" && r.channel === "uart1");
+    const ways: AccessDecision[] = [{ route: ext, state: "blocked", reasons: [] }, { route: oem, state: "ready", reasons: [] }];
+    expect(bestDecision(ways).route).toBe(oem);
+    expect(needText(de, routeNeed(routeOf(bestDecision(ways).route)!))).toBe("ab OEM 16.06.11");
+    expect(needText(de, routeNeed(routeOf(ways[0].route)!))).toBe("ab EMU1101-EXT Light 1.5.4");
   });
   it("names every reason in both languages", async () => {
     for (const lng of ["de", "en"]) {
@@ -56,30 +66,30 @@ describe("the catalog evaluated as in Rust", () => {
 });
 
 describe("the firmware a way needs", () => {
-  it("names the first supported MAINT build and the OEM base", async () => {
+  it("names the first supported EMU1101-EXT build and the OEM base", async () => {
     const { needText, routeNeed } = await import("./access");
     const de = i18n.getFixedT("de");
     const need = (action: string, channel: string) => needText(de, routeNeed(ROUTES.find((r) => r.action === action && r.channel === channel)!));
-    expect(need("read-parameters", "uart1")).toBe("ab MAINT 1.5.3");
-    expect(need("power-on-off", "uart1")).toBe("ab MAINT 1.5.3");
-    expect(need("read-identity", "uart0")).toBe("ab MAINT 1.5.3");
-    expect(need("read-diagnosis", "uart1")).toBe("ab MAINT 1.5.3");
-    expect(need("pack-lock-set", "uart1")).toBe("ab MAINT 1.6.3");
-    expect(need("hard-stop", "uart1")).toBe("ab MAINT 1.6.3");
+    expect(need("read-parameters", "uart1")).toBe("ab EMU1101-EXT Light 1.5.4");
+    expect(need("power-on-off", "uart1")).toBe("ab EMU1101-EXT Light 1.5.4");
+    expect(need("read-identity", "uart0")).toBe("ab EMU1101-EXT Light 1.5.4");
+    expect(need("read-diagnosis", "uart1")).toBe("ab EMU1101-EXT Light 1.5.4");
+    expect(need("pack-lock-set", "uart1")).toBe("ab EMU1101-EXT Full 1.6.4");
+    expect(need("hard-stop", "uart1")).toBe("ab EMU1101-EXT Full 1.6.4");
     expect(need("read-system", "uart1")).toBe("ab OEM 16.06.04");
-    // the reads of MNT format 5 by their read-capability bits
-    expect(need("read-history", "uart1")).toBe("ab MAINT 1.5.4");
-    expect(need("read-calibration", "uart0")).toBe("ab MAINT 1.5.4");
-    expect(need("read-soc-store", "uart1")).toBe("ab MAINT 1.5.4");
+    // the reads by their read-capability bits
+    expect(need("read-history", "uart1")).toBe("ab EMU1101-EXT Light 1.5.4");
+    expect(need("read-calibration", "uart0")).toBe("ab EMU1101-EXT Light 1.5.4");
+    expect(need("read-soc-store", "uart1")).toBe("ab EMU1101-EXT Light 1.5.4");
     expect(need("read-history", "uart0")).toBe("");
     // the original firmware is enough
     expect(need("read-telemetry", "uart0")).toBe("");
     // every way with a firmware condition gets a text
-    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab MAINT 1\.[56]\.[234]/);
+    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab EMU1101-EXT (Light 1\.5|Full 1\.6)\.4/);
   });
 });
 
-describe("the hard stop choice (MAINT 1.6.3, Group0 bits 6/7)", () => {
+describe("the hard stop choice (EMU1101-EXT Full, Group0 bits 6/7)", () => {
   it("takes the build's default while bit 7 is 1 and keeps every lower bit when set", async () => {
     const { hardStopChoice, hardStopConfigurable, withHardStop } = await import("./access");
     expect([hardStopConfigurable(0xfe), hardStopConfigurable(0x32), hardStopConfigurable(null)]).toEqual([true, false, false]);

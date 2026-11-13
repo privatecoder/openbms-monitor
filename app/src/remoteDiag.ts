@@ -1,4 +1,4 @@
-/** The reads of MNT format 5 (calibration pages 0x64/05, stored SOC records and live energy 0x64/06): pure helpers for
+/** The reads behind the read-capability bits (calibration pages 0x64/05, stored SOC records and live energy 0x64/06): pure helpers for
  *  their display. Nothing here predicts what the BMS does next; it shows what the pack reported at the moment of reading. */
 import type { CalPage, CalPageRead, Coefficients, SocRecord, SocStoreRead } from "./api";
 

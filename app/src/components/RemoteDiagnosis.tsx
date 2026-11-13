@@ -13,7 +13,7 @@ import { SectionHead, StatusLine } from "./Section";
 
 const has = (caps: number | null, bit: number) => caps !== null && (caps & (1 << bit)) !== 0;
 
-/** „Ferndiagnose“ (MNT format 5): the calibration (0x64/05) and the stored state with the energy counters (0x64/06), each
+/** „Ferndiagnose“ (EMU1101-EXT read-capability bits): the calibration (0x64/05) and the stored state with the energy counters (0x64/06), each
  *  asked on demand and only where the pack's own 64/03 announces it (read-capability bits). Changes nothing; an answer
  *  belongs to the pack and link it was asked for. */
 export function RemoteDiagnosis({ address, known, connected, locked, linkKey }: { address: number | null; known: number | null | undefined; connected: boolean; locked?: boolean; linkKey: string }) {

@@ -39,6 +39,9 @@ pub fn parse_read_response(function: u8, raw: &[u8]) -> Result<Vec<u16>> {
         return Err(Error::Layout("unexpected Modbus response header"));
     }
     let n = usize::from(raw[2]);
+    if n % 2 != 0 {
+        return Err(Error::Layout("Modbus byte count is odd"));
+    }
     if raw.len() < 5 + n {
         return Err(Error::Layout("Modbus response too short"));
     }
@@ -122,6 +125,15 @@ impl SystemValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_odd_byte_count_is_an_error_not_a_panic() {
+        let mut raw = vec![0x01, 0x03, 0x01, 0x55];
+        let crc = crc16(&raw);
+        raw.extend_from_slice(&crc.to_le_bytes());
+        raw.resize(47, 0);
+        assert!(matches!(parse_read_response(0x03, &raw), Err(Error::Layout(_))));
+    }
 
     #[test]
     fn system_request_bytes() {

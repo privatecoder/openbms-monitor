@@ -6,7 +6,7 @@
 
 use crate::marker::Found;
 use openbms_flash::session::PackState;
-use openbms_proto::{access, MaintInfo, Telemetry};
+use openbms_proto::{access, ExtInfo, Telemetry};
 use serde::Serialize;
 
 /// A SOC difference from this many percentage points on is shown as a difference (not a measurement's drift).
@@ -43,7 +43,7 @@ pub struct Build {
 }
 
 impl Build {
-    fn of(i: &MaintInfo) -> Self {
+    fn of(i: &ExtInfo) -> Self {
         Self { version: i.version(), format: i.format, build_id: i.build_id_hex(), flags: i.image_flags() }
     }
 }
@@ -53,9 +53,9 @@ impl Build {
 pub struct Side {
     /// String 2, the board's serial number (None: not readable)
     pub serial: Option<String>,
-    /// `0x64/03` over RS485-1/2 (None: not answered there: the original firmware or a build before MAINT 1.5.1)
+    /// `0x64/03` over RS485-1/2 (None: not answered there: the original firmware or a build without image flag bit 4)
     pub build: Option<Build>,
-    /// Group0 bit 3 means "power and clock over the CAN socket allowed" when set (MAINT 1.6 on); false: when clear
+    /// Group0 bit 3 means "power and clock over the CAN socket allowed" when set (EMU1101-EXT); false: when clear (TEMP(maint-1.6): the first MAINT 1.6)
     /// (1.5/1.5.1); None: no patch functions known for this side
     pub positive: Option<bool>,
     pub switches: Option<[u8; 8]>,
@@ -236,8 +236,8 @@ mod tests {
     #[test]
     fn the_bit_3_direction_comes_from_the_identity_else_from_the_image() {
         use openbms_flash::maint::policy::Master;
-        let mut i = MaintInfo { format: 4, base: [16, 6, 13], patch: [1, 5], build_id: [0x96; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false, uart0: true, patch_rev: 1, reserved_flags: 0 , read_caps: 0};
-        let f = |i: MaintInfo| Found { kind: "patched", info: Some(i), state: None, trusted: true, master: Master::No0x64 };
+        let mut i = ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 5], build_id: [0x96; 8], hard_stop: Some(false), power_rtc: true, pack_cutoff: false, uart0: true, patch_rev: 1, reserved_flags: 0 , read_caps: 0};
+        let f = |i: ExtInfo| Found { kind: "patched", info: Some(i), state: None, trusted: true, master: Master::No0x64 };
         assert_eq!(Side::new(None, Some(&f(i)), Some(true), &PackState::default()).positive, Some(false));
         i.patch = [1, 6];
         i.reserved_flags = 0x08;

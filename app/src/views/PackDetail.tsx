@@ -57,10 +57,10 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).then(putProbe, () => {}).finally(() => setProbing(false)); };
   const serials = asked && "bms" in asked ? asked : p.serials;
   const hardStops = useHardStops();
-  // the image's own flag only for the master of a format-3 profile; every other pack by its behaviour
+  // the image's own flag: the master's from its profile, another pack's from its own proven 64/03; else by behaviour
   const hardFlag = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null)
     : probe?.state === "proven" ? probe.hard_stop : null;
-  // a build that takes the choice from the parameters (MAINT 1.6.3): its image flags
+  // a build that takes the choice from the parameters (EMU1101-EXT Full): its image flags
   const imageFlags = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.caps?.flags : null)
     : probe?.state === "proven" ? probe.flags : null;
   // the full version from 64/03 on this connection: the master's profile, a slave's own proven answer

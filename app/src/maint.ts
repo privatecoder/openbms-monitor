@@ -1,6 +1,6 @@
 import type { Bus, ControlEndpoint, Endpoint, FirmwareImage, Installation, LiveStatus, MaintError, MasterView, PackProbeView, Pending } from "./api";
 import { hardStopConfigurable } from "./access";
-import { patchName } from "./profile";
+import { buildName, patchName } from "./profile";
 import { refusalOf } from "./wiring";
 import { decode } from "./errors";
 
@@ -284,17 +284,17 @@ export function showDone(flashed: boolean, master: MasterView | null): boolean {
   return flashed || master?.marker === "on";
 }
 
-/** The pack list's version: with the pack's own 64/03 (proven) „Firmware 16.06.13 · MAINT 1.5 (Build 297f9f2a…, Hard-Stop
- *  aus)“; else the 0x51 version with „ohne Patch-Funktionen“ (another MNT) or „Patch nicht geprüft“. Never inferred from
+/** The pack list's version: with the pack's own 64/03 (proven) „Firmware 16.06.13 · EMU1101-EXT Full 1.6.5 (Build
+ *  13464fc9…, Hard-Stop wählbar, aus)“; else the 0x51 version with „ohne Patch-Funktionen“ (another identity) or „Patch
+ *  nicht geprüft“. Never inferred from
  *  0x51 or from a refusal on the pack bus. */
 export function packVersionText(firmware: string, probe: PackProbeView | undefined, t: T): string {
   if (probe?.state === "proven" && probe.version) {
-    const [base, maint] = probe.version.split(" MAINT ");
     const chosen = hardStopConfigurable(probe.flags) ? ((probe.flags! & 1) ? "profile.hardStopChosenOn" : "profile.hardStopChosenOff") : "profile.hardStopUnknown";
     const hard = t(probe.hard_stop === true ? "profile.hardStopOn" : probe.hard_stop === false ? "profile.hardStopOff" : chosen);
-    return t("maint.packs.versionFull", { base, patch: probe.listed?.split(" MAINT ")[1] ?? maint ?? "", build: probe.build_id ? `${probe.build_id.slice(0, 8)}…` : "?", hard });
+    return t("maint.packs.versionFull", { base: probe.base ?? "?", name: buildName(probe.listed ?? probe.version, probe.base), build: probe.build_id ? `${probe.build_id.slice(0, 8)}…` : "?", hard });
   }
-  // an older patch is named; another MNT format may be a patch this app does not know: not proven, no more
+  // an older patch is named; another identity format may be a patch this app does not know: not proven, no more
   const key = probe?.state === "negative" ? (probe.version ? "maint.packs.versionNoPatch" : "maint.packs.versionUnknownFormat") : "maint.packs.versionUnchecked";
   return t(key, { version: firmware });
 }

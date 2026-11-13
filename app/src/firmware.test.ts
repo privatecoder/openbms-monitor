@@ -7,7 +7,7 @@ const image: FirmwareImage = { release: "16.06.13", device: "EMU1101_10D_HW16", 
 const target = { device_name: "X", firmware_version: "16.04", can_protocol: "CAN" };
 
 describe("flashing a board", () => {
-  const pack = (address: number, marker: BenchPack["marker"] = null): BenchPack => ({ address, info: target, serial: `SYN-${address}`, version: marker ? "16.06.13 MAINT 1.6.1" : null, marker });
+  const pack = (address: number, marker: BenchPack["marker"] = null): BenchPack => ({ address, info: target, serial: `SYN-${address}`, version: marker ? "EMU1101-EXT Full 1.6.5" : null, marker });
   it("preselects only a single pack", () => {
     expect(benchPick([pack(3)])).toBe(3);
     expect(benchPick([pack(0), pack(1)])).toBeNull();
@@ -42,13 +42,13 @@ describe("progress", () => {
 });
 
 describe("image naming", () => {
-  const maint = { ...image!, release: "16.06.13 MAINT 1.1", kind: "maintenance" as const, custom: true };
+  const maint = { ...image!, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance" as const, custom: true };
   const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
   const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
   it("names the maintenance build as known, not as custom firmware", () => {
-    expect(imageLabel(maint, tr("de"), true)).toBe("Wartungs-Build 16.06.13 MAINT 1.1 (bekannte Prüfsumme)");
-    expect(imageLabel(maint, tr("en"), true)).toBe("maintenance build 16.06.13 MAINT 1.1 (known checksum)");
-    expect(imageLabel(maint, tr("de"))).toBe("Wartungs-Build 16.06.13 MAINT 1.1");
+    expect(imageLabel(maint, tr("de"), true)).toBe("EMU1101-EXT Full 1.6.5 (bekannte Prüfsumme)");
+    expect(imageLabel(maint, tr("en"), true)).toBe("EMU1101-EXT Full 1.6.5 (known checksum)");
+    expect(imageLabel(maint, tr("de"))).toBe("EMU1101-EXT Full 1.6.5");
     expect(imageLabel(custom, tr("de"), true)).toBe("eigene Firmware");
     expect(imageLabel(image!, tr("de"), true)).toBe("16.06.13");
   });
@@ -59,6 +59,8 @@ describe("image naming", () => {
     expect(imageWarning(custom)).toBe("fw.customWarning");
     expect(imageWarning(image!)).toBeNull();
     expect(i18n.t("fw.maintWarning", { lng: "de" })).not.toMatch(/keiner bekannten/);
+    expect(i18n.t("fw.maintWarning", { lng: "de" })).toMatch(/^Gepatchte Firmware/);
+    expect(i18n.t("fw.maintWarning", { lng: "en" })).toMatch(/patched firmware/);
     // still behind the custom opt-in and its own phrase
     expect(confirmationPhrase(0, maint.custom)).toBe("FLASH CUSTOM 0");
   });
@@ -67,12 +69,21 @@ describe("image naming", () => {
 describe("flash result", () => {
   const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
   const info = (v: string) => ({ device_name: "X", firmware_version: v, can_protocol: "CAN" });
-  const maint = { ...image!, release: "16.06.13 MAINT 1.1", kind: "maintenance" as const, custom: true };
+  const maint = { ...image!, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance" as const, custom: true };
   const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
 
-  it("the version line names the image in full, the maintenance build with MAINT", () => {
+  it("the version line names the image in full, an EMU1101-EXT build by its name", () => {
     const done = { before: info("16.06"), after: info("16.06") };
-    expect(resultVersions(done, "16.06", maint, tr("de"))).toEqual({ from: "16.06", to: "16.06.13 MAINT 1.1" });
+    expect(resultVersions(done, "16.06", maint, tr("de"))).toEqual({ from: "16.06", to: "EMU1101-EXT Full 1.6.5 (Pack meldet 16.06)" });
+    // with the listed build's OEM base: a fitting answer is not repeated, another one is named
+    const light = { ...maint, release: "EMU1101-EXT Light 1.5.5", base: "16.06.13" };
+    const full = { ...maint, base: "16.06.13" };
+    for (const [img, lng] of [[light, "de"], [full, "en"]] as const) {
+      expect(resultVersions(done, "16.06", img, tr(lng)).to).toBe(img.release);
+      expect(resultVersions({ before: info("16.06"), after: info("16.04") }, null, img, tr(lng)).to).toMatch(/\(Pack meldet 16\.04\)|\(pack reports 16\.04\)/);
+      expect(resultVersions({ before: info("16.06"), after: info("17.01") }, null, img, tr(lng)).to).toContain("17.01");
+      expect(resultVersions({ before: info("16.06"), after: null }, null, img, tr(lng)).to).toBe(img.release);
+    }
     expect(resultVersions(done, "16.06", image, tr("de"))).toEqual({ from: "16.06", to: "16.06.13" });
     expect(resultVersions({ before: info("16.04"), after: info("16.06") }, null, image, tr("de"))).toEqual({ from: "16.04", to: "16.06.13" });
   });

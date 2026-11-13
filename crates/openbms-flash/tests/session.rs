@@ -474,7 +474,7 @@ fn a_missing_state_answer_is_not_compared_and_does_not_fail_the_flash() {
 
 #[test]
 fn a_bootloader_late_after_the_soc_save_is_found_by_a_later_probe() {
-    // MAINT 1.6.3 saves the SOC before it resets: the first R F L after 50 ms comes too early
+    // EMU1101-EXT Full saves the SOC before it resets: the first R F L after 50 ms comes too early
     let mut sim = BootSim::new();
     sim.set_soc_save(Duration::from_millis(400));
     let options = Options { ack_timeout: Duration::from_secs(3), ..Options::default() };

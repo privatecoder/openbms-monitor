@@ -122,6 +122,10 @@ pub fn parse(raw: &[u8]) -> Result<Frame> {
     if info_ascii.len() != lenid {
         return Err(Error::LengthMismatch { declared: lenid, actual: info_ascii.len() });
     }
+    // a valid LENGTH may still declare an odd number of hex digits: never a byte string
+    if lenid % 2 != 0 {
+        return Err(Error::Layout("INFO has an odd number of hex digits"));
+    }
     let info = info_ascii
         .chunks(2)
         .map(hex_byte)
@@ -177,6 +181,14 @@ impl Lines {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_odd_number_of_info_digits_is_an_error_not_a_panic() {
+        let len = length_field(3).unwrap();
+        let body = format!("20004600{len:04X}ABC");
+        let raw = format!("~{body}{:04X}\r", checksum(body.as_bytes()));
+        assert!(matches!(parse(raw.as_bytes()), Err(Error::Layout(_))));
+    }
 
     #[test]
     fn lines_split_across_reads_from_their_tilde() {
