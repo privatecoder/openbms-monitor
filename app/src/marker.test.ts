@@ -13,9 +13,11 @@ describe("maintenance marker", () => {
     expect(markerLine(v({ marker: "on" }), t).text).toContain("Marker gesetzt");
     expect(markerLine(v({ marker: "foreign" }), t).tone).toBe("warn");
   });
-  it("points older builds and the original on RS485-1/2 to the CAN socket", () => {
-    expect(markerLine(v({ bus: "pack", kind: "no-uart0", version: "16.06.13 MAINT 1.6" }), t).text).toContain("nur über die CAN-Buchse");
-    expect(markerLine(v({ bus: "pack", kind: "unknown", version: null }), t).text).toContain("über die CAN-Buchse verbinden");
+  it("points older builds and the original on RS485-1/2 to the ways that read the marker (from the catalog)", () => {
+    const noUart0 = markerLine(v({ bus: "pack", kind: "no-uart0", version: "16.06.13 MAINT 1.6" }), t).text;
+    expect(noUart0).toMatch(/^16\.06\.13 MAINT 1\.6 zeigt den Marker an diesem Anschluss nicht\. Lesen: /);
+    expect(noUart0).toContain("CAN-Buchse (EMU1101-EXT, nur am Master)");
+    expect(markerLine(v({ bus: "pack", kind: "unknown", version: null }), t).text).toMatch(/^Keine Antwort mit Marker\. Lesen: RS485-1\/2 .* oder CAN-Buchse/);
     // RTN 04 proves only that this image ignores it: a marker set earlier may stay
     expect(markerLine(v({ kind: "no-0x64", version: null }), t).text).toContain("kann im Speicher bleiben");
   });

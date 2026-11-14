@@ -1,6 +1,6 @@
 ---
 title: Automatische Adressvergabe
-short: Ignoriert die DIP-Adresse und vergibt Adressen über eine Puls-Kette. Bei EMU1101-EXT wird der Wartungsstart („Master anhalten“) abgelehnt, solange es an ist.
+short: Ignoriert die DIP-Adresse und vergibt Adressen über eine Puls-Kette. Solange es an ist, lehnt Patch-Firmware ab: „Wartung starten“ über die CAN-Buchse („Master anhalten“).
 related: topic.switches
 ---
 

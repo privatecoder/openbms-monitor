@@ -113,6 +113,8 @@ describe("access facts as text (help and hints)", async () => {
   const CAT = (await import("./generated/access.json")).default;
   const ACTIONS = [...new Set(ROUTES.map((r) => r.action))];
   const tr = (lng: string) => i18n.getFixedT(lng);
+  // the hints' own variables, filled with a neutral value
+  const VARS = { version: "V" };
   const way = (action: string, channel: string, i = 0) => ROUTES.filter((r) => r.action === action && r.channel === channel)[i];
   const state = (action: string, channel: string, f: Partial<Facts>, i = 0) => decide(way(action, channel, i), factsOf(f)).state;
 
@@ -159,7 +161,7 @@ describe("access facts as text (help and hints)", async () => {
     for (const lng of ["de", "en"]) {
       expect(takes(lng)).toEqual(Object.keys(ACCESS_HINTS).sort());
       for (const k of Object.keys(ACCESS_HINTS) as (keyof typeof ACCESS_HINTS)[]) {
-        const text = accessHint(tr(lng), k);
+        const text = accessHint(tr(lng), k, ROUTES, VARS);
         expect(text, `${lng} ${k}`).not.toMatch(/\{\{|acc\.|undefined/);
         for (const a of ACCESS_HINTS[k]) expect(ACTIONS).toContain(a);
       }
@@ -245,24 +247,29 @@ describe("access facts as text (help and hints)", async () => {
   // (except the three that say this pack lacks a CAN socket way), so only the generated part carries those facts.
   it("keeps the hints' prose free of port and firmware claims, so a removed way leaves no claim behind", () => {
     const negative = new Set(["clock.canBus", "bmsh.canBus", "ctl.canUnsupported"]);
-    const gone = new Set(["restart", "power-on-off", "set-clock", "read-history", "read-parameters", "write-parameters", "read-calibration", "read-soc-store", "read-diagnosis", "hard-stop"]);
-    const fewer = ROUTES.filter((r) => !(r.channel === "uart1" && gone.has(r.action)));
     for (const lng of ["de", "en"]) {
       const t = tr(lng);
       for (const k of Object.keys(ACCESS_HINTS) as (keyof typeof ACCESS_HINTS)[]) {
-        const prose = t(k, { access: "" });
+        const prose = t(k, { ...VARS, access: "" });
         expect(prose, `${lng} ${k}`).not.toMatch(/EMU1101|Patch-Firmware|patched firmware|RS485|UART|Bit ?\d|bit ?\d/);
         if (!negative.has(k)) expect(prose, `${lng} ${k}`).not.toMatch(/CAN-Buchse|CAN socket/);
         else expect(prose, `${lng} ${k}`).toMatch(/nicht|not/);
-        const now = accessHint(t, k), after = accessHint(t, k, fewer);
-        expect(now, `${lng} ${k}`).toMatch(/CAN-Buchse|CAN socket/);
-        if (!negative.has(k)) expect(after, `${lng} ${k}`).not.toMatch(/CAN-Buchse|CAN socket/);
+        // every port the hint names comes from a way of its actions: without those ways, the port is gone from it
+        const acts: readonly string[] = ACCESS_HINTS[k];
+        const channels = [...new Set(ROUTES.filter((r) => acts.includes(r.action) && r.implemented).map((r) => r.channel))];
+        expect(channels.length, `${lng} ${k}`).toBeGreaterThan(0);
+        for (const ch of channels) {
+          const port = t(`acc.doc.port.${ch}`);
+          const fewer = ROUTES.filter((r) => !(r.channel === ch && acts.includes(r.action)));
+          expect(accessHint(t, k, ROUTES, VARS), `${lng} ${k}`).toContain(port);
+          if (!prose.includes(port)) expect(accessHint(t, k, fewer, VARS), `${lng} ${k} without ${ch}`).not.toContain(port);
+        }
       }
     }
   });
   it("keeps every hint short: one or two lines, no bit numbers or versions", () => {
     for (const lng of ["de", "en"]) for (const k of Object.keys(ACCESS_HINTS) as (keyof typeof ACCESS_HINTS)[]) {
-      const text = accessHint(tr(lng), k);
+      const text = accessHint(tr(lng), k, ROUTES, VARS);
       expect(text.length, `${lng} ${k}: ${text}`).toBeLessThanOrEqual(240);
       expect(text, `${lng} ${k}`).not.toMatch(/Group\d|[Bb]it ?\d|\d\.\d\.\d/);
     }

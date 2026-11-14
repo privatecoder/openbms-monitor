@@ -154,7 +154,15 @@
     "uart0": "RS485-1/2",
     "uart1": "CAN-Buchse",
     "uart2": "Displayport"
-   }
+   },
+   "portThe": {
+    "uart0": "den RS485-1/2-Bus",
+    "uart1": "die CAN-Buchse",
+    "uart2": "den Displayport"
+   },
+   "via": "über {{ports}}",
+   "gate": "{{actions}} {{via}}",
+   "quote": "„{{name}}“"
   }
  },
  "en": {
@@ -311,7 +319,15 @@
     "uart0": "RS485-1/2",
     "uart1": "CAN socket",
     "uart2": "display port"
-   }
+   },
+   "portThe": {
+    "uart0": "the RS485-1/2 bus",
+    "uart1": "the CAN socket",
+    "uart2": "the display port"
+   },
+   "via": "via {{ports}}",
+   "gate": "{{actions}} {{via}}",
+   "quote": "“{{name}}”"
   }
  }
 }

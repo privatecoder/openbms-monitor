@@ -255,10 +255,16 @@ export const ACCESS_HINTS = {
   "rdiag.noCap": ["read-calibration", "read-soc-store"],
   "mdiag.hint": ["read-diagnosis"],
   "hs.hint": ["hard-stop"],
+  "maint.setup.controlHint": ["maint-start"],
+  "fw.patch.update": ["flash"],
+  "fw.soc.hint": ["read-soc-store"],
+  "mk.noUart0": ["maint-status"],
+  "mk.unknownPack": ["maint-status"],
 } as const satisfies Record<string, readonly string[]>;
 export type AccessHint = keyof typeof ACCESS_HINTS;
-/** A hint of `ACCESS_HINTS` with its access line filled in. */
-export const accessHint = (t: Tr, key: AccessHint, routes: readonly Route[] = ROUTES): string => t(key, { access: accessText(t, ACCESS_HINTS[key], routes) });
+/** A hint of `ACCESS_HINTS` with its access line filled in; `vars` are the hint's own variables (a version …). */
+export const accessHint = (t: Tr, key: AccessHint, routes: readonly Route[] = ROUTES, vars: Record<string, unknown> = {}): string =>
+  t(key, { ...vars, access: accessText(t, ACCESS_HINTS[key], routes) });
 
 /** The first supported build of each patch line („1.5.4“, „1.6.4“), for texts naming the supported range. */
 export const supportedLines = () => ({ light: LINE_FROM["1.5"].join("."), full: LINE_FROM["1.6"].join(".") });

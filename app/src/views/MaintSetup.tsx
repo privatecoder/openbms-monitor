@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { actLocked } from "../locks";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
+import { accessHint } from "../access";
 import { api, type ControlEndpoint, type Installation, type Pending } from "../api";
 import { errorKey, portKey, refusalParams, setupEndpoints, setupFields, type PortKind } from "../maint";
 import { Button } from "../components/ui/button";
@@ -84,7 +85,7 @@ export function MaintSetup({ installation, pending, markerOn, onSaved, onCancel,
           <KindSelect value={f.canKind} disabled={disabled} onChange={(k) => edit({ canKind: k, canValue: "" })} label={t("maint.setup.can")} />
           <PortInput kind={f.canKind} value={f.canValue} ports={ports} onRefresh={loadPorts} onChange={(v) => edit({ canValue: v })} label={t("maint.setup.can")} disabled={disabled} />
         </div>
-        <p className="text-muted">{t("maint.setup.controlHint")}</p>
+        <p className="text-muted">{accessHint(t, "maint.setup.controlHint")}</p>
         {markerOn && <p className="text-discharge">{t("maint.setup.markerOn")}</p>}
       </div>
 

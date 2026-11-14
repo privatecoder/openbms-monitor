@@ -437,7 +437,7 @@
   }
  },
  "groups": {
-  "0": "Not an enable mask. Original firmware: only bit 1 has an effect (temperature sensor check), the other bits are only stored and reported; the button event and the cell difference fault (event 1) are always evaluated. Patched firmware: with EMU1101-EXT bits 0, 2 and 3 release writing, maintenance and on/off, restart and clock via the CAN socket; EMU1101-EXT Full adds bit 4 (extended off), bit 5 (pack cutoff status) and bits 6/7 (hard stop choice).",
+  "0": "Not an enable mask. Original firmware: only bit 1 has an effect (temperature sensor check), the other bits are only stored and reported; the button event and the cell difference fault (event 1) are always evaluated. Patched firmware: with EMU1101-EXT bits 0, 2 and 3 release single access ways (each bit names which); EMU1101-EXT Full adds bit 4 (extended off), bit 5 (pack cutoff status) and bits 6/7 (hard stop choice).",
   "1": "Enable mask for event 2 (cell and pack voltage). The firmware ANDs the event with this mask right after evaluating it, before the charge lock, discharge lock, SOC, limits or protocols read it; a bit at 0 switches off the message and every reaction that depends on the event. Rules that read the parameter or the voltage directly stay active: the SOC corrections with the cell high- and low-voltage warning (100 % rule, jump at a low cell) keep working.",
   "2": "Enable mask for event 3 (cell temperature while charging and discharging, warning and protection). A bit at 0 switches off the message and every reaction that depends on the event; rules that read a parameter or measured value directly stay active.",
   "3": "Enable mask for event 4: ambient and MOSFET temperature (bits 0–5), plus cell heating (bit 6) and the severe fault message (bit 7). A bit at 0 switches off the message and every reaction that depends on the event; rules that read a parameter or measured value directly stay active.",
@@ -449,15 +449,15 @@
  "switches": {
   "0.0": {
    "name": "Allow writing via the CAN socket",
-   "short": "Patched firmware: 1 allows writing the parameters via the CAN socket, 0 locks it. Unlock only via the RS485-1/2 bus or on the display."
+   "short": "With patched firmware, applies to “Write parameters and switches” and “Set the hard stop at a recharge pause” via the CAN socket: 1 allows, 0 locks. Unlock only via the RS485-1/2 bus or on the display."
   },
   "0.2": {
    "name": "Allow maintenance start via the CAN socket",
-   "short": "Patched firmware: 1 allows “Halt master” via the CAN socket, 0 refuses it; releasing always works. Change only via the RS485-1/2 bus or on the display."
+   "short": "With patched firmware, applies to “Start maintenance” via the CAN socket (“Halt master”): 1 allows, 0 refuses; releasing does not depend on it. Change only via the RS485-1/2 bus or on the display."
   },
   "0.3": {
    "name": "Allow on/off, restart and clock via the CAN socket",
-   "short": "EMU1101-EXT: 1 (on) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."
+   "short": "EMU1101-EXT, applies together to “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket: 1 (on) allows, 0 (off) locks. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."
   },
   "0.6": {
    "name": "Hard stop at recharge pause",
@@ -469,11 +469,11 @@
   },
   "0.4": {
    "name": "Extended off",
-   "short": "Patched firmware with the pack cutoff (EMU1101-EXT Full), applies to a direct off via the RS485-1/2 bus and the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."
+   "short": "Patched firmware with the pack cutoff (EMU1101-EXT Full), applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."
   },
   "0.3p": {
    "name": "Release of on/off, restart and clock via the CAN socket",
-   "short": "EMU1101-EXT with on/off and the clock via the CAN socket: 1 (on, as with the old value FF) allows on/off, restart and setting the clock there together, 0 (off) locks them; reading the clock always works. Change only via the RS485-1/2 bus or on the display."
+   "short": "EMU1101-EXT with power/RTC in the build (image flag bit 1), applies together to “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket: 1 (on, as with the old value FF) allows, 0 (off) locks. Change only via the RS485-1/2 bus or on the display."
   },
   "0.5": {
    "name": "No individual pack cutoff",
@@ -689,7 +689,7 @@
   },
   "7.5": {
    "name": "Automatic addressing",
-   "short": "Ignores the DIP address and assigns addresses over a pulse chain. With EMU1101-EXT the maintenance start (“Halt master”) is refused while it is on."
+   "short": "Ignores the DIP address and assigns addresses over a pulse chain. While it is on, patched firmware refuses: “Start maintenance” via the CAN socket (“Halt master”)."
   },
   "7.6": {
    "name": "Avoid automatic address 0",

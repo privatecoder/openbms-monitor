@@ -6,6 +6,11 @@ other conditions, hints, whether the app uses it), in a title, short text or par
 ways the app uses, short (no versions or bit numbers). Several ways of one action are alternatives; the conditions of one way all hold together; a read
 capability mask needs at least one of its bits. This only describes the catalog; it decides nothing.
 
+`{VIA:<action>[,<action>…]}` renders the ports of the ways the app uses, as „über die CAN-Buchse“ (for prose that keeps its
+sentence and refers to the generated list for the conditions). `{GATE:<group>.<bit>}` renders the actions whose ways the
+app uses need that switch bit, quoted, with their ports („Uhr stellen“ und „Neustart“ über die CAN-Buchse); which value releases
+stays with the checked switch texts.
+
 The short form must match `accessText` in `app/src/access.ts` (`access.test.ts` compares both on `generated/access_text.json`).
 """
 import json
@@ -19,8 +24,10 @@ ACTIONS = list(dict.fromkeys(r["action"] for r in CATALOG["routes"]))
 PROBES = set(CATALOG["probe_actions"])
 POLARITY = {tuple(b) for b in CATALOG["build_polarity"]}
 PLACEHOLDER = re.compile(r"\{ACCESS:([^{}\n]*)\}")
+VIA = re.compile(r"\{VIA:([^{}\n]*)\}")
+GATE = re.compile(r"\{GATE:([^{}\n]*)\}")
 # what is left of a placeholder after resolving (no closing brace, a line break or a brace inside, a wrong spelling)
-LEFTOVER = re.compile(r"\{\s*ACCESS|\{\s*access\s*:", re.I)
+LEFTOVER = re.compile(r"\{\s*(?:ACCESS|VIA|GATE)|\{\s*(?:access|via|gate)\s*:", re.I)
 
 
 class AccessError(ValueError):
@@ -210,6 +217,50 @@ def block(lang, actions):
     return "\n".join(lines)
 
 
+def _ports(lang, channels):
+    """„den RS485-1/2-Bus oder die CAN-Buchse“: the ports in catalog order, as alternatives."""
+    order = list(dict.fromkeys(r["channel"] for r in CATALOG["routes"]))
+    return _t(lang, "doc.or").join(_t(lang, "doc.portThe." + ch) for ch in sorted(set(channels), key=order.index))
+
+
+def via(lang, actions):
+    """`{VIA:…}`: „über die CAN-Buchse“, the ports of every way of `actions` the app uses."""
+    channels = [r["channel"] for a in actions for r in _routes(a) if r["implemented"]]
+    if not channels:
+        raise AccessError(f"{{VIA:{','.join(actions)}}}: the app uses no way of it")
+    return _t(lang, "doc.via", ports=_ports(lang, channels))
+
+
+def _listing(lang, items):
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + _t(lang, "doc.and") + items[-1]
+
+
+def gate(lang, spec):
+    """`{GATE:g.b}`: the actions whose ways the app uses need Group g bit b, with their ports. A bit that gates nothing
+    fails: the prose around it would claim a gate the catalog no longer has."""
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", spec)
+    if not m:
+        raise AccessError(f"{{GATE:{spec}}}: expected <group>.<bit>")
+    g, b = int(m.group(1)), int(m.group(2))
+    per = {}  # action → its gated ports, in catalog order
+    for r in CATALOG["routes"]:
+        if r["implemented"] and any(n["kind"] in ("bit-set", "bit-clear") and (n["group"], n["bit"]) == (g, b) for n in r["needs"]):
+            per.setdefault(r["action"], []).append(r["channel"])
+    if not per:
+        raise AccessError(f"{{GATE:{spec}}}: no way the app uses needs Group{g} bit {b}")
+    groups = []  # (ports, [actions]): actions over the same ports together
+    for a, chs in per.items():
+        same = next((x for x in groups if x[0] == chs), None)
+        if same:
+            same[1].append(a)
+        else:
+            groups.append((chs, [a]))
+    # inside a sentence the names stand quoted, as the UI writes them („Neustart“, “Restart”)
+    name = lambda a: _t(lang, "doc.quote", name=_t(lang, "act." + a))
+    return "; ".join(_t(lang, "doc.gate", actions=_listing(lang, [name(a) for a in acts]),
+                        via=_t(lang, "doc.via", ports=_ports(lang, chs))) for chs, acts in groups)
+
+
 def _actions(spec):
     actions = [a.strip() for a in spec.split(",")]
     if not actions or any(not a for a in actions):
@@ -218,7 +269,10 @@ def _actions(spec):
 
 
 def fill(lang, text, markdown):
-    """Resolve `{ACCESS:…}`: a block in a Markdown body (on a line of its own), else the plain line."""
+    """Resolve `{ACCESS:…}` (a block in a Markdown body, on a line of its own; else the plain line), `{VIA:…}` and
+    `{GATE:…}` (inline everywhere)."""
+    text = VIA.sub(lambda m: via(lang, _actions(m.group(1))), text)
+    text = GATE.sub(lambda m: gate(lang, m.group(1)), text)
     if markdown:
         def sub_block(m):
             start = text.rfind("\n", 0, m.start()) + 1

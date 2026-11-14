@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, Cpu, FolderOpen, TriangleAlert } from "lucide-react";
+import { accessHint } from "../access";
 import { api, isDemo, type BenchScan, type FirmwareDone, type FirmwareImage, type FirmwareProgress, type FlashComparison, type SocStoreRead } from "../api";
 import { SocLines } from "../components/RemoteDiagnosis";
 import { Button } from "../components/ui/button";
@@ -380,7 +381,7 @@ function FlashSocNote({ port, address, locked }: { port: string; address: number
       </div>
       {read === null && <p className="text-muted">{t("fw.soc.unavailable")}</p>}
       {read && <SocLines read={read} />}
-      <p className="text-muted">{t("fw.soc.hint")}</p>
+      <p className="text-muted">{accessHint(t, "fw.soc.hint")}</p>
     </div>
   );
 }
@@ -411,7 +412,7 @@ function PatchImageNotes({ inst, port, address, release, powerRtc, packCutoff, p
   return (
     <div className="space-y-1 rounded-md border border-line p-3 text-sm">
       <p className="flex items-center gap-1 font-medium">{t("fw.patch.title", { release })}<InfoIcon id="topic.patchGates" /></p>
-      <p className="text-muted">{t("fw.patch.update")}</p>
+      <p className="text-muted">{accessHint(t, "fw.patch.update")}</p>
       {latent && <p className="text-alarm">{t("fw.markerLatent")}</p>}
       {/* the pack chosen above (Pack-Adresse) */}
       <div className="flex flex-wrap items-center gap-2">

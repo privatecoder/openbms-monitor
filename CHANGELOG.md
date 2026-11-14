@@ -4,6 +4,7 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- Help and hints: the pages on maintenance, firmware update, firmware profile, release bits and calibration, the function switch 0 texts and the maintenance, marker and firmware hints now take their ports and firmware needs from the app's access table too. Each release bit lists the actions it gates from the table (bit 3 now also names the pack lock over the CAN socket); the calibration help no longer says the factors cannot be read where the firmware offers reading them.
 - Help and hints: which port and firmware an action needs now comes from the app's access table itself. The help pages on access paths, buses, parameters, writing, BMS history, control and the diagnoses list every way of an action (port, firmware or read capability, release bits, notes, whether the app uses it), and the bus hints in Parameters, clock, history, control and diagnosis are built from the same data; the master's Modbus serial (String 1, 22 characters) stays apart from the 30-character answers, and the identity query is named a detection query. The bus overview no longer shows a table that did not render.
 - Help and hints: the 22-character note when filling the battery serial applies only to the master's Modbus answer without patched firmware; the access matrix explains “unclear” as a missing proof (firmware identity, flags, read capabilities or switches), not only unread switches; the balancing help no longer claims a lock reason readable only on RS485-1/2.
 
