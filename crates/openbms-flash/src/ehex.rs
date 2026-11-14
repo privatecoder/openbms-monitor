@@ -72,7 +72,9 @@ fn hex(s: &str, line: usize) -> Result<Vec<u8>> {
         )));
     }
     s.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             std::str::from_utf8(pair)
                 .ok()

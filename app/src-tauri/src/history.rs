@@ -782,10 +782,10 @@ fn blob_i16(vals: &[i64]) -> Vec<u8> {
     vals.iter().flat_map(|&v| (v.clamp(i16::MIN as i64, i16::MAX as i64) as i16).to_le_bytes()).collect()
 }
 pub(crate) fn unblob_u16(b: &[u8]) -> Vec<i64> {
-    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as i64).collect()
+    b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c) as i64).collect()
 }
 fn unblob_i16(b: &[u8]) -> Vec<i64> {
-    b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as i64).collect()
+    b.as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c) as i64).collect()
 }
 
 /// One pack row from a PackUpdate; false if the answer carries no telemetry.
@@ -1205,8 +1205,8 @@ fn compact_system(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
             let key = (r.get::<_, i64>(0)?, t.div_euclid(MINUTE_MS) * MINUTE_MS);
             let g = groups.entry(key).or_insert_with(|| (r.get(2).unwrap_or(0), 0, vec![Acc::default(); 8]));
             g.1 += w;
-            for i in 0..8 {
-                g.2[i].add(r.get(4 + i)?, w);
+            for (i, acc) in g.2.iter_mut().enumerate() {
+                acc.add(r.get(4 + i)?, w);
             }
         }
     }
