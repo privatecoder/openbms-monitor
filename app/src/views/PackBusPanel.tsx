@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type DeviceInfo, type FirmwareDone, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
 import { imageLabel, seriesPhrase } from "../firmware";
 import { judge, seriesOrder, seriesRowText, seriesView, startFlashSeries, summarizeSeries, withEnd, type FlashSeriesEnd, type PackEnd, type SeriesView } from "../flashSeries";
 import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
-import { seriesOpen, busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
+import { seriesOpen, busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, dipOffTick, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
+import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
 import { RowSocNote } from "../components/RemoteDiagnosis";
 
@@ -120,12 +121,15 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
     return () => { alive = false; clearTimeout(timer); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // C′ (the master gets an image without maintenance functions): the user says DIP 5–8 are OFF before releasing (`dipOffTick`)
+  const [dipOffTicked, dipOff] = useReducer(dipOffTick, false);
   // another port or installation: nothing of the old one counts (a series running stops before its next pack by itself)
-  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); setAskSlaves(null); setReleased(null); setPicked([]); setAsk(false); wantScan.current = true; }, [port, inst?.id]);
+  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); setAskSlaves(null); setReleased(null); setPicked([]); setAsk(false); dipOff({ kind: "context" }); wantScan.current = true; }, [port, inst?.id]);
   useEffect(() => { if (flashTick) { setFlashed(true); setBack(false); wantScan.current = true; } }, [flashTick]);
   useEffect(() => { if (flashed && !running && live?.bus === "polling") { setFlashed(false); setBack(true); } }, [flashed, running, live?.bus]);
 
   const master: MasterView | null = live?.master ?? null;
+  const cPrime = releaseFirst(master, 0, image?.kind ?? null);
   useEffect(() => { onMaster(master); }, [master]); // eslint-disable-line react-hooks/exhaustive-deps
   const quiet = live?.bus === "quiet";
   const busy = !!action || scanning;
@@ -146,11 +150,15 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   const marker = (release: boolean, confirmed: number | null = null) => run(release ? "release" : "halt", async () => {
     if (!inst) return;
     setReleased(null);
-    if (release && confirmed === null && (await api.maintExpectedSlaves(inst.id)) === null) {
+    // C′, confirmed by the user: DIP 5–8 of the master OFF, so the master ends at 0 slaves, not the kept count
+    const off = release && cPrime && dipOffTicked;
+    if (release && !off && confirmed === null && (await api.maintExpectedSlaves(inst.id)) === null) {
       setAskSlaves(Math.max(0, packs.length - 1));
       return;
     }
-    const m = release ? await api.maintRelease(inst.id, confirmed) : await api.maintHalt(inst.id);
+    // the tick counts for this one attempt only, whatever its outcome
+    if (release) dipOff({ kind: "release" });
+    const m = release ? await api.maintRelease(inst.id, confirmed, off) : await api.maintHalt(inst.id);
     setAskSlaves(null);
     if (release) setReleased(m.polling ?? null);
     setLive((l) => (l ? { ...l, master: m } : l));
@@ -223,7 +231,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   // flashing belongs to an installation: without one the panel only says so
   if (!inst) return (
     <section className="space-y-2 rounded-md border border-line p-4 text-sm">
-      <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /></h2>
+      <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /><GuideButton place="packBus" /></h2>
       <p className="text-discharge">{t("maint.panel.noInstallation")}</p>
     </section>
   );
@@ -231,7 +239,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   return (
     <section className="space-y-4 rounded-md border border-line p-4 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /></h2>
+        <h2 className="flex items-center gap-1.5 font-display text-lg font-semibold">{t("maint.panel.title")}<InfoIcon id="topic.maintenance" /><GuideButton place="packBus" /></h2>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{inst.name}</span>
           <Button variant="ghost" size="sm" {...may("maintenance.editPorts")} onClick={onEditPorts}>{t("maint.panel.editPorts")}</Button>
@@ -313,7 +321,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
                   </div>
                   {d && image && <RowSocNote port={port} address={a} disabled={decideUi("firmware.readTarget", { ...facts, port: !!port }).locked} />}
                   {pending && <p className="text-alarm">{t("maint.packs.pending", { pack: a })}</p>}
-                  {a === 0 && releaseFirst(master, 0, image?.kind ?? null) && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
+                  {a === 0 && cPrime && <p className="text-discharge">{t("maint.packs.cPrime")}</p>}
                 </li>
               );
             })}
@@ -377,7 +385,15 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           <h3 className="font-medium">{t("maint.done.title")}</h3>
           {master?.may_release && inst ? (
             askSlaves === null ? (
-              <ActButton variant="primary" size="sm" spinning={action === "release"} {...may("maintenance.release")} onClick={() => marker(true)}>{t("maint.release")}</ActButton>
+              <div className="space-y-2">
+                {cPrime && (
+                  <label className="flex items-start gap-2">
+                    <input type="checkbox" className="mt-0.5 h-4 w-4 accent-[var(--charge)]" checked={dipOffTicked} {...may("maintenance.release")} onChange={(e) => dipOff({ kind: "set", on: e.target.checked })} />
+                    {t("maint.done.dipOff")}
+                  </label>
+                )}
+                <ActButton variant="primary" size="sm" spinning={action === "release"} {...may("maintenance.release")} onClick={() => marker(true)}>{t("maint.release")}</ActButton>
+              </div>
             ) : (
               <div className="space-y-1">
                 <p>{t("maint.done.askSlaves")}</p>

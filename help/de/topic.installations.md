@@ -1,7 +1,7 @@
 ---
 title: Anlagen
 short: Alles, was die App über eine Batterie weiß, gehört zu einer Anlage. Die Ansicht Anlagen listet sie mit ihren Packs.
-related: topic.connection, topic.history, topic.params, topic.maintenance
+related: topic.connection, topic.history, topic.params, topic.maintenance, guide.setup
 ---
 - **Was dazugehört:** die Aufzeichnung, die erkannten Platinen je Adresse, Zelltyp je Pack, Gruppen und Paare, die Diagnose, die Parameterstände, die archivierte Historie aus dem BMS und die Update-Protokolle. Benutzer-Zellmodelle bleiben für alle Anlagen gemeinsam.
 - **Wählen:** in der Seitenleiste vor dem Verbinden (siehe Verbindung). Ohne Verbindung bestimmt die gewählte Anlage, was Verlauf und Parameter zeigen; die Übersicht zeigt immer den tatsächlich verbundenen Bus.

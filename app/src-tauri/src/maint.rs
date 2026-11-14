@@ -890,15 +890,23 @@ pub async fn maint_scan_cancel(state: State<'_, AppState>) -> Result<(), MaintEr
 /// polled right before is kept: the release waits for it again.
 #[tauri::command]
 pub async fn maint_halt(state: State<'_, AppState>, installation: String) -> Result<MasterView, MaintError> {
-    marker_action(&state, &installation, Action::Start, None)
+    marker_action(&state, &installation, Action::Start, Release::default())
 }
 
 /// „Master freigeben“: `stop`, only when 0x64 shows the marker on (never automatic), until the master reports its DIP
 /// slave count again: the one kept by the halt, else `expected_slaves` the user confirmed (None then: refused with
-/// "expected-slaves-needed").
+/// "expected-slaves-needed"). `dip_off`: the C′ release the panel offers before flashing the master with an image
+/// without maintenance functions, with DIP 5–8 of the master OFF: the master then reports 0 slaves, not the kept count.
 #[tauri::command]
-pub async fn maint_release(state: State<'_, AppState>, installation: String, expected_slaves: Option<u8>) -> Result<MasterView, MaintError> {
-    marker_action(&state, &installation, Action::Stop { expected: 0 }, expected_slaves)
+pub async fn maint_release(state: State<'_, AppState>, installation: String, expected_slaves: Option<u8>, dip_off: Option<bool>) -> Result<MasterView, MaintError> {
+    marker_action(&state, &installation, Action::Stop { expected: 0 }, Release { confirmed: expected_slaves, dip_off: dip_off.unwrap_or(false) })
+}
+
+/// What the user gave a release: the slave count they confirmed, and whether DIP 5–8 of the master are OFF (C′).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Release {
+    pub confirmed: Option<u8>,
+    pub dip_off: bool,
 }
 
 /// The DIP slave count kept for the installation's master by its halt (None: none kept for this master board).
@@ -912,9 +920,10 @@ pub(crate) fn master_board(state: &AppState, inst: &str) -> Result<Option<i64>, 
     with_store(state, |s| Ok(s.current_board(inst, 0)?.map(|b| b.id)))
 }
 
-/// The count a release waits for: the one kept by the halt, else the user's (None: ask the user).
-pub fn release_target(kept: Option<u8>, confirmed: Option<u8>) -> Option<u8> {
-    kept.or(confirmed)
+/// The count a release waits for: 0 with DIP 5–8 OFF (C′, the master polls nobody then), else the one kept by the
+/// halt, else the user's (None: ask the user).
+pub fn release_target(kept: Option<u8>, r: Release) -> Option<u8> {
+    if r.dip_off { Some(0) } else { kept.or(r.confirmed) }
 }
 
 /// What a finished release can say about the polling: N = 0 has no slaves to poll; for N > 0 only a pack bus capture
@@ -926,10 +935,10 @@ pub fn polling_after_release(expected: u8) -> &'static str {
 
 static LAST_LIVE: Mutex<String> = Mutex::new(String::new());
 
-fn marker_action(state: &AppState, installation: &str, action: Action, confirmed: Option<u8>) -> Result<MasterView, MaintError> {
+fn marker_action(state: &AppState, installation: &str, action: Action, release: Release) -> Result<MasterView, MaintError> {
     let name = if action == Action::Start { "halt" } else { "release" };
     event(state, Some(installation), &format!("{name} pressed"));
-    let r = marker_action_inner(state, installation, action, confirmed);
+    let r = marker_action_inner(state, installation, action, release);
     match &r {
         Ok(m) => event(state, Some(installation), &format!("{name} done {}", master_text(m))),
         Err(e) => event(state, Some(installation), &format!("{name} failed {}", serde_json::to_string(e).unwrap_or_default())),
@@ -961,7 +970,7 @@ pub fn master_check(stored: &str, read: Option<&SerialValue>) -> Result<(), Main
     }
 }
 
-fn marker_action_inner(state: &AppState, installation: &str, action: Action, confirmed: Option<u8>) -> Result<MasterView, MaintError> {
+fn marker_action_inner(state: &AppState, installation: &str, action: Action, release: Release) -> Result<MasterView, MaintError> {
     if state.flashing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(MaintError::Busy);
     }
@@ -986,7 +995,7 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action, con
         }
         _ => {
             let kept = with_store(state, |s| s.expected_slaves(&inst.id, board))?;
-            Action::Stop { expected: release_target(kept, confirmed).ok_or_else(|| refused("expected-slaves-needed"))? }
+            Action::Stop { expected: release_target(kept, release).ok_or_else(|| refused("expected-slaves-needed"))? }
         }
     };
     let r = control_dialog(state, &inst, action)?;
@@ -1276,9 +1285,10 @@ mod tests {
 
     #[test]
     fn a_release_waits_for_the_kept_or_the_confirmed_slave_count() {
-        assert_eq!(release_target(Some(11), Some(3)), Some(11), "the count read before the halt wins");
-        assert_eq!(release_target(None, Some(3)), Some(3));
-        assert_eq!(release_target(None, None), None);
+        let user = |n| Release { confirmed: n, dip_off: false };
+        assert_eq!(release_target(Some(11), user(Some(3))), Some(11), "the count read before the halt wins");
+        assert_eq!(release_target(None, user(Some(3))), Some(3));
+        assert_eq!(release_target(None, user(None)), None);
         assert_eq!(polling_after_release(0), "no-slaves");
         assert_eq!(polling_after_release(11), "unverified");
         let s = store_at("expected");
@@ -1289,6 +1299,23 @@ mod tests {
         assert_eq!(s.expected_slaves(&a.id, Some(5)).unwrap(), None);
         s.clear_expected_slaves(&a.id).unwrap();
         assert_eq!(s.expected_slaves(&a.id, Some(4)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_c_prime_release_with_dip_off_ends_at_0_slaves_although_the_halt_kept_another_count() {
+        // halted while polling 11 slaves; then DIP 5–8 OFF before the master gets an image without maintenance
+        // functions: after the marker clears the master reports 0 slaves, and that is the release's end
+        let st = |marker: bool, slaves| MaintState { marker_word: if marker { 0 } else { u32::MAX }, effective_slaves: slaves };
+        let kept = Some(11);
+        let cprime = release_target(kept, Release { confirmed: None, dip_off: true }).unwrap();
+        assert_eq!(cprime, 0);
+        assert!(target_reached(Action::Stop { expected: cprime }, st(false, 0)));
+        assert_eq!(polling_after_release(cprime), "no-slaves");
+        // the normal release still waits for the kept count, never for 0
+        let normal = release_target(kept, Release::default()).unwrap();
+        assert_eq!(normal, 11);
+        assert!(!target_reached(Action::Stop { expected: normal }, st(false, 0)));
+        assert!(target_reached(Action::Stop { expected: normal }, st(false, 11)));
     }
 
     #[test]

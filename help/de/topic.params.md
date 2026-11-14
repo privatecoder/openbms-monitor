@@ -1,7 +1,7 @@
 ---
 title: Parameter
 short: Die Einstellungen der Packs: Grenzwerte, Verzögerungen, Balancing und Funktionsschalter. Die App liest und vergleicht sie und schreibt sie auf Knopfdruck, auf ein Pack oder dieselbe Änderung auf mehrere; dazu Seriennummern, BMS-Uhr, CAN-Protokoll und Kalibrierung. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
-related: topic.buses, topic.access, topic.switches, topic.paramWrite, topic.calibration, topic.control
+related: topic.buses, topic.access, topic.switches, topic.paramWrite, topic.calibration, topic.control, guide.paramMulti
 ---
 - **Aus den Packs lesen:** über die Wege unten. An der CAN-Buchse liest jedes Pack an seiner Adresse und mit seiner eigenen Firmware, ohne dass der Master anhält; die Spalte trägt dann „CAN“. Liest die App dort auch seine Seriennummern (Wege unten), prüft sie die Platine wie auf dem RS485-1/2-Bus, speichert den Stand und schreibt über jeden Weg, den die Liste fürs Schreiben nennt. Ohne eindeutige BMS-Seriennummer bleibt es beim Lesen, und nichts wird gespeichert. Antwortet ein Pack dort nicht, hat es den Patch nicht oder ist nicht erreichbar; dann RS485-1/2 verwenden. Die Freigabebits in Funktionsschalter 0 erklärt „Patch-Firmware: Freigabebits“. Ein **Master**, der seine Slaves abfragt (DIP 0 mit Slaves), antwortet auf dem RS485-1/2-Bus nicht. Er wird erreichbar, sobald er nicht mehr abfragt: mit Patch-Firmware über „Master anhalten“ im Wartungsbereich (danach „Master freigeben“), sonst mit DIP 5–8 auf OFF oder kurz allein am Bus; oder seine Werte kommen aus einer Parameterdatei der App.
 - **Parameter lesen**

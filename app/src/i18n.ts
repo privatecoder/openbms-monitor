@@ -324,6 +324,7 @@ const resources = {
         },
         done: {
           title: "Fertig", dip: "DIP 5–8 am Master zurückstellen.",
+          dipOff: "DIP 5–8 am Master stehen auf OFF (C′: der Master bekommt danach ein Image ohne Wartungsfunktion). Die Freigabe endet dann bei 0 Slaves.",
           hint: "Danach zeigt die Statuszeile „Master fragt … Slaves ab“ als Bestätigung.",
           back: "Wartung abgeschlossen: Der Master fragt seine Slaves wieder ab.",
           askSlaves: "Wie viele Slaves stellt der DIP-Schalter am Master ein? Die Freigabe gilt erst, wenn der Master diese Zahl wieder meldet (vorbelegt: gefundene Packs − 1).",
@@ -1310,6 +1311,7 @@ const resources = {
       sw: { discharge: "Entladen", charge: "Laden", limiter: "Strombegrenzer", heater: "Heizung", on: "an", off: "aus" },
       sev: { info: "Hinweis", warning: "Warnung", protection: "Schutz", fault: "Fehler" },
       help: { more: "Ganze Erklärung öffnen", title: "Hilfe", missing: "Für diesen Punkt gibt es noch keinen Hilfetext.", related: "Siehe auch" },
+      guide: { button: "Anleitung", pick: "Anleitungen", hint: "Schritt für Schritt: {{title}}" },
     },
   },
   en: {
@@ -1632,6 +1634,7 @@ const resources = {
         },
         done: {
           title: "Done", dip: "Set DIP 5–8 of the master back.",
+          dipOff: "DIP 5–8 of the master are OFF (C′: the master gets an image without maintenance functions next). The release then ends at 0 slaves.",
           hint: "The status line then shows “Master polls … slaves” as confirmation.",
           back: "Maintenance finished: the master polls its slaves again.",
           askSlaves: "How many slaves does the master's DIP switch set? The release counts only once the master reports that number again (prefilled: packs found − 1).",
@@ -2618,6 +2621,7 @@ const resources = {
       sw: { discharge: "Discharge", charge: "Charge", limiter: "Current limiter", heater: "Heater", on: "on", off: "off" },
       sev: { info: "Info", warning: "Warning", protection: "Protection", fault: "Fault" },
       help: { more: "Open full explanation", title: "Help", missing: "There is no help text for this item yet.", related: "See also" },
+      guide: { button: "Guide", pick: "Guides", hint: "Step by step: {{title}}" },
     },
   },
 };

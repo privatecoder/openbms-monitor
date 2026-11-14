@@ -1,7 +1,7 @@
 ---
 title: Parameter und Seriennummern schreiben
 short: Die Parameter eines Packs ändern und schreiben, einen Pack an andere angleichen, dieselbe Änderung auf mehrere Packs schreiben, Seriennummern setzen. Parameter und Schalter schreiben: RS485-1/2 (Originalfirmware) oder CAN-Buchse (EMU1101-EXT, UART1-Schreibfreigabe an). Seriennummern schreiben: RS485-1/2 (Originalfirmware).
-related: topic.params, topic.paramCheck, topic.switches, topic.firmware, topic.access
+related: topic.params, topic.paramCheck, topic.switches, topic.firmware, topic.access, guide.paramMulti
 ---
 - **Bearbeiten:** Nach dem Lesen hat jede Pack-Spalte einen Stift. Die Zellen der Spalte werden zu Eingabefeldern (Werte in der angezeigten Einheit, Schalter als Häkchen); es wird immer nur eine Spalte bearbeitet. Geänderte Zellen sind farbig markiert, die Leiste über der Tabelle listet die Änderungen.
 - **Bank angleichen:** „Werte übernehmen aus …“ füllt die Spalte mit allen Werten und Schaltern einer anderen Spalte (ein anderer Pack oder eine geöffnete Parameterdatei). Danach lassen sich einzelne Werte noch ändern. So geht es: alle Packs lesen, einen bearbeiten, vom Referenz-Pack übernehmen, schreiben, nächster Pack. Exporte mit verschobener Reihenfolge stehen nicht zur Auswahl.

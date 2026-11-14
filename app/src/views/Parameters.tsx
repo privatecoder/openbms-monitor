@@ -7,6 +7,7 @@ import { api, isDemo, linkNow, type Bus, type Installation, type ParamWrite } fr
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
+import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
 import { afterUart1Write, capacityResets, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
@@ -638,7 +639,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
         <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight">
-          <SlidersHorizontal className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("par.title")}<InfoIcon id="topic.params" />
+          <SlidersHorizontal className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("par.title")}<InfoIcon id="topic.params" /><GuideButton place="parameters" />
         </h1>
         <p className="mt-1 max-w-3xl text-muted">{t("par.intro")}</p>
       </header>

@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button";
 import { Switch } from "../components/PackPicker";
 import { useNow } from "../components/live";
 import { InfoIcon } from "../help";
+import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
 import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
 import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
@@ -251,7 +252,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header className="space-y-2">
         <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight">
-          <Cpu className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("fw.title")}<InfoIcon id="topic.firmware" />
+          <Cpu className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("fw.title")}<InfoIcon id="topic.firmware" /><GuideButton place="firmware" />
         </h1>
         <p className="mt-1 max-w-3xl text-muted">{t("fw.intro")}</p>
         {connected && <p className="text-sm text-discharge">{t("fw.monitorWillStop")}</p>}

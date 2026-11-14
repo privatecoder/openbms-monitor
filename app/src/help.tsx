@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import { Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { Sheet, SheetContent } from "./components/ui/sheet";
@@ -47,9 +47,7 @@ function HelpPage({ id, onOpen }: { id: string; onOpen: (id: string) => void }) 
   return (
     <article className="space-y-4 text-sm leading-relaxed">
       <p className="text-ink/80">{e.short}</p>
-      <div className="space-y-3 [&_li]:ml-4 [&_li]:list-disc [&_strong]:font-semibold [&_table]:w-full [&_td]:border-t [&_td]:border-line [&_td]:py-1 [&_td]:pr-3 [&_th]:pr-3 [&_th]:text-left [&_th]:font-medium [&_code]:rounded [&_code]:bg-sunken [&_code]:px-1">
-        <Markdown>{e.body}</Markdown>
-      </div>
+      <HelpBody body={e.body} onOpen={onOpen} />
       {e.related.length > 0 && (
         <div>
           <div className="mb-2 text-sm text-muted">{t("help.related")}</div>
@@ -59,6 +57,35 @@ function HelpPage({ id, onOpen }: { id: string; onOpen: (id: string) => void }) 
         </div>
       )}
     </article>
+  );
+}
+
+/** An internal help link (`[title](#topic.firmware)` in a page): the id of an existing page, else null. */
+export function helpTarget(href: string | undefined): string | null {
+  const id = /^#([A-Za-z]+\.[^\s#]+)$/.exec(href ?? "")?.[1];
+  return id && (entries.en?.[id] ?? entries.de?.[id]) ? id : null;
+}
+
+/** How a page body renders: numbered steps and bullet lists styled apart (also nested, as a guide's cases), an
+ * internal link opens its page with the target's title; other links stay plain links. */
+export function helpComponents(onOpen: (id: string) => void, lang: string): Components {
+  return {
+    ol: ({ node: _, ...p }) => <ol className="ml-5 list-decimal space-y-1.5 marker:text-muted [&_ol]:mt-1 [&_ul]:mt-1" {...p} />,
+    ul: ({ node: _, ...p }) => <ul className="ml-4 list-disc space-y-1 [&_ol]:mt-1 [&_ul]:mt-1" {...p} />,
+    a: ({ node: _, href, children, ...p }) => {
+      const id = helpTarget(href);
+      if (!id) return <a href={href} {...p}>{children}</a>;
+      return <button type="button" onClick={() => onOpen(id)} className="font-medium text-charge underline-offset-2 hover:underline">{helpTitle(id, lang)}</button>;
+    },
+  };
+}
+
+export function HelpBody({ body, onOpen }: { body: string; onOpen: (id: string) => void }) {
+  const { i18n } = useTranslation();
+  return (
+    <div className="space-y-3 [&_strong]:font-semibold [&_table]:w-full [&_td]:border-t [&_td]:border-line [&_td]:py-1 [&_td]:pr-3 [&_th]:pr-3 [&_th]:text-left [&_th]:font-medium [&_code]:rounded [&_code]:bg-sunken [&_code]:px-1">
+      <Markdown components={helpComponents(onOpen, i18n.language)}>{body}</Markdown>
+    </div>
   );
 }
 

@@ -1,7 +1,7 @@
 ---
 title: Installations
 short: Everything the app knows about a bank belongs to an installation. The Installations view lists them with their packs.
-related: topic.connection, topic.history, topic.params, topic.maintenance
+related: topic.connection, topic.history, topic.params, topic.maintenance, guide.setup
 ---
 - **What belongs to it:** the recording, the boards identified per address, the cell type per pack, groups and pairs, the diagnosis, the parameter states, the archived history from the BMS and the update logs. User cell models stay shared by all installations.
 - **Choose:** in the sidebar before connecting (see Connection). Without a connection the chosen installation decides what History and Parameters show; the overview always shows the bus actually connected.

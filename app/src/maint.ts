@@ -252,6 +252,13 @@ export function packVersion(address: number, firmware: string, master: MasterVie
   return address === 0 && master?.kind === "patched" && master.version ? (t ? patchName(master, t) : master.listed ?? master.version) : firmware;
 }
 
+/** The C′ tick „DIP 5–8 am Master stehen auf OFF“: set by the user, and gone with another installation or port and with
+ *  every release attempt that used it (success or failure), so it never carries over to a later release. */
+export type DipOffEvent = { kind: "set"; on: boolean } | { kind: "context" } | { kind: "release" };
+export function dipOffTick(_ticked: boolean, e: DipOffEvent): boolean {
+  return e.kind === "set" ? e.on : false;
+}
+
 /** Scenario C': the master (address 0) with a trusted maintenance build and its marker on gets an image that is
  *  not a maintenance build only after „Master freigeben“ (the backend refuses it too). */
 export function releaseFirst(master: MasterView | null, address: number, kind: FirmwareImage["kind"] | null): boolean {

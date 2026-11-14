@@ -1,7 +1,7 @@
 ---
 title: Parameters
 short: The packs' settings: limits, delays, balancing and function switches. The app reads and compares them and writes them on a click, to one pack or the same change to several; also serial numbers, the BMS clock, the CAN protocol and the calibration. Visible only when maintenance functions are switched on.
-related: topic.buses, topic.access, topic.switches, topic.paramWrite, topic.calibration, topic.control
+related: topic.buses, topic.access, topic.switches, topic.paramWrite, topic.calibration, topic.control, guide.paramMulti
 ---
 - **Read from packs:** over the ways below. On the CAN socket every pack reports at its address and by its own firmware, without halting the master; its column then says “CAN”. If the app reads its serial numbers there too (ways below), it checks the board as on the RS485-1/2 bus, stores the state and writes over every way the list names for writing. Without a unique BMS serial number it only reads, and nothing is stored. If a pack does not answer there, it lacks the patch or is not reachable; then use the RS485-1/2 bus. The release bits in function switch 0 are explained in “Patched firmware: release bits”. A **master** that polls its slaves (DIP 0 with slaves) does not answer on the RS485-1/2 bus. It becomes reachable once it stops polling: with patched firmware via “Halt master” in the maintenance area (then “Release master”), otherwise with DIP 5–8 set OFF or briefly alone on the bus; or take its values from a parameter file of the app.
 - **Read parameters**

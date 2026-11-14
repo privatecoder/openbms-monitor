@@ -10,6 +10,7 @@ import { bankLine, clearUnchecked, noSerialPacks, packList, withIdentity } from 
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
+import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
 import { CONN_TIMEOUT_MS, RECONNECT_TRIES, reconnectDelay, useNow, waitText } from "../components/live";
 import { packBusy } from "../control";
@@ -647,7 +648,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       </nav>
       <div className="shrink-0 space-y-3 border-t border-line px-5 py-5">
         <div className="flex items-center justify-between text-sm">
-          <span className="flex items-center gap-1.5 font-medium">{t("conn.title")}<InfoIcon id="topic.connection" /></span>
+          <span className="flex items-center gap-1.5 font-medium">{t("conn.title")}<InfoIcon id="topic.connection" /><GuideButton place="connection" /></span>
           <span className={cn("flex items-center gap-1.5", connected ? "text-charge" : lost ? "text-alarm" : "text-muted")}>
             <span className="relative flex h-2 w-2">
               {connected && lastUpdate > 0 && <span key={lastUpdate} className="ping-once absolute inset-0 rounded-full bg-charge" />}

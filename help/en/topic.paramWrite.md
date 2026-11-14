@@ -1,7 +1,7 @@
 ---
 title: Writing parameters and serial numbers
 short: Change a pack's parameters and write them, bring a pack in line with the others, write the same change to several packs, set serial numbers. Write parameters and switches: RS485-1/2 (original firmware) or CAN socket (EMU1101-EXT, UART1 write release on). Write serial numbers: RS485-1/2 (original firmware).
-related: topic.params, topic.paramCheck, topic.switches, topic.firmware, topic.access
+related: topic.params, topic.paramCheck, topic.switches, topic.firmware, topic.access, guide.paramMulti
 ---
 - **Edit:** after reading, every pack column has a pencil. The column's cells become inputs (values in the unit shown, switches as check boxes); only one column is edited at a time. Changed cells are coloured, the bar above the table lists the changes.
 - **Bring a bank in line:** “Take values from …” fills the column with all values and switches of another column (another pack or an opened parameter file). Single values can still be changed afterwards. The way: read all packs, edit one, take from the reference pack, write, next pack. Exports with a shifted order are not offered.

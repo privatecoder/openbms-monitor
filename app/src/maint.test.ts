@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyParts, portKey, refusalParams, saveOffer, storedPort, withPort, packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, notOnBus, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
+import { dipOffTick, keyParts, portKey, refusalParams, saveOffer, storedPort, withPort, packIsCanAdapter, busLine, busyMessage, busyWaitStep, defaultName, endpointKey, mergeSuggestion, pickable, preselect, errorKey, flashBlocked, latestOnly, masterLine, nameCheck, notOnBus, otherBank, packPortOf, packVersion, pendingBlock, portBusy, releaseFirst, setupEndpoints, setupFields, showDone } from "./maint";
 import type { FirmwareImage, Installation, MasterView, Pending } from "./api";
 
 const inst: Installation = { id: "i", name: "Bank", endpoints: [], control: { kind: "serial", path: "/dev/a" } };
@@ -240,5 +240,16 @@ describe("a recovery's pending record", () => {
     const { pendingPackLabel, RECOVERY_PACK } = await import("./maint");
     expect(pendingPackLabel(RECOVERY_PACK)).toBe("?");
     expect(pendingPackLabel(3)).toBe(3);
+  });
+});
+
+describe("the C′ tick „DIP 5–8 OFF“", () => {
+  it("is gone after a change of installation or port, and after every release attempt", () => {
+    const set = dipOffTick(false, { kind: "set", on: true });
+    expect(set).toBe(true);
+    expect(dipOffTick(set, { kind: "context" })).toBe(false);
+    // a release that failed consumes it just as a successful one: the next attempt asks again
+    expect(dipOffTick(set, { kind: "release" })).toBe(false);
+    expect(dipOffTick(set, { kind: "set", on: false })).toBe(false);
   });
 });

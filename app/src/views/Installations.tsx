@@ -5,6 +5,7 @@ import { api, isDemo, type Installation, type InstallationOverview, type MqttSet
 import { Button } from "../components/ui/button";
 import { Panel } from "../components/ui/card";
 import { InfoIcon } from "../help";
+import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
 import { editBroker, packsOf, type PackSel } from "../connCheck";
 import { DIP_MAX } from "../access";
@@ -44,7 +45,7 @@ export function Installations({ maint, connected, onParameters }: {
     <div className="view-in mx-auto max-w-7xl space-y-6">
       <header>
         <h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight">
-          <Building2 className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("inst.title")}<InfoIcon id="topic.installations" />
+          <Building2 className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("inst.title")}<InfoIcon id="topic.installations" /><GuideButton place="installations" />
         </h1>
         <p className="mt-1 max-w-3xl text-muted">{t("inst.intro")}</p>
       </header>

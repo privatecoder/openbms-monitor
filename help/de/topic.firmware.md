@@ -1,7 +1,7 @@
 ---
 title: Firmware-Update
 short: Spielt Firmware über den RS485-1/2-Bus auf die Packs: freigegebene Original-Versionen, auf Wunsch auch eigene. Nur sichtbar, wenn die Wartungsfunktionen eingeschaltet sind.
-related: topic.maintenance, topic.buses, topic.access
+related: topic.maintenance, topic.buses, topic.access, guide.firmware
 ---
 - **Wo geflasht wird:** Flashen, Kennung und Wartungs-Marker gehen über die folgenden Wege (jeder Weg unter „Zugriffswege“); andere Wege für ein Update bietet die App nicht an:
 - **Firmware flashen**

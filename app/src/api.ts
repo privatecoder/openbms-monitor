@@ -752,7 +752,8 @@ const tauriApi = {
   maintScanCancel: () => invoke<void>("maint_scan_cancel"),
   maintHalt: (installation: string) => invoke<MasterView>("maint_halt", { installation }),
   /** `expectedSlaves`: the DIP slave count the user confirmed when the halt kept none */
-  maintRelease: (installation: string, expectedSlaves: number | null = null) => invoke<MasterView>("maint_release", { installation, expectedSlaves }),
+  // dipOff: the C′ release (DIP 5–8 of the master OFF before an image without maintenance functions): it ends at 0 slaves
+  maintRelease: (installation: string, expectedSlaves: number | null = null, dipOff = false) => invoke<MasterView>("maint_release", { installation, expectedSlaves, dipOff }),
   /** the DIP slave count kept by the halt for the installation's master (null: none) */
   maintExpectedSlaves: (installation: string) => invoke<number | null>("maint_expected_slaves", { installation }),
   /** before flashing an image with the patch functions: the target's Group0 from a fresh read on the pack bus (null:

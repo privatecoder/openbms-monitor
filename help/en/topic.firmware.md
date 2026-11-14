@@ -1,7 +1,7 @@
 ---
 title: Firmware update
 short: Writes firmware to the packs via the RS485-1/2 bus: released original versions, on request also custom images. Visible only when maintenance functions are switched on.
-related: topic.maintenance, topic.buses, topic.access
+related: topic.maintenance, topic.buses, topic.access, guide.firmware
 ---
 - **Where flashing happens:** flashing, identity and maintenance marker go over the following ways (every way under “Access paths”); the app offers no other way for an update:
 - **Flash firmware**
