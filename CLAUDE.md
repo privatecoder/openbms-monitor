@@ -38,6 +38,8 @@ python3 tools/gen_help.py      # regenerate help/ after editing the help tables
 python3 -m unittest discover -s tools   # generator checks (placeholders, prose without bus claims)
 ```
 
+`.github/workflows/ci.yml` runs the automated checks listed above, plus a frontend production build, on macOS for every push to `main` and every pull request (clippy with `-D warnings`), and fails when `python3 tools/gen_help.py` would change `help/` or `app/src/generated/`. Add a new check there when you add one here.
+
 ## Conventions
 
 - Every user-visible string exists in German and English (`i18n.ts`, both help languages). German is the primary language of the user.

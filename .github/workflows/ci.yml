@@ -1,0 +1,60 @@
+name: CI
+
+# Runs every check from CLAUDE.md's command list on each push to main and on pull requests. macOS, because the app
+# builds there without extra system packages and it is the main release target.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+      # tsc -b and vite; also produces app/dist, which the Tauri crate needs to compile
+      - name: Frontend build
+        working-directory: app
+        run: npm run build
+      - name: Type check
+        working-directory: app
+        run: npx tsc --noEmit -p .
+      - name: Frontend tests
+        working-directory: app
+        run: npx vitest run
+      # includes the_ui_catalog_is_current: app/src/generated/access.json must match access.rs
+      - name: Rust tests
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Help generator checks
+        run: python3 -m unittest discover -s tools
+      # help/ and the generated files must be what the generator writes from the committed sources
+      - name: Generated help is current
+        run: |
+          python3 tools/gen_help.py
+          git status --porcelain -- help app/src/generated
+          git diff --exit-code -- help app/src/generated
+          test -z "$(git status --porcelain --untracked-files=all -- help app/src/generated)"
