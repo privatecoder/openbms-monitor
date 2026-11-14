@@ -3,6 +3,8 @@ import { G0 } from "./access";
 
 /** Custom images get their own phrase, so consent to one kind never covers the other. */
 export const confirmationPhrase = (address: number, custom = false) => custom ? `FLASH CUSTOM ${address}` : `FLASH ${address}`;
+/** A flash series' one confirmation (backend `series_confirmation_ok`): it names the count; the backend keeps the list. */
+export const seriesPhrase = (count: number, custom = false) => custom ? `FLASH CUSTOM ${count} PACKS` : `FLASH ${count} PACKS`;
 
 type T = (key: string, params?: Record<string, unknown>) => string;
 
@@ -56,9 +58,17 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
   if (image.kind === "custom") return { from, to: after ? `${t("fw.customName")} (${t("fw.reports", { v: after })})` : t("fw.customName") };
   // "16.06" fits "16.06.13" but not "16.06.1x" of another minor: compare whole parts. An EMU1101-EXT name carries no
   // OEM base: the listed build's base (`image.base`) stands for it; without one the answer is always named.
-  const ref = image.release.startsWith("EMU1101-EXT") ? image.base ?? null : image.release;
-  const fits = !after || (ref !== null && (ref === after || ref.startsWith(`${after}.`) || ref.startsWith(`${after} `)));
+  const fits = !after || fitsImage(after, image);
   return { from, to: fits ? image.release : `${image.release} (${t("fw.reports", { v: after })})` };
+}
+
+/** Whether a 0x51 answer ("16.06", major.minor) fits the image flashed: "16.06" fits "16.06.13" but not "16.06.1x" of
+ *  another minor (whole parts compared). An EMU1101-EXT name carries no OEM base: the listed build's base (`image.base`)
+ *  stands for it; without one it never fits. A custom image has no known version: never fits (the caller decides). */
+export function fitsImage(after: string, image: FirmwareImage): boolean {
+  if (image.kind === "custom") return false;
+  const ref = image.release.startsWith("EMU1101-EXT") ? image.base ?? null : image.release;
+  return ref !== null && (ref === after || ref.startsWith(`${after}.`) || ref.startsWith(`${after} `));
 }
 
 /** What the release bits of Group0 (`g0`) mean after a flash with the patch functions, which takes them over unchanged:

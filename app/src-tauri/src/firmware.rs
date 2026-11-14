@@ -114,6 +114,262 @@ pub fn confirmation_ok(address: u8, custom: bool, typed: &str) -> bool {
     typed.trim() == phrase
 }
 
+/// The phrase of a flash series (several packs, one confirmation): it names the count, the confirmed list is kept by
+/// `series_begin` and every pack's start must name exactly that list. Custom images again have their own phrase.
+pub fn series_phrase(count: usize, custom: bool) -> String {
+    if custom { format!("FLASH CUSTOM {count} PACKS") } else { format!("FLASH {count} PACKS") }
+}
+
+pub fn series_confirmation_ok(count: usize, custom: bool, typed: &str) -> bool {
+    typed.trim() == series_phrase(count, custom)
+}
+
+/// The order of a series: the slaves by address, the master (address 0) last, so the bus stays quiet for every slave.
+/// None: fewer than two packs, an address twice or one that is no DIP address.
+pub fn series_order(addresses: &[u8]) -> Option<Vec<u8>> {
+    let mut order = addresses.to_vec();
+    order.sort_by_key(|a| (*a == 0, *a));
+    order.dedup();
+    (order.len() == addresses.len() && order.len() >= 2 && order.iter().all(|a| openbms_proto::address::is_dip(*a))).then_some(order)
+}
+
+/// A confirmed flash series: one installation's pack bus, one image, the packs in their order, and its own run id. Each
+/// pack is admitted only in turn and only after the one before finished cleanly (`SeriesSlot::after`); a refusal, a
+/// failure, a pending record or a missing or deviating after-check ends it. Ended by the UI as well (done, cancelled,
+/// link changed), always by its run id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Series {
+    run: u64,
+    installation: String,
+    key: String,
+    sha256: String,
+    custom: bool,
+    order: Vec<u8>,
+    /// the index in `order` of the next pack
+    next: usize,
+    /// the pack admitted now (from its admission, through its checks and flash, to its end)
+    running: Option<u8>,
+}
+
+/// What a series pack's start names: its run and the list as confirmed.
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct SeriesStart {
+    pub run: u64,
+    pub listed: Vec<u8>,
+}
+
+/// What `firmware_series_begin` returns: the run id every later call names, and the order.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SeriesBegun {
+    pub run: u64,
+    pub order: Vec<u8>,
+}
+
+/// The one series slot. Every change names the run it belongs to: a late end, a drop guard or a completion of an
+/// earlier run never touches a newer one. Admission and marking the pack as running are one step. A single flash or a
+/// recovery enters here too (`admit_single`): it and a series exclude each other under this one lock.
+#[derive(Debug, Default)]
+pub struct SeriesSlot {
+    current: Option<Series>,
+    last_run: u64,
+    /// a single flash or a recovery is admitted (from its series check to its end)
+    single: bool,
+}
+
+impl SeriesSlot {
+    pub const fn new() -> Self {
+        Self { current: None, last_run: 0, single: false }
+    }
+
+    /// A new series replaces an idle one; while a pack of the current one is admitted or flashing, or a single flash or
+    /// recovery is admitted, it is refused.
+    pub fn begin(&mut self, installation: &str, key: &str, sha256: &str, custom: bool, order: Vec<u8>) -> Result<u64, &'static str> {
+        if self.current.as_ref().is_some_and(|s| s.running.is_some()) {
+            return Err("series-busy");
+        }
+        if self.single {
+            return Err("flash-admitted");
+        }
+        self.last_run += 1;
+        self.current = Some(Series { run: self.last_run, installation: installation.into(), key: key.into(), sha256: sha256.into(), custom, order, next: 0, running: None });
+        Ok(self.last_run)
+    }
+
+    /// A series is open: a single flash or a recovery waits for its end.
+    #[cfg(test)]
+    pub fn open(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// Admits a single flash or a recovery, in one step with the check: no series open, no other single one admitted.
+    /// Released by `end_single` (the `SingleAdmitted` guard, at its end or refusal).
+    pub fn admit_single(&mut self) -> Result<(), &'static str> {
+        if self.current.is_some() {
+            return Err("series-open");
+        }
+        if self.single {
+            return Err("flash-admitted");
+        }
+        self.single = true;
+        Ok(())
+    }
+
+    pub fn end_single(&mut self) {
+        self.single = false;
+    }
+
+    /// Ends a series none of whose packs is admitted or flashing (one left open by a view that went away); no run id
+    /// needed. Pending records and markers are not touched.
+    pub fn end_idle(&mut self) -> Result<(), &'static str> {
+        match &self.current {
+            Some(s) if s.running.is_some() => Err("series-busy"),
+            _ => {
+                self.current = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// Admits `address` of run `run` and marks it running, in one step: the same installation, port and image, exactly
+    /// the confirmed list (`listed`, in any order) and `address` the next pack in turn while none is admitted.
+    #[allow(clippy::too_many_arguments)] // each argument is one bound value of the grant
+    pub fn admit(&mut self, run: u64, installation: Option<&str>, key: &str, sha256: &str, custom: bool, listed: &[u8], address: u8) -> bool {
+        let Some(s) = self.current.as_mut().filter(|s| s.run == run) else { return false };
+        let ok = installation == Some(s.installation.as_str())
+            && key == s.key
+            && sha256 == s.sha256
+            && custom == s.custom
+            && series_order(listed).as_deref() == Some(s.order.as_slice())
+            && s.running.is_none()
+            && s.order.get(s.next) == Some(&address);
+        if ok {
+            s.running = Some(address);
+        }
+        ok
+    }
+
+    /// The flash of `address` of run `run` returned (or its start was refused, `clean` false): the series goes on only
+    /// after a clean end of exactly the pack admitted in turn; anything else ends it, as does its last pack. Another
+    /// run is not touched. True: the series goes on.
+    pub fn after(&mut self, run: u64, address: u8, clean: bool) -> bool {
+        let Some(s) = self.current.as_mut().filter(|s| s.run == run) else { return false };
+        let in_turn = s.running == Some(address) && s.order.get(s.next) == Some(&address);
+        if clean && in_turn && s.next + 1 < s.order.len() {
+            s.running = None;
+            s.next += 1;
+            return true;
+        }
+        self.current = None;
+        false
+    }
+
+    /// Ends run `run` (a later one stays).
+    pub fn end(&mut self, run: u64) {
+        if self.current.as_ref().is_some_and(|s| s.run == run) {
+            self.current = None;
+        }
+    }
+}
+
+/// The series confirmed now (at most one; the flash slot keeps flashes one at a time anyway).
+static SERIES: std::sync::Mutex<SeriesSlot> = std::sync::Mutex::new(SeriesSlot::new());
+
+fn series_lock() -> std::sync::MutexGuard<'static, SeriesSlot> {
+    SERIES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Ends its run unless disarmed: every refusal of a series pack's start (any early return) ends that series.
+struct SeriesEnds(Option<u64>);
+
+impl Drop for SeriesEnds {
+    fn drop(&mut self) {
+        if let Some(run) = self.0 {
+            series_lock().end(run);
+        }
+    }
+}
+
+/// A single flash or a recovery, admitted against the series slot (`SeriesSlot::admit_single`): released when dropped.
+struct SingleAdmitted;
+
+impl Drop for SingleAdmitted {
+    fn drop(&mut self) {
+        series_lock().end_single();
+    }
+}
+
+/// A single flash or a recovery: refused while a series is open or another is admitted, else admitted until its end.
+fn admit_single() -> Result<SingleAdmitted, maint::MaintError> {
+    series_lock().admit_single().map(|()| SingleAdmitted).map_err(maint::refused)
+}
+
+/// Ends a series left open with none of its packs admitted (`SeriesSlot::end_idle`): the way out when a view went away
+/// without ending its series.
+#[tauri::command]
+pub fn firmware_series_end_idle() -> Result<(), String> {
+    series_lock().end_idle().map_err(|k| serde_json::to_string(&maint::refused(k)).unwrap_or_default())
+}
+
+/// A pack of a series answered cleanly with the new image: the flash finished, no pending record, the after-check
+/// compared everything and found nothing changed, and the version it reports fits the image (an unknown custom image
+/// has no known version: its answer is taken; a listed EMU1101-EXT build counts as custom but has its base).
+pub fn series_clean(ok: bool, pending: bool, verdict: Option<&str>, after: Option<&str>, info: &ImageInfo) -> bool {
+    ok && !pending && verdict == Some("same") && after.is_some_and(|v| info.kind == "custom" || version_fits(v, info))
+}
+
+/// 0x51 reports major.minor ("16.06"): it fits "16.06.13", not "16.06.1x" of another minor. An EMU1101-EXT name carries
+/// no OEM base: the listed build's base stands for it.
+fn version_fits(reported: &str, info: &ImageInfo) -> bool {
+    let reference = if info.kind == "maintenance" { info.base.as_deref() } else { Some(info.release.as_str()) };
+    reference.is_some_and(|r| r == reported || r.starts_with(&format!("{reported}.")) || r.starts_with(&format!("{reported} ")))
+}
+
+/// Starts a flash series: the image checked again, the typed phrase for exactly `addresses` (their count, the custom
+/// phrase for a custom image), no flash running and no pending bootloader record anywhere. Keeps the confirmed list for
+/// the installation's port and returns the order (slaves by address, the master last). Each pack is then started with
+/// `firmware_start` and `series` = this list, with every check of a single flash.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // each argument is one value from the UI
+pub async fn firmware_series_begin(state: State<'_, AppState>, port: String, installation: String, addresses: Vec<u8>, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<SeriesBegun, String> {
+    let l = self::lang(&lang);
+    let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
+    let order = series_order(&addresses).ok_or_else(|| to_text(maint::refused("series-not-confirmed")))?;
+    let (_, info) = read_image(&path, allow_custom, l)?;
+    confirmed_image(&info, &expected_sha256, l)?;
+    if !series_confirmation_ok(addresses.len(), info.custom, &confirmation) {
+        return Err(openbms_flash::Error::Cancelled.text(l));
+    }
+    if state.flashing.load(Ordering::SeqCst) {
+        return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
+    }
+    let key = maint::pack_key(&port).map_err(to_text)?;
+    maint::installation(&state, &installation).map_err(to_text)?;
+    series_pending(&state).map_err(to_text)?;
+    let run = series_lock().begin(&installation, &key, &info.sha256, info.custom, order.clone()).map_err(|k| to_text(maint::refused(k)))?;
+    maint::event(&state, Some(&installation), &format!("flash series {run} confirmed order={order:?} release={} custom={}", info.release, info.custom));
+    Ok(SeriesBegun { run, order })
+}
+
+/// Ends the flash series `run` (done, cancelled, the link or installation changed): no further pack of it is admitted.
+/// A later series is not touched.
+#[tauri::command]
+pub fn firmware_series_end(run: u64) {
+    series_lock().end(run);
+}
+
+/// A series refuses with any pending bootloader record, on any endpoint (also of a picked pack: finishing that one is a
+/// single flash).
+fn series_pending(state: &AppState) -> Result<(), maint::MaintError> {
+    series_pending_refusal(&maint::with_store(state, |s| s.all_pending())?)
+}
+
+pub fn series_pending_refusal(pending: &[crate::maint_store::Pending]) -> Result<(), maint::MaintError> {
+    match pending.first() {
+        Some(p) => Err(maint::MaintError::BootloaderPending { pack: p.pack, endpoint: p.endpoint.clone() }),
+        None => Ok(()),
+    }
+}
+
 /// Clears the flash flag on drop, so even a panic in the flash thread cannot leave the app locked.
 pub struct FlashSlot(Arc<AtomicBool>);
 
@@ -288,18 +544,25 @@ const FLASHING_TEXT: &str = "a firmware update is running";
 /// shows it there (image flag bit 4) and cleared before an image without the maintenance functions; the board must be
 /// the one the search showed (`expected`, its String 2). Quiet bus and the target's
 /// 0x51/0x47 are the flash's own preflight. Flashes on its own thread and returns at once. Refusals reach the UI as a JSON
-/// string of `MaintError`.
+/// string of `MaintError`. `series`: a pack of a confirmed flash series (`firmware_series_begin`), the list as confirmed;
+/// the series phrase confirms it, every check stays, and any refusal ends the series.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, expected: Option<String>) -> Result<FlashStarted, String> {
+pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: String, address: u8, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String, installation: Option<String>, expected: Option<String>, series: Option<SeriesStart>) -> Result<FlashStarted, String> {
     let l = self::lang(&lang);
     if !openbms_proto::address::is_dip(address) {
         return Err(openbms_flash::Error::Address(address).text(l));
     }
     // Re-read the file and bind the confirmation to the exact code hash shown in the UI.
+    // a series pack's refusal, wherever it returns, ends the series
+    let mut ends = SeriesEnds(series.as_ref().map(|s| s.run));
     let (image, info) = read_image(&path, allow_custom, l)?;
     confirmed_image(&info, &expected_sha256, l)?;
-    if !confirmation_ok(address, info.custom, &confirmation) {
+    let confirmed = match &series {
+        Some(sr) => series_confirmation_ok(sr.listed.len(), info.custom, &confirmation),
+        None => confirmation_ok(address, info.custom, &confirmation),
+    };
+    if !confirmed {
         return Err(openbms_flash::Error::Cancelled.text(l));
     }
     let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
@@ -308,6 +571,16 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     let _action = maint::begin_action(&state, "flash");
     // the endpoint key as the UI formed it: the pending record below is written and checked under this one key
     let key = maint::pack_key(&port).map_err(to_text)?;
+    // a series pack: admitted and marked running in one step, no other begin or start can come between
+    if let Some(sr) = &series {
+        if !series_lock().admit(sr.run, installation.as_deref(), &key, &info.sha256, info.custom, &sr.listed, address) {
+            return Err(to_text(maint::refused("series-not-confirmed")));
+        }
+        // a series never passes a pending record, not even of its own pack
+        series_pending(&state).map_err(to_text)?;
+    }
+    // a single flash: admitted against the series in one step, until its end
+    let single = if series.is_none() { Some(admit_single().map_err(to_text)?) } else { None };
     maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
     let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
     let kind = maint_kind(info.kind);
@@ -391,6 +664,10 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         .map(|b| openbms_proto::access::positive_build(openbms_proto::access::Patch::Version(b.patch), Some(b.flags)));
     let store = state.maint.clone();
     let stored = target.clone();
+    // a series pack: its end decides whether the next one may start
+    let in_series = series.as_ref().map(|sr| (sr.run, info.clone()));
+    // started: from here the flash's own end decides
+    ends.0 = None;
     std::thread::spawn(move || {
         let mut last = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -434,6 +711,12 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             let result = if done.ok { "ok" } else if done.pending { "pending" } else { "failed" };
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));
         }
+        if let Some((run, info)) = &in_series {
+            let clean = series_clean(done.ok, done.pending, done.comparison.as_ref().map(|c| c.verdict), done.after.as_ref().map(|a| a.firmware_version.as_str()), info);
+            let goes_on = series_lock().after(*run, address, clean);
+            maint::event(&state, installation.as_deref(), &format!("flash series {run} pack={address} clean={clean} goes_on={goes_on}"));
+        }
+        drop(single);
         drop(slot);
         drop(port_slot);
         let _ = app.emit("firmware-done", done);
@@ -484,6 +767,8 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
         .ok_or_else(|| l.pick("Der Port wird bereits verwendet", "the port is busy with another operation").to_string())?;
     let _action = maint::begin_action(&state, "flash");
     let key = maint::pack_key(&port).map_err(to_text)?;
+    // a recovery: admitted against the series in one step, until its end
+    let single = admit_single().map_err(to_text)?;
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
@@ -534,6 +819,7 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
         if let Some(id) = log_id {
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, if done.ok { "ok" } else { "failed" }));
         }
+        drop(single);
         drop(slot);
         drop(port_slot);
         let _ = app.emit("firmware-done", done);
@@ -681,6 +967,198 @@ mod tests {
         }));
         assert!(r.is_err());
         assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_series_phrase_names_the_count_and_never_stands_for_a_single_flash() {
+        assert!(series_confirmation_ok(3, false, " FLASH 3 PACKS "));
+        assert!(!series_confirmation_ok(4, false, "FLASH 3 PACKS"));
+        assert!(!series_confirmation_ok(3, false, "flash 3 packs"));
+        assert!(!series_confirmation_ok(3, false, "FLASH 3"));
+        // a custom image: its own phrase, either way round
+        assert!(series_confirmation_ok(3, true, "FLASH CUSTOM 3 PACKS"));
+        assert!(!series_confirmation_ok(3, true, "FLASH 3 PACKS"));
+        assert!(!series_confirmation_ok(3, false, "FLASH CUSTOM 3 PACKS"));
+        // the single flash stays as it was
+        assert!(!confirmation_ok(3, false, "FLASH 3 PACKS"));
+        assert!(confirmation_ok(3, false, "FLASH 3"));
+    }
+
+    #[test]
+    fn a_series_flashes_the_slaves_by_address_and_the_master_last() {
+        assert_eq!(series_order(&[0, 3, 1]), Some(vec![1, 3, 0]));
+        assert_eq!(series_order(&[2, 1]), Some(vec![1, 2]));
+        assert_eq!(series_order(&[0, 15, 14, 7]), Some(vec![7, 14, 15, 0]));
+        // one pack is a single flash; an address twice or no DIP address is no list
+        assert_eq!(series_order(&[1]), None);
+        assert_eq!(series_order(&[1, 1, 2]), None);
+        assert_eq!(series_order(&[1, 16]), None);
+    }
+
+    const SHA: &str = "aaaa";
+    fn slot_with(order: &[u8]) -> (SeriesSlot, u64) {
+        let mut slot = SeriesSlot::new();
+        let run = slot.begin("inst-1", "serial:/dev/p", SHA, false, series_order(order).unwrap()).unwrap();
+        (slot, run)
+    }
+    fn admit(slot: &mut SeriesSlot, run: u64, listed: &[u8], a: u8) -> bool {
+        slot.admit(run, Some("inst-1"), "serial:/dev/p", SHA, false, listed, a)
+    }
+
+    #[test]
+    fn a_series_admits_exactly_the_confirmed_list_in_turn() {
+        // out of turn, another list of the same count, another count: refused without changing anything
+        let (mut slot, run) = slot_with(&[0, 2, 1]);
+        for (listed, a) in [(&[0u8, 2, 1][..], 2), (&[0, 2, 1], 0), (&[0, 3, 1], 1), (&[2, 1], 1), (&[0, 2, 1, 3], 1)] {
+            assert!(!admit(&mut slot, run, listed, a), "{listed:?} {a}");
+        }
+        // another installation, port, image, kind or run
+        assert!(!slot.admit(run, Some("inst-2"), "serial:/dev/p", SHA, false, &[0, 1, 2], 1));
+        assert!(!slot.admit(run, None, "serial:/dev/p", SHA, false, &[0, 1, 2], 1));
+        assert!(!slot.admit(run, Some("inst-1"), "serial:/dev/q", SHA, false, &[0, 1, 2], 1));
+        assert!(!slot.admit(run, Some("inst-1"), "serial:/dev/p", "bbbb", false, &[0, 1, 2], 1));
+        assert!(!slot.admit(run, Some("inst-1"), "serial:/dev/p", SHA, true, &[0, 1, 2], 1));
+        assert!(!admit(&mut slot, run + 1, &[0, 1, 2], 1));
+        // the list as confirmed, in any order; admitted means running: nothing else meanwhile
+        assert!(admit(&mut slot, run, &[1, 2, 0], 1));
+        assert!(!admit(&mut slot, run, &[0, 1, 2], 1));
+        assert!(!admit(&mut slot, run, &[0, 1, 2], 2));
+        assert!(slot.after(run, 1, true));
+        assert!(admit(&mut slot, run, &[0, 1, 2], 2));
+        assert!(slot.after(run, 2, true));
+        assert!(admit(&mut slot, run, &[0, 1, 2], 0));
+        // done after the last pack
+        assert!(!slot.after(run, 0, true));
+        assert!(!slot.open());
+    }
+
+    #[test]
+    fn a_begin_cannot_replace_a_series_whose_pack_is_admitted() {
+        let (mut slot, a) = slot_with(&[1, 2, 0]);
+        // A's pack 1 admitted, its pre-checks running: a second begin is refused, A is kept
+        assert!(admit(&mut slot, a, &[1, 2, 0], 1));
+        assert_eq!(slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4, 0]), Err("series-busy"));
+        assert!(slot.after(a, 1, true));
+        assert!(admit(&mut slot, a, &[1, 2, 0], 2));
+        // an idle series is replaced by a new one; the old run's starts and completion touch nothing of the new one
+        let (mut slot, a) = slot_with(&[1, 2, 0]);
+        let b = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4, 0]).unwrap();
+        assert_ne!(a, b);
+        assert!(!admit(&mut slot, a, &[1, 2, 0], 1));
+        assert!(!slot.after(a, 1, true));
+        assert!(admit(&mut slot, b, &[3, 4, 0], 3));
+        assert!(!admit(&mut slot, b, &[3, 4, 0], 4));
+        assert!(slot.after(b, 3, true));
+        assert!(admit(&mut slot, b, &[3, 4, 0], 4));
+    }
+
+    #[test]
+    fn a_late_end_or_drop_of_an_old_run_leaves_the_new_one() {
+        let (mut slot, a) = slot_with(&[1, 2]);
+        let b = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4]).unwrap();
+        // `firmware_series_end` and the drop guard both end by run id
+        slot.end(a);
+        assert!(slot.open());
+        assert!(admit(&mut slot, b, &[3, 4], 3));
+        slot.end(b);
+        assert!(!slot.open());
+    }
+
+    #[test]
+    fn the_end_of_a_pack_not_admitted_in_turn_ends_the_series() {
+        let (mut slot, run) = slot_with(&[1, 2, 0]);
+        // nothing admitted: a completion for pack 1 ends it (it was never checked)
+        assert!(!slot.after(run, 1, true));
+        assert!(!slot.open());
+        let (mut slot, run) = slot_with(&[1, 2, 0]);
+        assert!(admit(&mut slot, run, &[1, 2, 0], 1));
+        assert!(!slot.after(run, 2, true));
+        assert!(!slot.open());
+        // a failure ends it
+        let (mut slot, run) = slot_with(&[1, 2, 0]);
+        assert!(admit(&mut slot, run, &[1, 2, 0], 1));
+        assert!(!slot.after(run, 1, false));
+        assert!(!slot.open());
+    }
+
+    #[test]
+    fn a_single_flash_waits_while_a_series_is_open_and_the_series_goes_on() {
+        let (mut slot, run) = slot_with(&[1, 2]);
+        assert!(admit(&mut slot, run, &[1, 2], 1));
+        assert!(slot.after(run, 1, true));
+        // between two packs the series is open: a single flash or recovery is refused (`series_open_refusal`), and
+        // that refused foreign action changes nothing: the series goes on with pack 2
+        assert!(slot.open());
+        assert!(admit(&mut slot, run, &[1, 2], 2));
+        assert!(!slot.after(run, 2, true));
+        assert!(!slot.open());
+    }
+
+    #[test]
+    fn a_begin_cannot_slip_in_while_a_single_flash_or_recovery_is_admitted() {
+        let mut slot = SeriesSlot::new();
+        // the single flash (or recovery) passed its series check and is admitted, its flashing mark not yet set: the
+        // check and the admission are one step, so a begin now is refused
+        slot.admit_single().unwrap();
+        assert_eq!(slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![1, 2]), Err("flash-admitted"));
+        // a second single one waits too
+        assert_eq!(slot.admit_single(), Err("flash-admitted"));
+        // its end (or refusal) frees the slot
+        slot.end_single();
+        let run = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![1, 2]).unwrap();
+        // and the other way round: with the series open no single flash or recovery is admitted
+        assert_eq!(slot.admit_single(), Err("series-open"));
+        assert!(admit(&mut slot, run, &[1, 2], 1));
+        assert_eq!(slot.admit_single(), Err("series-open"));
+    }
+
+    #[test]
+    fn an_idle_series_can_be_ended_without_its_run_but_not_while_a_pack_is_admitted() {
+        let (mut slot, run) = slot_with(&[1, 2]);
+        assert!(admit(&mut slot, run, &[1, 2], 1));
+        assert_eq!(slot.end_idle(), Err("series-busy"));
+        assert!(slot.after(run, 1, true));
+        // left idle (the view went away): ended, a single flash is admitted again
+        assert_eq!(slot.end_idle(), Ok(()));
+        assert!(!slot.open());
+        assert_eq!(slot.admit_single(), Ok(()));
+        // nothing open: ending is a no-op
+        slot.end_single();
+        assert_eq!(slot.end_idle(), Ok(()));
+    }
+
+    #[test]
+    fn a_pending_record_anywhere_refuses_a_series() {
+        use crate::maint_store::Pending;
+        assert!(series_pending_refusal(&[]).is_ok());
+        let p = Pending { id: 1, endpoint: "serial:/dev/q".into(), pack: 2, release: "16.06.13".into(), since: 0, bms_serial: Some("SYN-2".into()) };
+        assert!(matches!(series_pending_refusal(&[p]), Err(maint::MaintError::BootloaderPending { pack: 2, .. })));
+    }
+
+    #[test]
+    fn a_series_pack_is_clean_only_with_a_full_after_check_and_the_new_version() {
+        let info = |kind: &'static str, release: &str, base: Option<&str>, custom: bool| ImageInfo {
+            release: release.into(), device: "EMU1101".into(), bytes: 0, blocks: 0, sha256: String::new(), kind, custom,
+            power_rtc: false, pack_cutoff: false, positive: false, base: base.map(Into::into),
+        };
+        let orig = info("original", "16.06.13", None, false);
+        assert!(series_clean(true, false, Some("same"), Some("16.06"), &orig));
+        assert!(!series_clean(true, false, Some("same"), Some("16.05"), &orig));
+        assert!(!series_clean(true, false, Some("incomplete"), Some("16.06"), &orig));
+        assert!(!series_clean(true, false, Some("differs"), Some("16.06"), &orig));
+        assert!(!series_clean(true, false, None, Some("16.06"), &orig));
+        assert!(!series_clean(true, true, Some("same"), Some("16.06"), &orig));
+        assert!(!series_clean(false, false, Some("same"), Some("16.06"), &orig));
+        assert!(!series_clean(true, false, Some("same"), None, &orig));
+        // "16.06" does not fit another minor's release text
+        assert!(!series_clean(true, false, Some("same"), Some("16.0"), &orig));
+        // EMU1101-EXT: its OEM base stands for it
+        // (accepted only with custom firmware allowed, yet its version is checked)
+        let ext = info("maintenance", "EMU1101-EXT Full 1.6.5", Some("16.06.13"), true);
+        assert!(series_clean(true, false, Some("same"), Some("16.06"), &ext));
+        assert!(!series_clean(true, false, Some("same"), Some("16.05"), &ext));
+        // a custom image has no version to compare: its answer counts
+        assert!(series_clean(true, false, Some("same"), Some("99.01"), &info("custom", "custom", None, true)));
     }
 
     #[test]

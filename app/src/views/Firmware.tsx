@@ -13,10 +13,10 @@ import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
 import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
 import { chargeLine } from "../control";
 import { useWriteTexts } from "../components/ParamEdit";
-import { errorKey, packPortOf, portKey, type PortKind } from "../maint";
+import { errorKey, packPortOf, portKey, seriesOpen, type PortKind } from "../maint";
 import type { Maint } from "../maintStore";
 import { KindSelect, PortInput } from "./MaintSetup";
-import { PackBusPanel } from "./PackBusPanel";
+import { EndIdleSeries, PackBusPanel } from "./PackBusPanel";
 
 export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack, onUserAction, onEditPorts }: {
   connected: boolean;
@@ -61,13 +61,24 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const [closeRefused, setCloseRefused] = useState(false);
   const startedAt = useRef(0);
   const now = useNow(500);
+  // a flash series runs (from its confirmation to its end): the port stays held between its packs, the inputs fixed;
+  // `doneWait` hands a series pack's end event to the series
+  const seriesOn = useRef(false);
+  const seriesRun = useRef<number | null>(null);
+  const [inSeries, setInSeries] = useState(false);
+  // the last refusal was for a series left open: „Offene Serie beenden“ is offered
+  const [orphan, setOrphan] = useState(false);
+  const doneWait = useRef<((d: FirmwareDone) => void) | null>(null);
 
   const loadPorts = () => { api.listPorts().then(setPorts).catch(() => setPorts([])); };
   useEffect(loadPorts, []);
   useEffect(() => {
     const subs = [
       api.onFirmwareProgress(setProgress),
-      api.onFirmwareDone((d) => { setDone(d); setRunning(false); onRunning(false); setFlashTick((n) => n + 1); setScan(null); void maint.loadLists(); }),
+      api.onFirmwareDone((d) => {
+        setDone(d); setRunning(false); onRunning(seriesOn.current); setFlashTick((n) => n + 1); setScan(null); void maint.loadLists();
+        const wait = doneWait.current; doneWait.current = null; wait?.(d);
+      }),
       api.onFirmwareBusy(() => setCloseRefused(true)),
     ];
     return () => { subs.forEach((s) => s.then((f) => f())); };
@@ -82,7 +93,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // a search or a bootloader probe holds the port
   const busy = scanning || recProbe === "probing";
   // what may be done now (`locks.ts`)
-  const fw: UiFacts = { source: null, chosen: inst?.id ?? null, flashRunning: running, busy, image: !!image, port: !!bPort };
+  const fw: UiFacts = { source: null, chosen: inst?.id ?? null, flashRunning: running || inSeries, busy, image: !!image, port: !!bPort };
   const may = (a: UiAction, more: Partial<UiFacts> = {}) => lockProps(decideUi(a, { ...fw, ...more }), t);
   const inputsLocked = decideUi("firmware.inputs", fw).locked;
   const phrase = confirmationPhrase(address, image?.custom);
@@ -113,24 +124,53 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   /** Start a flash (panel or board): refusals are thrown back as the backend sent them. `installation`: the panel's,
-   *  null for „Platine flashen“ (`expected`: the String 2 the search showed). */
-  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, expected: string | null) => {
-    if (!path || !image) return;
+   *  null for „Platine flashen“ (`expected`: the String 2 the search showed). `series`: a pack of the confirmed series
+   *  (its list and the phrase typed for it). */
+  const startFlash = async (p: string, a: number, from: string | null, installation: string | null, expected: string | null, series?: { run: number; listed: number[]; phrase: string }) => {
+    if (!path || !image) { if (series) throw new Error("no image"); return; }
     // the backend stops the monitor (it may have been reconnected meanwhile)
     if (connected) onMonitorStopped();
     onUserAction();
     setError(null); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
-      const r = await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, expected);
+      const r = series
+        ? await api.firmwareStart(p, a, path, allowCustom, image.sha256, series.phrase, lang, installation, expected, { run: series.run, listed: series.listed })
+        : await api.firmwareStart(p, a, path, allowCustom, image.sha256, confirmationPhrase(a, image.custom), lang, installation, expected);
       setFlashed({ address: a, image, checked: from, bank: r.bank, marker: r.marker, bench: installation === null });
       // the pending record is written now
       void maint.loadLists();
     } catch (e) {
-      setRunning(false); onRunning(false);
+      setRunning(false); onRunning(seriesOn.current);
       throw e;
     }
   };
+
+  // the flash series of the pack bus panel: confirmed once in the backend, then each pack through `startFlash`
+  const series = inst && path && image ? {
+    begin: async (addresses: number[], phrase: string) => {
+      // held from the request on: nothing else starts while the backend confirms; undone by `seriesEnd`
+      seriesOn.current = true; setInSeries(true); onRunning(true);
+      const r = await api.firmwareSeriesBegin(port, inst.id, addresses, path, allowCustom, image.sha256, phrase, lang);
+      seriesRun.current = r.run;
+      return r.order;
+    },
+    flash: (a: number, from: string | null, listed: number[], phrase: string) => new Promise<FirmwareDone>((resolve, reject) => {
+      const run = seriesRun.current;
+      if (run === null) { reject(new Error("no series")); return; }
+      doneWait.current = resolve;
+      startFlash(port, a, from, inst.id, null, { run, listed, phrase }).catch((e) => { doneWait.current = null; reject(e); });
+    }),
+  } : null;
+  // after the series in any case (done, stopped, cancelled, a refused begin); never during a flash
+  const seriesEnd = () => {
+    seriesOn.current = false; setInSeries(false); doneWait.current = null; onRunning(false);
+    const run = seriesRun.current;
+    seriesRun.current = null;
+    if (run !== null) void api.firmwareSeriesEnd(run);
+  };
+  // the view goes away: its series' grant goes with it (single flashes wait while one is open)
+  useEffect(() => () => { if (seriesRun.current !== null) void api.firmwareSeriesEnd(seriesRun.current); }, []);
 
   const search = async () => {
     onUserAction(); setScanning(true); setError(null); setScan(null); setSearchGen((g) => g + 1);
@@ -149,8 +189,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const chosen = scan?.packs.find((p) => p.address === address) ?? null;
   const benchFlash = async () => {
     if (!chosen) return;
+    setOrphan(false);
     try { await startFlash(bPort, chosen.address, chosen.info.firmware_version, null, chosen.serial); }
-    catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
+    catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); setOrphan(seriesOpen(e)); }
   };
   const markerKey = benchMarkerKey(chosen, image);
 
@@ -165,7 +206,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
     if (!path || !image || recProbe !== "ok" || !oneBoard) return;
     if (connected) onMonitorStopped();
     onUserAction();
-    setError(null); setDone(null); setProgress(null); setCloseRefused(false);
+    setError(null); setOrphan(false); setDone(null); setProgress(null); setCloseRefused(false);
     setRunning(true); onRunning(true); startedAt.current = Date.now();
     try {
       await api.firmwareRecoveryStart(bPort, path, allowCustom, image.sha256, recoveryPhrase(image.custom), lang);
@@ -173,7 +214,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       setRecProbe(null); setOneBoard(false);
     } catch (e) {
       setRunning(false); onRunning(false);
-      const k = errorKey(e); setError(t(k.key, k.params));
+      const k = errorKey(e); setError(t(k.key, k.params)); setOrphan(seriesOpen(e));
     }
   };
 
@@ -225,7 +266,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       </div>
 
       {tab === "bus" && <PackBusPanel maint={maint} port={port} ports={ports} onEditPorts={onEditPorts} imagePicker={imagePicker} image={image}
-        running={running} flashTick={flashTick} onUserAction={onUserAction}
+        running={running} flashTick={flashTick} onUserAction={onUserAction} series={series} onSeriesEnd={seriesEnd}
         onFlash={(a, from) => inst ? startFlash(port, a, from, inst.id, null) : Promise.resolve()} onMaster={() => {}} />}
 
       {/* one board without an installation: any RS485-1/2 port, a search with String 2 and, where the build shows it
@@ -266,6 +307,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {benchPort.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
         <Button variant="primary" disabled={decideUi("firmware.benchFlash", { ...fw, target: !!chosen }).locked} title={phrase} onClick={() => void benchFlash()}>{t("fw.bench.flash", { address: chosen?.address ?? address })}</Button>
         {error && <p className="text-sm text-alarm">{error}</p>}
+        {orphan && <EndIdleSeries busy={busy} running={running || inSeries} onEnded={() => { setOrphan(false); setError(null); }} />}
         {/* a board whose application is gone answers no search: its bootloader may still wait on the line */}
         <details className="rounded-md border border-line p-3 text-sm" open={recProbe !== null || (scan !== null && scan.packs.length === 0)}>
           <summary className="cursor-pointer font-medium">{t("fw.rec.title")}</summary>
@@ -327,7 +369,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>
                 <Button variant="secondary" size="sm" onClick={reset}>{t("fw.again")}</Button>
-                <Button variant="primary" size="sm" onClick={onBack}>{t("fw.back")}</Button>
+                <Button variant="primary" size="sm" {...may("app.navigate", { portHeld: inSeries })} onClick={onBack}>{t("fw.back")}</Button>
               </div>
             </div>
           )}

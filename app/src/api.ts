@@ -693,8 +693,18 @@ const tauriApi = {
   /** recovery: flash the one board waiting in its bootloader on `port`; progress and result as `firmwareStart` */
   firmwareRecoveryStart: (port: string, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
     invoke<void>("firmware_recovery_start", { port, path, allowCustom, expectedSha256, confirmation, lang }),
-  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, expected: string | null) =>
-    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, expected }),
+  /** `series`: a pack of the confirmed flash series (`firmwareSeriesBegin`): its run and the list as confirmed;
+   *  `confirmation` is then the series phrase */
+  firmwareStart: (port: string, address: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string, installation: string | null, expected: string | null, series: { run: number; listed: number[] } | null = null) =>
+    invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, expected, series }),
+  /** a flash series: one confirmation (`seriesPhrase`) for exactly `addresses`; its run id and the order it flashes in
+   *  (slaves, master last) */
+  firmwareSeriesBegin: (port: string, installation: string, addresses: number[], path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
+    invoke<{ run: number; order: number[] }>("firmware_series_begin", { port, installation, addresses, path, allowCustom, expectedSha256, confirmation, lang }),
+  /** ends the series `run`: no further pack of it is admitted (a later series stays) */
+  firmwareSeriesEnd: (run: number) => invoke<void>("firmware_series_end", { run }),
+  /** ends a series left open with none of its packs admitted (no run id needed); refused while one of its packs runs */
+  firmwareSeriesEndIdle: () => invoke<void>("firmware_series_end_idle"),
   maintInstallations: () => invoke<Installation[]>("maint_installations"),
   /** lookup only: every installation that lists the endpoint or has it as CAN socket */
   maintInstallationsOf: (endpoint: Endpoint, activeOnly = false) => invoke<Installation[]>("maint_installations_of", { endpoint, activeOnly }),
@@ -1042,6 +1052,9 @@ function demoApi(): typeof tauriApi {
     markerRead: async () => { throw new Error("desktop app only"); },
     markerSet: async () => { throw new Error("desktop app only"); },
     firmwareStart: async () => { throw new Error("desktop app only"); },
+    firmwareSeriesBegin: async () => { throw new Error("desktop app only"); },
+    firmwareSeriesEnd: async () => {},
+    firmwareSeriesEndIdle: async () => {},
     firmwareRecoveryProbe: async () => { throw new Error("desktop app only"); },
     firmwareRecoveryStart: async () => { throw new Error("desktop app only"); },
     maintInstallations: async () => [],

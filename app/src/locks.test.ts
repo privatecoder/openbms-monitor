@@ -115,6 +115,42 @@ describe("firmware and maintenance", () => {
     // the pack the record is of may be flashed again (to finish it)
     expect(s("maintenance.flash", { flash: { ...flash, pending, address: 3 } })).toBe("open");
   });
+  it("a flash series: offered only where a single flash is offered for every picked pack", () => {
+    const image = { kind: "original" } as never;
+    const flash = { image, quiet: true, busy: false, running: false, address: 0, master: null, pending: [], port: "serial:/dev/p" };
+    expect(s("maintenance.flashSeries", { flash, picked: [1, 2, 0] })).toBe("open");
+    // fewer than two packs is a single flash
+    expect(s("maintenance.flashSeries", { flash, picked: [1] })).toBe("locked:maint.series.why.pick");
+    expect(s("maintenance.flashSeries", { flash, picked: [] })).toBe("locked:maint.series.why.pick");
+    // what refuses a single flash refuses the series
+    expect(s("maintenance.flashSeries", { flash: { ...flash, quiet: false }, picked: [1, 2] })).toBe("locked:maint.packs.why.quiet");
+    expect(s("maintenance.flashSeries", { flash: { ...flash, image: null }, picked: [1, 2] })).toBe("locked:maint.packs.why.image");
+    const master = { may_release: true } as never;
+    expect(s("maintenance.flashSeries", { flash: { ...flash, master }, picked: [1, 2] })).toBe("open");
+    expect(s("maintenance.flashSeries", { flash: { ...flash, master }, picked: [1, 0] })).toBe("locked:maint.packs.why.releaseFirst");
+    // locked while anything runs
+    expect(s("maintenance.flashSeries", { flash: { ...flash, running: true }, picked: [1, 2] })).toBe("locked:maint.packs.why.running");
+    expect(s("maintenance.flashSeries", { flash, picked: [1, 2], flashRunning: true })).toBe("locked:maint.packs.why.running");
+    expect(s("maintenance.flashSeries", { flash, picked: [1, 2], busy: true })).toBe("locked:maint.packs.why.busy");
+    // any pending record, also of a picked pack (a single flash may finish that one)
+    const pending = [{ id: 1, endpoint: "serial:/dev/p", pack: 2, since: 0 }] as never;
+    expect(s("maintenance.flash", { flash: { ...flash, pending, address: 2 } })).toBe("open");
+    expect(s("maintenance.flashSeries", { flash: { ...flash, pending }, picked: [1, 2] })).toBe("locked:maint.series.why.pending");
+    // the start also needs the phrase
+    expect(s("maintenance.seriesStart", { flash, picked: [1, 2], ready: false })).toBe("locked:maint.series.why.phrase");
+    expect(s("maintenance.seriesStart", { flash, picked: [1, 2], ready: true })).toBe("open");
+    expect(s("maintenance.seriesStart", { flash: { ...flash, pending }, picked: [1, 2], ready: true })).toBe("locked:maint.series.why.pending");
+    // ending a series left open: offered after such a refusal, not while anything runs
+    expect(s("maintenance.seriesEndIdle", { available: false })).toBe("hidden");
+    expect(s("maintenance.seriesEndIdle", { available: true })).toBe("open");
+    expect(s("maintenance.seriesEndIdle", { available: true, busy: true })).toBe("locked:lock.busy");
+    expect(s("maintenance.seriesEndIdle", { available: true, flashRunning: true })).toBe("locked:lock.flashRunning");
+    // the picker: shown with two packs, fixed while anything runs
+    expect(s("maintenance.seriesPick", { available: false })).toBe("hidden");
+    expect(s("maintenance.seriesPick", { available: true })).toBe("open");
+    expect(s("maintenance.seriesPick", { available: true, busy: true })).toBe("locked:lock.busy");
+    expect(s("maintenance.seriesPick", { available: true, flashRunning: true })).toBe("locked:lock.flashRunning");
+  });
   it("the banner: a pending record can always be cleared by hand; a marker is released unless a flash runs", () => {
     expect(s("pending.clear", { flashRunning: true })).toBe("open");
     expect(s("pending.clear", { busy: true })).toBe("locked:lock.busy");

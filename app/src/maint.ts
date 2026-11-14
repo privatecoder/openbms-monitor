@@ -173,6 +173,9 @@ export function errorKey(e: unknown): { key: string; params?: Record<string, unk
   return { key: "maint.err.text", params: { text: String(e) } };
 }
 
+/** A refusal because a flash series is still open (`series-open`): the panel then offers to end an idle one. */
+export const seriesOpen = (e: unknown): boolean => errorKey(e).key === "maint.err.refused.series-open";
+
 /** The serial number of an `other-bank` refusal (to offer „Seriennummer übernehmen“), else null. */
 export function otherBank(e: unknown): string | null {
   const v: unknown = decode(e);

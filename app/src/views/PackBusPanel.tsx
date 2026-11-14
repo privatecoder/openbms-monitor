@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, TriangleAlert } from "lucide-react";
-import { api, type DeviceInfo, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
+import { api, type DeviceInfo, type FirmwareDone, type FirmwareImage, type LiveStatus, type MasterView, type PackScan } from "../api";
+import { imageLabel, seriesPhrase } from "../firmware";
+import { judge, seriesOrder, seriesRowText, seriesView, startFlashSeries, summarizeSeries, withEnd, type FlashSeriesEnd, type PackEnd, type SeriesView } from "../flashSeries";
 import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
-import { busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
+import { seriesOpen, busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -21,7 +23,7 @@ function ActButton({ spinning, children, className, ...props }: Parameters<typeo
 /** The pack bus panel (design: simple flash flow): one screen with a live status line, „Bus ruhig machen“ while the
  *  bus is not quiet, the packs that answer with one „Flashen“ each, and „Fertig“. No steps to tick: the backend
  *  re-checks a quiet bus and the target right before each flash. */
-export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction }: {
+export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, image, running, flashTick, onFlash, onMaster, onUserAction, series, onSeriesEnd }: {
   maint: Maint;
   /** the RS485-1/2 port of the installation as its endpoint key ("" = none) */
   port: string;
@@ -39,6 +41,10 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   /** the master read of the live status (for the full version of address 0 elsewhere) */
   onMaster: (m: MasterView | null) => void;
   onUserAction: () => void;
+  /** the flash series (null without an image): its one confirmation in the backend, then each pack's flash until its end */
+  series: { begin: (addresses: number[], phrase: string) => Promise<number[]>; flash: (address: number, from: string | null, listed: number[], phrase: string) => Promise<FirmwareDone> } | null;
+  /** the series ended (after its last flash): the backend admits no further pack */
+  onSeriesEnd: () => void;
 }) {
   const { t } = useTranslation();
   const inst = maint.current;
@@ -47,12 +53,26 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   const [scanning, setScanning] = useState(false);
   // halt, release, adopt: the live loop waits meanwhile
   const [action, setAction] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<{ text: string; serial: string | null } | null>(null);
+  // `orphan`: refused for a series left open (the way to end it is offered)
+  const [actionError, setActionError] = useState<{ text: string; serial: string | null; orphan?: boolean } | null>(null);
   // the pack whose „Prüfen & flashen“ was pressed last (its button spins while the check and the flash run)
   const [target, setTarget] = useState<number | null>(null);
   const [flashed, setFlashed] = useState(false);
   // after a flash the master polls again (DIP back or released): the maintenance is over
   const [back, setBack] = useState(false);
+  // the flash series: the packs picked, its confirmation (the phrase typed), its rows and how it ended
+  const [picked, setPicked] = useState<number[]>([]);
+  const [ask, setAsk] = useState(false);
+  const [typed, setTyped] = useState("");
+  // the series shown: its rows with the label of its own image, replaced together (`seriesView`)
+  const [view, setView] = useState<SeriesView | null>(null);
+  const rows = view?.rows ?? null;
+  const [seriesEnd, setSeriesEnd] = useState<FlashSeriesEnd | null>(null);
+  const [current, setCurrent] = useState<number | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const cancelled = useRef(false);
+  // a series stops before its next pack when the panel goes away
+  useEffect(() => () => { cancelled.current = true; }, []);
 
   // the live loop reads the newest values through refs
   const args = useRef({ installation: inst?.id ?? null, port, running, action });
@@ -100,8 +120,8 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
     return () => { alive = false; clearTimeout(timer); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // another port or installation: nothing of the old one counts
-  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); setAskSlaves(null); setReleased(null); wantScan.current = true; }, [port, inst?.id]);
+  // another port or installation: nothing of the old one counts (a series running stops before its next pack by itself)
+  useEffect(() => { liveRef.current = null; setLive(null); setScan(null); setTarget(null); setActionError(null); setBack(false); setAskSlaves(null); setReleased(null); setPicked([]); setAsk(false); wantScan.current = true; }, [port, inst?.id]);
   useEffect(() => { if (flashTick) { setFlashed(true); setBack(false); wantScan.current = true; } }, [flashTick]);
   useEffect(() => { if (flashed && !running && live?.bus === "polling") { setFlashed(false); setBack(true); } }, [flashed, running, live?.bus]);
 
@@ -117,7 +137,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
 
   const run = async (key: string, f: () => Promise<void>) => {
     onUserAction(); setAction(key); setActionError(null); setBack(false);
-    try { await f(); } catch (e) { const k = errorKey(e); setActionError({ text: t(k.key, k.params), serial: otherBank(e) }); }
+    try { await f(); } catch (e) { const k = errorKey(e); setActionError({ text: t(k.key, k.params), serial: otherBank(e), orphan: seriesOpen(e) }); }
     finally { setAction(null); void maint.loadLists(); }
   };
   // the release waits for the master's DIP slave count: the one kept by the halt, else the user confirms it
@@ -159,6 +179,46 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
     // a pending pack does not answer 0x51: it is listed without a version
     ...pendingHere.filter((p) => p.pack !== RECOVERY_PACK && !scan?.packs.some(([a]) => a === p.pack)).map((p) => [p.pack, null] as [number, DeviceInfo | null]),
   ].sort((x, y) => x[0] - y[0]);
+  // the series: packs that answer can be picked; each is weighed like its single flash (`locks.ts`)
+  const versionOf = (a: number, d: DeviceInfo | null) => (d ? packVersion(a, d.firmware_version, master) : null);
+  const answering = packs.filter(([, d]) => d);
+  const chosen = picked.filter((a) => answering.some(([x]) => x === a));
+  const order = seriesOrder(chosen);
+  const phrase = seriesPhrase(order.length, image?.custom);
+  const seriesFacts: UiFacts = { ...facts, picked: chosen, available: answering.length >= 2, flash: { image, quiet, busy, running, address: 0, master, pending: maint.alerts.pending, port } };
+  const pick = decideUi("maintenance.seriesPick", seriesFacts);
+  const packName = (a: number) => (a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a }));
+  const toggle = (a: number) => { setAsk(false); setPicked((p) => (p.includes(a) ? p.filter((x) => x !== a) : [...p, a])); };
+  const startSeries = () => {
+    if (!series || !image || !inst) return;
+    const img = image, typedNow = typed.trim(), chosenOrder = order;
+    const from = new Map(answering.map(([a, d]) => [a, versionOf(a, d)]));
+    setAsk(false); setTyped(""); setCancelling(false); cancelled.current = false;
+    const label = imageLabel(img, t);
+    void run("series", async () => {
+      try {
+        // the link is taken before the backend is asked: a change meanwhile ends the series before its first pack
+        const end = await startFlashSeries({
+          link: () => `${args.current.installation}|${args.current.port}`,
+          begin: () => series.begin(chosen, typedNow),
+          onOrder: (listed) => { setView(seriesView(listed, from, label)); setSeriesEnd(null); },
+          end: onSeriesEnd,
+          cancelled: () => cancelled.current,
+          // read fresh: the list shown may still hold the record of the flash just finished; a failed read goes on, the
+          // backend refuses a series pack with any open record
+          pending: async () => ((await api.maintAlerts().catch(() => null))?.pending.length ?? 0) > 0,
+          flash: (a) => series.flash(a, from.get(a) ?? null, chosenOrder, typedNow),
+          judge: (d) => judge(d, img),
+          report: (a, e) => setView((v) => withEnd(v, a, e)),
+          start: (a) => { setCurrent(a); setTarget(a); },
+        });
+        setSeriesEnd(end);
+      } finally { setCurrent(null); setPicked([]); }
+    });
+  };
+  const errText = (e: unknown) => { const k = errorKey(e); return t(k.key, k.params); };
+  const rowText = (r: { address: number; end?: PackEnd }) => seriesRowText(r.address, r.end, current, view?.label ?? "", t, errText);
+  const rowTone = (e?: PackEnd) => (!e ? "text-muted" : e.kind === "flashed" ? "text-ok" : e.kind === "notReached" ? "text-discharge" : "text-alarm");
 
   // flashing belongs to an installation: without one the panel only says so
   if (!inst) return (
@@ -244,6 +304,8 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
               return (
                 <li key={a} className="space-y-1 rounded-md border border-line p-2">
                   <div className="flex flex-wrap items-center gap-3">
+                    {d && pick.visible && <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={chosen.includes(a)} {...lockProps(pick, t)}
+                      aria-label={t("maint.series.pickPack", { name })} onChange={() => toggle(a)} />}
                     <span className="font-medium">{name}</span>
                     <span className="text-muted">{version ? packVersionText(version, scan?.identities?.find((x) => x.address === a), t) : t("maint.packs.silent")}</span>
                     {/* one button in a fixed place: the backend checks quiet bus, target and installation, then flashes */}
@@ -256,11 +318,54 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
               );
             })}
           </ul>
+          {/* several packs, one confirmation: the same checks per pack, the master last, stops at the first failure */}
+          {pick.visible && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="ghost" size="sm" {...lockProps(pick, t)} onClick={() => { setAsk(false); setPicked(answering.map(([a]) => a)); }}>{t("maint.series.all")}</Button>
+              <Button variant="ghost" size="sm" {...lockProps(pick, t)} onClick={() => { setAsk(false); setPicked([]); }}>{t("maint.series.none")}</Button>
+              <Button variant="secondary" size="sm" {...lockProps(decideUi("maintenance.flashSeries", seriesFacts), t)} onClick={() => { setAsk(true); setTyped(""); }}>{t("maint.series.open", { count: chosen.length })}</Button>
+              <InfoIcon id="topic.maintenance" />
+            </div>
+          )}
+          {ask && image && (
+            <div className="space-y-2 rounded-md border border-charge/40 bg-charge/5 p-3">
+              <p className="font-medium">{t("maint.series.confirm", { count: order.length, image: imageLabel(image, t) })}</p>
+              <ol className="list-decimal pl-5 tabular-nums">
+                {order.map((a) => <li key={a}>{t("maint.series.line", { name: packName(a), from: versionOf(a, answering.find(([x]) => x === a)?.[1] ?? null) ?? "?", to: imageLabel(image, t) })}</li>)}
+              </ol>
+              <p className="text-muted">{t("maint.series.rules")}</p>
+              <p className="text-alarm">{t("fw.risks")}</p>
+              <label className="flex flex-wrap items-center gap-2">{t("maint.series.type", { phrase })}
+                <input value={typed} onChange={(e) => setTyped(e.target.value)} className="rounded border border-line bg-surface px-2 py-1 font-mono" aria-label={t("maint.series.type", { phrase })} />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="primary" size="sm" {...lockProps(decideUi("maintenance.seriesStart", { ...seriesFacts, ready: typed.trim() === phrase }), t)} onClick={startSeries}>{t("maint.series.start", { count: order.length })}</Button>
+                <Button variant="ghost" size="sm" onClick={() => setAsk(false)}>{t("maint.series.back")}</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {/* the series' progress and, at its end, the summary */}
+      {rows && (
+        <div className="space-y-2 rounded-md border border-line p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">{seriesEnd === null ? t("maint.series.running", { n: rows.filter((r) => r.end).length, of: rows.length }) : t(`maint.series.end.${seriesEnd}`)}</span>
+            <span className="ml-auto flex gap-2">
+              {seriesEnd === null && <Button variant="ghost" size="sm" onClick={() => { cancelled.current = true; setCancelling(true); }}>{t(cancelling ? "maint.series.cancelling" : "maint.series.cancel")}</Button>}
+              {seriesEnd !== null && <Button variant="ghost" size="sm" onClick={() => setView(null)}>{t("maint.series.close")}</Button>}
+            </span>
+          </div>
+          {seriesEnd !== null && <p className="tabular-nums">{t("maint.series.sum", { ...summarizeSeries(rows) })}</p>}
+          <ul className="space-y-0.5 tabular-nums">
+            {rows.map((r) => <li key={r.address} className={rowTone(r.end)}>{t("maint.series.row", { name: packName(r.address), from: r.from ?? "?", text: rowText(r) })}</li>)}
+          </ul>
         </div>
       )}
       {actionError && (
         <div className="space-y-1 text-alarm">
           <p className="flex gap-2"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />{actionError.text}</p>
+          {actionError.orphan && <EndIdleSeries busy={busy} running={running} onEnded={() => setActionError(null)} />}
           {actionError.serial && inst && <ActButton variant="secondary" size="sm" spinning={action === "adopt"} {...may("maintenance.adopt")} onClick={() => adopt(actionError.serial!)}>{t("maint.bank.adopt")}</ActButton>}
         </div>
       )}
@@ -289,5 +394,27 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
         </div>
       )}
     </section>
+  );
+}
+
+/** „Offene Serie beenden“: after a refusal for a flash series left open (a view that went away without ending it). The
+ *  backend ends it only while none of its packs is admitted; pending records and markers stay as they are. */
+export function EndIdleSeries({ busy, running, onEnded }: { busy: boolean; running: boolean; onEnded: () => void }) {
+  const { t } = useTranslation();
+  const [ending, setEnding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const d = decideUi("maintenance.seriesEndIdle", { source: null, chosen: null, available: true, busy: busy || ending, flashRunning: running });
+  const end = async () => {
+    setEnding(true); setError(null);
+    try { await api.firmwareSeriesEndIdle(); onEnded(); }
+    catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
+    finally { setEnding(false); }
+  };
+  if (!d.visible) return null;
+  return (
+    <div className="space-y-1">
+      <ActButton variant="secondary" size="sm" spinning={ending} {...lockProps(d, t)} onClick={() => void end()}>{t("maint.series.endIdle")}</ActButton>
+      {error && <p className="text-alarm">{error}</p>}
+    </div>
   );
 }

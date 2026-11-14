@@ -1,5 +1,5 @@
 import type { Bus, Source } from "./api";
-import { flashBlocked } from "./maint";
+import { flashBlocked, keyLabel, pendingPackLabel } from "./maint";
 
 /** One place for when a field or action of the UI is shown, offered or locked, and why. Components gather the facts
  *  (`UiFacts`) and render the decision; they do not phrase their own `disabled={…}` rules for what is decided here.
@@ -39,6 +39,14 @@ export type UiAction =
   // Maintenance (pack bus panel, banner)
   /** a pack row's „Prüfen & flashen“ (`flashBlocked`) */
   | "maintenance.flash"
+  /** the packs picked for a flash series and „Alle“ (`available`: at least two packs answer) */
+  | "maintenance.seriesPick"
+  /** „Ausgewählte flashen“: open the series' one confirmation (`picked`, each weighed like a single flash) */
+  | "maintenance.flashSeries"
+  /** the confirmation's „Serie starten“: as above, and the phrase typed (`ready`) */
+  | "maintenance.seriesStart"
+  /** „Offene Serie beenden“: shown after a refusal for a series left open (`available`); not while anything runs */
+  | "maintenance.seriesEndIdle"
   | "maintenance.halt"
   | "maintenance.release"
   | "maintenance.rescan"
@@ -182,6 +190,8 @@ export interface UiFacts {
   quiet?: boolean;
   /** a pack row's flash: everything `flashBlocked` weighs (image, quiet, busy, running, address, master, pending, port) */
   flash?: Parameters<typeof flashBlocked>[0];
+  /** maintenance: the packs picked for a flash series */
+  picked?: number[];
   /** Parameters: the writes running now */
   writes?: Partial<Record<WriteKind, boolean>>;
   /** Parameters: a read of the parameters runs */
@@ -301,6 +311,28 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       if (!f.flash) return lock("lock.loading");
       const why = flashBlocked(f.flash);
       return why ? { visible: true, locked: true, reason: why } : show();
+    }
+    case "maintenance.seriesPick":
+      if (!f.available) return hide;
+      return inputsLock(f) ?? show();
+    case "maintenance.seriesEndIdle":
+      if (!f.available) return hide;
+      return inputsLock(f) ?? show();
+    case "maintenance.flashSeries":
+    case "maintenance.seriesStart": {
+      if (!f.flash) return lock("lock.loading");
+      if (f.flashRunning || f.flash.running) return lock("maint.packs.why.running");
+      if (f.busy || f.flash.busy) return lock("maint.packs.why.busy");
+      // any open record, also of a picked pack: finishing that one is a single flash
+      const p = f.flash.pending[0];
+      if (p) return { visible: true, locked: true, reason: { key: "maint.series.why.pending", params: { pack: pendingPackLabel(p.pack), port: keyLabel(p.endpoint) } } };
+      if ((f.picked?.length ?? 0) < 2) return lock("maint.series.why.pick");
+      // offered only where a single flash would be offered for every picked pack
+      for (const address of f.picked ?? []) {
+        const why = flashBlocked({ ...f.flash, address });
+        if (why) return { visible: true, locked: true, reason: why };
+      }
+      return action === "maintenance.seriesStart" && !f.ready ? lock("maint.series.why.phrase") : show();
     }
     // halt and release are the way out of a maintenance: only another panel action holds them (a set marker never does)
     case "maintenance.halt":
