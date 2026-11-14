@@ -4,6 +4,8 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- Help and hints: the 22-character note when filling the battery serial applies only to the master's Modbus answer without patched firmware; the access matrix explains “unclear” as a missing proof (firmware identity, flags, read capabilities or switches), not only unread switches; the balancing help no longer claims a lock reason readable only on RS485-1/2.
+
 ## 0.4.0-beta — 2026-11-13
 
 - The patched firmware is now called EMU1101-EXT: Light (1.5.x) and Full (1.6.x). The app reads its identity with the signature `EXT` (format 05, 21 bytes) and supports Light from 1.5.4 and Full from 1.6.4, plus for now the first MAINT 1.6; the original firmware releases stay supported. The four releases Light 1.5.4/1.5.5 and Full 1.6.4/1.6.5 are listed by checksum; builds before them (MAINT 1.5.3, 1.6.3 and older) count as unknown patch firmware. Names, help and texts use the new wording throughout. A stored proof that names an older MAINT build no longer counts; the pack's live identity proves it again.

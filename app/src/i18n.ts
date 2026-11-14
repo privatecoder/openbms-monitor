@@ -1026,7 +1026,7 @@ const resources = {
       snw: {
         preRead: "Seriennummer vorher nicht lesbar; nichts geschrieben. Die App muss die alte BMS-Seriennummer kennen, um die Platine weiter zuzuordnen.",
         useBms: "BMS-Nummer übernehmen", useBmsHint: "Trägt die BMS-Seriennummer (String 2) ins Feld ein; geschrieben wird erst mit „Schreiben“. Ohne Patch-Firmware zeigt die CAN-Buchse nur die Batterie-Seriennummer (nur der Master).",
-        useBmsCut: "Nur die ersten {{n}} Zeichen passen ins Feld.", useBmsCan: "Die CAN-Buchse zeigt davon nur die ersten {{n}} Zeichen.",
+        useBmsCut: "Nur die ersten {{n}} Zeichen passen ins Feld.", useBmsCan: "Ohne Patch-Firmware zeigt der Master an der CAN-Buchse (Modbus) davon nur die ersten {{n}} Zeichen.",
         title: "Seriennummern", battery: "Batterie (String 1)", bms: "BMS (String 2)", reading: "Lese …", readError: "Nicht lesbar: {{err}}", reload: "Vom Pack neu lesen",
         placeholder: "neue Seriennummer", write: "Schreiben", writing: "Schreibe …", invalid: "1–30 Zeichen, nur druckbares ASCII (keine Umlaute)",
         done: "Geschrieben und zurückgelesen.", mismatch: "Gesendet, aber das Pack meldet {{text}}.", unread: "Geschrieben; Rücklesen fehlgeschlagen ({{err}}).",
@@ -1101,7 +1101,7 @@ const resources = {
       },
       acc: {
         title: "Zugriffswege", closed: "welche Aktion über welchen UART geht", noPack: "Erst ein Pack wählen.", action: "Aktion", thisLink: "diese Verbindung",
-        intro: "Welche Aktion über welchen Anschluss möglich ist, für das gewählte Pack, wie diese Verbindung es kennt (Firmwarebeleg, zuletzt gelesene Schalter). „ungeklärt“: Der Weg hängt an Schaltern, die über diese Verbindung noch nicht gelesen wurden; nach „Aus den Packs lesen“ steht dort „möglich“ oder „gesperrt“. Vorschau: Vor jedem Schreiben liest die App das Pack frisch und prüft erneut. Details im Tooltip.",
+        intro: "Welche Aktion über welchen Anschluss möglich ist, für das gewählte Pack, wie diese Verbindung es kennt (Firmwarebeleg, zuletzt gelesene Schalter). „ungeklärt“: Dieser Verbindung fehlt für den Weg noch ein Nachweis, etwa die Firmwarekennung mit Flags und Lesefähigkeiten oder gelesene Schalter; der Tooltip nennt, was fehlt. Vorschau: Vor jedem Schreiben liest die App das Pack frisch und prüft erneut. Details im Tooltip.",
         channel: { uart0: "UART0 · RS485-1/2", uart1: "UART1 · CAN-Buchse", uart2: "UART2 · Display/Bluetooth" },
         state: { ready: "möglich", unknown: "ungeklärt", blocked: "gesperrt", "not-implemented": "nicht in der App" },
         act: { "read-telemetry": "Messwerte lesen", "read-status": "Status lesen", "read-info": "Geräteinfo lesen", "read-parameters": "Parameter lesen", "write-parameters": "Parameter und Schalter schreiben", "write-name": "Gerätename ändern",
@@ -2301,7 +2301,7 @@ const resources = {
       snw: {
         preRead: "Serial number not readable before the write; nothing written. The app needs the old BMS serial number to keep the board assigned.",
         useBms: "Use BMS number", useBmsHint: "Puts the BMS serial number (string 2) into the field; it is written only with “Write”. Without patched firmware the CAN socket shows only the battery serial number (master only).",
-        useBmsCut: "Only the first {{n}} characters fit the field.", useBmsCan: "The CAN socket shows only the first {{n}} characters of it.",
+        useBmsCut: "Only the first {{n}} characters fit the field.", useBmsCan: "Without patched firmware the master shows only the first {{n}} characters of it on the CAN socket (Modbus).",
         title: "Serial numbers", battery: "Battery (string 1)", bms: "BMS (string 2)", reading: "Reading …", readError: "Not readable: {{err}}", reload: "Read again from the pack",
         placeholder: "new serial number", write: "Write", writing: "Writing …", invalid: "1–30 characters, printable ASCII only (no accents)",
         done: "Written and read back.", mismatch: "Sent, but the pack reports {{text}}.", unread: "Written; reading back failed ({{err}}).",
@@ -2376,7 +2376,7 @@ const resources = {
       },
       acc: {
         title: "Access paths", closed: "which action goes over which UART", noPack: "Pick a pack first.", action: "Action", thisLink: "this connection",
-        intro: "Which action is possible over which port, for the chosen pack, as this connection knows it (firmware proof, switches last read). “unclear”: the way depends on switches this connection has not read yet; after “Read from packs” it shows “possible” or “locked”. A preview: before every write the app reads the pack fresh and checks again. Details in the tooltip.",
+        intro: "Which action is possible over which port, for the chosen pack, as this connection knows it (firmware proof, switches last read). “unclear”: this connection still lacks a proof for the way, such as the firmware identity with flags and read capabilities, or read switches; the tooltip names what is missing. A preview: before every write the app reads the pack fresh and checks again. Details in the tooltip.",
         channel: { uart0: "UART0 · RS485-1/2", uart1: "UART1 · CAN socket", uart2: "UART2 · display/Bluetooth" },
         state: { ready: "possible", unknown: "unclear", blocked: "locked", "not-implemented": "not in the app" },
         act: { "read-telemetry": "Read readings", "read-status": "Read status", "read-info": "Read device info", "read-parameters": "Read parameters", "write-parameters": "Write parameters and switches", "write-name": "Change device name",

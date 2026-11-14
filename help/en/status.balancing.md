@@ -12,4 +12,4 @@ The BMS balances only if all of this holds:
 
 Two balanced cells must be at least three positions apart (limit of the balancing chip). LiFePO4 only reaches 3.40 V at the end of a charge, so with well matched cells balancing is rarely seen.
 
-On the CAN socket bus only the balanced cells are readable. Once a pack's parameters have been read, the pack view names its thresholds (parameters 8 and 62) and switches, otherwise the usual values. The exact lock reason is read by the app only on the RS485-1/2 bus. With an external balancer on the pack (installations, devices), its own line says whether it works by computation.
+On both buses the BMS reports only which cells it balances, never why it does not. The pack view explains identifiable causes from the readings and the pack's read parameters (thresholds parameters 8 and 62, switches), read over RS485-1/2 or, with EMU1101-EXT, also over the CAN socket; without read parameters it names the usual values. When every checked condition is met, the actual blocking reason stays unknown. With an external balancer on the pack (installations, devices), its own line says whether it works by computation.
