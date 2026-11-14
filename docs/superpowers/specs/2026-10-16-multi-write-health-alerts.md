@@ -8,7 +8,7 @@ Three independent features; one document because they share the review. Each is 
 
 ### Why
 
-A bank of many packs usually needs the same change on every pack (e.g. a temperature limit). Today a change is written to the one pack whose column is being edited; the same change on twelve packs means twelve edits. The clock already has „Uhr aller Packs stellen“ (series bound to installation and connection since `1bd1764`); parameters lack that.
+A bank of many packs usually needs the same change on every pack (e.g. a temperature limit). Today a change is written to the one pack whose column is being edited; the same change on twelve packs means twelve edits. The clock already has „Uhr aller Packs stellen“ (series bound to installation and connection since `9ab46eb`); parameters lack that.
 
 ### Design
 

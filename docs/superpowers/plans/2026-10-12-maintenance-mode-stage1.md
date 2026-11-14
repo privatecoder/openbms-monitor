@@ -87,7 +87,7 @@
 
 The work tree holds uncommitted changes of the same day (sidebar, pack count via 0x64, `maint.rs` in `openbms-proto`, `maint_status`). They are the base of this plan.
 
-- [x] Done: baseline commit `cdca30a` (user approved; checks passed).
+- [x] Done: baseline commit `a6c13ab` (user approved; checks passed).
 
 ---
 
