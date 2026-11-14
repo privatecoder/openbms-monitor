@@ -10,7 +10,7 @@ import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { cn } from "../lib/utils";
 import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
 import { afterUart1Write, capacityResets, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
-import { failure, outcomeOf, runSeries, type Outcome, type SeriesEnd } from "../multiWrite";
+import { attemptAgain, failure, outcomeOf, runSeries, unclearWrites, RETRY_PAUSE_MS, type Outcome, type PackResult, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
 import { MultiConfirm, SeriesPanel, TargetPicker, type Row } from "../components/MultiWrite";
 import { SerialLine } from "../components/SerialWrite";
@@ -140,7 +140,8 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const [picking, setPicking] = useState(false);
   const [targets, setTargets] = useState<number[]>([]);
   const [confirm, setConfirm] = useState<{ plans: TargetPlan[]; skipped: Row[]; capacity: { resets: number[]; unknown: number[] } | null; reading: number | null } | null>(null);
-  const [runState, setRunState] = useState<{ rows: Row[]; current: number | null; paused: number | null; end: SeriesEnd | null } | null>(null);
+  // `attempt`: the current pack's attempt, of `tries` at most
+  const [runState, setRunState] = useState<{ rows: Row[]; current: number | null; attempt: number; tries: number; paused: number | null; end: SeriesEnd | null } | null>(null);
   // what may be done now (`locks.ts`): one write at a time, nothing while a read or an edit runs where it would collide
   const pf: UiFacts = { source: null, chosen: null, writes: writing, reading: !!reading, editing: edit?.address ?? null, pausedAt: runState?.paused ?? null,
     canReadParams: connected && (bus === "pack" || bus === "can" || isDemo) && packs.length > 0 };
@@ -503,37 +504,59 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const cancelPrepare = () => { prepTicket.current++; setConfirm(null); busyFor("multi")(false); };
 
   /** The run: the edited pack first, then the others by address, one after another, each as a single write of its
-   *  own read with the change on top. It stops before the next pack after a link change or „Abbrechen“ and waits at
-   *  a refusal that left switches live. */
-  const run = async () => {
+   *  own read with the change on top. A pack whose write did not land or was not confirmed gets up to `retries` more
+   *  attempts, each on a fresh read of it (`attemptAgain`), then it is skipped. It stops before the next pack or
+   *  attempt after a link change or „Abbrechen“ and waits at a refusal that left switches live. */
+  const run = async (retries: number) => {
     if (!edit || !confirm?.capacity) return;
     const e = edit, cf = confirm, l = linkNow();
     setConfirm(null); setNote(null);
     cancelled.current = false;
     const plan = new Map(cf.plans.map((p) => [p.address, p]));
+    const change = changeOf(e.base, e.raws, e.baseSwitches, e.switches);
     const rows: Row[] = [{ address: e.address }, ...[...cf.plans.map((p) => ({ address: p.address })), ...cf.skipped].sort((x, y) => x.address - y.address)];
-    setRunState({ rows, current: null, paused: null, end: null });
-    const report = (a: number, out: Outcome) => setRunState((s) => s && { ...s, rows: s.rows.map((r) => (r.address === a ? { ...r, out } : r)) });
-    let source: ParamWrite | undefined;
+    setRunState({ rows, current: null, attempt: 1, tries: retries + 1, paused: null, end: null });
+    const report = (a: number, r: PackResult) => setRunState((s) => s && { ...s, rows: s.rows.map((x) => (x.address === a ? { ...x, ...r } : x)) });
+    // the edited pack's last write and final outcome: what becomes of the edit after the run
+    let source: ParamWrite | undefined, sourceOut: Outcome | undefined;
+    // CAN socket writes left unclear: a fresh read showing the change confirms them like an acknowledged write
+    const unclear = unclearWrites();
+    const sendPlan = async (a: number, p: { base: Raws; baseSwitches: number[]; raws: Raws; switches: number[] }) => {
+      const w = await send(a, toWire(p.base, p.baseSwitches), p.raws, p.switches, false, l);
+      if (a === e.address) source = w.r;
+      unclear.sent(a, w.r);
+      return w.out;
+    };
+    const stopped = () => cancelled.current || linkNow() !== l;
     const end = await runSeries([e.address, ...cf.plans.map((p) => p.address)], {
-      link: linkNow, cancelled: () => cancelled.current, report,
-      write: async (a) => {
-        setRunState((s) => s && { ...s, current: a });
-        if (a === e.address) { const w = await send(a, toWire(e.base, e.baseSwitches), e.raws, e.switches, false, l); source = w.r; return w.out; }
-        const p = plan.get(a)!;
-        return (await send(a, toWire(p.base, p.baseSwitches), p.raws, p.switches, false, l)).out;
-      },
+      link: linkNow, cancelled: () => cancelled.current, retries,
+      report: (a, r) => { if (a === e.address) sourceOut = r.out; report(a, r); },
+      attempt: (a, n) => setRunState((s) => s && { ...s, current: a, attempt: n }),
+      first: (a) => sendPlan(a, a === e.address ? e : plan.get(a)!),
+      // the same parameter read the view uses; its column shows the pack now
+      again: (a) => attemptAgain(a, change, e.seriesUnlocked, {
+        read: async (x) => { const p = await api.parameters(x); if (linkNow() === l) { replace(packCol(p, x, l, path)); seen(x, p); } return p; },
+        stop: stopped, send: (p) => sendPlan(a, p),
+        confirmed: (p) => {
+          const before = unclear.take(a);
+          if (!before || linkNow() !== l) return;
+          const now = Date.now();
+          setSources((s) => s.map((x) => (x.id === `pack-${a}` ? afterUart1Write(x, keepProof(x, packCol(p, a, l, path)), true, before, now) : x)));
+        },
+      }),
+      wait: () => new Promise((res) => setTimeout(res, RETRY_PAUSE_MS)),
       pause: (a) => new Promise<boolean>((res) => { resume.current = res; setRunState((s) => s && { ...s, current: null, paused: a }); })
         .then((goOn) => { resume.current = null; setRunState((s) => s && { ...s, paused: null }); return goOn; }),
     });
     setRunState((s) => s && { ...s, current: null, paused: null, end });
     busyFor("multi")(false);
     if (linkNow() !== l) return;
-    // the edited pack as after a single write: written closes the edit, stale keeps it on the pack's current state
+    // the edited pack as after a single write, by its final outcome: written closes the edit, stale keeps it on the
+    // pack's current state
     setPicking(false); setTargets([]);
-    const r = source as ParamWrite | undefined;
-    if (r?.kind === "written") setEdit(null);
-    else if (r?.kind === "stale") rebaseEdit(e.address, r.fresh);
+    const r = source as ParamWrite | undefined, out = sourceOut as Outcome | undefined;
+    if (out?.kind === "written") setEdit(null);
+    else if (out?.kind === "skipped" && out.why === "stale" && r?.kind === "stale") rebaseEdit(e.address, r.fresh);
   };
 
   const nf = (i: number) => new Intl.NumberFormat(i18n.language, { minimumFractionDigits: decimals(i), maximumFractionDigits: decimals(i) });
@@ -759,7 +782,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
               onRestore={(stored) => write(edit.address, stored)}
               onDiscard={() => { setEdit(null); setNote(null); setPicking(false); setTargets([]); }} />
           )}
-          {runState && <SeriesPanel rows={runState.rows} current={runState.current} paused={runState.paused} end={runState.end}
+          {runState && <SeriesPanel rows={runState.rows} current={runState.current} attempt={runState.attempt} tries={runState.tries} paused={runState.paused} end={runState.end}
             held={writing.params}
             onCancel={() => { cancelled.current = true; resume.current?.(false); }} onGoOn={() => resume.current?.(true)} onClose={() => setRunState(null)} />}
           {cols.flatMap((c) => {
