@@ -230,14 +230,16 @@ pub struct ExtInfo {
     pub read_caps: u16,
 }
 
-/// Read-capability bits of the format-5 mask: the history 0x4B over the CAN socket, the calibration pages 64/05, the
-/// stored SOC records in 64/06, the full-width live energy counters in 64/06.
+/// Capability bits of the format-5 mask: the history 0x4B over the CAN socket, the calibration pages 64/05, the
+/// stored SOC records in 64/06, the full-width live energy counters in 64/06, and (Full 1.6.7) the configurable CCL
+/// decrease step 64/07–08 (`ccl`).
 pub const CAP_HISTORY: u8 = 0;
 pub const CAP_CALIBRATION: u8 = 1;
 pub const CAP_SOC_STORE: u8 = 2;
 pub const CAP_ENERGY: u8 = 3;
+pub const CAP_CCL_STEP: u8 = 4;
 /// The bits this app knows; a mask with any other bit is a format it does not know (never guessed).
-pub const CAPS_KNOWN: u16 = 0x000F;
+pub const CAPS_KNOWN: u16 = 0x001F;
 
 /// What an RTN 00 answer to `0x64 INFO=03` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +431,10 @@ mod tests {
     const LIGHT_155: &str = "4558540510060D010505082CB731C006AAC53A000F";
     const FULL_164: &str = "4558540510060D0106044F4D2715C9EE553CFE000F";
     const FULL_165: &str = "4558540510060D01060513464FC91A6E6A20FE000F";
+    /// Light 1.5.6, Full 1.6.6 (early polling) and Full 1.6.7 (the CCL decrease step, mask 001F)
+    const LIGHT_156: &str = "4558540510060D010506FE7CBA82F861F3373A000F";
+    const FULL_166: &str = "4558540510060D0106062508B93F45C29F31FE000F";
+    const FULL_167: &str = "4558540510060D010607F445666C205184A8FE001F";
     /// TEMP(maint-1.6): the first MAINT 1.6, MNT format 3
     const TEMP_16: &str = "4D4E540310060D010618DAF61D8A93671D06";
 
@@ -481,12 +487,42 @@ mod tests {
         p[20] = 0x05;
         let only = ExtInfo::parse(&p).unwrap();
         assert_eq!((only.cap(CAP_HISTORY), only.cap(CAP_CALIBRATION), only.cap(CAP_SOC_STORE), only.cap(CAP_ENERGY)), (true, false, true, false));
+        // Full 1.6.7: bit 4 the CCL decrease step, apart from the four reads
+        let mut c = hex(FULL_165);
+        c[20] = 0x1F;
+        let ccl = ExtInfo::parse(&c).unwrap();
+        assert!(ccl.cap(CAP_CCL_STEP) && !b_ccl(&hex(FULL_165)));
         // an unknown bit: a format the app does not know, never partly read
-        for (at, v) in [(20, 0x1F), (19, 0x80)] {
+        for (at, v) in [(20, 0x3F), (20, 0x2F), (19, 0x80), (19, 0x01)] {
             let mut u = hex(FULL_165);
             u[at] = v;
             assert_eq!(ExtInfo::classify(&u), InfoAnswer::OtherFormat);
         }
+    }
+
+    fn b_ccl(info: &[u8]) -> bool {
+        ExtInfo::parse(info).unwrap().cap(CAP_CCL_STEP)
+    }
+
+    #[test]
+    fn the_new_releases_report_their_identity_and_capabilities() {
+        // Light 1.5.6 and Full 1.6.6: early polling, the same flags and mask 000F; Full 1.6.7 adds bit 4 (001F)
+        for (info, name, build, caps) in [
+            (LIGHT_156, "EMU1101-EXT Light 1.5.6", "fe7cba82f861f337", 0x000F),
+            (FULL_166, "EMU1101-EXT Full 1.6.6", "2508b93f45c29f31", 0x000F),
+            (FULL_167, "EMU1101-EXT Full 1.6.7", "f445666c205184a8", 0x001F),
+        ] {
+            let i = ExtInfo::parse(&hex(info)).unwrap();
+            assert_eq!((i.version(), i.build_id_hex(), i.read_caps, i.supported()), (name.to_string(), build.to_string(), caps, true));
+            assert_eq!(i.cap(CAP_CCL_STEP), caps & 0x10 != 0, "{name}");
+            assert!([CAP_HISTORY, CAP_CALIBRATION, CAP_SOC_STORE, CAP_ENERGY].iter().all(|&c| i.cap(c)), "{name}");
+        }
+        assert_eq!(ExtInfo::parse(&hex(LIGHT_156)).unwrap().image_flags(), 0x3A);
+        assert_eq!(ExtInfo::parse(&hex(FULL_167)).unwrap().image_flags(), 0xFE);
+        // the version alone gives no capability: a 1.6.7 identity with mask 000F has no CCL step
+        let mut v = hex(FULL_167);
+        v[20] = 0x0F;
+        assert!(!b_ccl(&v));
     }
 
     #[test]

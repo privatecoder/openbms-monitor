@@ -1,0 +1,23 @@
+---
+title: CCL decrease step (master)
+short: How fast the master lowers the bank's charge current limit (CCL): 1–20 A per online pack and update (EMU1101-EXT Full from 1.6.7). An EXT setting of its own, not a parameter.
+related: topic.firmwareProfile, topic.patchGates, topic.params, topic.access
+---
+- **What it does:** when the master lowers the charge current limit it requests for the whole bank (CCL), it takes off “online packs × step” amperes per completed update until the target is reached; the last remainder lands exactly on the target. Upwards it stays at 1 A per online pack and update. The default is 1, the usual behaviour of the original firmware.
+- **The unit:** A per online pack per update, not A/s and no current control of single packs. The master counts the online packs itself (itself and its reachable slaves, also those with a warning). An update follows only a complete polling round of the master; how long that takes depends on the number of packs and the firmware, there is no fixed rate. Example: 12 packs online, step 10: 120 A less per update; from 1560 A to 10 A that is 13 updates, not guaranteed 13 seconds. With step 1 it would be 130.
+- **What it does not change:** how the target is calculated, an immediate drop to 0 in protection cases, the heater, the discharge limit (DCL). A faster decrease says nothing about how fast the inverter follows, and it does not prevent every short voltage peak of a cell. Values above 1 are not tested on an inverter; start with a small value and watch.
+- **Only the master counts:** every BMS stores its own value, only the active master's acts. So the app reads and saves only the master's value (address 0). If another pack becomes master later, its own value applies; the app copies nothing to other packs.
+- **Apart from the parameters:** the step is none of the 87 parameters and no function switch. It is not in parameter files, not in a write to several packs, not in restoring a state and not in an installation's export. It is saved only with its own button.
+- **Reading:** after connecting and after a change of master the app reads the stored value fresh: first the firmware identity (64/03), which must report capability 0010, then the value (64/07). The version number alone is not enough. If the read fails, it says “not read”, never the default 1.
+- **Saving:** a whole number from 1 to 20, nothing is rounded. Before sending, the app checks the master's board (BMS serial, the same as at the read), its identity and, where the way requires it (see below), the write release (function switch 0, bit 0); the app never changes that release itself, and it does not halt a polling master for it. Then the command goes out exactly once, and the app reads the value back separately. Possible answers: invalid value, writing locked, saving in the BMS failed (the old value then stays active). Without a valid answer the outcome is open: the app repeats nothing and shows what the BMS reports afterwards.
+- **Never by itself:** the app writes this value neither at start, on connecting, after a change of master nor when restoring.
+- **Back to the original:** save step 1 explicitly; only that also resets the stored value to a defined state. An erased parameter memory also leads to 1.
+- **Older firmware:** after a change to firmware without this capability (Light, Full up to 1.6.6, original) the master decreases with the fixed step 1 again, whatever is stored. Whether the stored EXT value survives is open: a later parameter save under the older firmware may drop it, otherwise it may apply again after a change back to Full 1.6.7. For a defined state, save step 1 before the change.
+- **Not shown on RS485-1/2:** a master polling its slaves reports no firmware identity there, so whether it offers the step stays open. Halt the master first (maintenance) or set DIP 5–8 to OFF, then “Check again” or reconnect.
+- **Ways** (every way under “Access paths”):
+- **Read the master's CCL decrease step**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity).
+- **Save the master's CCL decrease step**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); Group0.bit0 (UART1 write release) = 1.

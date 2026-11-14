@@ -212,8 +212,12 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
   | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "restart-not-saved" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed"
-  | "unsupported" | "bit-blocked" | "not-ready";
-  code?: number; address?: number; board?: number; at?: number | null; gen?: number; group?: number; bit?: number };
+  | "unsupported" | "bit-blocked" | "not-ready"
+  | "ccl-bad-value" | "ccl-no-cap" | "ccl-no-answer" | "ccl-silent" | "ccl-malformed" | "ccl-read-refused" | "ccl-invalid" | "ccl-denied" | "ccl-persist" | "ccl-unknown"
+  | "ccl-readback-differs" | "ccl-readback-failed";
+  code?: number; address?: number; board?: number; at?: number | null; gen?: number; group?: number; bit?: number;
+  /** the CCL step's save: what a read after the attempt found (null: that read failed) */
+  now?: number | null };
 export function uart1Error(e: unknown): Uart1Error | null {
   const v: unknown = decode(e);
   if (!v || typeof v !== "object") return null;
@@ -247,7 +251,11 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   if (bank) return bankText(bank, t);
   const u = uart1Error(e);
   // RTN 05 from the pack itself (locked meanwhile, or data it does not take) reads apart from the app's own refusal
-  if (u) return t(`uart1.${u.error === "power-locked" && u.code !== undefined ? "power-refused" : u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0"), group: u.group, bit: u.bit });
+  if (u) {
+    const text = t(`uart1.${u.error === "power-locked" && u.code !== undefined ? "power-refused" : u.error}`, { code: (u.code ?? 0).toString(16).toUpperCase().padStart(2, "0"), pack: String(u.address ?? 0).padStart(2, "0"), group: u.group, bit: u.bit });
+    // a save of the CCL step names what the master holds after it (read once, never a second save)
+    return u.now === undefined ? text : `${text} ${u.now === null ? t("uart1.ccl-now-unknown") : t("uart1.ccl-now", { now: u.now })}`;
+  }
   // the same texts on both ports
   const sw = switchError(e);
   if (sw) return t(`uart1.${sw.error}`);

@@ -24,6 +24,7 @@ import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { HardStopLine } from "../components/HardStopLine";
+import { CclStepSection } from "../components/CclStep";
 import { DiagnosisLine } from "../components/DiagnosisLine";
 import { RemoteDiagnosis } from "../components/RemoteDiagnosis";
 import { withHardStop } from "../access";
@@ -124,7 +125,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const [gone, setGone] = useState<{ address: number; board: number; at: number | null; gen: number; armed: boolean } | null>(null);
   // one write at a time; the pack picker stays put while one runs, so no answer lands on another pack
   // `multi`: a parameter write to several packs, from its confirmation to its last pack (also while it waits)
-  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, marker: false, multi: false, hs: false });
+  const [writing, setWriting] = useState({ clock: false, can: false, cal: false, params: false, serial: false, name: false, ctl: false, marker: false, multi: false, hs: false, ccl: false });
   const busyFor = (k: keyof typeof writing) => (b: boolean) => setWriting((w) => (w[k] === b ? w : { ...w, [k]: b }));
 
   // one pack column is edited at a time; its write runs under the same lock as the other writes
@@ -670,6 +671,9 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={section("can")} onBusy={busyFor("can")} />
         <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined}
           connected={connected && !!installation && !isDemo} linkKey={link} locked={section("hs")} onBusy={busyFor("hs")} write={writeHardStop} />
+        {/* the master's own EXT setting, whichever pack is chosen; apart from the parameter table and its bulk paths */}
+        <CclStepSection connected={connected && !isDemo} bus={bus} installation={installation?.id ?? null} packs={packs.length} linkKey={link}
+          locked={section("ccl")} onBusy={busyFor("ccl")} />
         <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
         <RemoteDiagnosis address={chosen} known={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={section("serial")} onBusy={busyFor("serial")} linkKey={link} />

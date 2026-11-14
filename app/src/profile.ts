@@ -28,7 +28,7 @@ export const patched = (m: MasterView | null | undefined): boolean => m?.kind ==
 export const buildName = (version: string, base: string | null | undefined): string =>
   base && version.startsWith(`${base} `) ? version.slice(base.length + 1) : version;
 
-/** The name of a recognised patch: the listed build, else „EMU1101-EXT Full 1.6.6 (Basis a.b.c, Build nicht gelistet)“. */
+/** The name of a recognised patch: the listed build, else „EMU1101-EXT Full 1.6.9 (Basis a.b.c, Build nicht gelistet)“. */
 export function patchName(m: MasterView, t: T): string {
   if (m.listed) return m.listed;
   return t("profile.unlisted", { name: buildName(m.version ?? "?", m.base), base: m.base ?? "?" });

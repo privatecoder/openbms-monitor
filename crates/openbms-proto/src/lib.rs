@@ -5,6 +5,7 @@
 pub mod access;
 pub mod address;
 pub mod calibration;
+pub mod ccl;
 pub mod control;
 pub mod device_info;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod telemetry;
 pub mod uart1;
 
 pub use calibration::{Calibration, Refusal};
+pub use ccl::CclStep;
 pub use control::Comeback;
 pub use device_info::DeviceInfo;
 pub use error::{Error, Result};

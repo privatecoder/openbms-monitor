@@ -37,6 +37,8 @@
    "read-diagnosis": "Speicherdiagnose lesen",
    "read-calibration": "Kalibrierung lesen",
    "read-soc-store": "Gespeicherten Stand und Energiezähler lesen",
+   "read-ccl-step": "CCL-Abbaustufe des Masters lesen",
+   "write-ccl-step": "CCL-Abbaustufe des Masters speichern",
    "read-history": "Interne Historie lesen",
    "read-identity": "Firmwarekennung abfragen",
    "maint-status": "Wartungsstatus lesen",
@@ -75,11 +77,19 @@
     "no": "Lesefähigkeit {{name}} meldet dieses Pack nicht",
     "unknown": "Lesefähigkeit {{name}} nicht belegt"
    },
+   "capFeature": {
+    "no": "Fähigkeit {{name}} meldet dieses Pack nicht",
+    "unknown": "Fähigkeit {{name}} nicht belegt"
+   },
+   "capKind": {
+    "c4": "feature"
+   },
    "capName": {
     "c0": "Historie",
     "c1": "Kalibrierseiten",
     "c2": "gespeicherter Stand",
     "c3": "Energiezähler",
+    "c4": "CCL-Abbaustufe",
     "other": "unbenannt"
    }
   },
@@ -121,6 +131,7 @@
    "flag": "{{name}} (Imageflag Bit {{bit}})",
    "cap": "Lesefähigkeit {{names}}",
    "capBits": "Lesefähigkeit {{names}} (Bit {{bits}} der Firmwarekennung)",
+   "capBitsFeature": "Fähigkeit {{names}} (Bit {{bits}} der Firmwarekennung)",
    "base": "Originalfirmware ab {{v}}",
    "bit": "Group{{g}}.Bit{{b}} ({{name}}) = {{want}}",
    "bitBuild": "Freigabe in Group{{g}}.Bit{{b}} ({{name}}), Wert je Build (siehe Funktionsschalter {{g}})",
@@ -202,6 +213,8 @@
    "read-diagnosis": "Read the memory diagnosis",
    "read-calibration": "Read calibration",
    "read-soc-store": "Read stored state and energy counters",
+   "read-ccl-step": "Read the master's CCL decrease step",
+   "write-ccl-step": "Save the master's CCL decrease step",
    "read-history": "Read internal history",
    "read-identity": "Ask the firmware identity",
    "maint-status": "Read maintenance state",
@@ -240,11 +253,19 @@
     "no": "read capability {{name}} not reported by this pack",
     "unknown": "read capability {{name}} not proven"
    },
+   "capFeature": {
+    "no": "capability {{name}} not reported by this pack",
+    "unknown": "capability {{name}} not proven"
+   },
+   "capKind": {
+    "c4": "feature"
+   },
    "capName": {
     "c0": "history",
     "c1": "calibration pages",
     "c2": "stored state",
     "c3": "energy counters",
+    "c4": "CCL decrease step",
     "other": "unnamed"
    }
   },
@@ -286,6 +307,7 @@
    "flag": "{{name}} (image flag bit {{bit}})",
    "cap": "read capability {{names}}",
    "capBits": "read capability {{names}} (bit {{bits}} of the firmware identity)",
+   "capBitsFeature": "the {{names}} capability (bit {{bits}} of the firmware identity)",
    "base": "original firmware from {{v}}",
    "bit": "Group{{g}}.bit{{b}} ({{name}}) = {{want}}",
    "bitBuild": "release in Group{{g}}.bit{{b}} ({{name}}), value per build (see function switch {{g}})",

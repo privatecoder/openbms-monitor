@@ -169,8 +169,10 @@ impl PatchBuild {
     }
 }
 
-/// The listed builds (the supported ones): the four EMU1101-EXT releases, all on OEM 16.06.13 with soft stop as default
-/// and read caps 000F, and the TEMP(maint-1.6) build (no read caps). A later build: append one entry. .4 and .5 (the atomic scheduler fix) differ only by version and build ID.
+/// The listed builds (the supported ones): the seven EMU1101-EXT releases, all on OEM 16.06.13 with soft stop as
+/// default, read caps 000F (Full 1.6.7: 001F, the CCL decrease step), and the TEMP(maint-1.6) build (no read caps). A
+/// later build: append one entry. .4 and .5 (the atomic scheduler fix) differ only by version and build ID; Light 1.5.6
+/// and Full 1.6.6 add the early UART0 poll completion on the master (no command, permission or flag changes).
 pub const PATCH_BUILDS: &[PatchBuild] = &[
     // EMU1101-EXT Light 1.5.4: flags 3A (power and clock with Group0 bit 3 at 1, RS485-1/2 marker and identity, the 64/04
     // diagnosis, fixed soft stop)
@@ -225,6 +227,45 @@ pub const PATCH_BUILDS: &[PatchBuild] = &[
         build_id: "13464fc91a6e6a20",
         code_sha256: "20e26bf8a0a0cd9d9b21c9018fc2c5b4e2325cf510f0c01b48c72da1c684265d",
         ehex_sha256: "fae20016130c950ee12e9a90ad0aa0e042b41eda3e46aef1f95469378d800b2f",
+    },
+    // EMU1101-EXT Light 1.5.6: 1.5.5 plus the early UART0 poll completion
+    PatchBuild {
+        name: "EMU1101-EXT Light 1.5.6",
+        base: [16, 6, 13],
+        patch: [1, 5],
+        patch_rev: 6,
+        ext_format: 5,
+        flags: 0x3A,
+        read_caps: 0x000F,
+        build_id: "fe7cba82f861f337",
+        code_sha256: "20fe53a245ef7cb19ab8087aa28a168d6d0830e8198052ec8aad1c40f7f8ab62",
+        ehex_sha256: "2535115af7ca492930fe5bb6ae926bb2696f5cab6d7f36801142924272fd8f5e",
+    },
+    // EMU1101-EXT Full 1.6.6: 1.6.5 plus the early UART0 poll completion
+    PatchBuild {
+        name: "EMU1101-EXT Full 1.6.6",
+        base: [16, 6, 13],
+        patch: [1, 6],
+        patch_rev: 6,
+        ext_format: 5,
+        flags: 0xFE,
+        read_caps: 0x000F,
+        build_id: "2508b93f45c29f31",
+        code_sha256: "f97f3ade59e483ac7483a44f16b9a8a3d634dbdc9543bbdb0c1e89d31e739cb0",
+        ehex_sha256: "63568f2b87f1df5a7851c15a244505f2ded13bdbeee681e30e3a442661dbd3a2",
+    },
+    // EMU1101-EXT Full 1.6.7: 1.6.6 plus the configurable CCL decrease step (capability bit 4, mask 001F)
+    PatchBuild {
+        name: "EMU1101-EXT Full 1.6.7",
+        base: [16, 6, 13],
+        patch: [1, 6],
+        patch_rev: 7,
+        ext_format: 5,
+        flags: 0xFE,
+        read_caps: 0x001F,
+        build_id: "f445666c205184a8",
+        code_sha256: "a81d8b12ea97717a241fdaf929ba9d131bb89715b0eddb33940e279b0bbd4b4c",
+        ehex_sha256: "24665349103b44362c6dffd31d21e52cb67ef09e0dd2788a8cc6ba2a31b4255a",
     },
     // TEMP(maint-1.6): the first MAINT 1.6 (V1_6_CUTOFF), MNT format 3 with image flags 06: power and clock (bit 3 at 0
     // allows), the stored pack cutoff; hard stop off. Supported until the installation runs EMU1101-EXT Full, then
@@ -332,6 +373,9 @@ mod tests {
             ("EMU1101-EXT Light 1.5.5", "4558540510060D010505082CB731C006AAC53A000F", "a6bd1f959b4fd7baaf84ed2c65207a54f6225203c86e0257953e4d486c42d8fd"),
             ("EMU1101-EXT Full 1.6.4", "4558540510060D0106044F4D2715C9EE553CFE000F", "b3ab4856a2be678801cf1c7061c6daacb8f9b44b6f6a5aee1020ad64a4c4424a"),
             ("EMU1101-EXT Full 1.6.5", "4558540510060D01060513464FC91A6E6A20FE000F", "20e26bf8a0a0cd9d9b21c9018fc2c5b4e2325cf510f0c01b48c72da1c684265d"),
+            ("EMU1101-EXT Light 1.5.6", "4558540510060D010506FE7CBA82F861F3373A000F", "20fe53a245ef7cb19ab8087aa28a168d6d0830e8198052ec8aad1c40f7f8ab62"),
+            ("EMU1101-EXT Full 1.6.6", "4558540510060D0106062508B93F45C29F31FE000F", "f97f3ade59e483ac7483a44f16b9a8a3d634dbdc9543bbdb0c1e89d31e739cb0"),
+            ("EMU1101-EXT Full 1.6.7", "4558540510060D010607F445666C205184A8FE001F", "a81d8b12ea97717a241fdaf929ba9d131bb89715b0eddb33940e279b0bbd4b4c"),
         ] {
             let b = PATCH_BUILDS.iter().find(|b| b.name == name).unwrap();
             let live = ExtInfo::parse(&hex(info_hex)).unwrap();
@@ -348,8 +392,15 @@ mod tests {
         assert!(patch_build(3, [16, 6, 13], [1, 6], "13464fc91a6e6a20").is_none(), "other format");
         assert!(patch_build(5, [16, 6, 12], [1, 6], "13464fc91a6e6a20").is_none(), "other base");
         assert!(patch_build(5, [16, 6, 13], [1, 6], "0000000000000000").is_none(), "other build");
-        // every listed build is supported
+        // every listed build is supported; only Full 1.6.7 announces the CCL decrease step
         assert!(PATCH_BUILDS.iter().all(|b| b.caps().is_some()));
+        let ccl: Vec<_> = PATCH_BUILDS.iter().filter(|b| b.info().cap(openbms_proto::maint::CAP_CCL_STEP)).map(|b| b.name).collect();
+        assert_eq!(ccl, ["EMU1101-EXT Full 1.6.7"]);
+        // the published .ehex hashes of the new releases, as their release metadata names them
+        let ehex = |name: &str| PATCH_BUILDS.iter().find(|b| b.name == name).unwrap().ehex_sha256;
+        assert_eq!(ehex("EMU1101-EXT Light 1.5.6"), "2535115af7ca492930fe5bb6ae926bb2696f5cab6d7f36801142924272fd8f5e");
+        assert_eq!(ehex("EMU1101-EXT Full 1.6.6"), "63568f2b87f1df5a7851c15a244505f2ded13bdbeee681e30e3a442661dbd3a2");
+        assert_eq!(ehex("EMU1101-EXT Full 1.6.7"), "24665349103b44362c6dffd31d21e52cb67ef09e0dd2788a8cc6ba2a31b4255a");
     }
 
     #[test]
@@ -386,10 +437,10 @@ mod tests {
 
     #[test]
     fn a_later_build_is_one_more_table_entry() {
-        let later = PatchBuild { name: "EMU1101-EXT Full 1.6.6", patch_rev: 6, build_id: "0123456789abcdef", code_sha256: "c0de", ehex_sha256: "f11e", ..PATCH_BUILDS[3] };
+        let later = PatchBuild { name: "EMU1101-EXT Full 1.6.9", patch_rev: 9, build_id: "0123456789abcdef", code_sha256: "c0de", ehex_sha256: "f11e", ..PATCH_BUILDS[3] };
         let table = [PatchBuild { ..PATCH_BUILDS[3] }, later];
         let found = patch_in(&table, 5, [16, 6, 13], [1, 6], "0123456789abcdef").unwrap();
-        assert_eq!((found.name, found.caps()), ("EMU1101-EXT Full 1.6.6", PATCH_BUILDS[3].caps()));
+        assert_eq!((found.name, found.caps()), ("EMU1101-EXT Full 1.6.9", PATCH_BUILDS[3].caps()));
     }
 
     #[test]

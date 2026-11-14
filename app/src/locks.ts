@@ -156,10 +156,21 @@ export type UiAction =
   /** Parameters: show only the rows that differ (`available`: two comparable columns) */
   | "params.onlyDiff"
   /** health report: export as CSV (`entries`) */
-  | "report.export";
+  | "report.export"
+  /** Parameters: „EXT — CCL-Abbaustufe (Master)“, shown on a direct RS485 connection (either bus) whose master
+   *  reports capability bit 4 in its own 64/03 on this connection (`offered`) */
+  | "ccl.section"
+  /** its read of the master's value */
+  | "ccl.read"
+  /** its own save: an installation, a confirmed read with the master's serial (`available`, `target`), Group0 bit 0 not
+   *  known off (`writeLocked`), a valid value (`ready`) other than the stored one (`same`) */
+  | "ccl.save"
+  /** RS485-1/2: the master's 64/03 not answered on this link (`available`: its capabilities are known): ask it again
+   *  on a click, nothing written */
+  | "ccl.recheck";
 
 /** The writes of the Parameters view; one runs at a time. */
-export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs";
+export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs" | "ccl";
 
 export interface UiFacts {
   /** the source of the open connection: "bus" (RS485), "mqtt" (the add-on's feed), null: none */
@@ -237,6 +248,10 @@ export interface UiFacts {
   /** BMS history: the connection is open (direct), the chosen pack answers on it */
   connected?: boolean;
   answering?: boolean;
+  /** the CCL step: the value typed equals the one read */
+  same?: boolean;
+  /** the CCL step: the master's write release (Group0 bit 0) is known off */
+  writeLocked?: boolean;
 }
 
 export interface UiReason { key: string; params?: Record<string, unknown> }
@@ -492,6 +507,23 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       return f.available ? show() : lock("par.onlyDiffNeeds");
     case "report.export":
       return f.entries ? show() : lock("lock.nothing");
+    case "ccl.section":
+      return f.source === "bus" && (f.bus === "can" || f.bus === "pack") && f.connected && f.offered && !f.demo ? show() : hide;
+    case "ccl.recheck":
+      if (f.source !== "bus" || f.bus !== "pack" || !f.connected || f.demo || f.available) return hide;
+      return f.busy ? lock("lock.busy") : show();
+    case "ccl.read":
+      if (f.busy) return lock("lock.busy");
+      return f.held ? lock("lock.writeRunning") : show();
+    case "ccl.save":
+      if (!f.chosen) return lock("lock.cclViewOnly");
+      if (f.busy) return lock("lock.busy");
+      if (f.held) return lock("lock.writeRunning");
+      if (!f.available) return lock("lock.cclUnread");
+      if (!f.target) return lock("lock.cclNoSerial");
+      if (f.writeLocked) return lock("lock.cclWriteLocked");
+      if (!f.ready) return lock("lock.cclBadValue");
+      return f.same ? lock("lock.cclSame") : show();
   }
 }
 

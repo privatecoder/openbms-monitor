@@ -90,6 +90,12 @@ related: topic.buses, topic.patchGates, topic.control, topic.switches
 - **Gespeicherten Stand und Energiezähler lesen**
   - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit gespeicherter Stand oder Energiezähler (Bit 2 oder 3 der Firmwarekennung); Hinweis: zuverlässig nur ohne pollenden Master.
   - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit gespeicherter Stand oder Energiezähler (Bit 2 oder 3 der Firmwarekennung).
+- **CCL-Abbaustufe des Masters lesen**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Full 1.6.7 mit Fähigkeit CCL-Abbaustufe (Bit 4 der Firmwarekennung); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Full 1.6.7 mit Fähigkeit CCL-Abbaustufe (Bit 4 der Firmwarekennung).
+- **CCL-Abbaustufe des Masters speichern**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Full 1.6.7 mit Fähigkeit CCL-Abbaustufe (Bit 4 der Firmwarekennung); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Full 1.6.7 mit Fähigkeit CCL-Abbaustufe (Bit 4 der Firmwarekennung); Group0.Bit0 (UART1-Schreibfreigabe) = 1.
 - **Wartungsstatus lesen**
   - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Kennung und Wartungsmarker über RS485-1/2 (Imageflag Bit 4); Hinweis: zuverlässig nur ohne pollenden Master.
   - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4; nur am Master, Adresse 0.

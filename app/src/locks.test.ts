@@ -368,3 +368,55 @@ describe("name, diff filter, report export", () => {
     expect(s("report.export", { entries: true })).toBe("open");
   });
 });
+
+describe("EXT — CCL decrease step (master)", () => {
+  const live: Partial<UiFacts> = { source: "bus", bus: "can", connected: true, offered: true };
+  it("the section: only on a direct connection (either bus) whose master reports the capability", () => {
+    expect(state("ccl.section", live)).toBe("open");
+    expect(state("ccl.section", { ...live, offered: false })).toBe("hidden");
+    // RS485-1/2 too (the master answers there only while it does not poll; the backend says so)
+    expect(state("ccl.section", { ...live, bus: "pack" })).toBe("open");
+    expect(state("ccl.section", { ...live, bus: null })).toBe("hidden");
+    expect(state("ccl.section", { ...live, source: "mqtt" })).toBe("hidden");
+    expect(state("ccl.section", { ...live, connected: false })).toBe("hidden");
+    expect(state("ccl.section", { ...live, demo: true })).toBe("hidden");
+  });
+  it("check again: only on RS485-1/2 while the master's capabilities are not known, never in the preview", () => {
+    const pack: Partial<UiFacts> = { source: "bus", bus: "pack", connected: true, available: false };
+    expect(state("ccl.recheck", pack)).toBe("open");
+    expect(state("ccl.recheck", { ...pack, busy: true })).toBe("locked:lock.busy");
+    expect(state("ccl.recheck", { ...pack, available: true })).toBe("hidden");
+    expect(state("ccl.recheck", { ...pack, bus: "can" })).toBe("hidden");
+    expect(state("ccl.recheck", { ...pack, connected: false })).toBe("hidden");
+    expect(state("ccl.recheck", { ...pack, demo: true })).toBe("hidden");
+    // „Nur ansehen“ may ask too (a read)
+    expect(state("ccl.recheck", { ...pack, chosen: null })).toBe("open");
+  });
+  it("the read: free unless its own action or another write runs", () => {
+    expect(state("ccl.read", live)).toBe("open");
+    expect(state("ccl.read", { ...live, busy: true })).toBe("locked:lock.busy");
+    expect(state("ccl.read", { ...live, held: true })).toBe("locked:lock.writeRunning");
+    // „Nur ansehen“ reads too
+    expect(state("ccl.read", { ...live, chosen: null })).toBe("open");
+  });
+  it("the save: an installation, a confirmed read with the master's serial, the release, a new valid value", () => {
+    const ok: Partial<UiFacts> = { ...live, available: true, target: true, ready: true, same: false, writeLocked: false };
+    expect(state("ccl.save", ok)).toBe("open");
+    expect(state("ccl.save", { ...ok, chosen: null })).toBe("locked:lock.cclViewOnly");
+    expect(state("ccl.save", { ...ok, busy: true })).toBe("locked:lock.busy");
+    expect(state("ccl.save", { ...ok, held: true })).toBe("locked:lock.writeRunning");
+    // no value shown without a confirmed read: nothing to save over
+    expect(state("ccl.save", { ...ok, available: false })).toBe("locked:lock.cclUnread");
+    expect(state("ccl.save", { ...ok, target: false })).toBe("locked:lock.cclNoSerial");
+    expect(state("ccl.save", { ...ok, writeLocked: true })).toBe("locked:lock.cclWriteLocked");
+    expect(state("ccl.save", { ...ok, ready: false })).toBe("locked:lock.cclBadValue");
+    expect(state("ccl.save", { ...ok, same: true })).toBe("locked:lock.cclSame");
+    // the release not read yet: offered, the backend reads it fresh before sending
+    expect(state("ccl.save", { ...ok, writeLocked: undefined })).toBe("open");
+  });
+  it("another write of the Parameters view holds the section, and it holds the others", () => {
+    expect(state("params.section", { section: "ccl", writes: { params: true } })).toBe("locked:lock.writeRunning");
+    expect(state("params.section", { section: "ccl", writes: { ccl: true } })).toBe("open");
+    expect(state("params.section", { section: "hs", writes: { ccl: true } })).toBe("locked:lock.writeRunning");
+  });
+});

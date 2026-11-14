@@ -90,6 +90,12 @@ related: topic.buses, topic.patchGates, topic.control, topic.switches
 - **Read stored state and energy counters**
   - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with read capability stored state or energy counters (bit 2 or 3 of the firmware identity); note: reliable only without a polling master.
   - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with read capability stored state or energy counters (bit 2 or 3 of the firmware identity).
+- **Read the master's CCL decrease step**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity).
+- **Save the master's CCL decrease step**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); Group0.bit0 (UART1 write release) = 1.
 - **Read maintenance state**
   - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with identity and maintenance marker over RS485-1/2 (image flag bit 4); note: reliable only without a polling master.
   - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4; only at the master, address 0.

@@ -1,6 +1,7 @@
 import type { TFunction } from "i18next";
 import type { AccessDecision, AccessReason, Channel } from "./api";
 import CATALOG from "./generated/access.json";
+import ACCESS_TEXT from "./i18n.access.json";
 
 export const CHANNELS: Channel[] = ["uart0", "uart1", "uart2"];
 
@@ -28,7 +29,7 @@ export function reasonText(t: TFunction, r: AccessReason): string {
     case "firmware": return r.need.kind === "patch-from"
       ? t(`acc.fw.patch.${r.known}`, { v: extName(LINE_FROM[r.need.version.join(".")] ?? r.need.version) })
       : r.need.kind === "read-cap"
-      ? t(`acc.fw.cap.${r.known}`, { name: capNames(t, r.need.mask) })
+      ? t(`acc.fw.${capKind(r.need.mask) === "feature" ? "capFeature" : "cap"}.${r.known}`, { name: capNames(t, r.need.mask) })
       : t(`acc.fw.flag.${r.known}`, { bit: r.need.bit, name: t(`acc.fw.flagName.b${r.need.bit}`, { defaultValue: t("acc.fw.flagName.other") }) });
     case "bit": {
       const name = t(`acc.bitName.g${r.group}b${r.bit}`, { defaultValue: "" });
@@ -152,6 +153,14 @@ const POLARITY = new Set(CATALOG.build_polarity.map(([g, b]) => `${g}.${b}`));
 type Tr = (key: string, options?: Record<string, unknown>) => string;
 const maskBits = (mask: number) => Array.from({ length: 16 }, (_, b) => b).filter((b) => (mask & (1 << b)) !== 0);
 /** The read capabilities of a mask, any of which is enough („Historie“, „gespeicherter Stand oder Energiezähler“). */
+/** How the capability bits of a mask are worded (`acc.fw.capKind`, shared with `tools/access_help.py`): "read" (a read
+ *  capability, the default) or "feature" (a bit that gates more than a read, the CCL decrease step). One mask never mixes
+ *  them. */
+export function capKind(mask: number): "read" | "feature" {
+  const kinds = new Set(maskBits(mask).map((b) => (ACCESS_TEXT.de.fw.capKind as Record<string, string>)[`c${b}`] ?? "read"));
+  if (kinds.size !== 1) throw new Error(`access: capability mask ${mask} mixes the kinds ${[...kinds].join(", ")}`);
+  return [...kinds][0] as "read" | "feature";
+}
 const capNames = (t: Tr, mask: number) => maskBits(mask).map((b) => t(`acc.fw.capName.c${b}`, { defaultValue: t("acc.fw.capName.other") })).join(t("acc.doc.or"));
 
 /** One condition of a way in the hint form (`tools/access_help.py`, `_need` without detail): names, no bit numbers or
@@ -255,6 +264,7 @@ export const ACCESS_HINTS = {
   "rdiag.noCap": ["read-calibration", "read-soc-store"],
   "mdiag.hint": ["read-diagnosis"],
   "hs.hint": ["hard-stop"],
+  "ccl.hint": ["read-ccl-step", "write-ccl-step"],
   "maint.setup.controlHint": ["maint-start"],
   "fw.patch.update": ["flash"],
   "fw.soc.hint": ["read-soc-store"],

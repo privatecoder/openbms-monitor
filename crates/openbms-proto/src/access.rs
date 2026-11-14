@@ -12,7 +12,7 @@
 //! The catalog follows the firmware analysis (UART write matrix, 16.06.13 and the EMU1101-EXT builds). Its rows are data;
 //! `decide` evaluates one row for one pack's facts. Unknown stays unknown: a stored proof carries no image flags.
 
-use crate::maint::{MarkerWord, CAP_CALIBRATION, CAP_ENERGY, CAP_HISTORY, CAP_SOC_STORE, SUPPORTED_15, SUPPORTED_16};
+use crate::maint::{MarkerWord, CAP_CALIBRATION, CAP_CCL_STEP, CAP_ENERGY, CAP_HISTORY, CAP_SOC_STORE, SUPPORTED_15, SUPPORTED_16};
 use serde::Serialize;
 
 /// The patch line every supported build belongs to or follows (major, minor); which builds of it are supported decides
@@ -78,6 +78,9 @@ pub enum Action {
     ReadDiagnosis,
     ReadCalibration,
     ReadSocStore,
+    /// the master's CCL decrease step (EXT, read-capability bit 4; a numeric setting outside the OEM block)
+    ReadCclStep,
+    WriteCclStep,
     MaintStatus,
     MaintStart,
     MaintStop,
@@ -88,12 +91,12 @@ pub enum Action {
 
 impl Action {
     /// In the order the UI lists them.
-    pub const ALL: [Action; 32] = [
+    pub const ALL: [Action; 34] = [
         Action::ReadTelemetry, Action::ReadStatus, Action::ReadInfo, Action::ReadParameters, Action::WriteParameters, Action::WriteName,
         Action::ReadSerials, Action::WriteSerials, Action::ReadClock, Action::SetClock, Action::PowerOnOff, Action::PackLockSet,
         Action::PackLockRelease, Action::Restart,
         Action::ForceHeater, Action::ClearHistory, Action::SetRemaining, Action::SetLearnedFull, Action::Calibrate, Action::SetCanProtocol,
-        Action::HardStop, Action::ReadHistory, Action::ReadIdentity, Action::ReadDiagnosis, Action::ReadCalibration, Action::ReadSocStore, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
+        Action::HardStop, Action::ReadHistory, Action::ReadIdentity, Action::ReadDiagnosis, Action::ReadCalibration, Action::ReadSocStore, Action::ReadCclStep, Action::WriteCclStep, Action::MaintStatus, Action::MaintStart, Action::MaintStop, Action::ReadSystem,
         Action::DisplayTunnel, Action::Flash,
     ];
 
@@ -103,7 +106,7 @@ impl Action {
             self,
             Action::ReadTelemetry | Action::ReadStatus | Action::ReadInfo | Action::ReadParameters | Action::ReadSerials | Action::ReadClock
                 | Action::ReadHistory | Action::ReadIdentity | Action::ReadDiagnosis | Action::ReadCalibration | Action::ReadSocStore
-                | Action::MaintStatus | Action::ReadSystem
+                | Action::ReadCclStep | Action::MaintStatus | Action::ReadSystem
         )
     }
 
@@ -156,7 +159,7 @@ pub const FLAG_SINCE: [(u8, [u8; 3]); 7] = [
 ];
 
 /// The first supported build that carries each read-capability bit (format 5), for the matrix's „ab EMU1101-EXT …“.
-pub const CAP_SINCE: [(u8, [u8; 3]); 4] = [(CAP_HISTORY, [1, 5, 4]), (CAP_CALIBRATION, [1, 5, 4]), (CAP_SOC_STORE, [1, 5, 4]), (CAP_ENERGY, [1, 5, 4])];
+pub const CAP_SINCE: [(u8, [u8; 3]); 5] = [(CAP_HISTORY, [1, 5, 4]), (CAP_CALIBRATION, [1, 5, 4]), (CAP_SOC_STORE, [1, 5, 4]), (CAP_ENERGY, [1, 5, 4]), (CAP_CCL_STEP, [1, 6, 7])];
 
 /// Whether an image flag byte announces the positive Group0 bits 3/4 (None: not known, read as not).
 pub fn positive_of(flags: Option<u8>) -> bool {
@@ -259,6 +262,8 @@ const HARD_STOP: &[Firmware] = &[Firmware::ImageFlag { bit: FLAG_HARD_STOP }];
 const CAP_HISTORY_FW: &[Firmware] = &[Firmware::ReadCap { mask: 1 << CAP_HISTORY }];
 const CAP_CALIBRATION_FW: &[Firmware] = &[Firmware::ReadCap { mask: 1 << CAP_CALIBRATION }];
 const CAP_SOC_FW: &[Firmware] = &[Firmware::ReadCap { mask: (1 << CAP_SOC_STORE) | (1 << CAP_ENERGY) }];
+/// capability bit 4 (Full 1.6.7): the CCL decrease step 64/07–08
+const CAP_CCL_FW: &[Firmware] = &[Firmware::ReadCap { mask: 1 << CAP_CCL_STEP }];
 const CUTOFF_POWER: &[Firmware] = &[Firmware::PatchFrom { version: CUTOFF_MIN }, Firmware::ImageFlag { bit: FLAG_CUTOFF }, Firmware::ImageFlag { bit: FLAG_POWER }];
 
 const QUIET: &[Need] = &[Need::QuietBus];
@@ -332,6 +337,12 @@ pub const ROUTES: &[Route] = &[
     r(A::ReadCalibration, U1, "ASCII 64/05", CAP_CALIBRATION_FW, &[], true),
     r(A::ReadSocStore, U0, "ASCII 64/06", CAP_SOC_FW, QUIET, true),
     r(A::ReadSocStore, U1, "ASCII 64/06", CAP_SOC_FW, &[], true),
+    // every pack at its own address; only the master's value acts on the bank, so the app reads and writes it only at
+    // address 0 (`ccl.rs`). RS485-1/2 needs no Group0 bit (local parameter access), only the quiet bus
+    r(A::ReadCclStep, U0, "ASCII 64/07", CAP_CCL_FW, QUIET, true),
+    r(A::ReadCclStep, U1, "ASCII 64/07", CAP_CCL_FW, &[], true),
+    r(A::WriteCclStep, U0, "ASCII 64/08", CAP_CCL_FW, QUIET, true),
+    r(A::WriteCclStep, U1, "ASCII 64/08", CAP_CCL_FW, WRITE_RELEASE, true),
     r(A::MaintStatus, U0, "ASCII 64/02", UART0_EXT, QUIET, true),
     r(A::MaintStatus, U1, "ASCII 64/02", EXT, MASTER, true),
     r(A::MaintStart, U1, "ASCII 64/01", EXT, START, true),
@@ -680,8 +691,8 @@ mod tests {
             .map(|i| Facts {
                 patch: [Patch::Unknown, Patch::None, Patch::Version([1, 4]), Patch::Version([1, 5]), Patch::Version([1, 6]), Patch::Version([1, 7])][i % 6],
                 flags: [None, Some(0x00), Some(0x02), Some(0x06), Some(0x0E), Some(0x3A), Some(0xFE)][(i / 6) % 7],
-                // flags 3A with caps 000F, and the reverse pairings (caps without flags, flags without caps)
-                caps: [None, Some(0x0000), Some(0x000F), Some(0x0001), Some(0x0008)][(i / 3) % 5],
+                // flags 3A with caps 000F, FE with 001F, and the reverse pairings (caps without flags, flags without caps)
+                caps: [None, Some(0x0000), Some(0x000F), Some(0x0001), Some(0x0008), Some(0x001F)][(i / 3) % 6],
                 group0: [None, Some(0x00), Some(0xFF), Some(0xF7), Some(0xEF), Some(0xDA)][(i * 7) % 6],
                 group7: [None, Some(0x00), Some(0x08), Some(0x18), Some(0x38)][(i * 5) % 5],
                 address: [0, 3][(i / 2) % 2],
@@ -723,7 +734,7 @@ mod tests {
             "lines": { "1.5": SUPPORTED_15, "1.6": SUPPORTED_16 },
             "flag_since": FLAG_SINCE.iter().map(|(bit, v)| (bit.to_string(), *v)).collect::<std::collections::BTreeMap<_, _>>(),
             "cap_since": CAP_SINCE.iter().map(|(bit, v)| (bit.to_string(), *v)).collect::<std::collections::BTreeMap<_, _>>(),
-            "caps": { "history": CAP_HISTORY, "calibration": CAP_CALIBRATION, "soc_store": CAP_SOC_STORE, "energy": CAP_ENERGY },
+            "caps": { "history": CAP_HISTORY, "calibration": CAP_CALIBRATION, "soc_store": CAP_SOC_STORE, "energy": CAP_ENERGY, "ccl_step": CAP_CCL_STEP },
             "ext_min": EXT_MIN,
             "cutoff_min": CUTOFF_MIN,
             "bits": {
@@ -771,6 +782,37 @@ mod tests {
         assert!(ready(A::ReadSocStore, U1, &f(Some(0), Some(1 << CAP_SOC_STORE))));
         assert!(!ready(A::ReadSocStore, U1, &f(Some(0xFF), Some(1 << CAP_HISTORY))));
         assert!(!A::ReadCalibration.writes() && !A::ReadSocStore.writes());
+    }
+
+    #[test]
+    fn the_ccl_step_follows_capability_bit_4_and_its_write_bit_0() {
+        let f = |caps: Option<u16>, group0: Option<u8>| Facts {
+            patch: Patch::Version([1, 6]), flags: Some(0xFE), caps, group0, group7: None, address: 0, installation: true, marker: None, base: None, slaves: None,
+        };
+        // Full 1.6.7 (001F): the read needs no release bit, the write over the CAN socket Group0 bit 0
+        assert!(ready(A::ReadCclStep, U1, &f(Some(0x001F), None)));
+        assert!(ready(A::WriteCclStep, U1, &f(Some(0x001F), Some(0x01))));
+        let locked = decide(route(A::WriteCclStep, U1).unwrap(), &f(Some(0x001F), Some(0xFE)));
+        assert_eq!((locked.state, locked.reasons), (State::Blocked, vec![Reason::Bit { group: 0, bit: G0_WRITE, want: true, known: Some(false) }]));
+        assert_eq!(decide(route(A::WriteCclStep, U1).unwrap(), &f(Some(0x001F), None)).state, State::Unknown);
+        // Light and Full up to 1.6.6 (000F), the version alone, or a stored proof without the mask
+        assert_eq!(decide(route(A::ReadCclStep, U1).unwrap(), &f(Some(0x000F), None)).state, State::Blocked);
+        assert_eq!(decide(route(A::WriteCclStep, U1).unwrap(), &f(Some(0x000F), Some(0xFF))).state, State::Blocked);
+        assert_eq!(decide(route(A::ReadCclStep, U1).unwrap(), &f(None, None)).state, State::Unknown);
+        // „Nur ansehen“ reads, never writes
+        let view = Facts { installation: false, ..f(Some(0x001F), Some(0xFF)) };
+        assert!(ready(A::ReadCclStep, U1, &view) && !ready(A::WriteCclStep, U1, &view));
+        assert!(!A::ReadCclStep.writes() && A::WriteCclStep.writes() && A::WriteCclStep.needs_installation());
+        // RS485-1/2 too: no release bit there, only the quiet bus (a note); the CAN socket's write needs bit 0
+        assert_eq!(routes(A::WriteCclStep).map(|r| (r.channel, r.implemented)).collect::<Vec<_>>(), vec![(U0, true), (U1, true)]);
+        assert_eq!(routes(A::ReadCclStep).map(|r| (r.channel, r.implemented)).collect::<Vec<_>>(), vec![(U0, true), (U1, true)]);
+        assert_eq!((route(A::WriteCclStep, U0).unwrap().needs, route(A::ReadCclStep, U0).unwrap().needs), (QUIET, QUIET));
+        let u0 = decide(route(A::WriteCclStep, U0).unwrap(), &f(Some(0x001F), Some(0xFE)));
+        assert_eq!((u0.state, u0.reasons), (State::Ready, vec![Reason::QuietBus]));
+        assert_eq!(decide(route(A::WriteCclStep, U0).unwrap(), &f(Some(0x000F), Some(0xFF))).state, State::Blocked);
+        assert!(!ready(A::WriteCclStep, U0, &view));
+        // every pack answers at its own address: no master-only condition in the firmware's way
+        assert!(routes(A::WriteCclStep).chain(routes(A::ReadCclStep)).all(|r| !r.needs.contains(&Need::MasterOnly)));
     }
 
     #[test]

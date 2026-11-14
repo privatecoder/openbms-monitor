@@ -441,6 +441,13 @@ export interface SocStore {
   raw: [string, string]; records: [SocRecord | null, SocRecord | null];
 }
 export type DiagRecordClass = "erased" | "valid" | "invalid" | "unknown";
+/** 0x64/07 (EMU1101-EXT Full 1.6.7, capability bit 4): the master's CCL decrease step in A per online pack per update
+ *  (`down` 1..20), the fixed upward step and the bounds as the firmware reports them. */
+export interface CclStep { down: number; up: number; min: number; max: number }
+/** A confirmed read of the master's step and its String 2 read in the same session (null: not checkable, no save). */
+export interface CclRead { step: CclStep; serial: string | null }
+/** A saved step: the separate read-back after the acknowledged set. */
+export interface CclSaved { step: CclStep; serial: string }
 export interface SocStoreRead { store: SocStore; records: boolean; energy: boolean; checkpoint: boolean }
 export interface MemoryDiagnosis { params: [DiagRecord, DiagRecord]; params_compare: DiagCompare; soc: [DiagRecord, DiagRecord]; soc_compare: DiagCompare; lock: [boolean | null, boolean | null]; cache: number }
 export interface PackProbeView { gen: number; address: number; state: "proven" | "negative" | "undecided";
@@ -532,6 +539,10 @@ const tauriApi = {
   packImageFlags: (address: number) => invoke<ImageBits | null>("pack_image_flags", { address }),
   packCalibration: (address: number) => invoke<CalPageRead[]>("pack_calibration", { address }),
   packSocStore: (address: number) => invoke<SocStoreRead>("pack_soc_store", { address }),
+  /** the master's CCL decrease step (address 0, CAN socket); never a stand-in value */
+  cclStepRead: () => invoke<CclRead>("ccl_step_read"),
+  /** one explicit save of the master's step; `expected`: the master's String 2 the shown value was read with */
+  cclStepWrite: (installation: string | null, value: number, expected: string) => invoke<CclSaved>("ccl_step_write", { installation, value, expected }),
   firmwareSocStore: (port: string, address: number) => invoke<SocStoreRead | null>("firmware_soc_store", { port, address }),
   /** „Erneut prüfen“: the pack's own 64/03 now (CAN socket, not the master) */
   packProbe: (address: number, gen: number) => invoke<PackProbeView>("pack_probe", { address, gen }),
@@ -821,6 +832,8 @@ function demoApi(): typeof tauriApi {
     packDiagnosis: async () => ({ params: ["valid", "valid"], params_compare: "same", soc: ["valid", "valid"], soc_compare: "same", lock: [false, false], cache: 6 }) as MemoryDiagnosis,
     packCalibration: async () => { throw new Error("demo"); },
     packSocStore: async () => { throw new Error("demo"); },
+    cclStepRead: async () => { throw new Error("demo"); },
+    cclStepWrite: async () => { throw new Error("demo"); },
     packProbe: async () => { throw new Error("desktop app only"); },
     packProbes: async () => [],
     accessView: async () => ({ gen: 0, channel: null, decisions: [] }),

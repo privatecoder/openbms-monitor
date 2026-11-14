@@ -16,9 +16,9 @@ describe("firmware profile of the connection", () => {
     expect(profileLine(profile({}), tr("de"))).toEqual({ tone: "ok", text: "EMU1101-EXT Light 1.5.4" });
     expect(profileLine(profile({ marker: "on", slaves: 0 }), tr("en"))?.text).toBe("EMU1101-EXT Light 1.5.4");
     // an unlisted build with the same capabilities: same configuration, named by version and base
-    const later = profile({ listed: null, version: "EMU1101-EXT Full 1.6.6", patch: "1.6", base: "16.07.02" });
-    expect(profileLine(later, tr("de"))).toMatchObject({ text: "EMU1101-EXT Full 1.6.6", title: "EMU1101-EXT Full 1.6.6 (Basis 16.07.02, Build nicht gelistet) · Build 909a604e60e9225b" });
-    expect(patchName(later.master, tr("en"))).toBe("EMU1101-EXT Full 1.6.6 (base 16.07.02, build not listed)");
+    const later = profile({ listed: null, version: "EMU1101-EXT Full 1.6.9", patch: "1.6", base: "16.07.02" });
+    expect(profileLine(later, tr("de"))).toMatchObject({ text: "EMU1101-EXT Full 1.6.9", title: "EMU1101-EXT Full 1.6.9 (Basis 16.07.02, Build nicht gelistet) · Build 909a604e60e9225b" });
+    expect(patchName(later.master, tr("en"))).toBe("EMU1101-EXT Full 1.6.9 (base 16.07.02, build not listed)");
     expect(profileLine(profile({ kind: "unknown-patch", caps: null, version: "EMU1101-EXT 1.4.0" }), tr("de"))?.text).toBe("Unbekannte Patch-Firmware EMU1101-EXT 1.4.0: nur Original-Funktionen");
     expect(profileLine(profile({ kind: "no-0x64", caps: null }), tr("de"))?.text).toBe("0x64 nicht unterstützt, Firmwarestand nicht belegt");
     expect(profileLine(profile({ kind: "unknown", caps: null }), tr("en"))?.text).toBe("Firmware not recognised");

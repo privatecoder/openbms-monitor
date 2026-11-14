@@ -64,6 +64,9 @@ pub(crate) fn flows(action: Action) -> &'static [Channel] {
         A::ReadDiagnosis => BOTH,
         // the calibration pages and the stored SOC records / live energy (`diagnosis.rs`, EXT05)
         A::ReadCalibration | A::ReadSocStore => BOTH,
+        // the master's CCL decrease step (`ccl.rs`): RS485-1/2 with the right-bank check, the CAN socket with the strict
+        // identity and Group0 bit 0
+        A::ReadCclStep | A::WriteCclStep => BOTH,
         A::MaintStart | A::ReadSystem => &[Channel::Uart1],
         A::DisplayTunnel => &[],
     }

@@ -178,7 +178,8 @@ pub struct Connection {
     listened: bool,
 }
 
-/// A failed ein/aus (`Connection::on_off_phased`): `sent` whether the request had left completely before `error`.
+/// A failed write sent at most once (ein/aus `Connection::on_off_phased`, the CCL step `set_ccl_step`): `sent` whether
+/// the request had left completely before `error`.
 #[derive(Debug)]
 pub struct SwitchFailure {
     pub sent: bool,
@@ -457,9 +458,19 @@ impl Connection {
         self.ascii_answer(request, address, fits, limit)
     }
 
-    /// The answer part of `ascii_exchange`, once the request left completely. A valid answer of the address (also a
-    /// refusal) is a sample of the answer time; the pause after it is not.
+    /// The answer part of `ascii_exchange`, once the request left completely; any RTN other than 00 (and 0x5A) is an
+    /// error (`ascii_answer_frame` keeps the refusal's frame).
     fn ascii_answer(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool, limit: Duration) -> Result<Frame> {
+        let f = self.ascii_answer_frame(request, address, fits, limit)?;
+        if f.rtn != 0x00 && f.rtn != 0x5A {
+            return Err(openbms_proto::Error::Rtn(f.rtn).into());
+        }
+        Ok(f)
+    }
+
+    /// The answer frame of the address, also a refusal (any RTN). A valid answer of the address (also a refusal) is a
+    /// sample of the answer time; the pause after it is not.
+    fn ascii_answer_frame(&mut self, request: &[u8], address: u8, fits: &dyn Fn(&[u8]) -> bool, limit: Duration) -> Result<Frame> {
         let started = Instant::now();
         let deadline = started + limit;
         let mut lines = frame::Lines::default();
@@ -510,11 +521,7 @@ impl Connection {
             self.answered_in(Class::Ascii, address, started.elapsed());
         }
         std::thread::sleep(self.gap);
-        let f = result?;
-        if f.rtn != 0x00 && f.rtn != 0x5A {
-            return Err(openbms_proto::Error::Rtn(f.rtn).into());
-        }
-        Ok(f)
+        result
     }
 
     pub fn telemetry(&mut self, address: u8) -> Result<Telemetry> {
@@ -698,6 +705,37 @@ impl Connection {
         use openbms_proto::remote;
         let f = self.ascii_as(&remote::soc_store_request(address)?, address, |i| remote::parse_soc_store(i).is_ok())?;
         Ok(remote::parse_soc_store(&f.info)?)
+    }
+
+    /// The CCL decrease step of the pack at `address` (0x64/07, capability bit 4; changes nothing): only the exact
+    /// five-byte answer counts.
+    pub fn ccl_step(&mut self, address: u8) -> Result<openbms_proto::CclStep> {
+        use openbms_proto::ccl;
+        let f = self.ascii_as(&ccl::read_request(address)?, address, |i| ccl::parse(i).is_ok())?;
+        Ok(ccl::parse(&f.info)?)
+    }
+
+    /// Set and persist the CCL decrease step (0x64/08 `value`), sent once and never repeated here. Success: RTN 00 with
+    /// the exact five-byte answer naming `value`. A refusal counts only as RTN 05/04/08 without INFO; any other answer,
+    /// silence or a broken link after sending leaves the outcome open (`SwitchFailure::unclear`). An invalid value or
+    /// address sends nothing.
+    pub fn set_ccl_step(&mut self, address: u8, value: u8) -> std::result::Result<openbms_proto::CclStep, SwitchFailure> {
+        use openbms_proto::ccl;
+        let request = ccl::set_request(address, value).map_err(|e| SwitchFailure { sent: false, error: e.into() })?;
+        let before = self.drop_input().map_err(Error::from).and_then(|_| self.send(&request));
+        self.note_failure(&before, address);
+        before.map_err(|error| SwitchFailure { sent: false, error })?;
+        let limit = self.reply_budget(Class::Ascii, self.timeout);
+        let r = self.ascii_answer_frame(&request, address, &|i| ccl::parse_set(i, value).is_ok(), limit);
+        self.note_failure(&r, address);
+        let sent = |error: Error| SwitchFailure { sent: true, error };
+        let f = r.map_err(sent)?;
+        match (f.rtn, f.info.is_empty()) {
+            (0x00, _) => ccl::parse_set(&f.info, value).map_err(|e| sent(e.into())),
+            (rtn, true) if ccl::Refusal::of_rtn(rtn).is_some() => Err(sent(openbms_proto::Error::Rtn(rtn).into())),
+            // a refusal code with INFO, or another code: not the command's refusal, so not proof that nothing changed
+            _ => Err(sent(openbms_proto::Error::Layout("0x64/08 answer is neither the value nor a refusal without INFO").into())),
+        }
     }
 
     /// Modbus FC03/04 read (master only, CAN socket bus).
@@ -1883,5 +1921,46 @@ mod tests {
         assert_eq!(given.len(), 2);
         assert!(given[1] < Duration::from_millis(200), "second address gets only what is left: {:?}", given[1]);
         assert!(started.elapsed() < Duration::from_millis(700));
+    }
+
+    /// An answer frame of the master (address 0).
+    fn master_answer(rtn: u8, info: &[u8]) -> Vec<u8> {
+        answer(0, rtn, info)
+    }
+
+    #[test]
+    fn the_ccl_step_counts_only_its_exact_answer_and_a_refusal_without_info() {
+        use openbms_proto::ccl;
+        let set = ccl::set_request(0, 10).unwrap();
+        let ok = master_answer(0x00, &[1, 10, 1, 1, 20]);
+        assert_eq!(scripted(vec![(set.clone(), ok)]).set_ccl_step(0, 10).unwrap().down, 10);
+        // RTN 05/04/08 without INFO: definite refusals, not open
+        for rtn in [0x05, 0x04, 0x08] {
+            let f = scripted(vec![(set.clone(), master_answer(rtn, &[]))]).set_ccl_step(0, 10).unwrap_err();
+            assert!(f.sent && matches!(f.error, Error::Proto(openbms_proto::Error::Rtn(r)) if r == rtn) && !f.unclear(), "{rtn:02X}");
+        }
+        // a refusal code carrying INFO, another value, a wrong shape, silence: open, never success
+        for reply in [master_answer(0x05, &[0]), master_answer(0x00, &[1, 1, 1, 1, 20]), master_answer(0x00, &[1, 10, 1, 1]), master_answer(0x00, &[]), vec![]] {
+            let f = scripted(vec![(set.clone(), reply.clone())]).set_ccl_step(0, 10).unwrap_err();
+            assert!(f.sent && f.unclear(), "{:?}", String::from_utf8_lossy(&reply));
+        }
+        // a broken checksum is no answer at all
+        let mut bad = master_answer(0x00, &[1, 10, 1, 1, 20]);
+        let n = bad.len();
+        bad[n - 2] = if bad[n - 2] == b'0' { b'1' } else { b'0' };
+        assert!(scripted(vec![(set.clone(), bad)]).set_ccl_step(0, 10).unwrap_err().unclear());
+        // another address answering: not ours
+        let foreign = answer(1, 0x00, &[1, 10, 1, 1, 20]);
+        assert!(scripted(vec![(set.clone(), foreign)]).set_ccl_step(0, 10).unwrap_err().unclear());
+        // an invalid value builds no frame: nothing sent
+        for bad in [0, 21] {
+            let f = scripted(vec![]).set_ccl_step(0, bad).unwrap_err();
+            assert!(!f.sent && !f.unclear());
+        }
+        // the read: the exact five bytes, else an error
+        let read = ccl::read_request(0).unwrap();
+        assert_eq!(scripted(vec![(read.clone(), master_answer(0x00, &[1, 7, 1, 1, 20]))]).ccl_step(0).unwrap().down, 7);
+        assert!(scripted(vec![(read.clone(), master_answer(0x00, &[1, 0, 1, 1, 20]))]).ccl_step(0).is_err());
+        assert!(matches!(scripted(vec![(read.clone(), vec![])]).ccl_step(0), Err(Error::Timeout(_))));
     }
 }

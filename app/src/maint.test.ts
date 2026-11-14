@@ -167,7 +167,7 @@ describe("live status", () => {
     expect(masterLine(master({ marker: "foreign", marker_word: "12345678" }), tr).tone).toBe("alarm");
     expect(masterLine(master({ kind: "unknown-patch", caps: null, may_halt: false }), tr).tone).toBe("alarm");
     // not listed, same capabilities: named by its version and base
-    expect(masterLine(master({ listed: null, version: "EMU1101-EXT Full 1.6.6", patch: "1.6", base: "16.07.02" }), tr).text).toContain('profile.unlisted {"name":"EMU1101-EXT Full 1.6.6","base":"16.07.02"}');
+    expect(masterLine(master({ listed: null, version: "EMU1101-EXT Full 1.6.9", patch: "1.6", base: "16.07.02" }), tr).text).toContain('profile.unlisted {"name":"EMU1101-EXT Full 1.6.9","base":"16.07.02"}');
     expect(masterLine(master({ kind: "unknown" }), tr).text).toBe("maint.live.masterUnknown");
   });
 });

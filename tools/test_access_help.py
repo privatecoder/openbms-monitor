@@ -49,12 +49,26 @@ class Placeholders(unittest.TestCase):
         self.assertEqual(access_help.gate("de", "0.2"), "„Wartung starten“ über die CAN-Buchse")
         # the names stand quoted with their own casing, so an imperative English name still reads inside a sentence
         self.assertTrue(access_help.gate("en", "0.3").startswith("“Set clock”, “On/off”, "))
-        self.assertIn("applies to “Write parameters and switches” and “Set the hard stop", switch("switch.0.0", "en"))
+        self.assertIn("applies to “Write parameters and switches”, “Set the hard stop", switch("switch.0.0", "en"))
 
     def test_the_generator_refuses_what_is_left(self):
         for bad in ["{MIN", "{BUILDS} {NEW}", "{ACCESS:read-clock", "{VIA:flash", "{GATE:0.3"]:
             with self.subTest(bad=bad), self.assertRaises((SystemExit, access_help.AccessError)):
                 gen_help.fill("en", bad, where="test")
+
+    def test_the_ccl_bit_is_a_capability_the_reads_stay_read_capabilities(self):
+        # bit 4 gates a read and a write: its own wording from the shared texts, the four reads keep theirs
+        for lang, feature, read in (("de", "mit Fähigkeit CCL-Abbaustufe (Bit 4", "Lesefähigkeit Kalibrierseiten (Bit 1"),
+                                    ("en", "with the CCL decrease step capability (bit 4", "read capability calibration pages (bit 1")):
+            ccl = access_help.block(lang, ["read-ccl-step", "write-ccl-step"])
+            self.assertIn(feature, ccl)
+            self.assertNotRegex(ccl, "Lesefähigkeit|read capability")
+            self.assertIn(read, access_help.block(lang, ["read-calibration"]))
+            self.assertEqual((access_help.cap_kind(lang, 0x10), access_help.cap_kind(lang, 0x0C)), ("feature", "read"))
+            with self.assertRaises(access_help.AccessError):
+                access_help.cap_kind(lang, 0x11)
+        # both languages word the same bits the same way
+        self.assertEqual(access_help.TEXT["de"]["fw"]["capKind"], access_help.TEXT["en"]["fw"]["capKind"])
 
     def test_the_probe_names_patched_firmware_not_ext_alone(self):
         # the supported first MAINT 1.6 (MNT format 3) answers the detection query too

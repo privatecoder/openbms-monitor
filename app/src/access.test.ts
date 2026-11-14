@@ -85,8 +85,11 @@ describe("the firmware a way needs", () => {
     expect(need("read-history", "uart0")).toBe("");
     // the original firmware is enough
     expect(need("read-telemetry", "uart0")).toBe("");
+    // the CCL decrease step by its capability bit 4: from Full 1.6.7
+    expect(need("read-ccl-step", "uart1")).toBe("ab EMU1101-EXT Full 1.6.7");
+    expect(need("write-ccl-step", "uart1")).toBe("ab EMU1101-EXT Full 1.6.7");
     // every way with a firmware condition gets a text
-    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab EMU1101-EXT (Light 1\.5|Full 1\.6)\.4/);
+    for (const r of ROUTES) if (r.firmware.length) expect(needText(de, routeNeed(r))).toMatch(/^ab EMU1101-EXT (Light 1\.5|Full 1\.6)\.[47]/);
   });
 });
 
@@ -273,5 +276,19 @@ describe("access facts as text (help and hints)", async () => {
       expect(text.length, `${lng} ${k}: ${text}`).toBeLessThanOrEqual(240);
       expect(text, `${lng} ${k}`).not.toMatch(/Group\d|[Bb]it ?\d|\d\.\d\.\d/);
     }
+  });
+});
+
+describe("the wording of a capability bit", () => {
+  it("names the CCL bit a capability and keeps the reads read capabilities, in the reasons too", async () => {
+    const { capKind } = await import("./access");
+    expect([capKind(1 << 4), capKind(0x0F), capKind(1 << 1)]).toEqual(["feature", "read", "read"]);
+    expect(() => capKind(0x11)).toThrow();
+    const de = i18n.getFixedT("de"), en = i18n.getFixedT("en");
+    const r = (mask: number, known: "no" | "unknown") => ({ id: "firmware", need: { kind: "read-cap", mask }, known }) as Parameters<typeof reasonText>[1];
+    expect(reasonText(de, r(0x10, "no"))).toBe("Fähigkeit CCL-Abbaustufe meldet dieses Pack nicht");
+    expect(reasonText(en, r(0x10, "unknown"))).toBe("capability CCL decrease step not proven");
+    expect(reasonText(de, r(0x02, "no"))).toBe("Lesefähigkeit Kalibrierseiten meldet dieses Pack nicht");
+    expect(reasonText(en, r(0x02, "unknown"))).toBe("read capability calibration pages not proven");
   });
 });

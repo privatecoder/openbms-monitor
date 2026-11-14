@@ -81,6 +81,15 @@ def _min_build(firmware):
     return best
 
 
+def cap_kind(lang, mask):
+    """How the capability bits of `mask` are worded (`fw.capKind`): "read" (a read capability, the default) or
+    "feature" (a bit that gates more than a read, e.g. the CCL decrease step). One mask never mixes them."""
+    kinds = {TEXT[lang]["fw"].get("capKind", {}).get(f"c{b}", "read") for b in _bits(mask)}
+    if len(kinds) != 1:
+        raise AccessError(f"capability mask {mask:#06x} mixes the kinds {sorted(kinds)}")
+    return kinds.pop()
+
+
 def _firmware(lang, firmware, detail):
     if not firmware:
         return None
@@ -92,7 +101,8 @@ def _firmware(lang, firmware, detail):
         elif f["kind"] == "read-cap":
             bits = _bits(f["mask"])
             names = _t(lang, "doc.or").join(_t(lang, f"fw.capName.c{b}") for b in bits)
-            features.append(_t(lang, "doc.capBits", names=names, bits=_t(lang, "doc.or").join(map(str, bits))) if detail else names)
+            template = "doc.capBitsFeature" if cap_kind(lang, f["mask"]) == "feature" else "doc.capBits"
+            features.append(_t(lang, template, names=names, bits=_t(lang, "doc.or").join(map(str, bits))) if detail else names)
         elif f["kind"] != "patch-from":
             raise AccessError(f"unknown firmware need {f}")
     if not detail:
