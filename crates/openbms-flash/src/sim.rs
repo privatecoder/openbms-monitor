@@ -242,10 +242,12 @@ impl Link for BootSim {
     fn read_raw(&mut self, out: &mut [u8]) -> Result<usize> {
         if self.pending.is_empty() || self.now < self.boot_reply_ready_at {
             // the simulated clock runs at least as fast as the real one: the session's deadlines are real time, and a
-            // 1 ms sleep can take several on a loaded machine (CI)
+            // 1 ms sleep can take several on a loaded machine (CI). A pending answer still comes exactly at its time, so
+            // the measured gaps do not grow with the machine's load.
             let slept = std::time::Instant::now();
             std::thread::sleep(Duration::from_millis(1));
-            self.now += slept.elapsed().max(Duration::from_millis(1));
+            let next = self.now + slept.elapsed().max(Duration::from_millis(1));
+            self.now = if self.pending.is_empty() { next } else { next.min(self.boot_reply_ready_at) };
             return Ok(0);
         }
         let n = out.len().min(self.pending.len()).min(11);
