@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Route } from "lucide-react";
 import { api, type AccessView, type Channel } from "../api";
-import { CHANNELS, accessRows, bestDecision, bestState, cellTitle, needText, routeNeed, routeOf } from "../access";
+import { CHANNELS, PROBES, accessRows, bestDecision, bestState, cellTitle, needText, routeNeed, routeOf, supportedLines } from "../access";
 import { usePackProbes } from "../packProbes";
 import { useProfile } from "../profile";
 import { cn } from "../lib/utils";
@@ -46,7 +46,7 @@ export function AccessMatrix({ address, group0, group7, storedProof, linkKey }: 
       {open && (address === null ? <p className="text-muted">{t("acc.noPack")}</p> : (
         <>
           <p className="max-w-3xl text-muted">{t("acc.intro")}</p>
-          <p className="max-w-3xl text-muted">{t("acc.needLegend")}</p>
+          <p className="max-w-3xl text-muted">{t("acc.needLegend", supportedLines())}</p>
           <div className="overflow-x-auto">
             <table className="text-xs">
               <thead><tr><th className="px-2 py-1 text-left font-medium">{t("acc.action")}</th>{CHANNELS.map(head)}</tr></thead>
@@ -60,7 +60,7 @@ export function AccessMatrix({ address, group0, group7, storedProof, linkKey }: 
                       // the firmware the way the state comes from needs (ways of one cell can differ, e.g. binary A2/A4 and
                       // the OEM master's Modbus string)
                       const route = ds && routeOf(bestDecision(ds).route);
-                      const need = route ? needText(t, routeNeed(route)) || t(`acc.needOf.${r.action}`, { defaultValue: "" }) : "";
+                      const need = route ? needText(t, routeNeed(route)) || (PROBES.has(r.action) ? t("acc.probe") : "") : "";
                       return (
                         <td key={c} className="px-2 py-1 whitespace-nowrap" title={ds ? cellTitle(t, ds) : undefined}>
                           {s ? <span className={tone[s]}>{t(`acc.state.${s}`)}</span> : <span className="text-muted">–</span>}

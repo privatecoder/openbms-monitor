@@ -3,7 +3,7 @@ import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { Microscope } from "lucide-react";
 import { api, type CalPageRead, type SocStoreRead } from "../api";
-import { CAP } from "../access";
+import { CAP, accessHint } from "../access";
 import { errorText } from "../control";
 import { useReadCaps } from "../imageFlags";
 import { cn } from "../lib/utils";
@@ -42,7 +42,7 @@ export function RemoteDiagnosis({ address, known, connected, locked, linkKey }: 
       </div>
       {cal && ("error" in cal ? <StatusLine tone="error">{cal.error}</StatusLine> : <CalTable pages={cal} />)}
       {soc && ("error" in soc ? <StatusLine tone="error">{soc.error}</StatusLine> : <SocLines read={soc} full />)}
-      <StatusLine>{t("rdiag.hint")}</StatusLine>
+      <StatusLine>{accessHint(t, "rdiag.hint")}</StatusLine>
     </div>
   );
 }

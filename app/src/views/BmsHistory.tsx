@@ -6,7 +6,7 @@ import { api, isDemo, linkNow, type ArchivePack, type ArchivedRecord, type BmsHi
 import { CLOCK_FAR_S, csvName, currentRun, fmtBmsTime, historyCsv, lastRead, MAX_ROWS, noteProgress, sameInstallation, severalBoards, shownSource, startHistoryRead, summary, type HistoryRun, type LastRead } from "../bmsMemory";
 import { DiffText, readDiff, useBmsClock } from "../components/BmsClock";
 import { errorText } from "../control";
-import { factsOf, offerable } from "../access";
+import { accessHint, factsOf, offerable } from "../access";
 import { channelOf } from "../power";
 import { useReadCaps } from "../imageFlags";
 import { Button } from "../components/ui/button";
@@ -146,9 +146,9 @@ export function BmsHistory({ connected, bus, packs: livePacks, installation }: {
         </div>
         <p className={cn("text-sm", bus === "can" && connected && !isDemo && !canRead ? "text-discharge" : "text-muted")}>
           {reading ? t(canRead ? "bmsh.readingCan" : "bmsh.reading", { n: (progress ?? 0) + 1 })
-            : !connected ? t("bmsh.needConnection")
+            : !connected ? accessHint(t, "bmsh.needConnection")
             : canRead ? t("bmsh.canRead")
-            : bus === "can" && !isDemo ? t(caps === null ? "bmsh.canBusAsking" : "bmsh.canBus")
+            : bus === "can" && !isDemo ? (caps === null ? t("bmsh.canBusAsking") : accessHint(t, "bmsh.canBus"))
             : t("bmsh.packBus")}
         </p>
         {usable && clock && (

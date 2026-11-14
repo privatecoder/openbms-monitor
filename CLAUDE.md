@@ -21,7 +21,7 @@ Cross-platform monitor for the Seplos BMS V2.0 (10C/10E, EMU1101). The monitor i
   - `pairs.ts`, `diag/`, `cells/` (datasheet rules, pack and parameter checks), `params.ts`, `paramWrite.ts` (writing: raw values, the firmware's plausibility rules), `groups.ts`, `history/` (charts, client-side helpers), `notifications.ts` (notification settings and the wording handed to the backend; the block sits in Verlauf → Aufzeichnung). Nothing about a bank is kept in localStorage any more (only UI preferences like the connection fields and the chosen installation).
   - `i18n.ts`: all UI strings, German and English side by side.
   - `help.tsx`: info icons and help pages, rendered from `help/<lang>/<id>.md`.
-- `help/`: **generated**, do not edit. Source is `tools/gen_help.py` (topics, alarms) and `tools/param_help.py` (parameters, switch bits).
+- `help/`: **generated**, do not edit. Source is `tools/gen_help.py` (topics, alarms) and `tools/param_help.py` (parameters, switch bits). Access facts in help pages come from the catalog: `{ACCESS:<action>,…}` (own line in a body: a list of ways; in title/short and UI hints: one short line without versions or bit numbers, the same form as `accessText`) and `{MIN}` are rendered by `tools/access_help.py` from `app/src/generated/access.json`, with the DE/EN names and templates in `app/src/i18n.access.json` (shared with `i18n.ts`). UI hints that restate a catalog fact end in `{{access}}` and are filled by `accessHint` (`access.ts`, list `ACCESS_HINTS`). After changing a route in `access.rs`: `UPDATE_ACCESS=1 cargo test -p openbms-proto the_ui_catalog_is_current`, then `python3 tools/gen_help.py`. Effects, sequences, wiring and the Group0 bit polarity stay hand-written prose.
 - `data/cells/cells.json` + `data/schema/cells.schema.json`: bundled cell database; rules in `data/cells/README.md`.
 
 ## Commands
@@ -35,6 +35,7 @@ npm run dev                    # browser only, demo data
 cargo test --workspace         # Rust tests (from repo root)
 cargo clippy --workspace
 python3 tools/gen_help.py      # regenerate help/ after editing the help tables
+python3 -m unittest discover -s tools   # generator checks (placeholders, prose without bus claims)
 ```
 
 ## Conventions

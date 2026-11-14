@@ -1,5 +1,7 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
+// the access catalog's names and templates (acc.*), shared with the help generator (tools/access_help.py)
+import ACCESS_TEXT from "./i18n.access.json";
 
 const resources = {
   de: {
@@ -457,7 +459,7 @@ const resources = {
         setting: "Stelle Uhr …", settingAll: "Stelle Pack {{pack}} ({{n}} von {{of}}) …", setAllDone: "Uhr von {{ok}} von {{of}} Packs gestellt.", setAllFailed: "Nicht gestellt: {{list}}", setAllStopped: "Abgebrochen, weil Anlage oder Verbindung gewechselt haben: Uhr von {{ok}} von {{of}} Packs gestellt.",
         reading: "Lese Uhr …", readError: "Uhr nicht lesbar: {{err}}", setError: "Uhr nicht gestellt: {{err}}",
         hint: "Gesendet wird die Ortszeit dieses PCs; das BMS speichert sie ohne Zeitzone.",
-        canBus: "Dieses Pack kennt den Uhr-Befehl über die CAN-Buchse nicht: die BMS-Uhr nur über den RS485-1/2-Bus lesen und stellen (über die CAN-Buchse erst mit EMU1101-EXT).", needConnection: "Die BMS-Uhr lässt sich nur mit Verbindung lesen und stellen (RS485-1/2-Bus, oder CAN-Buchse mit EMU1101-EXT).",
+        canBus: "Dieses Pack bietet die Uhr über die CAN-Buchse nicht an. Stellen: {{access}}", needConnection: "Die BMS-Uhr lässt sich nur mit Verbindung lesen und stellen. Stellen: {{access}}",
         pointer: "Uhr stellen unter „Parameter“ (Wartungsfunktionen).",
         locked: "Uhr stellen über die CAN-Buchse ist an diesem Pack gesperrt (Funktionsschalter 0, Bit 3). Freigabe über den RS485-1/2-Bus oder am Display.",
         canHint: "Über die CAN-Buchse prüft die App vor dem Stellen die Platine und die Freigabe (Funktionsschalter 0, Bit 3).",
@@ -530,8 +532,8 @@ const resources = {
       ctl: {
         title: "Steuern", closed: "Neu starten, ein-/ausschalten, Heizung, Rest- und Vollkapazität, Historie löschen (gewähltes Pack)",
         closedCan: "Neu starten, ein-/ausschalten über die CAN-Buchse (gewähltes Pack)",
-        canUnsupported: "Steuern: über die CAN-Buchse nur mit EMU1101-EXT; sonst über den RS485-1/2-Bus.",
-        canHint: "Über die CAN-Buchse nur Neu starten, Ein und Aus; vorher prüft die App die Platine und die Freigabe (Funktionsschalter 0, Bit 3). Heizung, Restkapazität und Historie löschen gehen über den RS485-1/2-Bus.",
+        canUnsupported: "Steuern über die CAN-Buchse bietet dieses Pack nicht an. {{access}}",
+        canHint: "Vor jedem Befehl prüft die App die Platine und liest die Freigabe frisch. {{access}}",
         powerLocked: "Ein/Aus und Neustart über die CAN-Buchse sind an diesem Pack gesperrt (Funktionsschalter 0, Bit 3). Freigabe über den RS485-1/2-Bus oder am Display.",
         reading: "Lese Zustand …", readError: "Zustand nicht lesbar: {{err}}", reload: "Zustand neu lesen", running: "Sende …", cancel: "Abbrechen",
         state: {
@@ -650,8 +652,8 @@ const resources = {
         intro: "Die Datensätze, die das BMS selbst speichert: bis zu 500 je Pack, bei jeder Änderung von Zustand oder Meldungen und sonst alle Parameter 75 (Betrieb) bzw. 76 (Standby) Minuten, auch aus Zeiten ohne App.",
         pack: "Pack", read: "Historie lesen", cancel: "Abbrechen", reading: "Datensatz {{n}} …", save: "Als CSV speichern",
         saved: "Gespeichert: {{name}}", saveError: "Nicht gespeichert: {{err}}",
-        needConnection: "Zum Lesen über den RS485-1/2-Bus verbinden, oder über die CAN-Buchse bei Packs mit EMU1101-EXT.",
-        canBus: "Dieses Pack bietet die Historie über die CAN-Buchse nicht an (erst mit EMU1101-EXT). Über den RS485-1/2-Bus (19200 Baud) lässt sie sich bei jedem Pack lesen.",
+        needConnection: "Zum Lesen verbinden. {{access}}",
+        canBus: "Dieses Pack bietet die Historie über die CAN-Buchse nicht an. {{access}}",
         canBusAsking: "Frage das Pack, ob es die Historie über die CAN-Buchse anbietet …",
         arch: {
           saved_one: "Archiviert: 1 neuer Datensatz.", saved_other: "Archiviert: {{count}} neue Datensätze.",
@@ -699,8 +701,8 @@ const resources = {
         switchesUnconfirmed: "Gelesen nach einem abgelehnten Schreiben: die Schalter sind vielleicht nur aktiv, nicht gespeichert. Ein Neustart des Packs stellt die gespeicherten her.", switchesUnconfirmedShort: "Schalter evtl. nur aktiv",
         kind: { read: "gelesen", written: "geschrieben", refused: "abgelehnt" },
         reading: "Lese Pack {{pack}} … ({{n}} von {{of}})",
-        needConnection: "Zum Lesen aus den Packs zuerst über den RS485-1/2-Bus verbinden, oder über die CAN-Buchse bei Packs mit EMU1101-EXT. Exporte lassen sich auch ohne Verbindung öffnen.",
-        canBus: "Über die CAN-Buchse lesen Packs mit EMU1101-EXT ihre Parameter und Seriennummern, jedes nur mit eigener Patch-Firmware (der Master leitet nicht weiter). Schreiben braucht zusätzlich die Schreibfreigabe (Funktionsschalter 0, Bit 0); vor jedem Schreiben prüft die App die Platine. Ohne Patch: RS485-1/2-Bus (19200 Baud).",
+        needConnection: "Zum Lesen aus den Packs zuerst verbinden. {{access}} Exporte lassen sich auch ohne Verbindung öffnen.",
+        canBus: "Jedes Pack antwortet mit seiner eigenen Firmware; vor jedem Schreiben prüft die App die Platine. {{access}}",
         uart1Col: "CAN", uart1ColHint: "Über die CAN-Buchse gelesen (Patch-Firmware). Gespeichert und beschreibbar nur, wenn das Pack seine Platine ausweist.",
         gateUnnamed: "Bit 0.{{b}}: Bedeutung erst mit belegter Patch-Firmware", gateNeutral: "Bit 0.{{b}}", rawBit: "Rohbit {{v}}", lockUnclear: "ungeklärt", lockReread: "neu lesen", lockUnclearTip: "Nach Ein/Aus konnte die Spalte nicht neu gelesen werden: der Sperrstand kann sich geändert haben. „neu lesen“ liest nur diese Spalte, eine offene Bearbeitung bleibt.", gateRaw: "Gespeicherter Stand oder Datei ohne Patchbeleg: das Bit steht roh (0/1), ohne Deutung.",
         gatePowerUnknown: "Wirkt nur in Builds mit Ein/Aus und Uhr über die CAN-Buchse; ob dieses Pack einen solchen hat, zeigt seine Versionsabfrage über die CAN-Buchse.",
@@ -1100,31 +1102,10 @@ const resources = {
         history: "Verlauf der Messungen außen (mΩ)", clear: "Verlauf löschen", when: "Zeitpunkt", bus: "Sammelschiene", historyNote: "Rot: in dieser Messung auffällig. Ein Pack, der in mehreren Messungen auffällt, ist der Kandidat.",
       },
       acc: {
+        ...ACCESS_TEXT.de,
         title: "Zugriffswege", closed: "welche Aktion über welchen UART geht", noPack: "Erst ein Pack wählen.", action: "Aktion", thisLink: "diese Verbindung",
         intro: "Welche Aktion über welchen Anschluss möglich ist, für das gewählte Pack, wie diese Verbindung es kennt (Firmwarebeleg, zuletzt gelesene Schalter). „ungeklärt“: Dieser Verbindung fehlt für den Weg noch ein Nachweis, etwa die Firmwarekennung mit Flags und Lesefähigkeiten oder gelesene Schalter; der Tooltip nennt, was fehlt. Vorschau: Vor jedem Schreiben liest die App das Pack frisch und prüft erneut. Details im Tooltip.",
-        channel: { uart0: "UART0 · RS485-1/2", uart1: "UART1 · CAN-Buchse", uart2: "UART2 · Display/Bluetooth" },
-        state: { ready: "möglich", unknown: "ungeklärt", blocked: "gesperrt", "not-implemented": "nicht in der App" },
-        act: { "read-telemetry": "Messwerte lesen", "read-status": "Status lesen", "read-info": "Geräteinfo lesen", "read-parameters": "Parameter lesen", "write-parameters": "Parameter und Schalter schreiben", "write-name": "Gerätename ändern",
-          "read-serials": "Seriennummern lesen", "write-serials": "Seriennummern schreiben", "read-clock": "Uhr lesen", "set-clock": "Uhr stellen", "power-on-off": "Ein/Aus", "pack-lock-set": "Packsperre setzen (gezieltes Aus)", "pack-lock-release": "Packsperre lösen (gezieltes Ein)", restart: "Neustart",
-          "force-heater": "Heizung erzwingen", "clear-history": "Historie und Zähler löschen", "set-remaining": "Restladung setzen", "set-learned-full": "Gelernte Vollkapazität setzen", calibrate: "Kalibrieren",
-          "set-can-protocol": "CAN-Protokoll setzen", "hard-stop": "Hard-Stop bei Nachladepause einstellen", "read-diagnosis": "Speicherdiagnose lesen", "read-calibration": "Kalibrierung lesen", "read-soc-store": "Gespeicherten Stand und Energiezähler lesen", "read-history": "Interne Historie lesen", "read-identity": "Firmwarekennung abfragen", "maint-status": "Wartungsstatus lesen", "maint-start": "Wartung starten",
-          "maint-stop": "Wartung beenden", "read-system": "Systemwerte lesen", "display-tunnel": "Display-Tunnel (6 Byte)", flash: "Firmware flashen" },
-        needLegend: "Unter dem Zustand steht, welche Firmware der Weg mindestens braucht: „ab EMU1101-EXT Light/Full x.y.z“ ist die Version (was ein Pack tatsächlich anbietet, sagen seine gemeldeten Imageflags und Lesefähigkeiten). Ohne Angabe geht der Weg auch mit der Original-Firmware. Unterstützt sind die Original-Firmware, EMU1101-EXT Light ab 1.5.4 und EMU1101-EXT Full ab 1.6.4; ältere Patch-Stände behandelt die App wie die Original-Firmware.",
-        need: { patch: "ab EMU1101-EXT {{v}}", base: "ab OEM {{v}}" },
-        needOf: { "read-identity": "antwortet nur Patch-Firmware" },
-        fw: {
-          patch: { no: "braucht EMU1101-EXT ab {{v}}; dieses Pack hat sie nicht", unknown: "braucht EMU1101-EXT ab {{v}}; auf dieser Verbindung nicht belegt" },
-          flag: { no: "braucht {{name}} (Imageflag Bit {{bit}}); dieses Pack hat es nicht", unknown: "braucht {{name}} (Imageflag Bit {{bit}}); nicht belegt (ein gespeicherter Beleg kennt keine Imageflags)" },
-          flagName: { b1: "den Power/RTC-Build", b2: "die Packsperre", b4: "den Marker über den RS485-1/2-Bus (EMU1101-EXT)", b5: "die Speicherdiagnose", b7: "die einstellbare Hard-Stop-Auswahl", other: "die Funktion" },
-          cap: { no: "braucht {{name}} (Lesefähigkeit der Firmwarekennung); dieses Pack meldet sie nicht", unknown: "braucht {{name}} (Lesefähigkeit der Firmwarekennung); nicht belegt" },
-          capName: { m1: "die Historie über die CAN-Buchse", m2: "die Kalibrierseiten", m12: "den gespeicherten Stand oder die Energiezähler" },
-        },
-        bitWrong: "Group{{g}}.Bit{{b}}{{name}} muss {{want}} sein, ist {{now}}", bitUnread: "Group{{g}}.Bit{{b}}{{name}} muss {{want}} sein, noch nicht gelesen",
-        bitName: { g0b0: "UART1-Schreibfreigabe", g0b2: "Wartungsstart-Freigabe", g0b3: "Power/RTC-Sperre", g7b3: "Displayport aktiv", g7b5: "automatische Adressierung" },
-        marker: "Wartungsmarker muss {{want}} sein, ist {{now}}", markerState: { on: "gesetzt", off: "gelöscht", foreign: "fremd (wird nie überschrieben)", unread: "nicht gelesen" },
-        baseLow: "braucht Firmware ab {{from}}, dieses Pack hat {{now}}", baseUnknown: "braucht Firmware ab {{from}}; die genaue Version zeigt nur die Firmwarekennung (64/03)",
-        slavesNone: "nur am Master mit Slaves; er arbeitet gerade ohne (Einzelpack oder Wartung)", slavesUnknown: "nur am Master mit Slaves; Slavezahl nicht bekannt",
-        reason: { "view-only": "„Nur ansehen“: Schreiben braucht eine Verbindung mit Anlage", "master-only": "nur am Master (Adresse 0)", "quiet-bus": "RS485-1/2: zuverlässig nur bei angehaltenem Master oder einzelnem Pack", "local-board": "nur die Platine, an deren Displayport das Display bzw. Bluetooth-Modul steckt (Displayport aktiv, Group7.Bit3)", "not-implemented": "Die Firmware hat diesen Weg; die App nutzt ihn nicht." },
+        needLegend: "Unter dem Zustand steht, welche Firmware der Weg mindestens braucht: „ab EMU1101-EXT Light/Full x.y.z“ ist die Version (was ein Pack tatsächlich anbietet, sagen seine gemeldeten Imageflags und Lesefähigkeiten). Ohne Angabe geht der Weg auch mit der Original-Firmware. Unterstützt sind die Original-Firmware, EMU1101-EXT Light ab {{light}} und EMU1101-EXT Full ab {{full}}; ältere Patch-Stände behandelt die App wie die Original-Firmware.",
       },
       cap: {
         title: "Mitschnitt", intro: "Zeichnet auf, was die App über jede Verbindung sendet und empfängt (Monitor, Wartung, Firmware), mit Zeit. Für eine Fehlermeldung: starten, den Fehler auslösen, anhalten, exportieren. Nur im Speicher; Beenden der App verwirft ihn.",
@@ -1144,8 +1125,8 @@ const resources = {
         invalid: "Ungültige Paare (gleicher Pack zweimal oder in zwei Paaren) werden beim Speichern weggelassen.", equalizing: "Ladestände unterscheiden sich um {{d}} Punkte; das kann den Unterschied erklären ({{a}} / {{b}})", opposite: "Packs arbeiten gegeneinander (Ausgleich)", gap: "Ausgänge {{v}} auseinander", gapHigh: "Ausgänge {{v}} auseinander: Übergangswiderstand in Brücken oder Steckern", gapOffset: "konstanter Versatz, kein Widerstand über {{max}} mΩ messbar", gapGrows: "wächst mit dem Strom (≈ {{r}})", notJudged: "Bewertung ab {{a}} A je Pack", noPaired: "keine zeitgleichen Messpunkte (nötig: {{n}} Paare höchstens 3 s auseinander in 60 s)", footer: "Paar {{a}}/{{b}}: {{sum}}",
       },
       rdiag: {
-        title: "Ferndiagnose", reading: "Lese …", noCap: "Das Pack meldet diese Abfrage in seiner Firmwarekennung nicht (erst mit EMU1101-EXT).",
-        hint: "Mit EMU1101-EXT, je nach Lesefähigkeit, die das Pack in seiner Firmwarekennung meldet. Liest nur und ändert nichts; auch über die CAN-Buchse, während der Master abfragt.",
+        title: "Ferndiagnose", reading: "Lese …", noCap: "Das Pack meldet diese Abfrage nicht. {{access}}",
+        hint: "Liest nur und ändert nichts. {{access}}",
         cls: { erased: "leer", valid: "gültig", invalid: "ungültig", unknown: "unbekannt" },
         cal: {
           read: "Kalibrierung lesen",
@@ -1178,7 +1159,7 @@ const resources = {
         lock: "Gespeicherte Packsperre: Hauptkopie {{a}}, Sicherungskopie {{b}}.", locked: "gesperrt", unlocked: "entsperrt", lockUnknown: "unbekannt",
         cache: "Laufzeitspeicher gültig (Sperr-Latch {{latch}}).", latchOn: "gesetzt", latchOff: "aus", cacheUnconfirmed: "Laufzeitspeicher unbestätigt.",
         noLock: "Sperrfelder: von diesem Build nicht unterstützt.",
-        hint: "Mit EMU1101-EXT: liest die gespeicherten Kopien direkt und ändert nichts. Verschiedene gültige Kopien sagen nicht, welche neuer ist.",
+        hint: "Liest die gespeicherten Kopien direkt und ändert nichts. Verschiedene gültige Kopien sagen nicht, welche neuer ist. {{access}}",
       },
       hs: {
         title: "Hard-Stop bei Nachladepause", unread: "Parameter dieses Packs lesen, um die Einstellung zu sehen.", on: "Eingeschaltet", off: "Ausgeschaltet",
@@ -1186,7 +1167,7 @@ const resources = {
         doneOn: "Hard-Stop eingeschaltet (Funktionsschalter 0, Bits 6/7 zurückgelesen).", doneOff: "Hard-Stop ausgeschaltet (Funktionsschalter 0, Bits 6/7 zurückgelesen).",
         stale: "Das Pack hat sich seit dem Lesen geändert: nichts geschrieben. Die Spalte zeigt jetzt den aktuellen Stand; erneut wählen.",
         unclear: "Ergebnis ungeklärt: Parameter neu lesen und die Einstellung prüfen.",
-        hint: "Mit EMU1101-EXT Full einstellbar (was Hard-Stop bewirkt, erklärt die Hilfe). Schreibt den ganzen Parameterblock mit nur dieser Änderung; über die CAN-Buchse braucht es die Schreibfreigabe (Funktionsschalter 0, Bit 0).",
+        hint: "Was Hard-Stop bewirkt, erklärt die Hilfe. Schreibt den ganzen Parameterblock mit nur dieser Änderung. {{access}}",
       },
       dev: {
         title: "Geräte", intro: "Aktive Balancer, die fest an Packs hängen (z. B. NEEY, Heltec, JK). Die App liest sie nicht aus: wann sie arbeiten, berechnet sie aus den Zellspannungen mit den Werten hier.",
@@ -1732,7 +1713,7 @@ const resources = {
         setting: "Setting clock …", settingAll: "Setting pack {{pack}} ({{n}} of {{of}}) …", setAllDone: "Clock set on {{ok}} of {{of}} packs.", setAllFailed: "Not set: {{list}}", setAllStopped: "Stopped because the installation or connection changed: clock set on {{ok}} of {{of}} packs.",
         reading: "Reading clock …", readError: "Clock not readable: {{err}}", setError: "Clock not set: {{err}}",
         hint: "This PC's local time is sent; the BMS stores it without a time zone.",
-        canBus: "This pack does not know the clock command via the CAN socket: read and set the BMS clock via the RS485-1/2 bus only (via the CAN socket only with EMU1101-EXT).", needConnection: "The BMS clock can be read and set only while connected (RS485-1/2 bus, or CAN socket with EMU1101-EXT).",
+        canBus: "This pack does not offer the clock via the CAN socket. Setting: {{access}}", needConnection: "The BMS clock can be read and set only while connected. Setting: {{access}}",
         pointer: "Set the clock under “Parameters” (maintenance functions).",
         locked: "Setting the clock via the CAN socket is locked on this pack (function switch 0, bit 3). Release via the RS485-1/2 bus or on the display.",
         canHint: "Via the CAN socket the app checks the board and the release (function switch 0, bit 3) before setting.",
@@ -1805,8 +1786,8 @@ const resources = {
       ctl: {
         title: "Control", closed: "Restart, switch on/off, heater, remaining and full capacity, clear history (chosen pack)",
         closedCan: "Restart, switch on/off via the CAN socket (chosen pack)",
-        canUnsupported: "Control: via the CAN socket only with EMU1101-EXT; otherwise via the RS485-1/2 bus.",
-        canHint: "Via the CAN socket only restart, on and off; before each the app checks the board and the release (function switch 0, bit 3). Heater, remaining capacity and clearing the history go via the RS485-1/2 bus.",
+        canUnsupported: "This pack does not offer control via the CAN socket. {{access}}",
+        canHint: "Before every command the app checks the board and reads the release fresh. {{access}}",
         powerLocked: "On/off and restart via the CAN socket are locked on this pack (function switch 0, bit 3). Release via the RS485-1/2 bus or on the display.",
         reading: "Reading state …", readError: "State not readable: {{err}}", reload: "Read state again", running: "Sending …", cancel: "Cancel",
         state: {
@@ -1925,8 +1906,8 @@ const resources = {
         intro: "The records the BMS keeps itself: up to 500 per pack, written on every change of state or messages and otherwise every parameter 75 (working) or 76 (standby) minutes, also from times without the app.",
         pack: "Pack", read: "Read history", cancel: "Cancel", reading: "Record {{n}} …", save: "Save as CSV",
         saved: "Saved: {{name}}", saveError: "Not saved: {{err}}",
-        needConnection: "Connect via the RS485-1/2 bus to read, or via the CAN socket with EMU1101-EXT packs.",
-        canBus: "This pack does not offer the history via the CAN socket (only with EMU1101-EXT). Via the RS485-1/2 bus (19200 baud) it can be read from every pack.",
+        needConnection: "Connect to read. {{access}}",
+        canBus: "This pack does not offer the history via the CAN socket. {{access}}",
         canBusAsking: "Asking the pack whether it offers the history via the CAN socket …",
         arch: {
           saved_one: "Archived: 1 new record.", saved_other: "Archived: {{count}} new records.",
@@ -1974,8 +1955,8 @@ const resources = {
         switchesUnconfirmed: "Read after a refused write: the switches may only be active, not stored. A restart of the pack brings back the stored ones.", switchesUnconfirmedShort: "switches maybe live only",
         kind: { read: "read", written: "written", refused: "refused" },
         reading: "Reading pack {{pack}} … ({{n}} of {{of}})",
-        needConnection: "To read from the packs, connect via the RS485-1/2 bus first, or via the CAN socket with EMU1101-EXT packs. Exports can be opened without a connection.",
-        canBus: "Via the CAN socket packs with EMU1101-EXT read their parameters and serial numbers, each only with its own patched firmware (the master does not pass them on). Writing also needs the write release (function switch 0, bit 0); before every write the app checks the board. Without the patch: the RS485-1/2 bus (19200 baud).",
+        needConnection: "To read from the packs, connect first. {{access}} Exports can be opened without a connection.",
+        canBus: "Every pack answers with its own firmware; before every write the app checks the board. {{access}}",
         uart1Col: "CAN", uart1ColHint: "Read via the CAN socket (patched firmware). Stored and writable only when the pack identifies its board.",
         gateUnnamed: "Bit 0.{{b}}: meaning only with proven patched firmware", gateNeutral: "Bit 0.{{b}}", rawBit: "raw bit {{v}}", lockUnclear: "unclear", lockReread: "read again", lockUnclearTip: "After on/off the column could not be read again: the lock state may have changed. “read again” reads this column only, an open edit stays.", gateRaw: "Stored state or file without a patch proof: the bit is shown raw (0/1), not interpreted.",
         gatePowerUnknown: "Acts only in builds with on/off and the clock via the CAN socket; whether this pack has one shows its version query via the CAN socket.",
@@ -2375,31 +2356,10 @@ const resources = {
         history: "History of outside measurements (mΩ)", clear: "Clear history", when: "Time", bus: "Busbar", historyNote: "Red: conspicuous in this measurement. A pack that stands out in several measurements is the candidate.",
       },
       acc: {
+        ...ACCESS_TEXT.en,
         title: "Access paths", closed: "which action goes over which UART", noPack: "Pick a pack first.", action: "Action", thisLink: "this connection",
         intro: "Which action is possible over which port, for the chosen pack, as this connection knows it (firmware proof, switches last read). “unclear”: this connection still lacks a proof for the way, such as the firmware identity with flags and read capabilities, or read switches; the tooltip names what is missing. A preview: before every write the app reads the pack fresh and checks again. Details in the tooltip.",
-        channel: { uart0: "UART0 · RS485-1/2", uart1: "UART1 · CAN socket", uart2: "UART2 · display/Bluetooth" },
-        state: { ready: "possible", unknown: "unclear", blocked: "locked", "not-implemented": "not in the app" },
-        act: { "read-telemetry": "Read readings", "read-status": "Read status", "read-info": "Read device info", "read-parameters": "Read parameters", "write-parameters": "Write parameters and switches", "write-name": "Change device name",
-          "read-serials": "Read serial numbers", "write-serials": "Write serial numbers", "read-clock": "Read clock", "set-clock": "Set clock", "power-on-off": "On/off", "pack-lock-set": "Set pack lock (addressed off)", "pack-lock-release": "Release pack lock (addressed on)", restart: "Restart",
-          "force-heater": "Force heater", "clear-history": "Clear history and counters", "set-remaining": "Set remaining charge", "set-learned-full": "Set learned full capacity", calibrate: "Calibrate",
-          "set-can-protocol": "Set CAN protocol", "hard-stop": "Set the hard stop at a recharge pause", "read-diagnosis": "Read the memory diagnosis", "read-calibration": "Read calibration", "read-soc-store": "Read stored state and energy counters", "read-history": "Read internal history", "read-identity": "Ask the firmware identity", "maint-status": "Read maintenance state", "maint-start": "Start maintenance",
-          "maint-stop": "End maintenance", "read-system": "Read system values", "display-tunnel": "Display tunnel (6 bytes)", flash: "Flash firmware" },
-        needLegend: "Below the state: the firmware the way needs at least. “from EMU1101-EXT Light/Full x.y.z” is the version (what a pack actually offers, its reported image flags and read capabilities say). Without a note the way works with the original firmware too. Supported are the original firmware, EMU1101-EXT Light from 1.5.4 and EMU1101-EXT Full from 1.6.4; the app treats older patch builds like the original firmware.",
-        need: { patch: "from EMU1101-EXT {{v}}", base: "from OEM {{v}}" },
-        needOf: { "read-identity": "only patched firmware answers" },
-        fw: {
-          patch: { no: "needs EMU1101-EXT from {{v}}; this pack does not have it", unknown: "needs EMU1101-EXT from {{v}}; not proven on this connection" },
-          flag: { no: "needs {{name}} (image flag bit {{bit}}); this pack does not have it", unknown: "needs {{name}} (image flag bit {{bit}}); not proven (a stored proof knows no image flags)" },
-          flagName: { b1: "the power/RTC build", b2: "the pack lock", b4: "the marker via the RS485-1/2 bus (EMU1101-EXT)", b5: "the memory diagnosis", b7: "the configurable hard stop", other: "the function" },
-          cap: { no: "needs {{name}} (read capability of the firmware identity); this pack does not report it", unknown: "needs {{name}} (read capability of the firmware identity); not proven" },
-          capName: { m1: "the history via the CAN socket", m2: "the calibration pages", m12: "the stored state or the energy counters" },
-        },
-        bitWrong: "Group{{g}}.bit{{b}}{{name}} must be {{want}}, is {{now}}", bitUnread: "Group{{g}}.bit{{b}}{{name}} must be {{want}}, not read yet",
-        bitName: { g0b0: "UART1 write release", g0b2: "maintenance start release", g0b3: "power/RTC lock", g7b3: "display port on", g7b5: "automatic addressing" },
-        marker: "maintenance marker must be {{want}}, is {{now}}", markerState: { on: "set", off: "cleared", foreign: "foreign (never overwritten)", unread: "not read" },
-        baseLow: "needs firmware from {{from}}, this pack has {{now}}", baseUnknown: "needs firmware from {{from}}; only the firmware identity (64/03) shows the exact version",
-        slavesNone: "only at a master with slaves; it works without any now (single pack or maintenance)", slavesUnknown: "only at a master with slaves; slave count not known",
-        reason: { "view-only": "“View only”: writing needs a connection with an installation", "master-only": "only at the master (address 0)", "quiet-bus": "RS485-1/2: reliable only with the master halted or a single pack", "local-board": "only the board whose display port the display or Bluetooth module is plugged into (display port on, Group7.bit3)", "not-implemented": "The firmware has this path; the app does not use it." },
+        needLegend: "Below the state: the firmware the way needs at least. “from EMU1101-EXT Light/Full x.y.z” is the version (what a pack actually offers, its reported image flags and read capabilities say). Without a note the way works with the original firmware too. Supported are the original firmware, EMU1101-EXT Light from {{light}} and EMU1101-EXT Full from {{full}}; the app treats older patch builds like the original firmware.",
       },
       cap: {
         title: "Frame capture", intro: "Records what the app sends and receives on every connection (monitor, maintenance, firmware), with times. For a bug report: start, make the problem happen, stop, export. Kept in memory only; quitting the app discards it.",
@@ -2419,8 +2379,8 @@ const resources = {
         invalid: "Invalid pairs (same pack twice or in two pairs) are left out when saving.", equalizing: "states of charge differ by {{d}} points; that can explain the difference ({{a}} / {{b}})", opposite: "packs work against each other (equalizing)", gap: "outputs differ by {{v}}", gapHigh: "outputs differ by {{v}}: contact resistance in the bridges or plugs", gapOffset: "constant offset, no resistance above {{max}} mΩ measurable", gapGrows: "grows with the current (≈ {{r}})", notJudged: "rated from {{a}} A per pack", noPaired: "no simultaneous samples (needed: {{n}} pairs at most 3 s apart in 60 s)", footer: "Pair {{a}}/{{b}}: {{sum}}",
       },
       rdiag: {
-        title: "Remote diagnosis", reading: "Reading …", noCap: "The pack does not report this read in its firmware identity (only with EMU1101-EXT).",
-        hint: "With EMU1101-EXT, depending on the read capabilities the pack reports in its firmware identity. Only reads and changes nothing; also via the CAN socket while the master polls.",
+        title: "Remote diagnosis", reading: "Reading …", noCap: "The pack does not report this read. {{access}}",
+        hint: "Only reads and changes nothing. {{access}}",
         cls: { erased: "empty", valid: "valid", invalid: "invalid", unknown: "unknown" },
         cal: {
           read: "Read calibration",
@@ -2453,7 +2413,7 @@ const resources = {
         lock: "Stored pack lock: primary copy {{a}}, backup copy {{b}}.", locked: "locked", unlocked: "unlocked", lockUnknown: "unknown",
         cache: "Runtime cache valid (lock latch {{latch}}).", latchOn: "set", latchOff: "off", cacheUnconfirmed: "Runtime cache unconfirmed.",
         noLock: "Lock fields: not supported by this build.",
-        hint: "With EMU1101-EXT: reads the stored copies directly and changes nothing. Two different valid copies do not tell which is newer.",
+        hint: "Reads the stored copies directly and changes nothing. Two different valid copies do not tell which is newer. {{access}}",
       },
       hs: {
         title: "Hard stop at a recharge pause", unread: "Read this pack's parameters to see the setting.", on: "On", off: "Off",
@@ -2461,7 +2421,7 @@ const resources = {
         doneOn: "Hard stop switched on (function switch 0, bits 6/7 read back).", doneOff: "Hard stop switched off (function switch 0, bits 6/7 read back).",
         stale: "The pack changed since the read: nothing written. The column shows the current state now; choose again.",
         unclear: "Outcome unclear: read the parameters again and check the setting.",
-        hint: "Settable with EMU1101-EXT Full (the help explains what the hard stop does). Writes the whole parameter block with only this change; over the CAN socket it needs the write release (function switch 0, bit 0).",
+        hint: "The help explains what the hard stop does. Writes the whole parameter block with only this change. {{access}}",
       },
       dev: {
         title: "Devices", intro: "Active balancers wired to packs for good (e.g. NEEY, Heltec, JK). The app does not read them: it computes when they work from the cell voltages with the values here.",

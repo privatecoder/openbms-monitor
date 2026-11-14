@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
 import { accessRows, bestDecision, bestState, cellTitle, decide, group0Plan, reasonText, ROUTES, type Facts, type Group0Plan, type Proof } from "./access";
 import VECTORS from "./generated/access.vectors.json";
+import PARAM_FILE from "./generated/param_file.json";
 import type { AccessDecision } from "./api";
 
 const d = (action: string, channel: "uart0" | "uart1" | "uart2", state: AccessDecision["state"], reasons: AccessDecision["reasons"] = []): AccessDecision =>
@@ -104,3 +105,166 @@ describe("the hard stop choice (EMU1101-EXT Full, Group0 bits 6/7)", () => {
   });
 });
 
+
+describe("access facts as text (help and hints)", async () => {
+  const { ACCESS_HINTS, PROBES, accessHint, accessText, wayConditions, factsOf } = await import("./access");
+  const TEXT = (await import("./generated/access_text.json")).default as unknown as Record<string, Record<string, string>>;
+  const SHARED = (await import("./i18n.access.json")).default as unknown as Record<string, unknown>;
+  const CAT = (await import("./generated/access.json")).default;
+  const ACTIONS = [...new Set(ROUTES.map((r) => r.action))];
+  const tr = (lng: string) => i18n.getFixedT(lng);
+  const way = (action: string, channel: string, i = 0) => ROUTES.filter((r) => r.action === action && r.channel === channel)[i];
+  const state = (action: string, channel: string, f: Partial<Facts>, i = 0) => decide(way(action, channel, i), factsOf(f)).state;
+
+  it("words every action like the help generator (tools/access_help.py)", () => {
+    for (const lng of ["de", "en"]) for (const a of ACTIONS) expect(accessText(tr(lng), [a]), `${lng} ${a}`).toBe(TEXT[lng][a]);
+    expect(Object.keys(TEXT.de).sort()).toEqual([...ACTIONS].sort());
+  });
+
+  it("has every name and template in both languages", () => {
+    const keys = (o: unknown, p = ""): string[] => Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => (typeof v === "object" ? keys(v, `${p}${k}.`) : [`${p}${k}`]));
+    expect(keys(SHARED.de)).toEqual(keys(SHARED.en));
+    for (const lng of ["de", "en"]) {
+      const has = (k: string) => expect(i18n.exists(`acc.${k}`, { lng }), `${lng} acc.${k}`).toBe(true);
+      for (const a of ACTIONS) has(`act.${a}`);
+      for (const r of ROUTES) {
+        has(`channel.${r.channel}`);
+        for (const f of r.firmware) {
+          if (f.kind === "image-flag") has(`fw.flagName.b${f.bit}`);
+          if (f.kind === "read-cap") for (let b = 0; b < 16; b++) if (f.mask & (1 << b)) has(`fw.capName.c${b}`);
+        }
+        for (const n of r.needs) if (n.kind === "bit-set" || n.kind === "bit-clear") has(`bitName.g${n.group}b${n.bit}`);
+        if (r.yields) has(`doc.yields.${r.yields}`);
+      }
+      for (const bit of Object.values(CAT.flags)) has(`fw.flagName.b${bit}`);
+      for (const bit of Object.values(CAT.caps)) has(`fw.capName.c${bit}`);
+    }
+  });
+
+  it("fails loudly on a condition it has no words for", () => {
+    const t = tr("de");
+    const base = way("read-parameters", "uart0");
+    expect(() => wayConditions(t, { ...base, needs: [{ kind: "new-kind" } as never] })).toThrow(/new-kind/);
+    expect(() => wayConditions(t, { ...base, firmware: [{ kind: "new-firmware" } as never] })).toThrow(/new-firmware/);
+    expect(() => accessText(t, ["no-such-action"])).toThrow(/no-such-action/);
+  });
+
+  it("fills every hint that restates catalog facts, and only those take {{access}}", () => {
+    const takes = (lng: string) => {
+      const out: string[] = [];
+      const walk = (o: unknown, p: string) => { for (const [k, v] of Object.entries(o as Record<string, unknown>)) typeof v === "string" ? v.includes("{{access}}") && out.push(p + k) : walk(v, `${p}${k}.`); };
+      walk(i18n.getResourceBundle(lng, "translation"), "");
+      return out.sort();
+    };
+    for (const lng of ["de", "en"]) {
+      expect(takes(lng)).toEqual(Object.keys(ACCESS_HINTS).sort());
+      for (const k of Object.keys(ACCESS_HINTS) as (keyof typeof ACCESS_HINTS)[]) {
+        const text = accessHint(tr(lng), k);
+        expect(text, `${lng} ${k}`).not.toMatch(/\{\{|acc\.|undefined/);
+        for (const a of ACCESS_HINTS[k]) expect(ACTIONS).toContain(a);
+      }
+    }
+  });
+
+  // the counter-examples a generic „geht“ would get wrong
+  it("keeps the OEM master's String 1 apart from the patch's serial numbers", () => {
+    const oemMaster = { patch: { kind: "none" }, base: [16, 6, 13], address: 0 } as Partial<Facts>;
+    expect([state("read-serials", "uart1", oemMaster, 0), state("read-serials", "uart1", oemMaster, 1)]).toEqual(["blocked", "ready"]);
+    const de = tr("de");
+    expect(wayConditions(de, way("read-serials", "uart1", 0)).join(" ")).toMatch(/30 Zeichen/);
+    expect(wayConditions(de, way("read-serials", "uart1", 1)).join(" ")).toMatch(/String 1.*22 Zeichen/);
+    expect(accessText(tr("en"), ["read-serials"])).toMatch(/30 characters each.*String 1 only, 22 characters/);
+    // the help keeps the scope too
+    const page = Object.values(import.meta.glob("../../help/de/topic.buses.md", { query: "?raw", import: "default", eager: true }))[0] as string;
+    expect(page).toMatch(/16\.06\.11; nur am Master, Adresse 0; liefert nur die Batterie-Seriennummer \(String 1\), die ersten 22 Zeichen/);
+  });
+  it("reads the clock over the CAN socket without the bit 3 release, sets it only with it", () => {
+    const light = { patch: { kind: "version", version: [1, 5] }, flags: 0x3a, caps: 0x0f, group0: 0xf7, installation: true, address: 2 } as Partial<Facts>;
+    expect([state("read-clock", "uart1", light), state("set-clock", "uart1", light)]).toEqual(["ready", "blocked"]);
+    expect(accessText(tr("de"), ["read-clock"])).not.toMatch(/Bit3/);
+    expect(accessText(tr("de"), ["set-clock"])).toMatch(/Freigabe Power\/RTC\)/);
+  });
+  it("names bit 3 of a restart over the CAN socket without a value: EXT and TEMP read it the other way round", () => {
+    const ext = (g0: number) => ({ patch: { kind: "version", version: [1, 6] }, flags: 0xfe, group0: g0, installation: true, address: 1 }) as Partial<Facts>;
+    const temp = (g0: number) => ({ ...ext(g0), flags: 0x06 }) as Partial<Facts>;
+    expect([state("restart", "uart1", ext(0xff)), state("restart", "uart1", ext(0xf7))]).toEqual(["ready", "blocked"]);
+    expect([state("restart", "uart1", temp(0xf7)), state("restart", "uart1", temp(0xff))]).toEqual(["ready", "blocked"]);
+    // the hint names the release, never a bit or a value; the help names the bit and refers to the switch for the value
+    for (const lng of ["de", "en"]) expect(accessText(tr(lng), ["restart"])).not.toMatch(/[Bb]it ?\d|= [01]|Group/);
+    const page = Object.values(import.meta.glob("../../help/de/topic.control.md", { query: "?raw", import: "default", eager: true }))[0] as string;
+    expect(page).toMatch(/Freigabe in Group0\.Bit3 \(Power\/RTC\), Wert je Build/);
+    expect(page).not.toMatch(/Bit3[^.;]*= [01]/);
+  });
+  it("gives Light no stored pack lock", () => {
+    const light = { patch: { kind: "version", version: [1, 5] }, flags: 0x3a, caps: 0x0f, group0: 0xff, installation: true, address: 1 } as Partial<Facts>;
+    expect([state("pack-lock-set", "uart0", light), state("pack-lock-set", "uart1", light)]).toEqual(["blocked", "blocked"]);
+    expect(accessText(tr("de"), ["pack-lock-set"])).toMatch(/EMU1101-EXT: Packsperre/);
+    expect(Object.values(import.meta.glob("../../help/de/topic.control.md", { query: "?raw", import: "default", eager: true }))[0]).toMatch(/Full 1\.6\.4 mit Packsperre/);
+  });
+  it("needs the read capability, not the version: caps 0000 on a supported build", () => {
+    const noCaps = { patch: { kind: "version", version: [1, 5] }, flags: 0x3a, caps: 0, address: 1 } as Partial<Facts>;
+    expect([state("read-history", "uart1", noCaps), state("read-calibration", "uart1", noCaps), state("read-history", "uart0", noCaps)]).toEqual(["blocked", "blocked", "ready"]);
+    expect(accessText(tr("de"), ["read-soc-store"])).toMatch(/EMU1101-EXT: gespeicherter Stand oder Energiezähler/);
+  });
+  it("names UART2 in the help but never offers it in a hint", () => {
+    expect(ROUTES.filter((r) => r.channel === "uart2").every((r) => !r.implemented)).toBe(true);
+    for (const lng of ["de", "en"]) for (const a of ACTIONS) expect(accessText(tr(lng), [a])).not.toMatch(/UART2/);
+    const page = Object.values(import.meta.glob("../../help/de/topic.access.md", { query: "?raw", import: "default", eager: true }))[0] as string;
+    expect(page).toMatch(/UART2 · Display\/Bluetooth: .*die App nutzt diesen Weg nicht/);
+  });
+  it("words the identity as a detection query, not as an OEM function", () => {
+    expect(PROBES.has("read-identity")).toBe(true);
+    for (const lng of ["de", "en"]) {
+      const text = accessText(tr(lng), ["read-identity"]);
+      expect(text).toContain(tr(lng)("acc.doc.short.probe"));
+      expect(text).not.toMatch(/Originalfirmware|original firmware/);
+      // patched firmware, not EXT alone: the supported first MAINT 1.6 (MNT format 3) answers it too
+      expect(tr(lng)("acc.probe")).toMatch(/Patch-Firmware|patched firmware/);
+      expect(tr(lng)("acc.probe")).not.toMatch(/EXT/);
+    }
+    // TEMP(maint-1.6): the first MAINT 1.6 (patch 1.6, flags 06) is asked over both ports like an EXT build
+    const temp = { patch: { kind: "version", version: [1, 6] }, flags: 0x06, caps: null, address: 1 } as Partial<Facts>;
+    expect([state("read-identity", "uart1", temp), state("read-identity", "uart0", temp)]).toEqual(["ready", "blocked"]);
+  });
+  it("leaves a way unclear without flags and caps, even with the switches read", () => {
+    const f = factsOf({ patch: { kind: "version", version: [1, 5] }, group0: 0xff, group7: 0x00, address: 1 });
+    const d = decide(way("read-calibration", "uart1"), f);
+    expect(d.state).toBe("unknown");
+    expect(d.reasons).toEqual([{ id: "firmware", need: { kind: "read-cap", mask: 2 }, known: "unknown" }]);
+    expect(reasonText(tr("de"), d.reasons[0])).toBe("Lesefähigkeit Kalibrierseiten nicht belegt");
+  });
+
+  it("leaves no placeholder in the generated help and parameter file comments", () => {
+    const pages = import.meta.glob("../../help/*/*.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    const left = /\{\s*(?:ACCESS|MIN|BUILDS)|\{\{/i;
+    expect(Object.entries(pages).filter(([, text]) => left.test(text)).map(([p]) => p)).toEqual([]);
+    expect(JSON.stringify(PARAM_FILE)).not.toMatch(left);
+  });
+
+  // A route removed from the catalog must change every claim about it: the hints' own prose names no port or firmware
+  // (except the three that say this pack lacks a CAN socket way), so only the generated part carries those facts.
+  it("keeps the hints' prose free of port and firmware claims, so a removed way leaves no claim behind", () => {
+    const negative = new Set(["clock.canBus", "bmsh.canBus", "ctl.canUnsupported"]);
+    const gone = new Set(["restart", "power-on-off", "set-clock", "read-history", "read-parameters", "write-parameters", "read-calibration", "read-soc-store", "read-diagnosis", "hard-stop"]);
+    const fewer = ROUTES.filter((r) => !(r.channel === "uart1" && gone.has(r.action)));
+    for (const lng of ["de", "en"]) {
+      const t = tr(lng);
+      for (const k of Object.keys(ACCESS_HINTS) as (keyof typeof ACCESS_HINTS)[]) {
+        const prose = t(k, { access: "" });
+        expect(prose, `${lng} ${k}`).not.toMatch(/EMU1101|Patch-Firmware|patched firmware|RS485|UART|Bit ?\d|bit ?\d/);
+        if (!negative.has(k)) expect(prose, `${lng} ${k}`).not.toMatch(/CAN-Buchse|CAN socket/);
+        else expect(prose, `${lng} ${k}`).toMatch(/nicht|not/);
+        const now = accessHint(t, k), after = accessHint(t, k, fewer);
+        expect(now, `${lng} ${k}`).toMatch(/CAN-Buchse|CAN socket/);
+        if (!negative.has(k)) expect(after, `${lng} ${k}`).not.toMatch(/CAN-Buchse|CAN socket/);
+      }
+    }
+  });
+  it("keeps every hint short: one or two lines, no bit numbers or versions", () => {
+    for (const lng of ["de", "en"]) for (const k of Object.keys(ACCESS_HINTS) as (keyof typeof ACCESS_HINTS)[]) {
+      const text = accessHint(tr(lng), k);
+      expect(text.length, `${lng} ${k}: ${text}`).toBeLessThanOrEqual(240);
+      expect(text, `${lng} ${k}`).not.toMatch(/Group\d|[Bb]it ?\d|\d\.\d\.\d/);
+    }
+  });
+});

@@ -3,7 +3,7 @@ import { actLocked, decideUi } from "../locks";
 import { useTranslation } from "react-i18next";
 import { OctagonPause } from "lucide-react";
 import type { Parameters } from "../params";
-import { hardStopChoice, hardStopConfigurable } from "../access";
+import { accessHint, hardStopChoice, hardStopConfigurable } from "../access";
 import { useImageFlags } from "../imageFlags";
 import { Button } from "./ui/button";
 import { SectionHead, StatusLine } from "./Section";
@@ -51,7 +51,7 @@ export function HardStopLine({ address, read, known, connected, linkKey, locked,
         </div>
       )}
       {note && <StatusLine tone={note.error ? "error" : "ok"}>{note.text}</StatusLine>}
-      <StatusLine>{t("hs.hint")}</StatusLine>
+      <StatusLine>{accessHint(t, "hs.hint")}</StatusLine>
     </div>
   );
 }

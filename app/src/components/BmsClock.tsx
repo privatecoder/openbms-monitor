@@ -10,6 +10,7 @@ import { clockAccess, clockTargets, type Firmware } from "../power";
 import { SectionHead, StatusLine } from "./Section";
 import { Button } from "./ui/button";
 import { useNow } from "./live";
+import { accessHint } from "../access";
 
 const no = (a: number) => String(a).padStart(2, "0");
 
@@ -138,7 +139,7 @@ export function ClockLine({ connected, bus, packs, address, setAddress, locked, 
         )}
       </div>
       {!usable ? (
-        <StatusLine tone={access.unsupported ? "warn" : "muted"}>{access.unsupported ? t("clock.canBus") : t("clock.needConnection")}</StatusLine>
+        <StatusLine tone={access.unsupported ? "warn" : "muted"}>{access.unsupported ? accessHint(t, "clock.canBus") : accessHint(t, "clock.needConnection")}</StatusLine>
       ) : read === null ? (
         <StatusLine>{t("clock.reading")}</StatusLine>
       ) : "error" in read && (

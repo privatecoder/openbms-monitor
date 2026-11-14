@@ -112,6 +112,12 @@ impl Action {
     pub fn needs_installation(self) -> bool {
         self.writes() && !matches!(self, Action::Flash | Action::MaintStart | Action::MaintStop)
     }
+
+    /// A detection query: safe to send to any pack, but only a patched one answers it. Its `ANY` way is no promise that
+    /// the original firmware has the function.
+    pub fn probe(self) -> bool {
+        matches!(self, Action::ReadIdentity)
+    }
 }
 
 /// What the firmware of the pack must be for a way, as data: a new patch function needs a row here, not new code.
@@ -164,6 +170,10 @@ pub fn positive_build(patch: Patch, flags: Option<u8>) -> bool {
     positive_of(flags) || (flags.is_none() && matches!(patch, Patch::Version(_)))
 }
 
+/// The Group0 bits whose direction depends on the build (`inverted`): texts name them as a release without a value and
+/// leave the direction to the checked switch texts.
+pub const BUILD_POLARITY: [(u8, u8); 2] = [(0, G0_POWER_LOCK), (0, G0_EXTENDED_OFF)];
+
 /// Whether Group0 bit `bit` acts at 1 where the routes are written for 0: bit 4 (the extended off) always, bit 3 (power
 /// and clock) in a positive build (`positive_build`).
 pub fn inverted(group: u8, bit: u8, patch: Patch, flags: Option<u8>) -> bool {
@@ -192,6 +202,17 @@ pub enum Need {
     WithSlaves,
 }
 
+/// What a way returns where the ways of one action differ in scope (the help and hints name it, so the OEM master's
+/// shortened String 1 is never read as the patch's full answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Yields {
+    /// battery and BMS serial number (String 1 and 2), up to 30 bytes each
+    BothSerials,
+    /// only the battery serial number (String 1), its first 22 characters
+    BatteryString1,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Route {
     pub action: Action,
@@ -203,10 +224,20 @@ pub struct Route {
     pub needs: &'static [Need],
     /// whether this app sends it
     pub implemented: bool,
+    /// the scope of its answer where it differs from another way of the action
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yields: Option<Yields>,
 }
 
 const fn r(action: Action, channel: Channel, wire: &'static str, firmware: &'static [Firmware], needs: &'static [Need], implemented: bool) -> Route {
-    Route { action, channel, wire, firmware, needs, implemented }
+    Route { action, channel, wire, firmware, needs, implemented, yields: None }
+}
+
+impl Route {
+    const fn yields(mut self, y: Yields) -> Route {
+        self.yields = Some(y);
+        self
+    }
 }
 
 use Action as A;
@@ -265,9 +296,9 @@ pub const ROUTES: &[Route] = &[
     r(A::WriteParameters, U1, "binär A1 (158 Byte)", EXT, WRITE_RELEASE, true),
     r(A::WriteParameters, U2, "binär A1 (158 Byte)", ANY, LOCAL, false),
     r(A::WriteName, U0, "ASCII A1", ANY, QUIET, true),
-    r(A::ReadSerials, U0, "ASCII A2/A4", ANY, QUIET, true),
-    r(A::ReadSerials, U1, "binär A2/A4", EXT, &[], true),
-    r(A::ReadSerials, U1, "Modbus FC04 0000×21 (String 1, 22 Zeichen)", ANY, MODBUS_STRING1, true),
+    r(A::ReadSerials, U0, "ASCII A2/A4", ANY, QUIET, true).yields(Yields::BothSerials),
+    r(A::ReadSerials, U1, "binär A2/A4", EXT, &[], true).yields(Yields::BothSerials),
+    r(A::ReadSerials, U1, "Modbus FC04 0000×21 (String 1, 22 Zeichen)", ANY, MODBUS_STRING1, true).yields(Yields::BatteryString1),
     r(A::WriteSerials, U0, "ASCII A3/A5", ANY, QUIET, true),
     r(A::ReadClock, U0, "ASCII 4D", ANY, QUIET, true),
     r(A::ReadClock, U1, "ASCII 4D", POWER, &[], true),
@@ -701,6 +732,8 @@ mod tests {
             },
             "flags": { "power": FLAG_POWER, "cutoff": FLAG_CUTOFF, "uart0": FLAG_UART0, "positive": FLAG_POSITIVE, "diagnosis": FLAG_DIAGNOSIS, "checkpoint": FLAG_CHECKPOINT, "hard_stop": FLAG_HARD_STOP },
             "needs_installation": Action::ALL.iter().filter(|a| a.needs_installation()).collect::<Vec<_>>(),
+            "probe_actions": Action::ALL.iter().filter(|a| a.probe()).collect::<Vec<_>>(),
+            "build_polarity": BUILD_POLARITY,
             "routes": ROUTES,
         });
         let vectors = serde_json::json!({ "comment": catalog["comment"], "decide": decisions, "group0": plans });
@@ -930,6 +963,28 @@ mod tests {
         assert!(!decide(route(A::ReadSystem, U2).unwrap(), &Facts { slaves: Some(3), ..on }).reasons.iter().any(|r| matches!(r, Reason::WithSlaves { .. })));
         let old = decide(route(A::DisplayTunnel, U2).unwrap(), &Facts { base: Some([16, 6, 12]), ..on });
         assert!(old.reasons.contains(&Reason::Base { from: [16, 6, 13], known: Some([16, 6, 12]) }));
+    }
+
+    #[test]
+    fn only_the_listed_bits_change_direction_with_the_build() {
+        let patches = [Patch::Unknown, Patch::None, Patch::Version([1, 5]), Patch::Version([1, 6])];
+        let flags = [None, Some(0x00), Some(0x06), Some(0x3A), Some(0xFE)];
+        for group in [0, 7] {
+            for bit in 0..8 {
+                let any = patches.iter().any(|&p| flags.iter().any(|&f| inverted(group, bit, p, f)));
+                assert_eq!(any, BUILD_POLARITY.contains(&(group, bit)), "Group{group}.Bit{bit}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_serial_ways_name_their_scope_and_the_identity_is_a_probe() {
+        let scopes: Vec<_> = routes(A::ReadSerials).map(|r| (r.channel, r.yields)).collect();
+        assert_eq!(scopes, vec![(U0, Some(Yields::BothSerials)), (U1, Some(Yields::BothSerials)), (U1, Some(Yields::BatteryString1))]);
+        assert!(ROUTES.iter().filter(|r| r.action != A::ReadSerials).all(|r| r.yields.is_none()));
+        assert_eq!(Action::ALL.iter().filter(|a| a.probe()).collect::<Vec<_>>(), vec![&A::ReadIdentity]);
+        // the probe's CAN socket way needs no firmware: asking is safe, an answer comes only from a patch
+        assert_eq!(route(A::ReadIdentity, U1).unwrap().firmware, ANY);
     }
 
     #[test]

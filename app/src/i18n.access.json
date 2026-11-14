@@ -1,0 +1,317 @@
+{
+ "comment": "Names and templates of the access catalog (acc.* in i18n.ts), shared with tools/access_help.py for the help pages. Every key in both languages.",
+ "de": {
+  "channel": {
+   "uart0": "UART0 · RS485-1/2",
+   "uart1": "UART1 · CAN-Buchse",
+   "uart2": "UART2 · Display/Bluetooth"
+  },
+  "state": {
+   "ready": "möglich",
+   "unknown": "ungeklärt",
+   "blocked": "gesperrt",
+   "not-implemented": "nicht in der App"
+  },
+  "act": {
+   "read-telemetry": "Messwerte lesen",
+   "read-status": "Status lesen",
+   "read-info": "Geräteinfo lesen",
+   "read-parameters": "Parameter lesen",
+   "write-parameters": "Parameter und Schalter schreiben",
+   "write-name": "Gerätename ändern",
+   "read-serials": "Seriennummern lesen",
+   "write-serials": "Seriennummern schreiben",
+   "read-clock": "Uhr lesen",
+   "set-clock": "Uhr stellen",
+   "power-on-off": "Ein/Aus",
+   "pack-lock-set": "Packsperre setzen (gezieltes Aus)",
+   "pack-lock-release": "Packsperre lösen (gezieltes Ein)",
+   "restart": "Neustart",
+   "force-heater": "Heizung erzwingen",
+   "clear-history": "Historie und Zähler löschen",
+   "set-remaining": "Restladung setzen",
+   "set-learned-full": "Gelernte Vollkapazität setzen",
+   "calibrate": "Kalibrieren",
+   "set-can-protocol": "CAN-Protokoll setzen",
+   "hard-stop": "Hard-Stop bei Nachladepause einstellen",
+   "read-diagnosis": "Speicherdiagnose lesen",
+   "read-calibration": "Kalibrierung lesen",
+   "read-soc-store": "Gespeicherten Stand und Energiezähler lesen",
+   "read-history": "Interne Historie lesen",
+   "read-identity": "Firmwarekennung abfragen",
+   "maint-status": "Wartungsstatus lesen",
+   "maint-start": "Wartung starten",
+   "maint-stop": "Wartung beenden",
+   "read-system": "Systemwerte lesen",
+   "display-tunnel": "Display-Tunnel (6 Byte)",
+   "flash": "Firmware flashen"
+  },
+  "need": {
+   "patch": "ab EMU1101-EXT {{v}}",
+   "base": "ab OEM {{v}}"
+  },
+  "probe": "Erkennungsabfrage; eine Kennung meldet nur Patch-Firmware",
+  "fw": {
+   "patch": {
+    "no": "braucht EMU1101-EXT ab {{v}}; dieses Pack hat sie nicht",
+    "unknown": "braucht EMU1101-EXT ab {{v}}; auf dieser Verbindung nicht belegt"
+   },
+   "flag": {
+    "no": "Imageflag Bit {{bit}} ({{name}}) fehlt diesem Pack",
+    "unknown": "Imageflag Bit {{bit}} ({{name}}) nicht belegt (ein gespeicherter Beleg kennt keine Imageflags)"
+   },
+   "flagName": {
+    "b0": "Hard-Stop als Build-Vorgabe",
+    "b1": "Power/RTC",
+    "b2": "Packsperre",
+    "b3": "Freigaberichtung 1",
+    "b4": "Kennung und Wartungsmarker über RS485-1/2",
+    "b5": "Speicherdiagnose",
+    "b6": "SOC-Sicherung vor Neustart",
+    "b7": "Hard-Stop-Auswahl",
+    "other": "unbenannte Funktion"
+   },
+   "cap": {
+    "no": "Lesefähigkeit {{name}} meldet dieses Pack nicht",
+    "unknown": "Lesefähigkeit {{name}} nicht belegt"
+   },
+   "capName": {
+    "c0": "Historie",
+    "c1": "Kalibrierseiten",
+    "c2": "gespeicherter Stand",
+    "c3": "Energiezähler",
+    "other": "unbenannt"
+   }
+  },
+  "bitWrong": "Group{{g}}.Bit{{b}}{{name}} muss {{want}} sein, ist {{now}}",
+  "bitUnread": "Group{{g}}.Bit{{b}}{{name}} muss {{want}} sein, noch nicht gelesen",
+  "bitName": {
+   "g0b0": "UART1-Schreibfreigabe",
+   "g0b2": "Wartungsstart-Freigabe",
+   "g0b3": "Power/RTC",
+   "g0b4": "erweitertes Aus",
+   "g7b3": "Displayport aktiv",
+   "g7b4": "erweitertes Display-Format",
+   "g7b5": "automatische Adressierung"
+  },
+  "marker": "Wartungsmarker muss {{want}} sein, ist {{now}}",
+  "markerState": {
+   "on": "gesetzt",
+   "off": "gelöscht",
+   "foreign": "fremd (wird nie überschrieben)",
+   "unread": "nicht gelesen"
+  },
+  "baseLow": "braucht Firmware ab {{from}}, dieses Pack hat {{now}}",
+  "baseUnknown": "braucht Firmware ab {{from}}; die genaue Version zeigt nur die Firmwarekennung (64/03)",
+  "slavesNone": "nur am Master mit Slaves; er arbeitet gerade ohne (Einzelpack oder Wartung)",
+  "slavesUnknown": "nur am Master mit Slaves; Slavezahl nicht bekannt",
+  "reason": {
+   "view-only": "„Nur ansehen“: Schreiben braucht eine Verbindung mit Anlage",
+   "master-only": "nur am Master (Adresse 0)",
+   "quiet-bus": "RS485-1/2: zuverlässig nur bei angehaltenem Master oder einzelnem Pack",
+   "local-board": "nur die Platine, an deren Displayport das Display bzw. Bluetooth-Modul steckt (Displayport aktiv, Group7.Bit3)",
+   "not-implemented": "Die Firmware hat diesen Weg; die App nutzt ihn nicht."
+  },
+  "doc": {
+   "oem": "Originalfirmware genügt",
+   "ext": "EMU1101-EXT ab {{v}}",
+   "extWith": "EMU1101-EXT ab {{v}} mit {{features}}",
+   "and": " und ",
+   "or": " oder ",
+   "flag": "{{name}} (Imageflag Bit {{bit}})",
+   "cap": "Lesefähigkeit {{names}}",
+   "capBits": "Lesefähigkeit {{names}} (Bit {{bits}} der Firmwarekennung)",
+   "base": "Originalfirmware ab {{v}}",
+   "bit": "Group{{g}}.Bit{{b}} ({{name}}) = {{want}}",
+   "bitBuild": "Freigabe in Group{{g}}.Bit{{b}} ({{name}}), Wert je Build (siehe Funktionsschalter {{g}})",
+   "masterOnly": "nur am Master, Adresse 0",
+   "marker": "Wartungsmarker {{state}}",
+   "withSlaves": "nur am Master mit Slaves",
+   "localBoard": "nur die Platine am Displayport",
+   "quietBus": "zuverlässig nur ohne pollenden Master",
+   "hint": "Hinweis: {{text}}",
+   "notInApp": "die App nutzt diesen Weg nicht",
+   "yields": {
+    "both-serials": "liefert Batterie- und BMS-Seriennummer, je bis 30 Zeichen",
+    "battery-string1": "liefert nur die Batterie-Seriennummer (String 1), die ersten 22 Zeichen"
+   },
+   "short": {
+    "ext": "EMU1101-EXT",
+    "extWith": "EMU1101-EXT: {{features}}",
+    "release": "Freigabe {{name}}",
+    "on": "{{name}} an",
+    "off": "{{name}} aus",
+    "masterOnly": "nur am Master",
+    "base": "Original ab {{v}}",
+    "oem": "Originalfirmware",
+    "yields": {
+     "both-serials": "beide Nummern, je bis 30 Zeichen",
+     "battery-string1": "nur String 1, 22 Zeichen"
+    },
+    "probe": "Erkennungsabfrage, Kennung nur von Patch-Firmware"
+   },
+   "port": {
+    "uart0": "RS485-1/2",
+    "uart1": "CAN-Buchse",
+    "uart2": "Displayport"
+   }
+  }
+ },
+ "en": {
+  "channel": {
+   "uart0": "UART0 · RS485-1/2",
+   "uart1": "UART1 · CAN socket",
+   "uart2": "UART2 · display/Bluetooth"
+  },
+  "state": {
+   "ready": "possible",
+   "unknown": "unclear",
+   "blocked": "locked",
+   "not-implemented": "not in the app"
+  },
+  "act": {
+   "read-telemetry": "Read readings",
+   "read-status": "Read status",
+   "read-info": "Read device info",
+   "read-parameters": "Read parameters",
+   "write-parameters": "Write parameters and switches",
+   "write-name": "Change device name",
+   "read-serials": "Read serial numbers",
+   "write-serials": "Write serial numbers",
+   "read-clock": "Read clock",
+   "set-clock": "Set clock",
+   "power-on-off": "On/off",
+   "pack-lock-set": "Set pack lock (addressed off)",
+   "pack-lock-release": "Release pack lock (addressed on)",
+   "restart": "Restart",
+   "force-heater": "Force heater",
+   "clear-history": "Clear history and counters",
+   "set-remaining": "Set remaining charge",
+   "set-learned-full": "Set learned full capacity",
+   "calibrate": "Calibrate",
+   "set-can-protocol": "Set CAN protocol",
+   "hard-stop": "Set the hard stop at a recharge pause",
+   "read-diagnosis": "Read the memory diagnosis",
+   "read-calibration": "Read calibration",
+   "read-soc-store": "Read stored state and energy counters",
+   "read-history": "Read internal history",
+   "read-identity": "Ask the firmware identity",
+   "maint-status": "Read maintenance state",
+   "maint-start": "Start maintenance",
+   "maint-stop": "End maintenance",
+   "read-system": "Read system values",
+   "display-tunnel": "Display tunnel (6 bytes)",
+   "flash": "Flash firmware"
+  },
+  "need": {
+   "patch": "from EMU1101-EXT {{v}}",
+   "base": "from OEM {{v}}"
+  },
+  "probe": "detection query; only patched firmware reports an identity",
+  "fw": {
+   "patch": {
+    "no": "needs EMU1101-EXT from {{v}}; this pack does not have it",
+    "unknown": "needs EMU1101-EXT from {{v}}; not proven on this connection"
+   },
+   "flag": {
+    "no": "image flag bit {{bit}} ({{name}}) missing on this pack",
+    "unknown": "image flag bit {{bit}} ({{name}}) not proven (a stored proof knows no image flags)"
+   },
+   "flagName": {
+    "b0": "hard stop as the build default",
+    "b1": "power/RTC",
+    "b2": "pack lock",
+    "b3": "positive release bits",
+    "b4": "identity and maintenance marker over RS485-1/2",
+    "b5": "memory diagnosis",
+    "b6": "SOC checkpoint before a restart",
+    "b7": "configurable hard stop",
+    "other": "unnamed function"
+   },
+   "cap": {
+    "no": "read capability {{name}} not reported by this pack",
+    "unknown": "read capability {{name}} not proven"
+   },
+   "capName": {
+    "c0": "history",
+    "c1": "calibration pages",
+    "c2": "stored state",
+    "c3": "energy counters",
+    "other": "unnamed"
+   }
+  },
+  "bitWrong": "Group{{g}}.bit{{b}}{{name}} must be {{want}}, is {{now}}",
+  "bitUnread": "Group{{g}}.bit{{b}}{{name}} must be {{want}}, not read yet",
+  "bitName": {
+   "g0b0": "UART1 write release",
+   "g0b2": "maintenance start release",
+   "g0b3": "power/RTC",
+   "g0b4": "extended off",
+   "g7b3": "display port on",
+   "g7b4": "extended display format",
+   "g7b5": "automatic addressing"
+  },
+  "marker": "maintenance marker must be {{want}}, is {{now}}",
+  "markerState": {
+   "on": "set",
+   "off": "cleared",
+   "foreign": "foreign (never overwritten)",
+   "unread": "not read"
+  },
+  "baseLow": "needs firmware from {{from}}, this pack has {{now}}",
+  "baseUnknown": "needs firmware from {{from}}; only the firmware identity (64/03) shows the exact version",
+  "slavesNone": "only at a master with slaves; it works without any now (single pack or maintenance)",
+  "slavesUnknown": "only at a master with slaves; slave count not known",
+  "reason": {
+   "view-only": "“View only”: writing needs a connection with an installation",
+   "master-only": "only at the master (address 0)",
+   "quiet-bus": "RS485-1/2: reliable only with the master halted or a single pack",
+   "local-board": "only the board whose display port the display or Bluetooth module is plugged into (display port on, Group7.bit3)",
+   "not-implemented": "The firmware has this path; the app does not use it."
+  },
+  "doc": {
+   "oem": "the original firmware is enough",
+   "ext": "EMU1101-EXT from {{v}}",
+   "extWith": "EMU1101-EXT from {{v}} with {{features}}",
+   "and": " and ",
+   "or": " or ",
+   "flag": "{{name}} (image flag bit {{bit}})",
+   "cap": "read capability {{names}}",
+   "capBits": "read capability {{names}} (bit {{bits}} of the firmware identity)",
+   "base": "original firmware from {{v}}",
+   "bit": "Group{{g}}.bit{{b}} ({{name}}) = {{want}}",
+   "bitBuild": "release in Group{{g}}.bit{{b}} ({{name}}), value per build (see function switch {{g}})",
+   "masterOnly": "only at the master, address 0",
+   "marker": "maintenance marker {{state}}",
+   "withSlaves": "only at a master with slaves",
+   "localBoard": "only the board at the display port",
+   "quietBus": "reliable only without a polling master",
+   "hint": "note: {{text}}",
+   "notInApp": "the app does not use this way",
+   "yields": {
+    "both-serials": "returns battery and BMS serial number, up to 30 characters each",
+    "battery-string1": "returns only the battery serial number (String 1), its first 22 characters"
+   },
+   "short": {
+    "ext": "EMU1101-EXT",
+    "extWith": "EMU1101-EXT: {{features}}",
+    "release": "release {{name}}",
+    "on": "{{name}} on",
+    "off": "{{name}} off",
+    "masterOnly": "only at the master",
+    "base": "original from {{v}}",
+    "oem": "original firmware",
+    "yields": {
+     "both-serials": "both numbers, up to 30 characters each",
+     "battery-string1": "String 1 only, 22 characters"
+    },
+    "probe": "detection query, identity only from patched firmware"
+   },
+   "port": {
+    "uart0": "RS485-1/2",
+    "uart1": "CAN socket",
+    "uart2": "display port"
+   }
+  }
+ }
+}

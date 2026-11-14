@@ -33,7 +33,7 @@ import { latestOnly } from "../maint";
 import { cutoffBits, cutoffRowLabel, gateBits, gateRowLabel, getProfile, inverseG0, keepMask, positivePatch, TAKE_OVER_KEEP, LOCK_BIT, lockChanged, packLockActive, selfLock, switchOn, useProfile, writeLocked } from "../profile";
 import { usePackProbes } from "../packProbes";
 import { channelOf, controlHint, controlMode, controlOffers, packCutoff, packFirmware, powerLocked } from "../power";
-import { factsOf, EXT_MIN, offerable, positiveBuild } from "../access";
+import { accessHint, factsOf, EXT_MIN, offerable, positiveBuild } from "../access";
 import { StatusLine } from "../components/Section";
 import { cellName, config } from "./CellAssign";
 
@@ -634,8 +634,8 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         </div>
         <p className={cn("text-sm", bus === "can" && connected && !isDemo ? "text-discharge" : "text-muted")}>
           {reading ? t("par.reading", { pack: packNo(reading.address), n: reading.n, of: reading.of })
-            : !connected ? t("par.needConnection")
-            : bus === "can" && !isDemo ? t("par.canBus")
+            : !connected ? accessHint(t, "par.needConnection")
+            : bus === "can" && !isDemo ? accessHint(t, "par.canBus")
             : !installation && !isDemo ? t("par.viewOnly")
             : t("par.packBus")}
         </p>
@@ -659,7 +659,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           readCaps={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} />
         <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={section("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
         {chosen !== null && controlHint(where) && (
-          <div className="border-t border-line pt-3 text-sm"><StatusLine>{t("ctl.canUnsupported")}</StatusLine></div>
+          <div className="border-t border-line pt-3 text-sm"><StatusLine>{accessHint(t, "ctl.canUnsupported")}</StatusLine></div>
         )}
         {connected && <AccessMatrix address={chosen} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           group7={chosen !== null ? targetRead(chosen)?.function_switches[7] : undefined}

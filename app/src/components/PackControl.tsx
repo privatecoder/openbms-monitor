@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Power } from "lucide-react";
 import { api, type PackLive, type PackPatch } from "../api";
 import { refusal } from "../calibration";
-import { G0 } from "../access";
+import { G0, accessHint } from "../access";
 import { chargeLine, writeError, belowSocProtection, blockingAlarms, chargeFree, commandedOff, cutoffOutcome, dischargeFree, energyText, errorText, heaterOn, lockState, noAnswer, offCutoffText, offExpect, offKind, offOutcome, offReasons, remainingAllowed, remainingRaw, learnedFullAllowed, learnedFullRaw, socOf, cutoffError, shownOff, switchUnclear, relockable, relockAsk, type RestartResult } from "../control";
 import { helpTitle } from "../help";
 import { masterBroadcast } from "../power";
@@ -405,7 +405,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
           {powerHeld && <StatusLine tone="warn">{t("ctl.powerLocked")}</StatusLine>}
           {noteFor !== "remaining" && noteFor !== "learned" && noteFor !== "clear" && noteLine}
           {offers("force-heater") ? <p className="max-w-3xl text-muted">{t("ctl.heater.hint")}</p>
-            : can && !RS485_ONLY.some(offers) && <p className="max-w-3xl text-muted">{t("ctl.canHint")}</p>}
+            : can && !RS485_ONLY.some(offers) && <p className="max-w-3xl text-muted">{accessHint(t, "ctl.canHint")}</p>}
           {offers("set-remaining") && (
             <div className="space-y-1">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">

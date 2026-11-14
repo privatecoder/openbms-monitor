@@ -28,7 +28,7 @@ export function reasonText(t: TFunction, r: AccessReason): string {
     case "firmware": return r.need.kind === "patch-from"
       ? t(`acc.fw.patch.${r.known}`, { v: extName(LINE_FROM[r.need.version.join(".")] ?? r.need.version) })
       : r.need.kind === "read-cap"
-      ? t(`acc.fw.cap.${r.known}`, { name: t(`acc.fw.capName.m${r.need.mask}`, { defaultValue: t("acc.fw.flagName.other") }) })
+      ? t(`acc.fw.cap.${r.known}`, { name: capNames(t, r.need.mask) })
       : t(`acc.fw.flag.${r.known}`, { bit: r.need.bit, name: t(`acc.fw.flagName.b${r.need.bit}`, { defaultValue: t("acc.fw.flagName.other") }) });
     case "bit": {
       const name = t(`acc.bitName.g${r.group}b${r.bit}`, { defaultValue: "" });
@@ -56,7 +56,7 @@ export type Need =
   | { kind: "master-only" | "quiet-bus" | "local-board" | "with-slaves" }
   | { kind: "marker"; on: boolean }
   | { kind: "base-from"; base: [number, number, number] };
-export interface Route { action: string; channel: Channel; wire: string; firmware: Firmware[]; needs: Need[]; implemented: boolean }
+export interface Route { action: string; channel: Channel; wire: string; firmware: Firmware[]; needs: Need[]; implemented: boolean; yields?: string }
 export type Marker = { kind: "off" | "on" } | { kind: "foreign"; word: number };
 export type Patch = { kind: "unknown" | "none" } | { kind: "version"; version: [number, number] };
 export interface Facts {
@@ -143,6 +143,125 @@ export function needText(t: TFunction, n: RouteNeed | null): string {
     n.base && t("acc.need.base", { v: n.base.map((x) => String(x).padStart(2, "0")).join(".") }),
   ].filter(Boolean).join(" · ");
 }
+
+/** Detection queries (`Action::probe`): safe to send to any pack, but only a patch answers; their `ANY` is no OEM function. */
+export const PROBES = new Set<string>(CATALOG.probe_actions);
+/** The Group0 bits whose direction depends on the build (`access::BUILD_POLARITY`): texts give them no value. */
+const POLARITY = new Set(CATALOG.build_polarity.map(([g, b]) => `${g}.${b}`));
+/** A translate function: i18next's `t`, or the plain one the error texts get. */
+type Tr = (key: string, options?: Record<string, unknown>) => string;
+const maskBits = (mask: number) => Array.from({ length: 16 }, (_, b) => b).filter((b) => (mask & (1 << b)) !== 0);
+/** The read capabilities of a mask, any of which is enough („Historie“, „gespeicherter Stand oder Energiezähler“). */
+const capNames = (t: Tr, mask: number) => maskBits(mask).map((b) => t(`acc.fw.capName.c${b}`, { defaultValue: t("acc.fw.capName.other") })).join(t("acc.doc.or"));
+
+/** One condition of a way in the hint form (`tools/access_help.py`, `_need` without detail): names, no bit numbers or
+ *  values of the bits whose direction depends on the build; null for a note (the quiet bus), which the hint leaves out. */
+function needLine(t: Tr, n: Need): string | null {
+  switch (n.kind) {
+    case "bit-set": case "bit-clear": {
+      const name = t(`acc.bitName.g${n.group}b${n.bit}`);
+      if (POLARITY.has(`${n.group}.${n.bit}`)) return t("acc.doc.short.release", { name });
+      return t(n.kind === "bit-set" ? "acc.doc.short.on" : "acc.doc.short.off", { name });
+    }
+    case "master-only": return t("acc.doc.short.masterOnly");
+    case "marker": return t("acc.doc.marker", { state: t(`acc.markerState.${n.on ? "on" : "off"}`) });
+    case "base-from": return t("acc.doc.short.base", { v: n.base.map((x) => String(x).padStart(2, "0")).join(".") });
+    case "with-slaves": return t("acc.doc.withSlaves");
+    case "local-board": return t("acc.doc.localBoard");
+    case "quiet-bus": return null;
+    default: throw new Error(`access: no text for the condition ${JSON.stringify(n)}`);
+  }
+}
+
+/** The conditions of one way in the hint form, all of them needed: probe, firmware with its features (no version; the
+ *  help and the matrix name it), the further conditions, what it returns. */
+export function wayConditions(t: Tr, r: Route): string[] {
+  const conds: string[] = [];
+  const probe = PROBES.has(r.action);
+  if (probe) conds.push(t("acc.doc.short.probe"));
+  const features = r.firmware.flatMap((f) => {
+    switch (f.kind) {
+      case "patch-from": return [];
+      case "image-flag": return [t(`acc.fw.flagName.b${f.bit}`)];
+      case "read-cap": return [capNames(t, f.mask)];
+      default: throw new Error(`access: no text for the firmware need ${JSON.stringify(f)}`);
+    }
+  });
+  if (r.firmware.length) conds.push(features.length ? t("acc.doc.short.extWith", { features: features.join(", ") }) : t("acc.doc.short.ext"));
+  else if (!probe && !r.needs.some((n) => n.kind === "base-from")) conds.push(t("acc.doc.short.oem"));
+  // the firmware base first, with the firmware
+  const needs = [...r.needs].sort((a, b) => Number(a.kind !== "base-from") - Number(b.kind !== "base-from"));
+  for (const n of needs) { const c = needLine(t, n); if (c) conds.push(c); }
+  if (r.yields) conds.push(t(`acc.doc.short.yields.${r.yields}`));
+  return conds;
+}
+
+/** [(port, conditions)] → „A oder B (c)“: ports with the same conditions together, alternatives joined by „oder“. */
+function joinPorts(t: Tr, ways: [string, string][]): string {
+  const groups: { conds: string; ports: string[] }[] = [];
+  for (const [port, conds] of ways) {
+    const g = groups.find((x) => x.conds === conds);
+    if (g) g.ports.push(port); else groups.push({ conds, ports: [port] });
+  }
+  const or = t("acc.doc.or");
+  return groups.map((g) => `${g.ports.join(or)} (${g.conds})`).join(or);
+}
+
+/** The ways of `actions` the app uses, as one short line (`plain` in `tools/access_help.py`). Several actions over the
+ *  same ports share their common conditions; otherwise one sentence per group of actions with the same ways. The action
+ *  names only where the actions differ (the UI shows the action already). `routes`: the catalog (another one in tests). */
+export function accessText(t: Tr, actions: readonly string[], routes: readonly Route[] = ROUTES): string {
+  const per = actions.map((a) => {
+    if (!ROUTES.some((r) => r.action === a)) throw new Error(`access: unknown action ${a}`);
+    return { a, ways: routes.filter((r) => r.action === a && r.implemented).map((r) => ({ ch: r.channel, conds: wayConditions(t, r) })) };
+  });
+  const port = (ch: string) => t(`acc.doc.port.${ch}`);
+  const act = (a: string) => t(`acc.act.${a}`);
+  if (per.length > 1 && per.every((p) => p.ways.length) && new Set(per.map((p) => p.ways.map((w) => w.ch).join(","))).size === 1) {
+    const merged: [string, string][] = [];
+    for (const [i, w0] of per[0].ways.entries()) {
+      const common = w0.conds.filter((c) => per.every((p) => p.ways[i].conds.includes(c)));
+      if (!common.length) break;
+      let text = common.join(", ");
+      for (const p of per) {
+        const extra = p.ways[i].conds.filter((c) => !common.includes(c));
+        if (extra.length) text += `; ${act(p.a)}: ${extra.join(", ")}`;
+      }
+      merged.push([port(w0.ch), text]);
+    }
+    if (merged.length === per[0].ways.length) return `${joinPorts(t, merged)}.`;
+  }
+  const groups: { names: string[]; text: string }[] = [];
+  for (const p of per) {
+    const text = p.ways.length ? joinPorts(t, p.ways.map((w) => [port(w.ch), w.conds.join(", ")])) : t("acc.doc.notInApp");
+    const g = groups.find((x) => x.text === text);
+    if (g) g.names.push(p.a); else groups.push({ names: [p.a], text });
+  }
+  if (groups.length === 1) return `${groups[0].text}.`;
+  return groups.map((g) => `${g.names.map(act).join(", ")}: ${g.text}.`).join(" ");
+}
+
+/** Hints that restate catalog facts: their text takes `{{access}}`, the line `accessText` gives for these actions. */
+export const ACCESS_HINTS = {
+  "clock.needConnection": ["set-clock"],
+  "clock.canBus": ["set-clock"],
+  "bmsh.needConnection": ["read-history"],
+  "bmsh.canBus": ["read-history"],
+  "par.needConnection": ["read-parameters"],
+  "par.canBus": ["read-parameters", "write-parameters"],
+  "ctl.canUnsupported": ["restart", "power-on-off"],
+  "ctl.canHint": ["restart", "power-on-off"],
+  "rdiag.hint": ["read-calibration", "read-soc-store"],
+  "rdiag.noCap": ["read-calibration", "read-soc-store"],
+  "mdiag.hint": ["read-diagnosis"],
+  "hs.hint": ["hard-stop"],
+} as const satisfies Record<string, readonly string[]>;
+export type AccessHint = keyof typeof ACCESS_HINTS;
+/** A hint of `ACCESS_HINTS` with its access line filled in. */
+export const accessHint = (t: Tr, key: AccessHint, routes: readonly Route[] = ROUTES): string => t(key, { access: accessText(t, ACCESS_HINTS[key], routes) });
+
+/** The first supported build of each patch line („1.5.4“, „1.6.4“), for texts naming the supported range. */
+export const supportedLines = () => ({ light: LINE_FROM["1.5"].join("."), full: LINE_FROM["1.6"].join(".") });
 
 /** The catalog route of a decision (same action, channel and command). */
 export const routeOf = (d: AccessDecision["route"]) => ROUTES.find((r) => r.action === d.action && r.channel === d.channel && r.wire === d.wire);

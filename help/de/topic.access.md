@@ -1,11 +1,108 @@
 ---
 title: Zugriffswege
 short: Welche Aktion über welchen der drei UARTs des BMS geht, unter welchen Bedingungen, für das gewählte Pack. Eine zentrale Tabelle in der App; die Oberfläche zeigt sie, die Schreibwege prüfen nach ihr.
-related: topic.buses, topic.patchGates, topic.control
+related: topic.buses, topic.patchGates, topic.control, topic.switches
 ---
-- **UART0 · RS485-1/2:** Seplos-ASCII mit 19200 Baud. Alle Einstellungen der Originalfirmware gehen hier: Parameter und Schalter, Seriennummern, Kalibrierung, CAN-Protokoll, Restladung, Heizung, Historie, Uhr, Ein/Aus, Neustart und das Firmware-Update. Mit EMU1101-EXT zusätzlich: Firmwarekennung, Speicherdiagnose und Lesen/Löschen des Wartungs-Markers an der eigenen Adresse jedes Packs (kein Start). Zuverlässig nur, wenn der Master nicht pollt (Wartung) oder ein einzelnes Pack dranhängt.
-- **UART1 · CAN-Buchse:** das RS485-Paar der CAN-Buchse mit 9600 Baud. Messwerte, Status und Geräteinfo gehen an jedes Pack; Systemwerte (Modbus) nur am Master. Mit EMU1101-EXT zusätzlich: Parameter lesen, Seriennummern lesen, Parameter schreiben, wenn Group0.Bit0 (Schreibfreigabe) gesetzt ist, und die Wartung am Master (Start nur mit Group0.Bit2 und ohne automatische Adressierung, Group7.Bit5). Außerdem Uhr, Ein/Aus und Neustart, solange Group0.Bit3 sie nicht sperrt; mit EMU1101-EXT Full auch die gespeicherte Sperre: setzen nur mit eingeschaltetem erweitertem Aus (Group0.Bit4 = 1), lösen immer. Lesend kommen die Speicherdiagnose (64/04), BMS-Historie, Kalibrierung und gespeicherter Stand dazu, je nach Lesefähigkeit des Packs; die Hard-Stop-Auswahl (Group0.Bit6/7) mit Full.
-- **UART2 · Display/Bluetooth:** der Displayport, binär. Nur die Platine, an der das Display oder ein Bluetooth-Modul steckt, und nur mit Group7.Bit3 (Displayport aktiv); die Adresse im Rahmen wählt kein anderes Pack. Parameter lesen und schreiben sowie das CAN-Protokoll gehen dort auch. Die App spricht diesen Anschluss nicht; die Tabelle nennt ihn, damit klar ist, was ein Display oder eine Hersteller-App dort ändern kann.
+- **UART0 · RS485-1/2:** Seplos-ASCII mit 19200 Baud, an der eigenen Adresse jedes Packs. Zuverlässig nur, wenn der Master nicht pollt (Wartung) oder ein einzelnes Pack dranhängt.
+- **UART1 · CAN-Buchse:** das RS485-Paar der CAN-Buchse mit 9600 Baud. Jedes Pack antwortet an seiner eigenen Adresse mit seiner eigenen Firmware, auch während der Master pollt; die Systemwerte (Modbus) kommen vom Master.
+- **UART2 · Display/Bluetooth:** der Displayport, binär. Nur die Platine, an der das Display oder ein Bluetooth-Modul steckt; die Adresse im Rahmen wählt kein anderes Pack. Die App spricht diesen Anschluss nicht; die Liste nennt ihn, damit klar ist, was ein Display oder eine Hersteller-App dort ändern kann.
+- **So liest sich die Liste unten:** Jede Zeile unter einer Aktion ist ein eigener Weg; einer davon genügt. Die Bedingungen einer Zeile gelten zusammen. „EMU1101-EXT ab …“ nennt den ersten unterstützten Build mit diesem Weg; ob ein Pack ihn hat, sagen seine gemeldeten Imageflags und Lesefähigkeiten, nie die Versionsnummer allein. Von mehreren genannten Lesefähigkeiten genügt eine. Bei Group0.Bit3 und Bit4 hängt die Richtung vom Build ab; welcher Wert freigibt, steht beim Funktionsschalter 0. Eine Erkennungsabfrage darf an jedes Pack gehen, eine Kennung meldet aber nur Patch-Firmware. Ein Hinweis sperrt nichts.
 - **Zustände:** „möglich“: alle Bedingungen der Tabelle bekannt und erfüllt (Firmware, Schalter, Adresse, Wartungsmarker, eine Verbindung mit Anlage für Schreiben); beim Ausführen prüft die App zusätzlich Platine und frischen Stand. „ungeklärt“: eine Bedingung ist nicht bekannt (Schalter noch nicht gelesen, Firmware auf dieser Verbindung nicht belegt; ein gespeicherter Beleg kennt keine Imageflags). „gesperrt“: eine Bedingung ist bekannt nicht erfüllt. „nicht in der App“: die Firmware hat den Weg, die App nutzt ihn nicht. Der Tooltip nennt den Befehl und jede Bedingung.
-- **Firmware je Zelle:** Unter dem Zustand nennt die Matrix, welche Firmware der Weg mindestens braucht: „ab EMU1101-EXT Light 1.5.4“ (Patch-Funktionen an der CAN-Buchse, Wartung, Kennung und Wartungsende über RS485-1/2, Speicherdiagnose), „ab EMU1101-EXT Full 1.6.4“ (gespeicherte Packsperre, Hard-Stop-Auswahl), „ab OEM …“ (eine Version der Originalfirmware, z. B. die Modbus-Werte des Masters). Was ein Pack tatsächlich anbietet, sagen seine gemeldeten Imageflags und Lesefähigkeiten. Hat eine Zelle mehrere Wege, gilt die Angabe für den Weg, aus dem ihr Zustand kommt. Ohne Angabe genügt die Originalfirmware; die Firmwarekennung selbst beantwortet nur Patch-Firmware. Unterstützt sind Original, EMU1101-EXT Light ab 1.5.4 und Full ab 1.6.4; ältere Patch-Stände behandelt die App wie die Originalfirmware.
+- **Firmware je Zelle:** Unter dem Zustand nennt die Matrix, welche Firmware der Weg mindestens braucht: „ab EMU1101-EXT …“ (der erste unterstützte Build mit diesem Weg) oder „ab OEM …“ (eine Version der Originalfirmware, z. B. die Modbus-Werte des Masters); ohne Angabe genügt die Originalfirmware. Hat eine Zelle mehrere Wege, gilt die Angabe für den Weg, aus dem ihr Zustand kommt. Unterstützt sind Original und EMU1101-EXT Light 1.5.4 / Full 1.6.4; ältere Patch-Stände behandelt die App wie die Originalfirmware.
 - **Vorschau:** Die Tabelle nutzt den Firmwarebeleg dieser Verbindung und die zuletzt gelesenen Schalter. Vor jedem Schreiben liest die App das Pack frisch und prüft erneut; die Tabelle allein gibt nichts frei.
+
+**Alle Wege nach Aktion** (aus derselben Tabelle wie die Matrix):
+
+- **Messwerte lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: Originalfirmware genügt.
+  - UART2 · Display/Bluetooth: Originalfirmware genügt; Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Status lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: Originalfirmware genügt.
+  - UART2 · Display/Bluetooth: Originalfirmware genügt; Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Geräteinfo lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: Originalfirmware genügt.
+- **Parameter lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4.
+  - UART2 · Display/Bluetooth: Originalfirmware genügt; Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Parameter und Schalter schreiben**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4; Group0.Bit0 (UART1-Schreibfreigabe) = 1.
+  - UART2 · Display/Bluetooth: Originalfirmware genügt; Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Gerätename ändern**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **Seriennummern lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; liefert Batterie- und BMS-Seriennummer, je bis 30 Zeichen; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4; liefert Batterie- und BMS-Seriennummer, je bis 30 Zeichen.
+  - UART1 · CAN-Buchse: Originalfirmware ab 16.06.11; nur am Master, Adresse 0; liefert nur die Batterie-Seriennummer (String 1), die ersten 22 Zeichen.
+- **Seriennummern schreiben**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **Uhr lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Power/RTC (Imageflag Bit 1).
+- **Uhr stellen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Power/RTC (Imageflag Bit 1); Freigabe in Group0.Bit3 (Power/RTC), Wert je Build (siehe Funktionsschalter 0).
+- **Ein/Aus**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Power/RTC (Imageflag Bit 1); Freigabe in Group0.Bit3 (Power/RTC), Wert je Build (siehe Funktionsschalter 0).
+- **Packsperre setzen (gezieltes Aus)**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Full 1.6.4 mit Packsperre (Imageflag Bit 2); Freigabe in Group0.Bit4 (erweitertes Aus), Wert je Build (siehe Funktionsschalter 0); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Full 1.6.4 mit Packsperre (Imageflag Bit 2) und Power/RTC (Imageflag Bit 1); Freigabe in Group0.Bit4 (erweitertes Aus), Wert je Build (siehe Funktionsschalter 0); Freigabe in Group0.Bit3 (Power/RTC), Wert je Build (siehe Funktionsschalter 0).
+- **Packsperre lösen (gezieltes Ein)**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Full 1.6.4 mit Packsperre (Imageflag Bit 2); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Full 1.6.4 mit Packsperre (Imageflag Bit 2) und Power/RTC (Imageflag Bit 1); Freigabe in Group0.Bit3 (Power/RTC), Wert je Build (siehe Funktionsschalter 0).
+- **Neustart**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Power/RTC (Imageflag Bit 1); Freigabe in Group0.Bit3 (Power/RTC), Wert je Build (siehe Funktionsschalter 0).
+- **Heizung erzwingen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **Historie und Zähler löschen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **Restladung setzen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **Gelernte Vollkapazität setzen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **Kalibrieren**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+- **CAN-Protokoll setzen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART2 · Display/Bluetooth: Originalfirmware genügt; Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Hard-Stop bei Nachladepause einstellen**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Full 1.6.4 mit Hard-Stop-Auswahl (Imageflag Bit 7); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Full 1.6.4 mit Hard-Stop-Auswahl (Imageflag Bit 7); Group0.Bit0 (UART1-Schreibfreigabe) = 1.
+  - UART2 · Display/Bluetooth: EMU1101-EXT ab Full 1.6.4 mit Hard-Stop-Auswahl (Imageflag Bit 7); Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Interne Historie lesen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit Historie (Bit 0 der Firmwarekennung).
+- **Firmwarekennung abfragen**
+  - UART0 · RS485-1/2: Erkennungsabfrage; eine Kennung meldet nur Patch-Firmware; EMU1101-EXT ab Light 1.5.4 mit Kennung und Wartungsmarker über RS485-1/2 (Imageflag Bit 4); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: Erkennungsabfrage; eine Kennung meldet nur Patch-Firmware.
+- **Speicherdiagnose lesen**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Speicherdiagnose (Imageflag Bit 5); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Speicherdiagnose (Imageflag Bit 5).
+- **Kalibrierung lesen**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit Kalibrierseiten (Bit 1 der Firmwarekennung); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit Kalibrierseiten (Bit 1 der Firmwarekennung).
+- **Gespeicherten Stand und Energiezähler lesen**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit gespeicherter Stand oder Energiezähler (Bit 2 oder 3 der Firmwarekennung); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4 mit Lesefähigkeit gespeicherter Stand oder Energiezähler (Bit 2 oder 3 der Firmwarekennung).
+- **Wartungsstatus lesen**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Kennung und Wartungsmarker über RS485-1/2 (Imageflag Bit 4); Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4; nur am Master, Adresse 0.
+- **Wartung starten**
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4; nur am Master, Adresse 0; Wartungsmarker gelöscht; Group0.Bit2 (Wartungsstart-Freigabe) = 1; Group7.Bit5 (automatische Adressierung) = 0.
+- **Wartung beenden**
+  - UART0 · RS485-1/2: EMU1101-EXT ab Light 1.5.4 mit Kennung und Wartungsmarker über RS485-1/2 (Imageflag Bit 4); Wartungsmarker gesetzt; Hinweis: zuverlässig nur ohne pollenden Master.
+  - UART1 · CAN-Buchse: EMU1101-EXT ab Light 1.5.4; nur am Master, Adresse 0; Wartungsmarker gesetzt.
+- **Systemwerte lesen**
+  - UART1 · CAN-Buchse: Originalfirmware ab 16.06.04; nur am Master, Adresse 0.
+  - UART2 · Display/Bluetooth: Originalfirmware genügt; Group7.Bit3 (Displayport aktiv) = 1; Group7.Bit4 (erweitertes Display-Format) = 1; nur am Master, Adresse 0; nur am Master mit Slaves; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Display-Tunnel (6 Byte)**
+  - UART0 · RS485-1/2: Originalfirmware ab 16.06.13; Hinweis: zuverlässig nur ohne pollenden Master; die App nutzt diesen Weg nicht.
+  - UART2 · Display/Bluetooth: Originalfirmware ab 16.06.13; Group7.Bit3 (Displayport aktiv) = 1; nur die Platine am Displayport; die App nutzt diesen Weg nicht.
+- **Firmware flashen**
+  - UART0 · RS485-1/2: Originalfirmware genügt; Hinweis: zuverlässig nur ohne pollenden Master.

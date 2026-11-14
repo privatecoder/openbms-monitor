@@ -7,6 +7,7 @@ import { errorText } from "../control";
 import { useImageFlags } from "../imageFlags";
 import { Button } from "./ui/button";
 import { SectionHead, StatusLine } from "./Section";
+import { accessHint } from "../access";
 
 /** The image flags of the stored pack lock (bit 2) and of the diagnosis (bit 5) */
 const CUTOFF = 0x04;
@@ -53,7 +54,7 @@ export function DiagnosisLine({ address, known, connected, locked, linkKey }: { 
             : t("mdiag.noLock")}</StatusLine>
         </>
       )}
-      <StatusLine>{t("mdiag.hint")}</StatusLine>
+      <StatusLine>{accessHint(t, "mdiag.hint")}</StatusLine>
     </div>
   );
 }

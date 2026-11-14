@@ -1,11 +1,108 @@
 ---
 title: Access paths
 short: Which action goes over which of the BMS's three UARTs, under which conditions, for the chosen pack. One central table in the app; the interface shows it, the write paths check against it.
-related: topic.buses, topic.patchGates, topic.control
+related: topic.buses, topic.patchGates, topic.control, topic.switches
 ---
-- **UART0 · RS485-1/2:** Seplos ASCII at 19200 baud. Every setting of the original firmware goes here: parameters and switches, serial numbers, calibration, CAN protocol, remaining charge, heater, history, clock, on/off, restart and the firmware update. With EMU1101-EXT also: firmware identity, memory diagnosis and reading/clearing the maintenance marker at every pack's own address (no start). Reliable only while the master does not poll (maintenance) or with a single pack attached.
-- **UART1 · CAN socket:** the RS485 pair of the CAN socket at 9600 baud. Readings, status and device info go to every pack; system values (Modbus) only at the master. With EMU1101-EXT also: read parameters, read serial numbers, write parameters while Group0.bit0 (write release) is set, and maintenance at the master (start only with Group0.bit2 and without automatic addressing, Group7.bit5). Also clock, on/off and restart, as long as Group0.bit3 does not lock them; with EMU1101-EXT Full also the stored lock: set only with the extended off switched on (Group0.bit4 = 1), released always. For reading, the memory diagnosis (64/04), the BMS history, the calibration and the stored state join, as far as the pack reports them; the hard stop choice (Group0.bit6/7) with Full.
-- **UART2 · display/Bluetooth:** the display port, binary. Only the board the display or a Bluetooth module is plugged into, and only with Group7.bit3 (display port on); the address in the frame does not pick another pack. Reading and writing parameters and the CAN protocol work there too. The app does not speak this port; the table names it so it is clear what a display or a vendor app can change there.
+- **UART0 · RS485-1/2:** Seplos ASCII at 19200 baud, at every pack's own address. Reliable only while the master does not poll (maintenance) or with a single pack attached.
+- **UART1 · CAN socket:** the RS485 pair of the CAN socket at 9600 baud. Every pack answers at its own address with its own firmware, also while the master polls; the system values (Modbus) come from the master.
+- **UART2 · display/Bluetooth:** the display port, binary. Only the board the display or a Bluetooth module is plugged into; the address in the frame does not pick another pack. The app does not speak this port; the list names it so it is clear what a display or a vendor app can change there.
+- **How to read the list below:** every line below an action is a way of its own; one of them is enough. The conditions of one line hold together. “EMU1101-EXT from …” names the first supported build with this way; whether a pack has it, its reported image flags and read capabilities say, never the version number alone. Of several read capabilities named, one is enough. For Group0.bit3 and bit4 the direction depends on the build; which value releases, function switch 0 says. A detection query may go to any pack, but only patched firmware reports an identity. A note locks nothing.
 - **States:** “possible”: every condition of the table known and met (firmware, switches, address, maintenance marker, a connection with an installation for writes); when it runs, the app also checks the board and the fresh state. “unclear”: a condition is not known (switches not read yet, firmware not proven on this connection; a stored proof knows no image flags). “locked”: a condition is known not to hold. “not in the app”: the firmware has the path, the app does not use it. The tooltip names the command and every condition.
-- **Firmware per cell:** Below the state the matrix names the firmware the way needs at least: “from EMU1101-EXT Light 1.5.4” (patch functions on the CAN socket, maintenance, identity and maintenance end over RS485-1/2, memory diagnosis), “from EMU1101-EXT Full 1.6.4” (stored pack lock, hard stop choice), “from OEM …” (an original firmware version, e.g. the master's Modbus values). What a pack actually offers, its reported image flags and read capabilities say. Where a cell has several ways, the note is that of the way its state comes from. Without a note the original firmware is enough; the firmware identity itself is answered only by patched firmware. Supported are the original, EMU1101-EXT Light from 1.5.4 and Full from 1.6.4; the app treats older patch builds like the original firmware.
+- **Firmware per cell:** below the state the matrix names the firmware the way needs at least: “from EMU1101-EXT …” (the first supported build with this way) or “from OEM …” (an original firmware version, e.g. the master's Modbus values); without a note the original firmware is enough. Where a cell has several ways, the note is that of the way its state comes from. Supported are the original and EMU1101-EXT Light 1.5.4 / Full 1.6.4; the app treats older patch builds like the original firmware.
 - **Preview:** the table uses this connection's firmware proof and the switches last read. Before every write the app reads the pack fresh and checks again; the table alone releases nothing.
+
+**Every way by action** (from the same table as the matrix):
+
+- **Read readings**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: the original firmware is enough.
+  - UART2 · display/Bluetooth: the original firmware is enough; Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Read status**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: the original firmware is enough.
+  - UART2 · display/Bluetooth: the original firmware is enough; Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Read device info**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: the original firmware is enough.
+- **Read parameters**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4.
+  - UART2 · display/Bluetooth: the original firmware is enough; Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Write parameters and switches**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4; Group0.bit0 (UART1 write release) = 1.
+  - UART2 · display/Bluetooth: the original firmware is enough; Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Change device name**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Read serial numbers**
+  - UART0 · RS485-1/2: the original firmware is enough; returns battery and BMS serial number, up to 30 characters each; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4; returns battery and BMS serial number, up to 30 characters each.
+  - UART1 · CAN socket: original firmware from 16.06.11; only at the master, address 0; returns only the battery serial number (String 1), its first 22 characters.
+- **Write serial numbers**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Read clock**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with power/RTC (image flag bit 1).
+- **Set clock**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with power/RTC (image flag bit 1); release in Group0.bit3 (power/RTC), value per build (see function switch 0).
+- **On/off**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with power/RTC (image flag bit 1); release in Group0.bit3 (power/RTC), value per build (see function switch 0).
+- **Set pack lock (addressed off)**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.4 with pack lock (image flag bit 2); release in Group0.bit4 (extended off), value per build (see function switch 0); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.4 with pack lock (image flag bit 2) and power/RTC (image flag bit 1); release in Group0.bit4 (extended off), value per build (see function switch 0); release in Group0.bit3 (power/RTC), value per build (see function switch 0).
+- **Release pack lock (addressed on)**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.4 with pack lock (image flag bit 2); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.4 with pack lock (image flag bit 2) and power/RTC (image flag bit 1); release in Group0.bit3 (power/RTC), value per build (see function switch 0).
+- **Restart**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with power/RTC (image flag bit 1); release in Group0.bit3 (power/RTC), value per build (see function switch 0).
+- **Force heater**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Clear history and counters**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Set remaining charge**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Set learned full capacity**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Calibrate**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+- **Set CAN protocol**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART2 · display/Bluetooth: the original firmware is enough; Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Set the hard stop at a recharge pause**
+  - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.4 with configurable hard stop (image flag bit 7); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Full 1.6.4 with configurable hard stop (image flag bit 7); Group0.bit0 (UART1 write release) = 1.
+  - UART2 · display/Bluetooth: EMU1101-EXT from Full 1.6.4 with configurable hard stop (image flag bit 7); Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Read internal history**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with read capability history (bit 0 of the firmware identity).
+- **Ask the firmware identity**
+  - UART0 · RS485-1/2: detection query; only patched firmware reports an identity; EMU1101-EXT from Light 1.5.4 with identity and maintenance marker over RS485-1/2 (image flag bit 4); note: reliable only without a polling master.
+  - UART1 · CAN socket: detection query; only patched firmware reports an identity.
+- **Read the memory diagnosis**
+  - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with memory diagnosis (image flag bit 5); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with memory diagnosis (image flag bit 5).
+- **Read calibration**
+  - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with read capability calibration pages (bit 1 of the firmware identity); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with read capability calibration pages (bit 1 of the firmware identity).
+- **Read stored state and energy counters**
+  - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with read capability stored state or energy counters (bit 2 or 3 of the firmware identity); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4 with read capability stored state or energy counters (bit 2 or 3 of the firmware identity).
+- **Read maintenance state**
+  - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with identity and maintenance marker over RS485-1/2 (image flag bit 4); note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4; only at the master, address 0.
+- **Start maintenance**
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4; only at the master, address 0; maintenance marker cleared; Group0.bit2 (maintenance start release) = 1; Group7.bit5 (automatic addressing) = 0.
+- **End maintenance**
+  - UART0 · RS485-1/2: EMU1101-EXT from Light 1.5.4 with identity and maintenance marker over RS485-1/2 (image flag bit 4); maintenance marker set; note: reliable only without a polling master.
+  - UART1 · CAN socket: EMU1101-EXT from Light 1.5.4; only at the master, address 0; maintenance marker set.
+- **Read system values**
+  - UART1 · CAN socket: original firmware from 16.06.04; only at the master, address 0.
+  - UART2 · display/Bluetooth: the original firmware is enough; Group7.bit3 (display port on) = 1; Group7.bit4 (extended display format) = 1; only at the master, address 0; only at a master with slaves; only the board at the display port; the app does not use this way.
+- **Display tunnel (6 bytes)**
+  - UART0 · RS485-1/2: original firmware from 16.06.13; note: reliable only without a polling master; the app does not use this way.
+  - UART2 · display/Bluetooth: original firmware from 16.06.13; Group7.bit3 (display port on) = 1; only the board at the display port; the app does not use this way.
+- **Flash firmware**
+  - UART0 · RS485-1/2: the original firmware is enough; note: reliable only without a polling master.

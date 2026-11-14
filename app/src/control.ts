@@ -4,6 +4,7 @@ import { CUTOFF_BIT, LOCK_BIT } from "./profile";
 import { parseNumber } from "./calibration";
 import { refusalOf } from "./wiring";
 import { decode, kindOf } from "./errors";
+import { accessHint } from "./access";
 
 /** System status bit 5: switched off by command (0x45 type 4). */
 export const OFF_BIT = 0x20;
@@ -253,8 +254,8 @@ export function errorText(e: unknown, t: (k: string, o?: Record<string, unknown>
   if (noAnswer(e)) return t("ctl.silent");
   if (linkChanged(e)) return t("ctl.linkChanged");
   // the reads of the read-capability bits on a pack whose own 64/03 does not announce them (`diagnosis.rs`, `bms_memory.rs`)
-  if (typeof e === "string" && e.startsWith("history-no-cap:")) return t("bmsh.canBus");
-  if (typeof e === "string" && e.startsWith("no-cap:")) return t("rdiag.noCap");
+  if (typeof e === "string" && e.startsWith("history-no-cap:")) return accessHint(t, "bmsh.canBus");
+  if (typeof e === "string" && e.startsWith("no-cap:")) return accessHint(t, "rdiag.noCap");
   const b = packBusy(e);
   if (!b) return String(e);
   return t("ctl.busy", { pack: String(b.address).padStart(2, "0"), action: t(`ctl.action.${b.action}`) });
