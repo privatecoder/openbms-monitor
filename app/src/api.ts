@@ -501,7 +501,11 @@ export type Source = "bus" | "mqtt";
 export interface Connected { linked: boolean; answered: number; gen: number; profile: ProfileView; source: Source }
 /** One pack's identity and parameters as the add-on last read them (feed meta). */
 export interface FeedPack { address: number; device: DeviceInfo | null; battery_serial: SerialValue | null; bms_serial: SerialValue | null;
-  parameters: Parameters | null; parameters_at: number | null }
+  parameters: Parameters | null; parameters_at: number | null;
+  /** the read-capability mask of the board's EMU1101-EXT identity (64/03) as the add-on read it */
+  read_caps?: number | null;
+  /** the master's CCL decrease step as the add-on last confirmed it (null: no confirmed value) and its read time (add-on clock) */
+  ccl?: CclStep | null; ccl_at?: number | null }
 /** The add-on's feed (event "feed"): "waiting" for the first measurement, "live", "off" (switched off in the add-on),
  *  "offline" (the add-on reports itself gone), "broker" (the broker connection failed, `link_error`; it reconnects), "denied" (the broker refused the subscription).
  *  `skew_ms`: its clock minus the Monitor's. */

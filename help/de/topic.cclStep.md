@@ -1,7 +1,7 @@
 ---
 title: CCL-Abbaustufe (Master)
 short: Wie schnell der Master die Ladestrom-Grenze (CCL) der Bank absenkt: 1–20 A je Pack online und Aktualisierung (EMU1101-EXT Full ab 1.6.7). Eine eigene EXT-Einstellung, kein Parameter.
-related: topic.firmwareProfile, topic.patchGates, topic.params, topic.access
+related: topic.firmwareProfile, topic.patchGates, topic.params, topic.mqtt, topic.access
 ---
 - **Was sie bewirkt:** Senkt der Master die Ladestrom-Grenze, die er für die ganze Bank anfordert (CCL), zieht er je abgeschlossener Aktualisierung „Packs online × Stufe“ Ampere ab, bis das Ziel erreicht ist; den letzten Rest setzt er genau aufs Ziel. Nach oben bleibt es bei 1 A je Pack online und Aktualisierung. Standard ist 1, das gewohnte Verhalten der Originalfirmware.
 - **Die Einheit:** A je Pack online je Aktualisierung, nicht A/s und keine Stromregelung einzelner Packs. Packs online zählt der Master selbst (er und seine erreichbaren Slaves, auch solche mit Warnung). Eine Aktualisierung folgt erst auf eine vollständige Abfragerunde des Masters; wie lange die dauert, hängt von der Zahl der Packs und der Firmware ab, eine feste Rate gibt es nicht. Beispiel: 12 Packs online, Stufe 10: 120 A weniger je Aktualisierung; von 1560 A auf 10 A sind das 13 Aktualisierungen, nicht garantiert 13 Sekunden. Mit Stufe 1 wären es 130.
@@ -14,6 +14,7 @@ related: topic.firmwareProfile, topic.patchGates, topic.params, topic.access
 - **Zurück zum Original:** Stufe 1 ausdrücklich speichern; nur das setzt auch den gespeicherten Wert definiert zurück. Ein gelöschter Parameterspeicher führt ebenfalls zu 1.
 - **Ältere Firmware:** Nach einem Wechsel auf eine Firmware ohne diese Fähigkeit (Light, Full bis 1.6.6, Original) senkt der Master wieder mit der festen Stufe 1 ab, was immer gespeichert ist. Ob der gespeicherte EXT-Wert dabei erhalten bleibt, ist offen: Ein späteres Speichern der Parameter unter der älteren Firmware kann ihn verwerfen, sonst kann er nach einem Wechsel zurück auf Full 1.6.7 wieder gelten. Wer einen definierten Stand will, speichert vor dem Wechsel Stufe 1.
 - **Auf RS485-1/2 nicht angezeigt:** Ein Master, der seine Slaves abfragt, meldet dort keine Firmwarekennung, dann bleibt offen, ob er die Stufe anbietet. Erst den Master anhalten (Wartung) oder DIP 5–8 auf OFF stellen, dann „Erneut prüfen“ oder neu verbinden.
+- **Über Home Assistant (MQTT):** Die App fragt nichts selbst ab und zeigt nur den Wert, den das Add-on zuletzt bestätigt gelesen hat, mit dessen Lesezeit, sofern dessen Master die Fähigkeit meldet. Kein Feld, kein Speichern, kein Neu-Lesen. Das Add-on liest den Wert alle 10 Minuten; ist er älter als 30 Minuten oder hat der Master das Lesen abgelehnt, steht dort „noch kein bestätigter Wert“. Als aktuell gilt er nur, solange Messwerte des Add-ons ankommen (dann ist auch der Uhrversatz bekannt); kommen keine, ist das Add-on offline oder der Datenstrom aus, sagt die App, dass sich das nicht sagen lässt, und zeigt keinen Wert. Ändern nur mit einer direkten Verbindung (Add-on vorher stoppen).
 - **Wege** (jeder Weg unter „Zugriffswege“):
 - **CCL-Abbaustufe des Masters lesen**
   - UART0 · RS485-1/2: EMU1101-EXT ab Full 1.6.7 mit Fähigkeit CCL-Abbaustufe (Bit 4 der Firmwarekennung); Hinweis: zuverlässig nur ohne pollenden Master.

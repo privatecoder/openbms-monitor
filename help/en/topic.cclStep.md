@@ -1,7 +1,7 @@
 ---
 title: CCL decrease step (master)
 short: How fast the master lowers the bank's charge current limit (CCL): 1–20 A per online pack and update (EMU1101-EXT Full from 1.6.7). An EXT setting of its own, not a parameter.
-related: topic.firmwareProfile, topic.patchGates, topic.params, topic.access
+related: topic.firmwareProfile, topic.patchGates, topic.params, topic.mqtt, topic.access
 ---
 - **What it does:** when the master lowers the charge current limit it requests for the whole bank (CCL), it takes off “online packs × step” amperes per completed update until the target is reached; the last remainder lands exactly on the target. Upwards it stays at 1 A per online pack and update. The default is 1, the usual behaviour of the original firmware.
 - **The unit:** A per online pack per update, not A/s and no current control of single packs. The master counts the online packs itself (itself and its reachable slaves, also those with a warning). An update follows only a complete polling round of the master; how long that takes depends on the number of packs and the firmware, there is no fixed rate. Example: 12 packs online, step 10: 120 A less per update; from 1560 A to 10 A that is 13 updates, not guaranteed 13 seconds. With step 1 it would be 130.
@@ -14,6 +14,7 @@ related: topic.firmwareProfile, topic.patchGates, topic.params, topic.access
 - **Back to the original:** save step 1 explicitly; only that also resets the stored value to a defined state. An erased parameter memory also leads to 1.
 - **Older firmware:** after a change to firmware without this capability (Light, Full up to 1.6.6, original) the master decreases with the fixed step 1 again, whatever is stored. Whether the stored EXT value survives is open: a later parameter save under the older firmware may drop it, otherwise it may apply again after a change back to Full 1.6.7. For a defined state, save step 1 before the change.
 - **Not shown on RS485-1/2:** a master polling its slaves reports no firmware identity there, so whether it offers the step stays open. Halt the master first (maintenance) or set DIP 5–8 to OFF, then “Check again” or reconnect.
+- **Over Home Assistant (MQTT):** the app asks nothing itself and shows only the value the add-on last read and confirmed, with its read time, as long as the add-on's master reports the capability. No field, no save, no reread. The add-on reads the value every 10 minutes; if it is older than 30 minutes or the master refused the read, it says “no confirmed value yet”. It counts as current only while measurements of the add-on arrive (then its clock offset is known as well); when none arrive, the add-on is offline or the feed is off, the app says this cannot be told and shows no value. Changing it needs a direct connection (stop the add-on first).
 - **Ways** (every way under “Access paths”):
 - **Read the master's CCL decrease step**
   - UART0 · RS485-1/2: EMU1101-EXT from Full 1.6.7 with the CCL decrease step capability (bit 4 of the firmware identity); note: reliable only without a polling master.

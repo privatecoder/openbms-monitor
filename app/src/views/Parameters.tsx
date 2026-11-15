@@ -24,7 +24,7 @@ import { Segmented } from "../components/PackPicker";
 import { ClockLine, usePackChoice } from "../components/BmsClock";
 import { CalibrationSection, CanProtocolLine } from "../components/Calibration";
 import { HardStopLine } from "../components/HardStopLine";
-import { CclStepSection } from "../components/CclStep";
+import { CclFeedSection, CclStepSection } from "../components/CclStep";
 import { DiagnosisLine } from "../components/DiagnosisLine";
 import { RemoteDiagnosis } from "../components/RemoteDiagnosis";
 import { withHardStop } from "../access";
@@ -674,6 +674,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         {/* the master's own EXT setting, whichever pack is chosen; apart from the parameter table and its bulk paths */}
         <CclStepSection connected={connected && !isDemo} bus={bus} installation={installation?.id ?? null} packs={packs.length} linkKey={link}
           locked={section("ccl")} onBusy={busyFor("ccl")} />
+        <CclFeedSection packs={packs.length} />
         <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
         <RemoteDiagnosis address={chosen} known={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={section("serial")} onBusy={busyFor("serial")} linkKey={link} />

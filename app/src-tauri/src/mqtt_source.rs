@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
+use openbms_proto::ccl::CclStep;
 use openbms_proto::params::Parameters;
 use openbms_proto::{DeviceInfo, SerialValue};
 use serde::{Deserialize, Serialize};
@@ -241,6 +242,12 @@ pub struct MetaPackView {
     pub parameters: Option<Parameters>,
     /// when the parameters were read (add-on clock, ms)
     pub parameters_at: Option<i64>,
+    /// the read-capability mask of the board's EMU1101-EXT identity (64/03) as the add-on read it; None: none known
+    pub read_caps: Option<u16>,
+    /// the master's CCL decrease step as the add-on last confirmed it, shown read-only; None: no confirmed value
+    pub ccl: Option<CclStep>,
+    /// when the add-on read `ccl` (add-on clock, ms)
+    pub ccl_at: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -346,6 +353,9 @@ impl Feeder {
             out.push(Effect::NewBoot);
             self.packs.clear();
             self.measured = false;
+            // the offset belongs to the boot's clock: known again with this boot's first pack message (a retained meta
+            // carries no usable time)
+            self.skew = None;
             self.master_sent = false;
         }
         self.on = m.on;
@@ -359,6 +369,14 @@ impl Feeder {
             }
             if let Some(v) = p.bms_serial.as_ref().and_then(|d| d.value.clone().ok()) {
                 entry.bms_serial = Some(v);
+            }
+            if let Some(caps) = p.identity.as_ref().and_then(|d| d.value.as_ref().ok()).map(|i| i.read_caps) {
+                entry.read_caps = Some(caps);
+            }
+            // unlike the identity caches: a meta without a confirmed step means the add-on has none (stale, refused)
+            match p.ccl.as_ref().and_then(|c| c.value.clone().ok().map(|v| (v, c.t))) {
+                Some((v, t)) => (entry.ccl, entry.ccl_at) = (Some(v), Some(t)),
+                None => (entry.ccl, entry.ccl_at) = (None, None),
             }
             if let Some(part) = &p.params {
                 self.params(p.address, part);
@@ -881,6 +899,69 @@ mod tests {
         assert!(!e.iter().any(|x| matches!(x, Effect::MasterSerial(_))));
         let e = f.handle("seplos/openbms/v1/meta", &meta("b2", true, packs), 0, 0);
         assert!(e.iter().any(|x| matches!(x, Effect::MasterSerial(_))), "checked again for a new boot");
+    }
+
+    fn ext_identity(caps: u16) -> String {
+        let mut b = b"EXT\x05".to_vec();
+        b.extend([16, 6, 13, 1, 6, 7, 0xA8, 0x67, 0x6B, 0x52, 0xBA, 0xE2, 0x81, 0xFF, 0xFE]);
+        b.extend(caps.to_be_bytes());
+        hex(&b)
+    }
+
+    fn master_view(e: &[Effect]) -> MetaPackView {
+        feeds(e)[0].packs.iter().find(|p| p.address == 0).cloned().unwrap()
+    }
+
+    #[test]
+    fn ccl_step_from_meta_and_cleared_by_null() {
+        let mut f = Feeder::new("seplos");
+        let with = |ccl: Value| json!([{"addr": 0, "maint": {"t": 1, "hex": ext_identity(0x001F)}, "ccl": ccl},
+            {"addr": 1, "maint": {"t": 1, "hex": ext_identity(0x000F)}, "ccl": null}]);
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b1", true, with(json!({"t": 5_000, "hex": "010a010114"}))), 0, 0);
+        let m = master_view(&e);
+        assert_eq!((m.read_caps, m.ccl, m.ccl_at), (Some(0x001F), Some(CclStep { down: 10, up: 1, min: 1, max: 20 }), Some(5_000)));
+        let slave = feeds(&e)[0].packs.iter().find(|p| p.address == 1).cloned().unwrap();
+        assert_eq!((slave.read_caps, slave.ccl), (Some(0x000F), None));
+        // a newer read
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b1", true, with(json!({"t": 9_000, "hex": "0103010114"}))), 0, 1);
+        assert_eq!((master_view(&e).ccl.map(|c| c.down), master_view(&e).ccl_at), (Some(3), Some(9_000)));
+        // the add-on has no confirmed value any more: gone, unlike the serials and the device info
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b1", true, with(Value::Null)), 0, 2);
+        let m = master_view(&e);
+        assert_eq!((m.ccl, m.ccl_at, m.read_caps), (None, None, Some(0x001F)));
+        // a part that does not decode is no confirmed value either
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, with(json!({"t": 9_500, "hex": "010a010114"}))), 0, 3);
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b1", true, with(json!({"t": 9_600, "hex": "0115010114"}))), 0, 4);
+        assert_eq!(master_view(&e).ccl, None);
+        // a pack the meta leaves out entirely has no step either
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, with(json!({"t": 9_700, "hex": "010a010114"}))), 0, 5);
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([{"addr": 0}])), 0, 6);
+        assert_eq!((master_view(&e).ccl, master_view(&e).read_caps), (None, Some(0x001F)));
+    }
+
+    #[test]
+    fn a_boot_change_forgets_the_clock_offset() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([])), 0, 0);
+        let e = f.handle("seplos/openbms/v1/pack/0", &pack_msg("b1", 1, 0, 4_000, 9_000), 500_000, 10);
+        assert!(feeds(&e)[0].skew_ms.is_some());
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b2", true, json!([])), 600_000, 20);
+        assert_eq!((feeds(&e)[0].skew_ms, feeds(&e)[0].state), (None, "waiting"));
+        // a meta of the same boot sets none either: its receipt time says nothing about the add-on's clock
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b2", true, json!([])), 700_000, 30);
+        assert_eq!(feeds(&e)[0].skew_ms, None);
+        let e = f.handle("seplos/openbms/v1/pack/0", &pack_msg("b2", 1, 0, 4_000, 9_000), 800_000, 40);
+        assert_eq!(feeds(&e)[0].skew_ms, Some(9_010 - 800_000));
+    }
+
+    #[test]
+    fn read_caps_keep_the_last_good_identity() {
+        let mut f = Feeder::new("seplos");
+        f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([{"addr": 0, "maint": {"t": 1, "hex": ext_identity(0x001F)}}])), 0, 0);
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b1", true, json!([{"addr": 0, "maint": {"t": 2, "hex": "455854"}}])), 0, 1);
+        assert_eq!(master_view(&e).read_caps, Some(0x001F));
+        let e = f.handle("seplos/openbms/v1/meta", &meta("b2", true, json!([{"addr": 0, "maint": null}])), 0, 2);
+        assert_eq!(master_view(&e).read_caps, None, "a new boot starts over");
     }
 
     #[test]

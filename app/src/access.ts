@@ -265,6 +265,7 @@ export const ACCESS_HINTS = {
   "mdiag.hint": ["read-diagnosis"],
   "hs.hint": ["hard-stop"],
   "ccl.hint": ["read-ccl-step", "write-ccl-step"],
+  "ccl.feedHint": ["write-ccl-step"],
   "maint.setup.controlHint": ["maint-start"],
   "fw.patch.update": ["flash"],
   "fw.soc.hint": ["read-soc-store"],

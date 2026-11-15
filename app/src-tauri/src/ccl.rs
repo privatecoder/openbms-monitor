@@ -283,6 +283,8 @@ pub(crate) fn run(state: &AppState, link: &Link, channel: Channel, value: u8, ex
 /// bit.
 #[tauri::command]
 pub async fn ccl_step_read(state: tauri::State<'_, AppState>) -> Result<CclRead, String> {
+    // over the add-on's feed the add-on owns the bus: its own reading is shown instead (feed `meta.packs[].ccl`)
+    crate::bms_io_allowed(&state)?;
     let PackAction { guard: _guard, link, bus } = PackAction::read(&state, MASTER, "ccl_read")?;
     let channel = on_bus(Action::ReadCclStep, bus)?;
     with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
@@ -293,10 +295,16 @@ pub async fn ccl_step_read(state: tauri::State<'_, AppState>) -> Result<CclRead,
 /// „Speichern“: one explicit set of the master's setting (`value` 1..=20, an integer), read back separately.
 #[tauri::command]
 pub async fn ccl_step_write(state: tauri::State<'_, AppState>, installation: Option<String>, value: serde_json::Value, expected: String) -> Result<CclSaved, String> {
-    let value = step_of(&value)?;
-    let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), MASTER, "ccl_write")?;
+    write_command(&state, installation.as_deref(), &value, &expected)
+}
+
+/// The body of `ccl_step_write`. Never over the add-on's feed (MQTT): the Monitor only shows the add-on's reading there.
+fn write_command(state: &AppState, installation: Option<&str>, value: &serde_json::Value, expected: &str) -> Result<CclSaved, String> {
+    crate::bms_io_allowed(state)?;
+    let value = step_of(value)?;
+    let PackAction { guard: _guard, link, bus } = PackAction::write(state, installation, MASTER, "ccl_write")?;
     let channel = on_bus(Action::WriteCclStep, bus)?;
-    run(&state, &link, channel, value, &expected)
+    run(state, &link, channel, value, expected)
 }
 
 #[cfg(test)]
@@ -569,6 +577,17 @@ mod tests {
         // a confirmed read over RS485-1/2
         let mut d = uart0(Ok(step(1)), vec![Ok(step(4))]);
         assert_eq!(read_session(&mut d), Ok(CclRead { step: step(4), serial: Some("SYN-M".into()) }));
+    }
+
+    #[test]
+    fn never_written_over_the_feed() {
+        let state = AppState::default();
+        *state.source.lock().unwrap() = Some(crate::SourceKind::Mqtt);
+        crate::new_link(&state, Some("inst-a".into()));
+        let r = write_command(&state, Some("inst-a"), &serde_json::json!(10), "BMS-1");
+        assert_eq!(r.unwrap_err(), crate::MQTT_SOURCE);
+        // refused before anything else: no reservation is left behind
+        assert!(crate::control::pack_action(&state.ops, MASTER).is_none());
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! The Seplos BMS add-on's OpenBMS Monitor feed (`docs/exchange/openbms-feed-v1.md`): its MQTT messages decoded into
 //! the types a bus read gives, and the state of the source (current boot, duplicates, its clock). Pure: no I/O.
 
+use openbms_proto::ccl::{self, CclStep};
 use openbms_proto::device_info::DeviceInfo;
+use openbms_proto::maint::ExtInfo;
 use openbms_proto::modbus::SystemValues;
 use openbms_proto::serial::{parse_ascii_serial, SerialValue};
 use openbms_proto::status::Status;
@@ -47,6 +49,10 @@ pub struct MetaPack {
     pub device: Option<Part<DeviceInfo>>,
     pub battery_serial: Option<Part<SerialValue>>,
     pub bms_serial: Option<Part<SerialValue>>,
+    /// the EMU1101-EXT identity (64/03) as the add-on read it: the board's image flags and read capabilities
+    pub identity: Option<Part<ExtInfo>>,
+    /// the master's CCL decrease step (64/07), only while the add-on holds a confirmed, fresh value; read-only here
+    pub ccl: Option<Part<CclStep>>,
     pub params: Option<Part<Vec<u8>>>,
 }
 
@@ -151,6 +157,8 @@ pub fn decode_meta(v: &Value) -> Result<FeedMeta, String> {
                         device: part(&p["r51"], |b| DeviceInfo::parse(b).map_err(|e| e.to_string())),
                         battery_serial: part(&p["a2"], serial),
                         bms_serial: part(&p["a4"], serial),
+                        identity: part(&p["maint"], |b| ExtInfo::parse(b).map_err(|e| e.to_string())),
+                        ccl: part(&p["ccl"], |b| ccl::parse(b).map_err(|e| e.to_string())),
                         params: part(&p["r47"], params),
                     })
                 })
@@ -327,6 +335,48 @@ mod tests {
     fn meta_a2_wrong_length_is_a_failed_part() {
         let m = decode_meta(&meta("b1", json!([{"addr": 0, "a2": {"t": 3, "hex": "4142"}}]))).unwrap();
         assert!(m.packs[0].battery_serial.as_ref().unwrap().value.is_err());
+    }
+
+    fn ext_identity(caps: u16) -> Vec<u8> {
+        let mut b = b"EXT\x05".to_vec();
+        b.extend([16, 6, 13, 1, 6, 7]);
+        b.extend([0xA8, 0x67, 0x6B, 0x52, 0xBA, 0xE2, 0x81, 0xFF, 0xFE]);
+        b.extend(caps.to_be_bytes());
+        b
+    }
+
+    #[test]
+    fn meta_ccl_step_and_identity() {
+        let m = decode_meta(&meta("b1", json!([
+            {"addr": 0, "maint": {"t": 2, "hex": hex(&ext_identity(0x001F))}, "ccl": {"t": 5, "hex": "010a010114"}},
+            {"addr": 1, "maint": {"t": 2, "hex": hex(&ext_identity(0x000F))}, "ccl": null},
+            {"addr": 2}]))).unwrap();
+        let ccl = m.packs[0].ccl.as_ref().unwrap();
+        assert_eq!(ccl.t, 5);
+        assert_eq!(ccl.value, Ok(CclStep { down: 10, up: 1, min: 1, max: 20 }));
+        assert_eq!(m.packs[0].identity.as_ref().unwrap().value.as_ref().unwrap().read_caps, 0x001F);
+        assert!(m.packs[0].identity.as_ref().unwrap().value.as_ref().unwrap().cap(openbms_proto::maint::CAP_CCL_STEP));
+        assert!(!m.packs[1].identity.as_ref().unwrap().value.as_ref().unwrap().cap(openbms_proto::maint::CAP_CCL_STEP));
+        assert!(m.packs[1].ccl.is_none() && m.packs[2].ccl.is_none() && m.packs[2].identity.is_none());
+    }
+
+    #[test]
+    fn meta_bad_ccl_step_fails_only_that_part() {
+        for bad in ["010a01011", "zz0a010114", "010a0101", "010a01011400", "020a010114", "0115010114", "0100010114", "010a020114", ""] {
+            let m = decode_meta(&meta("b1", json!([{"addr": 0, "a2": {"t": 3, "hex": hex(&serial30("BAT-1"))},
+                "ccl": {"t": 5, "hex": bad}}]))).unwrap();
+            assert!(m.packs[0].ccl.as_ref().unwrap().value.is_err(), "{bad}");
+            assert!(m.packs[0].battery_serial.as_ref().unwrap().value.is_ok(), "{bad}");
+        }
+        let m = decode_meta(&meta("b1", json!([{"addr": 0, "ccl": {"t": 5, "err": "failed"}}]))).unwrap();
+        assert!(m.packs[0].ccl.as_ref().unwrap().value.is_err());
+    }
+
+    #[test]
+    fn meta_bad_identity_fails_only_that_part() {
+        let m = decode_meta(&meta("b1", json!([{"addr": 0, "maint": {"t": 2, "hex": "455854"}, "ccl": {"t": 5, "hex": "010a010114"}}]))).unwrap();
+        assert!(m.packs[0].identity.as_ref().unwrap().value.is_err());
+        assert!(m.packs[0].ccl.as_ref().unwrap().value.is_ok());
     }
 
     #[test]

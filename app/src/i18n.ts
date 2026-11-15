@@ -1247,6 +1247,9 @@ const resources = {
         saved: "Gespeichert und zurückgelesen: {{v}} A je Pack online und Aktualisierung.",
         noSerial: "Die BMS-Seriennummer des Masters ließ sich nicht lesen: ohne sie speichert die App nichts.",
         hint: "Kein Parameter, nie auf andere Packs kopiert. {{access}}",
+        feedRead: "Gelesen vom Add-on {{at}}.", feedUnread: "Das Add-on meldet noch keinen bestätigten Wert.",
+        feedUnknown: "Ob der zuletzt vom Add-on gelesene Wert aktuell ist, lässt sich gerade nicht bestimmen. Er wird gezeigt, sobald er sich als aktuell bestätigen lässt.",
+        feedHint: "Hier nur angezeigt, wie das Add-on den Wert gelesen hat; ändern nur mit einer direkten Verbindung. {{access}}",
       },
       hs: {
         title: "Hard-Stop bei Nachladepause", unread: "Parameter dieses Packs lesen, um die Einstellung zu sehen.", on: "Eingeschaltet", off: "Ausgeschaltet",
@@ -2589,6 +2592,9 @@ const resources = {
         saved: "Saved and read back: {{v}} A per online pack and update.",
         noSerial: "The master's BMS serial could not be read: without it the app saves nothing.",
         hint: "Not a parameter, never copied to other packs. {{access}}",
+        feedRead: "Read by the add-on {{at}}.", feedUnread: "The add-on reports no confirmed value yet.",
+        feedUnknown: "Whether the value the add-on last read is current cannot be determined right now. It is shown once it can be confirmed as current.",
+        feedHint: "Shown here only as the add-on read it; changing it needs a direct connection. {{access}}",
       },
       hs: {
         title: "Hard stop at a recharge pause", unread: "Read this pack's parameters to see the setting.", on: "On", off: "Off",

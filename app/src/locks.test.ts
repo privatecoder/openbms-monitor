@@ -381,6 +381,16 @@ describe("EXT — CCL decrease step (master)", () => {
     expect(state("ccl.section", { ...live, connected: false })).toBe("hidden");
     expect(state("ccl.section", { ...live, demo: true })).toBe("hidden");
   });
+  it("over the add-on's feed: read-only, only while the feed's master reports the capability; the bus section never", () => {
+    const feed: Partial<UiFacts> = { source: "mqtt", offered: true };
+    expect(state("ccl.feed", feed)).toBe("open");
+    expect(state("ccl.feed", { ...feed, chosen: null })).toBe("open");
+    expect(state("ccl.feed", { ...feed, offered: false })).toBe("hidden");
+    expect(state("ccl.feed", { ...feed, source: "bus" })).toBe("hidden");
+    expect(state("ccl.feed", { ...feed, source: null })).toBe("hidden");
+    expect(state("ccl.feed", { ...feed, demo: true })).toBe("hidden");
+    expect(state("ccl.section", { ...feed, bus: "can", connected: true })).toBe("hidden");
+  });
   it("check again: only on RS485-1/2 while the master's capabilities are not known, never in the preview", () => {
     const pack: Partial<UiFacts> = { source: "bus", bus: "pack", connected: true, available: false };
     expect(state("ccl.recheck", pack)).toBe("open");

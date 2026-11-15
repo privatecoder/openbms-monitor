@@ -3,11 +3,12 @@ import { useTranslation } from "react-i18next";
 import { TrendingDown } from "lucide-react";
 import { api, isDemo, type Bus, type CclRead } from "../api";
 import { CAP, accessHint } from "../access";
-import { CCL_MAX, CCL_MIN, bankStep, masterKey, masterOffers, parseStep, writeLockedOf } from "../ccl";
+import { CCL_MAX, CCL_MIN, bankStep, feedCcl, feedCclLines, masterKey, masterOffers, parseStep, writeLockedOf } from "../ccl";
 import { errorText } from "../control";
 import { decideUi, lockProps } from "../locks";
 import { useProfile } from "../profile";
 import { askBitsAgain, useReadCaps } from "../imageFlags";
+import { useFeed, useSource } from "../source";
 import { Button } from "./ui/button";
 import { SectionHead, StatusLine } from "./Section";
 
@@ -129,6 +130,30 @@ export function CclStepSection({ connected, bus, installation, packs, linkKey, l
       {read && !read.serial && <StatusLine tone="warn">{t("ccl.noSerial")}</StatusLine>}
       {note && <StatusLine tone={note.tone}>{note.text}</StatusLine>}
       <StatusLine>{accessHint(t, "ccl.hint")}</StatusLine>
+    </div>
+  );
+}
+
+/** The same section over the add-on's feed (MQTT): the master's step as the add-on last confirmed it, read-only. No field,
+ *  no save, no read of its own (the add-on owns the bus); changing it needs a direct connection. */
+export function CclFeedSection({ packs }: { packs: number }) {
+  const { t, i18n } = useTranslation();
+  const source = useSource();
+  const feed = useFeed();
+  // the age bound runs on while the feed is quiet
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const v = feedCcl(feed, now);
+  if (!decideUi("ccl.feed", { source, chosen: null, offered: v.offered, demo: isDemo }).visible) return null;
+  const at = (ms: number) => new Date(ms).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" });
+  return (
+    <div className="space-y-2 border-t border-line pt-3 text-sm">
+      <SectionHead icon={TrendingDown} title={t("ccl.title")} help="topic.cclStep" />
+      {feedCclLines(v, packs, t, at).map((l, i) => <StatusLine key={i} tone={l.tone}>{l.text}</StatusLine>)}
+      <StatusLine>{accessHint(t, "ccl.feedHint")}</StatusLine>
     </div>
   );
 }

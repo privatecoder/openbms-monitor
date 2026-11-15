@@ -167,7 +167,10 @@ export type UiAction =
   | "ccl.save"
   /** RS485-1/2: the master's 64/03 not answered on this link (`available`: its capabilities are known): ask it again
    *  on a click, nothing written */
-  | "ccl.recheck";
+  | "ccl.recheck"
+  /** the same section over the add-on's feed (MQTT): the add-on's reading of the master, shown read-only, while the
+   *  feed's master reports capability bit 4 in its 64/03 (`offered`); no field, no save, no read */
+  | "ccl.feed";
 
 /** The writes of the Parameters view; one runs at a time. */
 export type WriteKind = "clock" | "can" | "cal" | "params" | "serial" | "name" | "ctl" | "marker" | "multi" | "hs" | "ccl";
@@ -512,6 +515,8 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     case "ccl.recheck":
       if (f.source !== "bus" || f.bus !== "pack" || !f.connected || f.demo || f.available) return hide;
       return f.busy ? lock("lock.busy") : show();
+    case "ccl.feed":
+      return f.source === "mqtt" && f.offered && !f.demo ? show() : hide;
     case "ccl.read":
       if (f.busy) return lock("lock.busy");
       return f.held ? lock("lock.writeRunning") : show();
