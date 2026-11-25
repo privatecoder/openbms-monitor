@@ -786,6 +786,9 @@ fn read_parameters_ascii(state: &AppState, before: &Link, address: u8) -> Result
     let p = with_link(&state.conn, &state.flashing, &state.link, before, |c| c.parameters(address))?;
     // a version proof counts for the board whose String 2 the check read just now
     let serial = checked.as_ref().ok().and_then(|(_, read)| maint_store::real(read).map(String::from));
+    // the pack's own 64/03 at its address (asked again where this connection has no finding yet), so EMU1101-EXT is
+    // proven on RS485-1/2 for this very read, the master too
+    profile::reask_identity(state, before, address);
     let patch = profile::pack_patch(state, before, address, serial.as_deref());
     if bank::snapshot_allowed(&checked) {
         let id = bms_memory::snapshot(state, before, address, history::SnapshotKind::Read, &p.block);

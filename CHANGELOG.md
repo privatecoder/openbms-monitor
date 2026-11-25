@@ -2,6 +2,10 @@
 
 All notable changes of OpenBMS Monitor. Newest first; the app shows this file in its About view.
 
+## 0.4.2-beta — 2026-11-26
+
+- RS485-1/2: EMU1101-EXT packs are now proven by their own firmware identity (64/03 at the pack's address), the master included, so the Parameters view names the Group0 bits of the patched firmware (write, maintenance start, on/off and clock releases, extended off, pack lock, hard stop) and their editing follows the pack's image flags. The identity is asked once per connection on the first parameter read of each pack; “Check again” in the pack view asks again, now also for the master on RS485-1/2. The pack view shows the master's version and hard-stop flag from that answer as well. On the CAN socket nothing changes.
+
 ## 0.4.1-beta — 2026-11-26
 
 - Firmware view: the warning for an unknown image now says its checksum is neither a known original version nor an EMU1101-EXT build this app version knows, and that a newer build may need a newer app version.

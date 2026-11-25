@@ -210,6 +210,8 @@ describe("asking a BMS directly", () => {
     expect(s("pack.askSerials", { source: "mqtt" })).toBe("hidden");
     expect(s("pack.probe", {})).toBe("open");
     expect(s("pack.probe", { address: 0 })).toBe("hidden");
+    expect(s("pack.probe", { address: 0, bus: "pack" })).toBe("open");
+    expect(s("pack.probe", { address: 4, bus: "pack" })).toBe("open");
     expect(s("pack.probe", { busy: true })).toBe("locked:lock.busy");
     expect(s("pack.probe", { source: "mqtt" })).toBe("hidden");
   });

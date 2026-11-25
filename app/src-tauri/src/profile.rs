@@ -316,9 +316,10 @@ pub struct PackPatch {
     pub at: Option<i64>,
 }
 
-/// The pure decision of `pack_patch`: the master's profile for address 0 on the CAN socket; for another pack its own live
-/// 64/03 on this link (proven: "live"; negative: no patch functions, also over a stored proof); else a stored proof of
-/// the same board (String 2 `serial`, canonical as read now).
+/// The pure decision of `pack_patch`: the master's profile for address 0 on the CAN socket; else the pack's own live
+/// 64/03 on this link (any pack on RS485-1/2, where EMU1101-EXT answers at its own address; proven: "live"; negative: no
+/// patch functions, also over a stored proof); else a stored proof of the same board (String 2 `serial`, canonical as
+/// read now).
 pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackFinding>, proof: Option<&crate::maint_store::PatchProof>, serial: Option<&str>) -> Option<PackPatch> {
     let role = if address == 0 { "master" } else { "pack" };
     if address == 0 {
@@ -328,16 +329,17 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
                 return Some(PackPatch { source: "master".into(), role, release, caps: caps_of_info(caps, &patch.info), at: Some(p.at) });
             }
         }
-    } else {
-        match live {
-            Some(PackFinding::Proven { info, listed, .. }) => {
-                let caps = known::caps_of(info)?;
-                return Some(PackPatch { source: "live".into(), role, release: listed.map(String::from).unwrap_or_else(|| info.version()), caps: caps_of_info(caps, info), at: None });
-            }
-            // another identity or a patch below the supported one: a stored proof no longer holds on this connection
-            Some(PackFinding::Negative(_)) => return None,
-            Some(PackFinding::Undecided) | None => {}
+    }
+    // on the CAN socket the master is its profile, never a live finding
+    let live = live.filter(|_| address != 0 || profile.is_none_or(|p| p.bus != Bus::CanSocketBus));
+    match live {
+        Some(PackFinding::Proven { info, listed, .. }) => {
+            let caps = known::caps_of(info)?;
+            return Some(PackPatch { source: "live".into(), role, release: listed.map(String::from).unwrap_or_else(|| info.version()), caps: caps_of_info(caps, info), at: None });
         }
+        // another identity or a patch below the supported one: a stored proof no longer holds on this connection
+        Some(PackFinding::Negative(_)) => return None,
+        Some(PackFinding::Undecided) | None => {}
     }
     let proof = proof.filter(|p| serial == Some(p.bms_serial.as_str()))?;
     // a proof means „a supported patch“: its capabilities; one naming an older build no longer holds
@@ -348,10 +350,7 @@ pub fn pack_patch_of(address: u8, profile: Option<&Profile>, live: Option<&PackF
 /// The pack's own identity on this link names a build the app does not support (an older patch, another identity format):
 /// the master by its profile, another pack by its live finding. Unknown (no answer yet) is not unsupported.
 pub fn unsupported_of(address: u8, profile: Option<&Profile>, live: Option<&PackFinding>) -> bool {
-    if address == 0 {
-        return profile.is_some_and(|p| matches!(p.master, Master::UnknownPatch(_)));
-    }
-    matches!(live, Some(PackFinding::Negative(_)))
+    (address == 0 && profile.is_some_and(|p| matches!(p.master, Master::UnknownPatch(_)))) || matches!(live, Some(PackFinding::Negative(_)))
 }
 
 pub fn unsupported_here(state: &AppState, link: &Link, address: u8) -> bool {
@@ -383,11 +382,11 @@ pub fn base_of(info: &openbms_proto::ExtInfo) -> Option<[u8; 3]> {
 /// not support: its base still holds).
 fn identity_of(state: &AppState, link: &Link, address: u8) -> Option<openbms_proto::ExtInfo> {
     if address == 0 {
-        return match bank::profile(state, link.gen)?.master {
-            Master::Patched { patch, .. } => Some(patch.info),
-            Master::UnknownPatch(info) => info,
-            _ => None,
-        };
+        match bank::profile(state, link.gen).map(|p| p.master) {
+            Some(Master::Patched { patch, .. }) => return Some(patch.info),
+            Some(Master::UnknownPatch(Some(info))) => return Some(info),
+            _ => {}
+        }
     }
     match bank::live(state, link.gen, address)? {
         PackFinding::Proven { info, .. } => Some(info),
@@ -463,7 +462,7 @@ pub fn probe_view(gen: u64, address: u8, f: &PackFinding) -> PackProbeView {
         read_caps: proven.map(|i| i.read_caps) }
 }
 
-/// Ask the pack at `address` (not the master: its profile holds) for its own 64/03 on connection `link`, under the port
+/// Ask the pack at `address` for its own 64/03 on connection `link` (on the CAN socket not the master: its profile holds), under the port
 /// lock with the generation check; the finding is kept for this connection and the UI is told. A link failure is an error;
 /// silence is a finding („undecided“), never a lost pack or original firmware.
 pub fn probe_pack_on(state: &AppState, link: &Link, address: u8) -> Result<PackFinding, String> {
@@ -480,10 +479,16 @@ pub fn probe_pack_on(state: &AppState, link: &Link, address: u8) -> Result<PackF
     Ok(f)
 }
 
-/// Whether a parameter read asks the firmware identity again: the master when its profile got no valid answer, a slave
-/// not yet asked or silent before (another valid identity, RTN 04/05 stay as they are). CAN socket only.
-pub fn ask_again(address: u8, can: bool, master_unknown: bool, live: Option<&PackFinding>) -> bool {
-    can && if address == 0 { master_unknown } else { matches!(live, None | Some(PackFinding::Undecided)) }
+/// Whether a parameter read asks the firmware identity again: on the CAN socket the master when its profile got no valid
+/// answer, a slave not yet asked or silent before; on RS485-1/2 every pack (also the master) once per connection, at
+/// its own address (EMU1101-EXT answers there; a silent pack is asked again only by „Erneut prüfen“, so a bank of
+/// silent packs does not wait on every read; another valid identity, RTN 04/05 stay as they are).
+pub fn ask_again(address: u8, bus: Bus, master_unknown: bool, live: Option<&PackFinding>) -> bool {
+    let unasked = matches!(live, None | Some(PackFinding::Undecided));
+    match bus {
+        Bus::CanSocketBus => if address == 0 { master_unknown } else { unasked },
+        Bus::PackBus => live.is_none(),
+    }
 }
 
 /// `ask_again` on `link`, run by a parameter read under the pack's reservation: a silent 64/03 (a network gateway, the
@@ -491,10 +496,10 @@ pub fn ask_again(address: u8, can: bool, master_unknown: bool, live: Option<&Pac
 pub fn reask_identity(state: &AppState, link: &Link, address: u8) {
     let Some(p) = bank::profile(state, link.gen) else { return };
     let live = bank::live(state, link.gen, address);
-    if !ask_again(address, p.bus == Bus::CanSocketBus, matches!(p.master, Master::Unknown), live.as_ref()) {
+    if !ask_again(address, p.bus, matches!(p.master, Master::Unknown), live.as_ref()) {
         return;
     }
-    if address != 0 {
+    if address != 0 || p.bus == Bus::PackBus {
         let _ = probe_pack_on(state, link, address);
         return;
     }
@@ -537,8 +542,9 @@ pub async fn pack_probe(state: tauri::State<'_, AppState>, address: u8, gen: u64
     if link.gen != gen {
         return Err(crate::LINK_CHANGED.into());
     }
-    if address == 0 || bank::profile(&state, gen).is_none_or(|p| p.bus != Bus::CanSocketBus) {
-        return Err("64/03 of a pack is asked on the CAN socket, for packs other than the master".into());
+    // on the CAN socket the master's identity is its profile („Firmware prüfen“); on RS485-1/2 every pack answers its own
+    if address == 0 && bank::profile(&state, gen).is_none_or(|p| p.bus == Bus::CanSocketBus) {
+        return Err("64/03 of the master is asked with its profile on the CAN socket".into());
     }
     let _guard = crate::control::reserve_pack_wait(&state, address, "probe")?;
     probe_pack_on(&state, &link, address).map(|f| probe_view(gen, address, &f))
@@ -1094,15 +1100,34 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_read_asks_again_only_after_silence_and_only_on_the_can_socket() {
+    fn a_parameter_read_asks_again_only_after_silence() {
+        let (can, rs) = (Bus::CanSocketBus, Bus::PackBus);
         let proven = live([1, 6], Some(false));
-        assert!(ask_again(4, true, false, None));
-        assert!(ask_again(4, true, false, Some(&PackFinding::Undecided)));
-        assert!(!ask_again(4, true, true, Some(&proven)));
-        assert!(!ask_again(4, true, false, Some(&PackFinding::Negative(None))));
-        assert!(!ask_again(4, false, true, None));
-        assert!(ask_again(0, true, true, None));
-        assert!(!ask_again(0, true, false, Some(&PackFinding::Undecided)));
+        assert!(ask_again(4, can, false, None));
+        assert!(ask_again(4, can, false, Some(&PackFinding::Undecided)));
+        assert!(!ask_again(4, can, true, Some(&proven)));
+        assert!(!ask_again(4, can, false, Some(&PackFinding::Negative(None))));
+        assert!(ask_again(0, can, true, None));
+        assert!(!ask_again(0, can, false, Some(&PackFinding::Undecided)));
+        // RS485-1/2: every pack at its own address, the master too, whatever the profile says
+        assert!(ask_again(4, rs, true, None));
+        assert!(ask_again(0, rs, false, None));
+        assert!(!ask_again(0, rs, true, Some(&PackFinding::Undecided)));
+        assert!(!ask_again(0, rs, true, Some(&proven)));
+        assert!(!ask_again(0, rs, true, Some(&PackFinding::Negative(None))));
+    }
+
+    #[test]
+    fn the_master_on_rs485_is_proven_by_its_own_identity() {
+        let p = pack_patch_of(0, None, Some(&live([1, 6], Some(false))), None, None).unwrap();
+        assert_eq!((p.source.as_str(), p.role), ("live", "master"));
+        // a patched CAN profile still comes first; a negative live finding outweighs a stored proof
+        let master = pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), Some(&live([1, 6], None)), None, None).unwrap();
+        assert_eq!(master.source, "master");
+        let proof = PatchProof { address: 0, bms_serial: "SYN-0".into(), release: "EMU1101-EXT Full 1.6.7".into(), source: "flash".into(), at: 7 };
+        assert_eq!(pack_patch_of(0, None, Some(&PackFinding::Negative(None)), Some(&proof), Some("SYN-0")), None);
+        assert!(unsupported_of(0, None, Some(&PackFinding::Negative(None))));
+        assert!(!unsupported_of(0, None, Some(&PackFinding::Undecided)));
     }
 
     /// An `EXT05` identity (1.5 → Light 1.5.4, 1.6 → Full 1.6.4); `hard_stop` None: a configurable one
@@ -1125,8 +1150,9 @@ mod tests {
         assert_eq!(pack_patch_of(3, None, Some(&PackFinding::Negative(None)), Some(&proof), Some("SYN-3")), None);
         // undecided (silence, an error): the stored proof holds
         assert_eq!(pack_patch_of(3, None, Some(&PackFinding::Undecided), Some(&proof), Some("SYN-3")).unwrap().source, "user");
-        // the master never takes a slave's answer: address 0 keeps its profile path
-        assert_eq!(pack_patch_of(0, None, Some(&live([1, 5], Some(true))), None, None), None);
+        // on the CAN socket the master keeps its profile path: a live finding at address 0 does not count there
+        assert_eq!(pack_patch_of(0, Some(&of("tcp:gw", Bus::CanSocketBus, None)), Some(&live([1, 5], Some(true))), None, None), None);
+        assert_eq!(pack_patch_of(0, Some(&of("serial:x", Bus::PackBus, None)), Some(&live([1, 5], Some(true))), None, None).unwrap().source, "live");
         assert_eq!(pack_patch_of(0, Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, None, None).unwrap().role, "master");
     }
 

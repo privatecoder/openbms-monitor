@@ -404,7 +404,8 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       return f.source === "bus" && f.bus === "can" && f.profile ? show() : hide;
     // a slave's own 64/03 (the master has its profile)
     case "pack.probe":
-      if (f.source !== "bus" || f.bus !== "can" || !f.profile || f.address === 0) return hide;
+      // the CAN socket asks the master with its profile; on RS485-1/2 every pack answers its own 64/03
+      if (f.source !== "bus" || !f.profile || (f.bus === "can" && f.address === 0)) return hide;
       return f.busy ? lock("lock.busy") : show();
     case "bmsHistory.read":
       if (!f.connected) return lock("lock.notConnected");

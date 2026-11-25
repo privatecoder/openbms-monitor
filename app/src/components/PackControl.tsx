@@ -151,7 +151,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   const recheck = async (a: number) => {
     const g = getProfile()?.gen;
     if (g === undefined) return;
-    try { await (a === 0 ? api.firmwareProfileCheck(g) : api.packProbe(a, g)); } catch { /* shown as before */ }
+    try { await (a === 0 && getProfile()?.bus !== "pack" ? api.firmwareProfileCheck(g) : api.packProbe(a, g)); } catch { /* shown as before */ }
     try { await api.serialNumbers(a, true); } catch { /* the next read shows it */ }
   };
 

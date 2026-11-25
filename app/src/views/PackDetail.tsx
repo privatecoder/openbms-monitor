@@ -49,7 +49,7 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const [probing, setProbing] = useState(false);
   const pf: UiFacts = { source: useSource(), chosen: null, bus, profile: !!profile, address: p.address, busy: probing };
   const askable = decideUi("pack.askSerials", pf).visible;
-  // a slave's own 64/03 (the master has its profile)
+  // a pack's own 64/03 (on the CAN socket not the master: it has its profile)
   const [probes, putProbe] = usePackProbes();
   const probe = probes[p.address];
   const probeAction = decideUi("pack.probe", pf);
@@ -57,15 +57,15 @@ export function PackDetail({ p, bus, multi, onBack, scope, packs }: { p: PackEnt
   const recheck = () => { if (!profile) return; setProbing(true); api.packProbe(p.address, profile.gen).then(putProbe, () => {}).finally(() => setProbing(false)); };
   const serials = asked && "bms" in asked ? asked : p.serials;
   const hardStops = useHardStops();
-  // the image's own flag: the master's from its profile, another pack's from its own proven 64/03; else by behaviour
-  const hardFlag = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.hard_stop : null)
-    : probe?.state === "proven" ? probe.hard_stop : null;
+  // the image's own flag: the master's from its profile on the CAN socket, every other pack's (on RS485-1/2 the master's
+  // too) from its own proven 64/03; else by behaviour
+  const canMaster = p.address === 0 && profile?.bus === "can";
+  const own = probe?.state === "proven" ? probe : null;
+  const hardFlag = canMaster ? (profile.master.kind === "patched" ? profile.master.hard_stop : null) : own ? own.hard_stop : null;
   // a build that takes the choice from the parameters (EMU1101-EXT Full): its image flags
-  const imageFlags = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.caps?.flags : null)
-    : probe?.state === "proven" ? probe.flags : null;
+  const imageFlags = canMaster ? (profile.master.kind === "patched" ? profile.master.caps?.flags : null) : own ? own.flags : null;
   // the full version from 64/03 on this connection: the master's profile, a slave's own proven answer
-  const proven = p.address === 0 ? (profile?.bus === "can" && profile.master.kind === "patched" ? profile.master.listed ?? profile.master.version : null)
-    : probe?.state === "proven" ? probe.listed ?? probe.version : null;
+  const proven = canMaster ? (profile.master.kind === "patched" ? profile.master.listed ?? profile.master.version : null) : own ? own.listed ?? own.version : null;
   const firmware = firmwareText(p.device?.firmware_version, proven);
   const askBinary = () => api.serialNumbers(p.address, true).then(setAsked, (e) => setAsked({ error: errorText(e, t) }));
 
