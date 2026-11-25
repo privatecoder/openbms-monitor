@@ -118,6 +118,15 @@ export const fromStored = (s: { address: number; at: number; kind: "read" | "wri
   stored: { at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial, unconfirmed: !!s.switches_unconfirmed },
 });
 
+/** The stored columns shown, each with its place's newest block (`rows`, as `installationSnapshots` gives them); other
+ *  columns and a stored column without a row stay as they are, and no place is added. */
+export const refreshedStored = (cols: Source[], rows: StoredRow[]): Source[] => {
+  const fresh = new Map(rows.map((r) => [`stored-${r.address}`, fromStored(r)]));
+  return cols.map((x) => (x.kind === "stored" ? fresh.get(x.id) ?? x : x));
+};
+/** One stored block as the backend gives it (`fromStored`'s input). */
+type StoredRow = typeof fromStored extends (s: infer S) => Source ? S : never;
+
 /** A pack column; `address` is the address asked, not byte 0 of the answer, so a write goes where the column says. */
 export const fromPack = (p: Parameters, address = p.address): Source => ({
   id: `pack-${address}`, kind: "pack", address, label: String(address).padStart(2, "0"), device: p.device_name,

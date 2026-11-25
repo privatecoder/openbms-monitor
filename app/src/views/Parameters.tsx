@@ -9,7 +9,7 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
-import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
+import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, refreshedStored, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
 import { afterUart1Write, capacityResets, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { attemptAgain, failure, outcomeOf, runSeries, unclearWrites, RETRY_PAUSE_MS, type Outcome, type PackResult, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
@@ -168,23 +168,33 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
 
   // the stored state of every place (newest block of its current board), after the stored columns of before
   const [storedNote, setStoredNote] = useState<string | null>(null);
-  const loadStored = async () => {
+  // `refresh`: after a read, only the stored columns already shown take their place's newest block, without a note
+  const loadStored = async (refresh = false) => {
     if (!installation) return;
-    const ticket = storedLoads.begin(), id = installation.id;
+    // a refresh takes no ticket, so it never drops a click's load; it only updates columns shown, with newer blocks
+    const ticket = refresh ? null : storedLoads.begin(), id = installation.id;
     // a late answer for another installation (or a superseded load) must not put its columns into this one
-    const current = () => storedLoads.accepts(ticket) && keptLink.split("|")[0] === id;
-    setStoredNote(null);
+    const current = () => (ticket === null || storedLoads.accepts(ticket)) && keptLink.split("|")[0] === id;
+    if (!refresh) setStoredNote(null);
     try {
       const rows = await api.installationSnapshots(id);
       if (!current()) return;
+      if (refresh) {
+        setSources((s) => refreshedStored(s, rows));
+        return;
+      }
       setSources((s) => [...s.filter((x) => x.kind !== "stored"), ...rows.map(fromStored)]);
       // said also when the columns were there already, so a click visibly did something
       const newest = rows.reduce((m, r) => Math.max(m, r.at), 0);
       setStoredNote(rows.length
         ? t("par.storedLoaded", { count: rows.length, at: new Date(newest).toLocaleString(i18n.language, { dateStyle: "short", timeStyle: "short" }) })
         : t("par.storedNone"));
-    } catch (e) { if (current()) setStoredNote(String(e)); }
+    } catch (e) { if (current() && !refresh) setStoredNote(String(e)); }
   };
+  // a read keeps a new block for its place: stored columns shown follow it (the read is async, so the state goes by ref)
+  const storedShown = useRef(false);
+  storedShown.current = sources.some((x) => x.kind === "stored");
+  const refreshStored = () => { if (storedShown.current) void loadStored(true); };
   // from the installations view, or nothing shown yet without a connection
   useEffect(() => {
     if (installation && (wantStored || (!connected && !sources.length))) { wantStored = false; void loadStored(); }
@@ -245,6 +255,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
       setSources((s) => s.map((x) => (x.id === next.id ? next : x)));
     }
     setReading(null);
+    refreshStored();
   };
 
   /** „Neu lesen“ of one column: that pack alone, its column replaced in place (also one of an earlier read or error). */
@@ -256,6 +267,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     const next = await readPack(address, l);
     if (next) setSources((s) => s.map((x) => (x.id === id ? next : x)));
     setReading(null);
+    refreshStored();
   };
 
   /** After a restart (a refused write's live switches are gone then) or ein/aus (the lock state, Group0 bit 5): the pack's column, if shown, is read again. */
@@ -400,6 +412,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     }
     const next = sw.map((v, g) => (g === 0 ? withHardStop(v, enabled) : v));
     const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, l);
+    refreshStored();
     if (!r) return { text: writeError(error, t, (err) => t("pw.error", { err })), error: true };
     if (r.kind === "written" && out.kind === "written") return { text: t(enabled ? "hs.doneOn" : "hs.doneOff"), error: false };
     if (r.kind === "stale") return { text: t("hs.stale"), error: true };
@@ -466,7 +479,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         } else say({ text: t("pw.unread", { err: r.read_error ?? "" }), error: true });
         if (!restore) setEdit(null);
       }
-    } finally { busyFor("params")(false); }
+    } finally { busyFor("params")(false); refreshStored(); }
   };
 
   /** Further packs that can take the edit: a read column of this link, not the edited pack. */
@@ -552,6 +565,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     });
     setRunState((s) => s && { ...s, current: null, paused: null, end });
     busyFor("multi")(false);
+    refreshStored();
     if (linkNow() !== l) return;
     // the edited pack as after a single write, by its final outcome: written closes the edit, stale keeps it on the
     // pack's current state
@@ -648,7 +662,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
       <Panel className="space-y-3 p-5">
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="primary" disabled={!canRead} onClick={read}><Download className="h-4 w-4" />{t("par.read")}</Button>
-          <Button {...lockProps(decideUi("params.loadStored", { source: null, chosen: installation?.id ?? null, demo: isDemo }), t)} onClick={loadStored} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
+          <Button {...lockProps(decideUi("params.loadStored", { source: null, chosen: installation?.id ?? null, demo: isDemo }), t)} onClick={() => void loadStored()} title={t("par.storedHint")}><Archive className="h-4 w-4" />{t("par.stored")}</Button>
           <Button onClick={() => file.current?.click()}><FileUp className="h-4 w-4" />{t("par.open")}</Button>
           <input ref={file} type="file" accept=".toml,application/toml,text/plain" multiple className="hidden" onChange={(e) => open(e.target.files)} />
           {cols.some((c) => !c.notRead) && <Button variant="ghost" disabled={lockedFor("params.clear")} onClick={() => { setSources(() => withPlaceholders([], packs, readsBus)); setSaved(null); }} title={t("par.clearHint")}>{t("par.clear")}</Button>}

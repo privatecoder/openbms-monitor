@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
+import { FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, refreshedStored, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -144,5 +144,16 @@ describe("a stored read", () => {
     expect(fromStored({ ...row, patch }).read?.patch).toEqual(patch);
     expect(fromStored(row).read?.patch).toBeUndefined();
     expect(fromStored({ ...row, parameters: null }).read).toBeUndefined();
+  });
+});
+
+describe("refreshedStored", () => {
+  it("gives the stored columns shown their place's newest block, leaves the rest and adds no place", () => {
+    const row = (address: number, at: number, board: "current" | "unclear") =>
+      ({ address, at, kind: "read" as const, board, bms_serial: board === "current" ? `SYN-${address}` : null, parameters: null });
+    const cols = [fromStored(row(1, 1, "current")), fromStored(row(2, 1, "unclear")), { id: "pack-2", kind: "pack" as const, label: "02" }];
+    const next = refreshedStored(cols, [row(1, 5, "current"), row(2, 5, "current"), row(3, 5, "current")]);
+    expect(next.map((c) => [c.id, c.stored?.at, c.stored?.board])).toEqual([["stored-1", 5, "current"], ["stored-2", 5, "current"], ["pack-2", undefined, undefined]]);
+    expect(refreshedStored(cols, [])).toEqual(cols);
   });
 });

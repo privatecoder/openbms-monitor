@@ -4,6 +4,7 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 
 ## Unreleased
 
+- Parameters: stored columns that are shown follow a read or write at once (their place's newest block, e.g. a board identified by a serial number set just before), instead of keeping the state they were opened with; no stored column is added or brought back by this.
 - Connection form and Installations → Ports: a network gateway entered without its port (e.g. only an IP address) now locks “Connect” and “Save” with the reason “the gateway's port is missing: enter host:port”, instead of failing with the system's “invalid socket address”.
 
 ## 0.4.2-beta — 2026-11-26
