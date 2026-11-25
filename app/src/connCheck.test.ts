@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, noAnswer, partialLine } from "./connCheck";
+import { connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, noAnswer, partialLine, tcpPortMissing } from "./connCheck";
 
 const t = i18n.getFixedT("de");
 const none = { answered: null, noise: false, intra: false, pack_at_9600: false };
@@ -313,5 +313,12 @@ describe("when the sidebar reads the broker again", () => {
     expect(profileLoadNeeded({ inst: "a", rev: 0 }, "a", 1)).toBe(true);
     expect(profileLoadNeeded({ inst: "a", rev: 1 }, "b", 1)).toBe(true);
     expect(profileLoadNeeded({ inst: null, rev: 0 }, null, 0)).toBe(false);
+  });
+});
+
+describe("tcpPortMissing", () => {
+  it("wants host:port for a network gateway, an empty field is not this error", () => {
+    for (const ok of ["192.0.2.10:4196", "gw.local:8899", " 192.0.2.10:502 ", "[2001:db8::1]:4196", "::1:4196", "localhost:004196", "localhost:+4196", ""]) expect(tcpPortMissing(ok), ok).toBe(false);
+    for (const bad of ["192.0.2.10", "gw.local", "192.0.2.10:", ":4196", "192.0.2.10:0", "192.0.2.10:70000", "192.0.2.10:41a6"]) expect(tcpPortMissing(bad), bad).toBe(true);
   });
 });

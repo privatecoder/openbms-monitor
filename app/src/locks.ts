@@ -112,6 +112,8 @@ export type UiAction =
   // Sidebar connection actions
   /** „Verbinden“ / „Neu verbinden“ (`ready`: the form is complete; `loaded`: the installation's broker or packs are read) */
   | "connection.connect"
+  /** Installations → Ports: save (`busy`: saving, `held`: the section is held; `tcpNoPort`: a gateway without a port) */
+  | "installation.savePorts"
   /** „Abbrechen“ of a connect running or waiting for the port */
   | "connection.cancel"
   | "connection.disconnect"
@@ -224,6 +226,8 @@ export interface UiFacts {
   address?: number | null;
   /** the bus of the open RS485 connection */
   bus?: Bus | null;
+  /** a network gateway entered without its port (`connCheck.tcpPortMissing`) */
+  tcpNoPort?: boolean;
   /** the connection's firmware profile is read */
   profile?: boolean;
   /** the browser preview: nothing reaches a file or a device */
@@ -448,7 +452,12 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       if (f.linkPhase === "connecting") return lock("lock.connecting");
       if (f.portHeld) return lock("lock.portHeld");
       if (f.loaded === false) return lock("lock.loading");
+      if (f.tcpNoPort) return lock("lock.tcpNoPort");
       return f.ready ? show() : lock("lock.formIncomplete");
+    case "installation.savePorts":
+      if (f.busy) return lock("lock.busy");
+      if (f.held) return lock("lock.writeRunning");
+      return f.tcpNoPort ? lock("lock.tcpNoPort") : show();
     case "connection.cancel":
       return f.waiting || f.linkPhase === "connecting" ? show() : hide;
     case "connection.disconnect":

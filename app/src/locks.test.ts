@@ -254,6 +254,11 @@ describe("the rest, completed: connection actions, bank check, sections, views",
     expect(s("connection.connect", { linkPhase: "idle", ready: true })).toBe("open");
     expect(s("connection.connect", { linkPhase: "open", ready: true })).toBe("open");
     expect(s("connection.connect", { linkPhase: "connecting", ready: true })).toBe("locked:lock.connecting");
+    expect(s("connection.connect", { linkPhase: "idle", ready: true, tcpNoPort: true })).toBe("locked:lock.tcpNoPort");
+    expect(s("installation.savePorts", {})).toBe("open");
+    expect(s("installation.savePorts", { tcpNoPort: true })).toBe("locked:lock.tcpNoPort");
+    expect(s("installation.savePorts", { busy: true, tcpNoPort: true })).toBe("locked:lock.busy");
+    expect(s("installation.savePorts", { held: true })).toBe("locked:lock.writeRunning");
     expect(s("connection.connect", { linkPhase: "idle", ready: true, portHeld: true })).toBe("locked:lock.portHeld");
     expect(s("connection.connect", { linkPhase: "idle", ready: true, loaded: false })).toBe("locked:lock.loading");
     expect(s("connection.connect", { linkPhase: "idle", ready: false })).toBe("locked:lock.formIncomplete");

@@ -276,3 +276,14 @@ export function targetsForInstallation(fill: { kind: "tcp" | "serial"; target: s
 export function profileLoadNeeded(loaded: { inst: string | null; rev: number } | null, inst: string | null, rev: number): boolean {
   return !loaded || loaded.inst !== inst || loaded.rev !== rev;
 }
+
+/** A network gateway is reached at `host:port`; like the backend's address resolution (`to_socket_addrs`), the port is
+ *  what follows the last colon, a number 1–65535 (`[addr]:port` for IPv6). An empty field is not this error. Without a
+ *  port the system cannot form an address at all („invalid socket address“), so the form says so first. */
+export function tcpPortMissing(target: string): boolean {
+  const s = target.trim();
+  if (!s) return false;
+  const i = s.lastIndexOf(":");
+  const port = s.slice(i + 1);
+  return i <= 0 || !/^\+?\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535;
+}

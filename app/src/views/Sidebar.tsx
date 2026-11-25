@@ -20,7 +20,7 @@ import { readMark } from "../bmsMemory";
 import { pollsBus, refusalOf, useWiring } from "../wiring";
 import { DIP_MAX } from "../access";
 import { useUpdate } from "../update";
-import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, profileLoadNeeded, targetsForInstallation, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, packsLine, packsOf, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
+import { BAUD, connectCancelled, connectedForOther, endBeforeSwitch, explain, fillFields, firstLine, editBroker, fixedFallback, profileLoadNeeded, targetsForInstallation, tcpPortMissing, gapLine, initialWay, lastWay, mergeAfterSearch, mqttSaveAction, pruneGap, lastConn, noAnswer, otherBus, packsLine, packsOf, padAddress, parseSel, saveLastConn, saveLastWay, selAddresses, selText, type Gap, type PackSel } from "../connCheck";
 
 /** a wait for a busy port that was ended (cancel, new settings, a user action, a flash, the firmware view) */
 class Cancelled extends Error {}
@@ -790,7 +790,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         )}
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" {...lockProps(decideUi("connection.connect", { ...facts,
-            ready: src === "mqtt" ? !!mq.host && !!mq.base && !!mq.port : !!target, loaded: src === "mqtt" ? !mqLoading : !packsLoading }), t)} onClick={() => connect()}>
+            ready: src === "mqtt" ? !!mq.host && !!mq.base && !!mq.port : !!target, tcpNoPort: src !== "mqtt" && kind === "tcp" && tcpPortMissing(target), loaded: src === "mqtt" ? !mqLoading : !packsLoading }), t)} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {decideUi("connection.cancel", { ...facts, waiting }).visible && <Button variant="ghost" onClick={waiting ? stopWaiting : cancelConnect}>{t("conn.cancel")}</Button>}

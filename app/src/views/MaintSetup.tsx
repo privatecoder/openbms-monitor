@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { actLocked } from "../locks";
+import { actLocked, decideUi, lockProps } from "../locks";
+import { tcpPortMissing } from "../connCheck";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { accessHint } from "../access";
@@ -67,6 +68,9 @@ export function MaintSetup({ installation, pending, markerOn, onSaved, onCancel,
 
   const can: ControlEndpoint | null = !f.canValue.trim() ? null : f.canKind === "tcp" ? { kind: "tcp", addr: f.canValue.trim() } : { kind: "serial", path: f.canValue };
 
+  const tcpNoPort = (f.canKind === "tcp" && tcpPortMissing(f.canValue)) || (f.packKind === "tcp" && tcpPortMissing(f.packValue));
+  const saveUi = decideUi("installation.savePorts", { source: null, chosen: null, busy: saving, held: disabled, tcpNoPort });
+
   const save = async () => {
     setError(null); setSaving(true);
     try { onSaved(await api.maintSaveInstallation({ ...installation, control: can, endpoints: setupEndpoints(installation, portKey(f.packKind, f.packValue)) })); }
@@ -100,9 +104,10 @@ export function MaintSetup({ installation, pending, markerOn, onSaved, onCancel,
       {installation.master_serial && <p className="text-muted">{t("maint.setup.serial", { serial: installation.master_serial })}</p>}
 
       <div className="flex flex-wrap gap-2">
-        <Button variant="primary" size="sm" disabled={actLocked(saving, disabled)} onClick={save}>{t("maint.setup.save")}</Button>
+        <Button variant="primary" size="sm" {...lockProps(saveUi, t)} onClick={save}>{t("maint.setup.save")}</Button>
         <Button variant="secondary" size="sm" disabled={actLocked(saving, false)} onClick={onCancel}>{t("maint.setup.cancel")}</Button>
       </div>
+      {tcpNoPort && <p className="text-discharge">{t("lock.tcpNoPort")}</p>}
       {error && <p className="text-alarm">{error}</p>}
     </div>
   );
