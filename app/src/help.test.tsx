@@ -3,7 +3,7 @@ import { isValidElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import "./i18n";
 import i18n from "i18next";
-import { HelpBody, helpComponents, helpTarget, helpTitle } from "./help";
+import { HelpBody, helpComponents, helpTarget, helpTitle, parseHelp } from "./help";
 
 const PAGE = import.meta.glob("../../help/de/guide.firmware.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const guide = Object.values(PAGE)[0].replace(/^---\n[\s\S]*?\n---\n/, "");
@@ -41,5 +41,14 @@ describe("help pages", () => {
     expect(link.props.children).toBe(helpTitle("topic.firmware", "en"));
     link.props.onClick();
     expect(onOpen).toHaveBeenCalledWith("topic.firmware");
+  });
+});
+
+describe("help files", () => {
+  it("reads the front matter also with CRLF line ends (a Windows checkout)", () => {
+    for (const nl of ["\n", "\r\n"]) {
+      const e = parseHelp(["---", "title: Cell count", "short: Cells in series", "related: a, b", "---", "", "Body text"].join(nl), "param.x");
+      expect([e.title, e.short, e.related, e.body]).toEqual(["Cell count", "Cells in series", ["a", "b"], "Body text"]);
+    }
   });
 });

@@ -11,7 +11,8 @@ import changelog from "../../../CHANGELOG.md?raw";
 import { StoragePanel } from "./Storage";
 
 /** The changelog without its title and intro: from the first version heading on. */
-export const changelogBody = (raw: string) => {
+export const changelogBody = (text: string) => {
+  const raw = text.replace(/\r\n?/g, "\n");
   const i = raw.search(/^## /m);
   return i < 0 ? raw : raw.slice(i);
 };

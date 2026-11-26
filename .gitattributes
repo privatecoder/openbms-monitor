@@ -1,0 +1,7 @@
+# Text files are checked out with LF on every platform: help pages, the changelog and generated data are parsed
+# line by line, and a Windows checkout with CRLF must not change what the app shows.
+* text=auto eol=lf
+*.ehex binary
+*.png binary
+*.ico binary
+*.icns binary

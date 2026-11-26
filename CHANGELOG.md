@@ -2,6 +2,10 @@
 
 All notable changes of OpenBMS Monitor. Newest first; the app shows this file in its About view.
 
+## 0.4.4-beta — 2026-11-26
+
+- Windows: parameter and switch names, help titles and short texts showed as their ids (e.g. `param.cells_in_series`, `switch.0.0`) because the help pages were built with CRLF line ends. The repository now checks text out with LF on every platform, and help pages and the changelog are read with either line end.
+
 ## 0.4.3-beta — 2026-11-26
 
 - Parameters: stored columns that are shown follow a read or write at once (their place's newest block, e.g. a board identified by a serial number set just before), instead of keeping the state they were opened with; no stored column is added or brought back by this.

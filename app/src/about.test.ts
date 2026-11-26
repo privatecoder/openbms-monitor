@@ -10,5 +10,6 @@ describe("about view", () => {
   it("the shown changelog starts at the first version heading", () => {
     expect(changelogBody("# Changelog\n\nintro\n\n## Unreleased\n\n- a\n")).toBe("## Unreleased\n\n- a\n");
     expect(changelogBody("no headings")).toBe("no headings");
+    expect(changelogBody("# Changelog\r\n\r\nintro\r\n\r\n## Unreleased\r\n\r\n- a\r\n")).toBe("## Unreleased\n\n- a\n");
   });
 });

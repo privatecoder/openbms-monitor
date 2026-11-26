@@ -10,23 +10,30 @@ const files = import.meta.glob("../../help/*/*.md", { query: "?raw", import: "de
 
 interface Entry { title: string; short: string; body: string; related: string[] }
 
-const entries: Record<string, Record<string, Entry>> = {};
-for (const [path, raw] of Object.entries(files)) {
-  const m = path.match(/help\/([a-z]{2})\/(.+)\.md$/);
-  if (!m) continue;
-  const [, lang, id] = m;
+/** One help file: its front matter and body. Line ends are normalised first: a checkout with CRLF (Windows) would
+ *  otherwise miss the front matter and every title would show as its id. */
+export function parseHelp(text: string, id: string): Entry {
+  const raw = text.replace(/\r\n?/g, "\n");
   const fm = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   const meta: Record<string, string> = {};
   if (fm) for (const line of fm[1].split("\n")) {
     const i = line.indexOf(":");
     if (i > 0) meta[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
-  (entries[lang] ??= {})[id] = {
+  return {
     title: meta.title ?? id,
     short: meta.short ?? "",
     body: fm ? fm[2].trim() : raw,
     related: (meta.related ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   };
+}
+
+const entries: Record<string, Record<string, Entry>> = {};
+for (const [path, raw] of Object.entries(files)) {
+  const m = path.match(/help\/([a-z]{2})\/(.+)\.md$/);
+  if (!m) continue;
+  const [, lang, id] = m;
+  (entries[lang] ??= {})[id] = parseHelp(raw, id);
 }
 
 export function useHelpEntry(id: string): Entry | undefined {
