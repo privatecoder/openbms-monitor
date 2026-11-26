@@ -1425,6 +1425,8 @@ impl Store {
     }
 
     /// Keep a parameter block of a place with the String 2 of its newest board (None: no board identified yet).
+    /// A kept block under the board registered at the place (the tests' shorthand; the app passes the serial it read).
+    #[cfg(test)]
     pub fn add_param_snapshot(&self, inst: &str, address: u8, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
         let serial = self.current_board(inst, address)?.map(|b| b.bms_serial);
         self.db

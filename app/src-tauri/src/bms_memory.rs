@@ -293,18 +293,9 @@ pub async fn set_can_protocol(state: State<'_, AppState>, address: u8, installat
     })
 }
 
-/// Keep a parameter block for the place in the connection's installation (`before`: the link when the exchange
-/// began). Nothing with „Nur ansehen“, nothing for a pack whose board is not confirmed (`bank.rs`); a failure must not
-/// fail the exchange with the pack.
-pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8]) -> Option<i64> {
-    if crate::bank::unconfirmed(state, before.gen, address) {
-        return None;
-    }
-    for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot(inst, address, kind, block, now_ms()))
-}
-
-/// `snapshot` with the String 2 this very read showed (`seen`: None for none of its own), not the one registered at the
-/// place: a replaced board with a placeholder never gets its predecessor's serial.
+/// Keep a block for the place (not for a pack still unconfirmed), with the String 2 this very read showed (`seen`: None
+/// for none of its own), never the one registered at the place: a replaced board with a placeholder never gets its
+/// predecessor's serial.
 pub fn snapshot_seen(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8], seen: Option<&str>) -> Option<i64> {
     if crate::bank::unconfirmed(state, before.gen, address) {
         return None;
