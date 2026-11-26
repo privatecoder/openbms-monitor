@@ -2,6 +2,14 @@
 
 All notable changes of OpenBMS Monitor. Newest first; the app shows this file in its About view.
 
+## Unreleased
+
+- Commissioning over RS485-1/2: an installation without the setting “inverter connected via” no longer refuses everything; over RS485-1/2 the bus rule listens first as always and works on a quiet bus (search, flash, recovery, reads), while the CAN socket's RS485 pair still waits for the setting.
+- Firmware: listed EMU1101-EXT builds (known checksum) are flashed without “Allow custom firmware” and with the ordinary phrase (`FLASH <n>`, `FLASH <n> PACKS`, `RECOVER`); only images the app does not know need the switch and the `CUSTOM` phrase.
+- Firmware, “Flash a board”: a search with several answering boards preselects none (before, pack 00 stayed chosen); a new search clears the choice.
+- Pack bus panel: each found pack is asked for its own firmware identity (64/03) on the quiet RS485-1/2 bus during the search, so a pack shows its EMU1101-EXT build without a CAN socket adapter, also right after a flash; the series confirmation lists the same version as the rows.
+- Firmware update of the installation's master: without a marker read over the CAN socket, the master's own RS485-1/2 status decides (a marker on is released before an image without maintenance functions, as on “Flash a board”), instead of only the marker last seen.
+
 ## 0.4.4-beta — 2026-11-26
 
 - Windows: parameter and switch names, help titles and short texts showed as their ids (e.g. `param.cells_in_series`, `switch.0.0`) because the help pages were built with CRLF line ends. The repository now checks text out with LF on every platform, and help pages and the changelog are read with either line end.

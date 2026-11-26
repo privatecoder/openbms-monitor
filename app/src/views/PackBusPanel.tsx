@@ -339,7 +339,11 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
             <div className="space-y-2 rounded-md border border-charge/40 bg-charge/5 p-3">
               <p className="font-medium">{t("maint.series.confirm", { count: order.length, image: imageLabel(image, t) })}</p>
               <ol className="list-decimal pl-5 tabular-nums">
-                {order.map((a) => <li key={a}>{t("maint.series.line", { name: packName(a), from: versionOf(a, answering.find(([x]) => x === a)?.[1] ?? null) ?? "?", to: imageLabel(image, t) })}</li>)}
+                {order.map((a) => {
+                  // the same version text as the pack's row: its own 64/03 where the search got one, else 0x51
+                  const v = versionOf(a, answering.find(([x]) => x === a)?.[1] ?? null);
+                  return <li key={a}>{t("maint.series.line", { name: packName(a), from: v ? packVersionText(v, scan?.identities?.find((x) => x.address === a), t) : "?", to: imageLabel(image, t) })}</li>;
+                })}
               </ol>
               <p className="text-muted">{t("maint.series.rules")}</p>
               <p className="text-alarm">{t("fw.risks")}</p>

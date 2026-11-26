@@ -40,6 +40,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   // every search starts a new generation: what was read for the earlier one (Group0) no longer counts
   const [searchGen, setSearchGen] = useState(0);
   const [address, setAddress] = useState(0);
+  // „Platine flashen“: nothing chosen yet (a search with several answers, or before one)
+  const NO_PACK = -1;
   const [path, setPath] = useState<string | null>(null);
   const [image, setImage] = useState<FirmwareImage | null>(null);
   // not remembered: every visit starts with the vendor allowlist only
@@ -98,6 +100,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const may = (a: UiAction, more: Partial<UiFacts> = {}) => lockProps(decideUi(a, { ...fw, ...more }), t);
   const inputsLocked = decideUi("firmware.inputs", fw).locked;
   const phrase = confirmationPhrase(address, image?.custom);
+  // the RS485-1/2 tab shares this state; a search on „Platine flashen“ may have cleared it (the notes then take pack 0, as before)
+  const busAddress = address === NO_PACK ? 0 : address;
   const owner = inst && bPort && bPort === port ? inst : null;
 
   const chooseImage = async () => {
@@ -174,7 +178,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   useEffect(() => () => { if (seriesRun.current !== null) void api.firmwareSeriesEnd(seriesRun.current); }, []);
 
   const search = async () => {
-    onUserAction(); setScanning(true); setError(null); setScan(null); setSearchGen((g) => g + 1);
+    // no pack is chosen until this search found exactly one or the user picks one of its results
+    onUserAction(); setScanning(true); setError(null); setScan(null); setSearchGen((g) => g + 1); setAddress(NO_PACK);
     // the backend drops the monitor connection first; the UI must forget it too
     if (connected) onMonitorStopped();
     try {
@@ -241,10 +246,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
       {/* bound to the port and board it reads: another one starts without a fresh value */}
-      {image?.kind === "maintenance" && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${address}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} positive={!!image.positive} locked={inputsLocked}
+      {image?.kind === "maintenance" && (tab === "bus" || chosen) && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${busAddress}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={tab === "bus" ? busAddress : address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} positive={!!image.positive} locked={inputsLocked}
         latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
       {/* the bench target; on the pack bus each pack row reads its own (`PackBusPanel`) */}
-      {image && tab === "bench" && <FlashSocNote key={`bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} port={bPort} address={address} locked={inputsLocked} />}
+      {image && tab === "bench" && chosen && <FlashSocNote key={`bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} port={bPort} address={address} locked={inputsLocked} />}
     </div>
   );
 
@@ -306,7 +311,7 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         {chosen && image && <p className="font-medium">{t("fw.summary", { address: chosen.address, from: chosen.info.firmware_version, to: imageLabel(image, t) })}</p>}
         <p className="text-sm text-alarm">{t("fw.risks")}</p>
         {benchPort.kind === "tcp" && <p className="text-sm text-discharge">{t("fw.tcpUntested")}</p>}
-        <Button variant="primary" disabled={decideUi("firmware.benchFlash", { ...fw, target: !!chosen }).locked} title={phrase} onClick={() => void benchFlash()}>{t("fw.bench.flash", { address: chosen?.address ?? address })}</Button>
+        <Button variant="primary" disabled={decideUi("firmware.benchFlash", { ...fw, target: !!chosen }).locked} title={phrase} onClick={() => void benchFlash()}>{chosen ? t("fw.bench.flash", { address: chosen.address }) : t("fw.bench.flashPick")}</Button>
         {error && <p className="text-sm text-alarm">{error}</p>}
         {orphan && <EndIdleSeries busy={busy} running={running || inSeries} onEnded={() => { setOrphan(false); setError(null); }} />}
         {/* a board whose application is gone answers no search: its bootloader may still wait on the line */}

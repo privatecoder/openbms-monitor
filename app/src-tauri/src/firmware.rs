@@ -104,6 +104,16 @@ pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&
     }
 }
 
+/// The installation master's marker decided over RS485-1/2 (`bench_marker`'s result `m`): its own fresh status wins; only
+/// where the build shows none there (`unchecked`) and the master is a patched one (`ext`: it answered 64/03) does a
+/// marker last seen on still refuse an image without the maintenance functions, as without any read.
+pub fn u0_marker(m: &'static str, last_on: bool, image: known::ImageKind, ext: bool) -> Result<&'static str, &'static str> {
+    if m == "unchecked" && ext && last_on && image != known::ImageKind::Maintenance {
+        return Err("release-master-first-unread");
+    }
+    Ok(m)
+}
+
 fn lang(code: &str) -> Lang {
     if code.starts_with("de") { Lang::De } else { Lang::En }
 }
@@ -437,14 +447,20 @@ pub fn log_name(unix_s: u64, installation: Option<&str>, address: u8, what: &str
     }
 }
 
-/// Parse and authorize an image: allowlisted vendor releases, or any image that passes the strict
-/// format and header checks when custom firmware is allowed.
+/// The name an image is flashed under without „Eigene Firmware zulassen“: an allowlisted vendor release or a listed
+/// EMU1101-EXT build, both by the checksum of the decoded application (`known.rs`); None for anything else.
+fn listed_name(code_sha256: &str) -> Option<&'static str> {
+    known::RELEASES.iter().find(|r| r.code_sha256 == code_sha256).map(|r| r.name).or_else(|| known::patch_by_code(code_sha256).map(|b| b.name))
+}
+
+/// Parse and authorize an image: allowlisted vendor releases and listed EMU1101-EXT builds, or any image that passes the
+/// strict format and header checks when custom firmware is allowed.
 pub fn image_info(bytes: &[u8], allow_custom: bool) -> openbms_flash::Result<(ehex::Image, ImageInfo)> {
     let image = ehex::parse(bytes)?;
-    let release = match known::identify(&image) {
-        Ok(r) => Some(r.name),
-        Err(_) if allow_custom => None,
-        Err(e) => return Err(e),
+    let release = match listed_name(&image.code_sha256) {
+        Some(name) => Some(name),
+        None if allow_custom => None,
+        None => return Err(known::identify(&image).err().unwrap_or_else(|| openbms_flash::Error::Image("unknown image".into()))),
     };
     let (kind, known_build) = known::kind(&image);
     let kind = match kind {
@@ -584,12 +600,20 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
     let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
     let kind = maint_kind(info.kind);
-    // C' belongs to the installation's master
+    // C' belongs to the installation's master. Without a valid marker read over the CAN socket (no control channel, or no
+    // answer) the master's own RS485-1/2 status decides once the port is open (`u0_marker`), not the history alone
+    let mut u0_pending: Option<bool> = None;
     let marker = match &inst {
         Some(owner) => {
             let fresh = if address == 0 && owner.control.is_some() { maint::read_master(&state, owner).ok() } else { None };
             let last_on = address == 0 && maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
-            master_marker_check(address, kind, fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?
+            let fresh_known = fresh.as_ref().is_some_and(|m| m.caps().is_some() && m.marker().is_some());
+            if address == 0 && !fresh_known && !matches!(fresh, Some(Master::No0x64)) {
+                u0_pending = Some(last_on);
+                None
+            } else {
+                master_marker_check(address, kind, fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?
+            }
         }
         None => None,
     };
@@ -618,7 +642,19 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             // another board than the one stored for its address is not flashed. Its String 2 goes with the pending
             // record: only that board's answer clears it.
             let target = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
-            (bank, target, marker, crate::bench::rs485_marker(&mut link, address))
+            let found = crate::bench::rs485_marker(&mut link, address);
+            let marker = match u0_pending {
+                Some(last_on) => {
+                    let m = crate::bench::bench_marker(&mut link, &found, address, kind).map_err(to_text)?;
+                    let m = u0_marker(m, last_on, kind, found.info.is_some()).map_err(|k| to_text(maint::refused(k)))?;
+                    if m == "released" {
+                        maint::event(&state, Some(&i.id), &format!("flash: marker of pack {address} cleared over RS485-1/2"));
+                    }
+                    Some(m)
+                }
+                None => marker,
+            };
+            (bank, target, marker, found)
         }
         None => {
             // the board shown at the search, before anything changes on it
@@ -922,6 +958,14 @@ mod tests {
         assert_eq!(master_marker_check(0, maint, Some(&Master::No0x64), true), Ok(Some("latent")));
         assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), true), Ok(Some("unchecked")));
         assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), false), Ok(Some("unchecked")));
+        // without a CAN read the master's own RS485-1/2 status decides, in both directions of a stale history
+        assert_eq!(u0_marker("checked", true, orig, true), Ok("checked"));
+        assert_eq!(u0_marker("released", false, orig, true), Ok("released"));
+        // the build shows nothing there: a patched master last seen on still refuses an image without maintenance
+        assert_eq!(u0_marker("unchecked", true, orig, true), Err("release-master-first-unread"));
+        assert_eq!(u0_marker("unchecked", true, maint, true), Ok("unchecked"));
+        // an original master (no 64/03 there) ignores the marker
+        assert_eq!(u0_marker("unchecked", true, orig, false), Ok("unchecked"));
         // another address: no marker question
         assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
     }
@@ -1205,6 +1249,11 @@ mod tests {
         let bytes = lines.join("\n").into_bytes();
         let err = image_info(&bytes, false).err().unwrap();
         assert!(err.to_string().contains("unknown or unsupported"));
+        // a listed EMU1101-EXT build needs no custom consent, an unlisted image does
+        let full = known::PATCH_BUILDS.iter().find(|b| b.name == "EMU1101-EXT Full 1.6.7").unwrap();
+        assert_eq!(listed_name(full.code_sha256), Some("EMU1101-EXT Full 1.6.7"));
+        assert_eq!(listed_name(known::RELEASES[0].code_sha256), Some(known::RELEASES[0].name));
+        assert_eq!(listed_name(&"0".repeat(64)), None);
         // with custom firmware allowed, the same image passes the format checks and is marked
         let (_, info) = image_info(&bytes, true).unwrap();
         assert!(info.custom);

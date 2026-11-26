@@ -795,15 +795,29 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     let mut stopped = inst.is_some() && !cancelled
         && probe_until_cancel::<_, ()>(&found, &state.scan_cancel, &mut bus_read, |a| Ok(canonical_string2(&mut link, a))).unwrap_or(false);
     let bus_serials = unique_serials(bus_read);
+    // each found pack's own 64/03 on this quiet pack bus (EMU1101-EXT answers at its address there, also right after a
+    // flash): the answer comes from that address on this very connection, so it needs no board matching
+    let mut own: Vec<(u8, openbms_flash::maint::policy::PackFinding)> = vec![];
+    if inst.is_some() && !cancelled && !stopped {
+        let budget = crate::profile::identity_budget(&link);
+        stopped = probe_until_cancel::<_, ()>(&found, &state.scan_cancel, &mut own, |a| {
+            Ok(dialog::probe_pack(&mut link, &SystemClock::new(), a, budget).map(openbms_flash::maint::policy::PackFinding::of).unwrap_or(openbms_flash::maint::policy::PackFinding::Undecided))
+        }).unwrap_or(false);
+    }
     drop(link);
-    let identities = match &inst {
-        Some(i) if !cancelled && !stopped && !bus_serials.is_empty() => {
-            let (v, s) = board_identities(&state, i, &bus_serials, &state.scan_cancel);
+    let gen = crate::link_now(&state).gen;
+    let mut identities: Vec<crate::profile::PackProbeView> = own.iter()
+        .filter(|(_, f)| *f != openbms_flash::maint::policy::PackFinding::Undecided)
+        .map(|(a, f)| crate::profile::probe_view(gen, *a, f)).collect();
+    // the rest over the installation's CAN socket, by board (a pack bus answer counts first)
+    let rest: Vec<(u8, String)> = bus_serials.into_iter().filter(|(a, _)| !identities.iter().any(|v| v.address == *a)).collect();
+    if let Some(i) = &inst {
+        if !cancelled && !stopped && !rest.is_empty() {
+            let (v, s) = board_identities(&state, i, &rest, &state.scan_cancel);
             stopped = s;
-            v
+            identities.extend(v);
         }
-        _ => vec![],
-    };
+    }
     let cancelled = cancelled || stopped;
     Ok(PackScan { packs, bank, cleared, cancelled, identities })
 }

@@ -5,7 +5,9 @@
 //!   the user said the inverter's communication is paused or cut for now (`paused`, this session only).
 //! - RS485-1/2 always listens for one polling cycle before a connection's first request: a Seplos master polling its
 //!   slaves (pack 0 with slaves, until its maintenance marker or DIP 5–8 halt it) or any other sender refuses there.
-//! - An installation without the setting: nothing is sent, the UI asks for it (never taken for one without inverter).
+//! - An installation without the setting: RS485-1/2 still works after its listen (a quiet bus is what makes commissioning
+//!   a new bank possible: search, flash, read), the CAN socket's pair sends nothing until the UI has the setting (never
+//!   taken for one without inverter).
 //! - No installation („Nur ansehen“, „Platine flashen“): the user chose a free port; the connection listens briefly on
 //!   that port before its first request, whichever bus it is.
 
@@ -66,7 +68,11 @@ fn held() -> bool {
 
 /// The bus rule for `bus` under `w`.
 pub fn decide(w: Wiring, bus: Bus) -> Result<Permit, String> {
-    let inverter = w.inverter.ok_or("wiring-unset")?;
+    // not set yet: RS485-1/2 listens first like every connection there (a polling inverter or master is heard and
+    // refuses); the CAN socket's pair has no such listen, so it waits for the setting
+    let Some(inverter) = w.inverter else {
+        return if bus == Bus::PackBus { Ok(Permit::ListenFirst) } else { Err("wiring-unset".into()) };
+    };
     if inverter.polls() == Some(bus) && !w.paused {
         return Err("bus-inverter".into());
     }
@@ -276,5 +282,7 @@ mod tests {
         assert_eq!(decide(w(Inverter::Uart0, true), Bus::PackBus), Ok(Permit::ListenFirst));
         assert_eq!(decide(w(Inverter::Can, false), Bus::CanSocketBus), Ok(Permit::Send));
         assert_eq!(decide(Wiring::default(), Bus::CanSocketBus), Err("wiring-unset".into()));
+        // a new installation on RS485-1/2: the listen decides, so search, flash and reads work on a quiet bus
+        assert_eq!(decide(Wiring::default(), Bus::PackBus), Ok(Permit::ListenFirst));
     }
 }
