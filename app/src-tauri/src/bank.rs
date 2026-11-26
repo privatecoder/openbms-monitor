@@ -383,6 +383,18 @@ pub(crate) fn board_matches(state: &AppState, gen: u64, address: u8, serial: &st
     state.bank.lock().is_ok_and(|b| b.current(gen).and_then(|b| b.boards_read.get(&address)).is_some_and(|s| s == serial))
 }
 
+/// A board without a serial of its own answers at `address`: the serial last read there and the finding bound to it no
+/// longer describe what answers now, so both go; the next real serial read there starts ownerless and gets its own proof
+/// (`board_read`), also when it is the serial seen before.
+pub(crate) fn forget_board(state: &AppState, gen: u64, address: u8) {
+    if let Ok(mut b) = state.bank.lock() {
+        if b.gen == gen {
+            b.boards_read.remove(&address);
+            b.live.remove(&address);
+        }
+    }
+}
+
 /// A flash of the pack begins: its live finding of this connection no longer holds.
 pub(crate) fn clear_live(state: &AppState, gen: u64, address: u8) {
     if let Ok(mut b) = state.bank.lock() {

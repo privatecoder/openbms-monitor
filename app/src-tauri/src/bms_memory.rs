@@ -392,7 +392,7 @@ impl<'a> AsciiIo<'a> {
             // no serial of its own (e.g. the factory placeholder): no earlier finding can be tied to this board, so its
             // own 64/03 is asked now, right before the write; only that fresh answer counts (none: no proof)
             None => {
-                crate::bank::clear_live(state, link.gen, address);
+                crate::bank::forget_board(state, link.gen, address);
                 crate::profile::reask_identity(state, link, address);
                 crate::profile::pack_patch(state, link, address, None).filter(|p| p.source == "live")
             }

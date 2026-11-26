@@ -13,7 +13,7 @@ All notable changes of OpenBMS Monitor. Newest first; the app shows this file in
 - Bench flash and recovery clear obsolete firmware evidence at every ambiguous matching place and report ambiguity or storage errors.
 - A hard-stop write checks the target’s configurable hard-stop capability again in the backend.
 - The first real board serial invalidates unbound firmware evidence, including the master profile used for CAN writes.
-- An RS485-1/2 write to a board without its own serial preserves its image-specific Group0 bits. Its write and rename snapshots carry no firmware proof.
+- An RS485-1/2 write to a board without its own serial asks that pack's firmware identity right before writing: with an answer, the bits its build implements can change and its snapshots carry that proof; without one, its image-specific Group0 bits stay as read and its snapshots carry no proof. The finding is not kept for a board read at that address later.
 - If the master’s marker could not be verified, the result explains how a set marker affects patched firmware.
 - Pack control reads a proven cutoff’s switch state on opening when no column provides it. The power button waits for its direction and the refresh button retries an unreadable state.
 - Loading stored parameter columns preserves newer reads and uses the snapshot ID to distinguish reads within the same millisecond.

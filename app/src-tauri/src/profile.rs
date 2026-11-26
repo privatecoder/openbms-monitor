@@ -1178,6 +1178,22 @@ mod tests {
     }
 
     #[test]
+    fn a_placeholder_board_in_between_leaves_no_finding_for_the_board_read_after_it() {
+        let state = AppState::default();
+        crate::new_link(&state, None);
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, true, None);
+        bank::board_read(&state, link.gen, 2, Some("SYN-A"));
+        // a placeholder board B answers at that address: its fresh finding is not bound to A's serial
+        bank::forget_board(&state, link.gen, 2);
+        bank::set_live(&state, link.gen, 2, live([1, 6], Some(false)));
+        // A answers again: the finding of B is dropped and A is asked for its own
+        bank::board_read(&state, link.gen, 2, Some("SYN-A"));
+        assert!(bank::live(&state, link.gen, 2).is_none());
+        assert!(ask_again(2, Bus::PackBus, false, None));
+    }
+
+    #[test]
     fn a_parameter_read_asks_again_only_after_silence() {
         let (can, rs) = (Bus::CanSocketBus, Bus::PackBus);
         let proven = live([1, 6], Some(false));
