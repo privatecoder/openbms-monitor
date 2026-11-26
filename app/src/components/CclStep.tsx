@@ -8,6 +8,8 @@ import { errorText } from "../control";
 import { decideUi, lockProps } from "../locks";
 import { useProfile } from "../profile";
 import { askBitsAgain, useReadCaps } from "../imageFlags";
+import { usePackProbes } from "../packProbes";
+import { packFirmware } from "../power";
 import { useFeed, useSource } from "../source";
 import { Button } from "./ui/button";
 import { SectionHead, StatusLine } from "./Section";
@@ -28,7 +30,10 @@ export function CclStepSection({ connected, bus, installation, packs, linkKey, l
   // does not poll)
   const [tick, setTick] = useState(0);
   const [checking, setChecking] = useState(false);
-  const caps0 = useReadCaps(connected && bus === "pack" ? 0 : null, null, linkKey, tick);
+  // a proven 64/03 of the master on this connection (e.g. „Erneut prüfen“ in its pack view) counts here at once
+  const [probes] = usePackProbes();
+  const shared = bus === "pack" ? packFirmware(0, profile, probes[0]).caps : null;
+  const caps0 = useReadCaps(connected && bus === "pack" ? 0 : null, shared, linkKey, tick);
   const offered = bus === "can" ? masterOffers(profile) : caps0 !== null && (caps0 & (1 << CAP.ccl_step)) !== 0;
   const key = masterKey(linkKey, profile);
   const [read, setRead] = useState<CclRead | null>(null);

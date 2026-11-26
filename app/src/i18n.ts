@@ -410,7 +410,7 @@ const resources = {
           hint: "Nach dem Flashen startet die Platine neu und übernimmt Kapazität und Ladestand aus diesem Stand; nur zur Information, keine Bedingung für das Flashen. Lesen: {{access}}",
         },
         markerLatent: "Der Wartungsmarker des Masters war zuletzt an, und das jetzige Image kennt 0x64 nicht: Der Marker steckt noch im Flash, ist unter diesem Image aber nicht prüfbar. Ein Patch-Image startet mit diesem alten Marker und fragt dann keine Slaves ab. Nach dem Flash über die CAN-Buchse „Master freigeben“ (mit der DIP-Slavezahl).",
-        markerUnchecked: "Der Wartungsmarker des Masters ließ sich vor dem Flashen nicht frisch lesen (keine CAN-Buchse eingerichtet oder keine Antwort). Zuletzt war er nicht an; ist er doch gesetzt, nach dem Update „Master freigeben“ prüfen.",
+        markerUnchecked: "Der Wartungsmarker des Masters ließ sich vor dem Flashen weder über RS485-1/2 noch über die CAN-Buchse frisch lesen. Zuletzt war er nicht an; ist er doch gesetzt, nach dem Update „Master freigeben“ prüfen.", markerUncheckedOn: "Der Wartungsmarker des Masters ließ sich vor dem Flashen nicht frisch lesen, zuletzt war er aber an. Das neue Image startet dann angehalten (der Master fragt seine Slaves nicht ab): nach dem Update „Master freigeben“.",
         patch: {
           title: "Patch-Firmware {{release}}: vor dem Flashen",
           update: "Flashen: {{access}} Fragt der Master seine Slaves ab, zuerst „Master anhalten“ oder DIP 5–8 von Hand.",
@@ -1760,7 +1760,7 @@ const resources = {
           hint: "After flashing the board restarts and takes capacity and state of charge from this state; information only, no condition for flashing. Read: {{access}}",
         },
         markerLatent: "The master's maintenance marker was last seen on, and the current image does not know 0x64: the marker is still in flash but cannot be checked under this image. A patched image starts with this old marker and then polls no slaves. After the flash use “Release master” via the CAN socket (with the DIP slave count).",
-        markerUnchecked: "The master's maintenance marker could not be read freshly before flashing (no CAN socket set up or no answer). It was last seen not on; if it is set after all, check “Release master” after the update.",
+        markerUnchecked: "The master's maintenance marker could be read freshly before flashing neither over RS485-1/2 nor over the CAN socket. It was last seen not on; if it is set after all, check “Release master” after the update.", markerUncheckedOn: "The master's maintenance marker could not be read freshly before flashing, but it was last seen on. The new image then starts halted (the master does not poll its slaves): “Release master” after the update.",
         patch: {
           title: "Patched firmware {{release}}: before flashing",
           update: "Flashing: {{access}} When the master polls its slaves, first “Halt master” or DIP 5–8 by hand.",

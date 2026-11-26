@@ -342,6 +342,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           <h2 className="font-display text-lg font-semibold">{flashed?.recovery ? t("fw.rec.runTitle") : flashed ? t("fw.runTitle", { address: flashed.address }) : t("fw.s5")}</h2>
           {flashed && flashed.bank !== "none" && <p className="text-sm text-muted">{t(`maint.bank.flash.${flashed.bank}`)}</p>}
           {flashed?.marker === "unchecked" && (!flashed.bench || flashed.address === 0) && <p className="text-sm text-discharge">{t(flashed.bench ? "fw.bench.markerUnchecked" : "fw.markerUnchecked")}</p>}
+          {/* nothing readable now, but the marker was last seen on: a maintenance image then starts halted */}
+          {flashed?.marker === "unchecked-on" && <p className="text-sm text-discharge">{t("fw.markerUncheckedOn")}</p>}
           {flashed?.marker === "released" && <p className="text-sm text-muted">{t("fw.bench.markerReleased")}</p>}
           {flashed?.marker === "latent" && <p className="text-sm text-alarm">{t("fw.markerLatent")}</p>}
           {running && (

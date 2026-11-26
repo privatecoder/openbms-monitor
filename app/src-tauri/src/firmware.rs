@@ -103,6 +103,8 @@ pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&
         (Some(Master::No0x64), _) if last_on && image == known::ImageKind::Maintenance => Ok(Some("latent")),
         (Some(Master::No0x64), _) => Ok(Some("unchecked")),
         _ if image != known::ImageKind::Maintenance && last_on => Err("release-master-first-unread"),
+        // a maintenance image may go on, but the result says the marker was last seen on (it would start halted)
+        _ if last_on => Ok(Some("unchecked-on")),
         _ => Ok(Some("unchecked")),
     }
 }
@@ -122,7 +124,7 @@ pub fn u0_marker(m: &'static str, last_on: bool, image: known::ImageKind) -> Res
     if m == "unchecked" && last_on && image != known::ImageKind::Maintenance {
         return Err("release-master-first-unread");
     }
-    Ok(m)
+    Ok(if m == "unchecked" && last_on { "unchecked-on" } else { m })
 }
 
 fn lang(code: &str) -> Lang {
@@ -685,6 +687,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
                                 // cleared, but the master polls its slaves again: the flash is refused, the marker is off
                                 if matches!(&e, maint::MaintError::Refused { reason } if reason == "bench-dip-on") {
                                     let _ = maint::keep_master_released(&state, &i.id, &released(&found.master));
+                                    // the count a halt kept belongs to that halt, not to a later one
+                                    let _ = maint::with_store(&state, |s| s.clear_expected_slaves(&i.id));
                                 }
                                 return Err(to_text(e));
                             }
@@ -692,6 +696,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
                         if m == "released" {
                             maint::event(&state, Some(&i.id), &format!("flash: marker of pack {address} cleared over RS485-1/2"));
                             maint::keep_master_released(&state, &i.id, &released(&found.master)).map_err(to_text)?;
+                            // as after a release from the panel: the count the halt kept is used up
+                            maint::with_store(&state, |s| s.clear_expected_slaves(&i.id)).map_err(to_text)?;
                         }
                         Some(m)
                     } else if can_decides {
@@ -1046,7 +1052,7 @@ mod tests {
             assert_eq!(master_marker_check(0, orig, fresh, true), Err("release-master-first-unread"));
             assert_eq!(master_marker_check(0, known::ImageKind::Custom, fresh, true), Err("release-master-first-unread"));
             assert_eq!(master_marker_check(0, orig, fresh, false), Ok(Some("unchecked")));
-            assert_eq!(master_marker_check(0, maint, fresh, true), Ok(Some("unchecked")));
+            assert_eq!(master_marker_check(0, maint, fresh, true), Ok(Some("unchecked-on")));
         }
         // RTN 04 with a marker kept on: latent; a patched image says so, original to original goes on unchecked
         assert_eq!(master_marker_check(0, maint, Some(&Master::No0x64), true), Ok(Some("latent")));
@@ -1059,7 +1065,7 @@ mod tests {
         // maintenance functions, whatever the master is
         assert_eq!(u0_marker("unchecked", true, orig), Err("release-master-first-unread"));
         assert_eq!(u0_marker("unchecked", true, known::ImageKind::Custom), Err("release-master-first-unread"));
-        assert_eq!(u0_marker("unchecked", true, maint), Ok("unchecked"));
+        assert_eq!(u0_marker("unchecked", true, maint), Ok("unchecked-on"), "the result says it was last seen on");
         assert_eq!(u0_marker("unchecked", false, orig), Ok("unchecked"));
         // another address: no marker question
         assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
