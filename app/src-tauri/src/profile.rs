@@ -268,7 +268,8 @@ pub fn hard_stop_observation(status: &openbms_proto::Status) -> bool {
 /// The image itself reports the hard stop for this pack on connection `gen` (a format-3 master at address 0, or a pack's
 /// own format-3 64/03 with a supported patch): then no observation is kept or shown for it.
 pub fn hard_stop_reported(profile: Option<&Profile>, live: Option<&PackFinding>, address: u8) -> bool {
-    if address == 0 {
+    // the master by its profile on the CAN socket; on RS485-1/2 (and every other pack) by its own 64/03
+    if address == 0 && profile.is_some_and(|p| p.bus == Bus::CanSocketBus) {
         return profile.is_some_and(|p| p.caps().is_some() && matches!(&p.master, Master::Patched { patch, .. } if patch.info.hard_stop.is_some()));
     }
     matches!(live, Some(PackFinding::Proven { info, .. }) if info.hard_stop.is_some())
@@ -1032,6 +1033,9 @@ mod tests {
         assert!(!hard_stop_reported(Some(&p3), None, 1), "a slave keeps the observation path");
         assert!(!hard_stop_reported(Some(&profile(patched([1, 5], LISTED), Bus::CanSocketBus)), None, 0), "format 2: flag unknown");
         assert!(!hard_stop_reported(None, None, 0));
+        // RS485-1/2: the master by its own 64/03, not by a profile that has no identity there
+        assert!(hard_stop_reported(Some(&of("serial:x", Bus::PackBus, None)), Some(&live([1, 5], Some(true))), 0));
+        assert!(!hard_stop_reported(Some(&of("serial:x", Bus::PackBus, None)), None, 0));
         // the poll thread's status with waiting and charge MOSFET off: nothing recorded for the format-3 master
         let state = AppState::default();
         let dir = std::env::temp_dir().join(format!("openbms-hardstop-{}", std::process::id()));
@@ -1097,6 +1101,24 @@ mod tests {
         let info = |base| ExtInfo { format: 5, base, patch: [1, 6], build_id: [0; 8], hard_stop: None, power_rtc: true, pack_cutoff: true , reserved_flags: 0, read_caps: 0, patch_rev: 4, uart0: false };
         assert_eq!(base_of(&info([16, 6, 13])), Some([16, 6, 13]));
         assert_eq!(base_of(&info([16, 6, 0xFF])), None);
+    }
+
+    #[test]
+    fn another_board_at_an_address_drops_the_live_finding_of_the_one_before() {
+        let state = AppState::default();
+        crate::new_link(&state, None);
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, true, None);
+        bank::set_live(&state, link.gen, 2, live([1, 6], Some(false)));
+        // the same board, or a read without a real String 2: the finding stays
+        assert!(!bank::board_read(&state, link.gen, 2, Some("SYN-A")));
+        assert!(!bank::board_read(&state, link.gen, 2, Some("SYN-A")));
+        assert!(!bank::board_read(&state, link.gen, 2, None));
+        assert!(bank::live(&state, link.gen, 2).is_some());
+        // another board answers there now: its own 64/03 is asked again (ask_again sees no finding)
+        assert!(bank::board_read(&state, link.gen, 2, Some("SYN-B")));
+        assert!(bank::live(&state, link.gen, 2).is_none());
+        assert!(ask_again(2, Bus::PackBus, false, bank::live(&state, link.gen, 2).as_ref()));
     }
 
     #[test]

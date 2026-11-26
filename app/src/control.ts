@@ -46,7 +46,8 @@ export function offKind(mode: "full" | "power", cutoff: boolean, patch: PackPatc
   if (mode === "power" && !cutoff) return "soft";
   if (g0 === undefined) return "unread";
   if ((g0 & CUTOFF_BIT) !== 0) return "soft";
-  return mode === "power" || patch?.caps.pack_cutoff === true ? "cutoff" : "cutoffMaybe";
+  // proven on this connection (either bus), or the stored proof of the read says so
+  return cutoff || patch?.caps.pack_cutoff === true ? "cutoff" : "cutoffMaybe";
 }
 
 /** What the fresh Group0 (`g0`, undefined: the 0x47 after the action failed) and status say about the pack cutoff after

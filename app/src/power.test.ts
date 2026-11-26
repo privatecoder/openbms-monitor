@@ -35,6 +35,10 @@ describe("power and clock over the CAN socket", () => {
     expect(powerRtc(0, profile({ kind: "unknown-patch", caps: null }), undefined)).toBe(false);
     // RS485-1/2 has no such service, and no profile flag
     expect(powerRtc(0, profile({}, "pack"), undefined)).toBe(false);
+    // RS485-1/2: every pack by its own 64/03, the master too (its profile there has no identity)
+    expect(packCutoff(0, profile({}, "pack"), probe({ address: 0, version: "EMU1101-EXT Full 1.6.7", pack_cutoff: true }))).toBe(true);
+    expect(packCutoff(2, profile({}, "pack"), probe({ address: 2, version: "EMU1101-EXT Full 1.6.7", pack_cutoff: true }))).toBe(true);
+    expect(packCutoff(0, profile({}, "pack"), probe({ address: 0, gen: 3, pack_cutoff: true }))).toBe(false);
     expect(powerRtc(0, null, undefined)).toBe(false);
     // a slave by its own 64/03 only, never by the master's
     expect(powerRtc(3, profile(), probe({}))).toBe(true);
@@ -111,7 +115,9 @@ describe("power and clock over the CAN socket", () => {
   it("notes the slaves only after ein/aus at the master over the CAN socket", () => {
     expect(masterBroadcast("power", 0)).toBe(true);
     expect(masterBroadcast("power", 2)).toBe(false);
-    expect(masterBroadcast("full", 0)).toBe(false);
+    // RS485-1/2: the master's broadcast is named too
+    expect(masterBroadcast("full", 0)).toBe(true);
+    expect(masterBroadcast(null, 0)).toBe(false);
   });
 });
 

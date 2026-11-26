@@ -238,6 +238,9 @@ pub(crate) struct BankState {
     uart1: BTreeMap<u8, bool>,
     /// CAN socket: what each pack's own addressed 64/03 showed on this connection (missing: not asked yet)
     live: BTreeMap<u8, openbms_flash::maint::policy::PackFinding>,
+    /// per pack the real String 2 its last parameter read showed on this connection: another one means another board,
+    /// whose live finding is not the one kept
+    boards_read: BTreeMap<u8, String>,
 }
 
 impl BankState {
@@ -342,6 +345,22 @@ pub(crate) fn set_live(state: &AppState, gen: u64, address: u8, finding: openbms
         }
         _ => false,
     }
+}
+
+/// The real String 2 a parameter read of `address` showed on connection `gen` (None: a placeholder or none, which says
+/// nothing): when it is another one than the last read there, another board answers at that address now, and the live
+/// finding (of the board before) is dropped, so the read asks the new board's 64/03 (true).
+pub(crate) fn board_read(state: &AppState, gen: u64, address: u8, serial: Option<&str>) -> bool {
+    let (Ok(mut b), Some(s)) = (state.bank.lock(), serial) else { return false };
+    if b.gen != gen {
+        return false;
+    }
+    let changed = b.boards_read.get(&address).is_some_and(|prev| prev != s);
+    b.boards_read.insert(address, s.to_string());
+    if changed {
+        b.live.remove(&address);
+    }
+    changed
 }
 
 /// A flash of the pack begins: its live finding of this connection no longer holds.

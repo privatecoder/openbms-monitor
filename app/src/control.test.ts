@@ -140,6 +140,8 @@ describe("the stored pack cutoff in „Steuern“ (EMU1101-EXT Full)", () => {
     expect(offKind("full", false, null, 0xef)).toBe("cutoffMaybe");
     expect(offKind("full", false, patch(false), 0xcf)).toBe("cutoffMaybe");
     expect(offKind("full", false, patch(true), 0xef)).toBe("cutoff");
+    // RS485-1/2 with the cutoff proven on this connection (the pack's own 64/03): certain, not „falls Full“
+    expect(offKind("full", true, null, 0xef)).toBe("cutoff");
     expect(offKind("full", false, patch(null, "flash"), 0xdf)).toBe("soft");
     expect(offKind("full", false, null, 0xff)).toBe("soft");
     // a failed read: no command, whatever proof is cached

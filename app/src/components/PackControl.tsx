@@ -47,7 +47,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   offers?: (action: string) => boolean;
   /** CAN socket: Group0 bit 3 as last seen (true: locked, the buttons wait); null: not known, the backend reads it */
   powerLocked?: boolean | null;
-  /** CAN socket: the stored pack cutoff (Full) proven for this pack on this connection */
+  /** the stored pack cutoff (Full) proven for this pack on this connection (CAN socket or RS485-1/2) */
   cutoff?: boolean;
   /** the pack's proven build has the positive Group0 bits 3/4 (image flag bit 3): read here as the inverse builds' */
   positive?: boolean;
@@ -159,7 +159,13 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     const r: RestartResult = await api.packRestart(a);
     if (!same(a, lk)) return null;
     await reload(a);
-    if (r.kind !== "not_reachable") { forced.delete(`${lk}|${a}`); if (same(a, lk)) onChanged?.(a); if (can) void recheck(a); }
+    if (r.kind !== "not_reachable") {
+      forced.delete(`${lk}|${a}`);
+      // RS485-1/2: the pack's own 64/03 again before its column is reread, so a pack silent before is proven for that read
+      if (!can) { const g = getProfile()?.gen; if (g !== undefined) await api.packProbe(a, g).catch(() => null); }
+      if (same(a, lk)) onChanged?.(a);
+      if (can) void recheck(a);
+    }
     // the charge before and once back: a difference is said, never corrected
     const c = r.charge;
     const charge = c === undefined ? "" : c === null ? ` ${t("ctl.charge.unchecked")}`
@@ -249,11 +255,11 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     // RS485-1/2: bit 5 only means a lock if the pack is a Full build; named where bit 4 or 5 is 0
     const g = norm(f);
     const both = G0.extendedOff | G0.lockState;
-    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!can && g !== undefined && (g & both) !== both
+    const maybe = (n: NonNullable<Note>): NonNullable<Note> => (!cutoff && !can && g !== undefined && (g & both) !== both
       ? { text: `${n.text} ${t("ctl.cutoff.bit5", { v: (g & G0.lockState) !== 0 ? 1 : 0, state: t((g & G0.lockState) === 0 ? "ctl.cutoff.bit5Locked" : "ctl.cutoff.bit5Free") })}`, tone: n.tone } : n);
-    if (can && cut === "stillLocked") return slaves({ text: t("ctl.cutoff.stillLocked"), tone: "error" });
+    if (cutoff && cut === "stillLocked") return slaves({ text: t("ctl.cutoff.stillLocked"), tone: "error" });
     // off: a stored lock (bit 5 at 0) or an unreadable Group0 never reads „Laden möglich“, on either way
-    const offText = !on ? offCutoffText(cut, !can) : null;
+    const offText = !on ? offCutoffText(cut, !cutoff) : null;
     if (offText) return slaves({ text: t(offText, { pack: no(a) }), tone: cut === "locked" && l ? "ok" : "warn" });
     const unread = cut === "unread" ? ` ${t("ctl.cutoff.unread")}` : "";
     const withUnread = (n: NonNullable<Note>): NonNullable<Note> => (unread ? { text: `${n.text}${unread}`, tone: n.tone === "ok" ? "warn" : n.tone } : n);
@@ -262,12 +268,12 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
       const why = offReasons(l.status);
       return slaves(maybe(withUnread({ text: t("ctl.onOff.offAgain", { reason: why.length ? names(why) : t("ctl.onOff.protection") }), tone: "error" })));
     }
-    if (on && can && cut === "releasedHeld") return slaves({ text: t("ctl.cutoff.releasedHeld"), tone: "warn" });
+    if (on && cutoff && cut === "releasedHeld") return slaves({ text: t("ctl.cutoff.releasedHeld"), tone: "warn" });
     if (on) {
       const n = dischargeFree(l.status) ? { text: t("ctl.onOff.onDone"), tone: "ok" as const } : { text: t("ctl.onOff.onBlocked"), tone: "warn" as const };
-      return slaves(maybe(withUnread(can && cut === "released" ? { text: `${t("ctl.cutoff.released")} ${n.text}`, tone: n.tone } : n)));
+      return slaves(maybe(withUnread(cutoff && cut === "released" ? { text: `${t("ctl.cutoff.released")} ${n.text}`, tone: n.tone } : n)));
     }
-    if (can && cut === "notLocked") return slaves({ text: t("ctl.cutoff.notLocked"), tone: "warn" });
+    if (cutoff && cut === "notLocked") return slaves({ text: t("ctl.cutoff.notLocked"), tone: "warn" });
     // „done“ only when the read shows it: charging current may have lifted „off“ meanwhile
     const out = offOutcome(l.status);
     return slaves(maybe(withUnread(out === "off" ? { text: t("ctl.onOff.offDone", { pack: no(a) }), tone: "ok" }
@@ -336,11 +342,12 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
 
   // the newest Group0 seen: this section's own read, else the parameters column
   const g0 = inverseG0(fresh47 ? fresh47.g0 : group0, positive || positivePatch(fresh47?.patch));
-  const lock = lockState(can && cutoff, !can, g0);
+  // the cutoff proven on this connection (CAN socket or RS485-1/2): the lock is certain; unproven on RS485-1/2 only a maybe
+  const lock = lockState(cutoff, !can && !cutoff, g0);
   // a stored lock is released by „Ein“, whatever the off bit shows
   // „maybeActive“ (RS485-1/2, bit 5 only means a lock with 1.6) is an uncertainty line, never the command state
   const off = shownOff(st, lock);
-  const extendedOff = can && cutoff && g0 !== undefined && (g0 & CUTOFF_BIT) === 0;
+  const extendedOff = cutoff && g0 !== undefined && (g0 & CUTOFF_BIT) === 0;
   const relock = relockable(off, lock, can, cutoff, g0);
   const forcedAt = forced.get(`${linkKey}|${address}`);
   const heaterForced = forcedAt !== undefined && Date.now() < forcedAt + HEATER_MS;

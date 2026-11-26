@@ -8,11 +8,11 @@ import { CUTOFF_MIN, factsOf, firmwareKnown, FLAG_CUTOFF, FLAG_POWER, G0, offera
 export const POWER_LOCK_BIT = G0.powerLock;
 
 /** The firmware of `address` as this connection proved it (`access::Facts` patch and image flags): over the CAN socket
- *  the master by the profile, a slave by its own 64/03. A stored proof never counts here (it carries no image flags), and
- *  nothing is ever sent to find out. Over RS485-1/2 nothing is proven: unknown. */
+ *  the master by the profile, every other pack (and over RS485-1/2 every pack, the master too) by its own 64/03. A stored
+ *  proof never counts here (it carries no image flags), and nothing is ever sent to find out. */
 export function packFirmware(address: number | null, profile: ProfileView | null, probe: PackProbeView | undefined): Firmware {
-  if (address === null || profile?.bus !== "can") return UNKNOWN;
-  if (address === 0) {
+  if (address === null || !profile) return UNKNOWN;
+  if (address === 0 && profile.bus === "can") {
     const m = profile.master;
     if (m.kind === "patched" && m.caps?.version) return { patch: { kind: "version", version: m.caps.version }, flags: m.caps.flags ?? null, caps: m.caps.read_caps ?? null };
     // another identity or an older patch, or no 64/03 at all: no supported patch
@@ -92,6 +92,7 @@ export function clockTargets(packs: number[], canSet: (a: number) => boolean): {
 /** Over the CAN socket a pack the catalog offers no control action for gets one line where „Steuern“ would be. */
 export const controlHint = (w: Where & { fw: Firmware }) => w.connected && w.bus === "can" && !w.demo && controlMode(w) === null;
 
-/** After ein/aus at the master over the CAN socket: its acknowledgement covers only the master, its broadcast to the
- *  slaves is not confirmed. */
-export const masterBroadcast = (mode: "full" | "power" | null, address: number) => mode === "power" && address === 0;
+/** After ein/aus at the master (address 0, on either bus): its acknowledgement covers only the master, its broadcast to
+ *  the slaves is not confirmed. On RS485-1/2 a master that does not poll may have no slaves; the warning errs on the safe
+ *  side. */
+export const masterBroadcast = (mode: "full" | "power" | null, address: number) => mode !== null && address === 0;
