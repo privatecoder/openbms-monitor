@@ -115,6 +115,8 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const fwOf = (a: number) => packFirmware(a, profile, probes[a]);
   // image flags and read capabilities: this connection's own finding first; a negative one (no supported patch now)
   // outweighs what an older column was read under, so no feature of the earlier build stays offered
+  // the chosen pack has no supported patch on this connection (its own 64/03 said so): no EXT feature line at all
+  const negative = chosen !== null && fwOf(chosen).patch.kind === "none";
   const flagsOf = (a: number) => { const f = fwOf(a); return f.patch.kind === "none" ? null : f.flags ?? targetRead(a)?.patch?.caps.flags; };
   const capsOf = (a: number) => { const f = fwOf(a); return f.patch.kind === "none" ? null : f.caps ?? targetRead(a)?.patch?.caps.read_caps; };
   // Group0 bit 3 at 1 allows power in the pack's proven build (this connection's identity, else its column's proof)
@@ -691,14 +693,14 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={section("clock")} onBusy={busyFor("clock")}
           installation={!!installation} firmware={fwOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={section("can")} onBusy={busyFor("can")} />
-        <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? flagsOf(chosen) : undefined}
-          connected={connected && !!installation && !isDemo} linkKey={link} locked={section("hs")} onBusy={busyFor("hs")} write={writeHardStop} />
+        {!negative && <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? flagsOf(chosen) : undefined}
+          connected={connected && !!installation && !isDemo} linkKey={link} locked={section("hs")} onBusy={busyFor("hs")} write={writeHardStop} />}
         {/* the master's own EXT setting, whichever pack is chosen; apart from the parameter table and its bulk paths */}
         <CclStepSection connected={connected && !isDemo} bus={bus} installation={installation?.id ?? null} packs={packs.length} linkKey={link}
           locked={section("ccl")} onBusy={busyFor("ccl")} />
         <CclFeedSection packs={packs.length} />
-        <DiagnosisLine address={chosen} known={chosen !== null ? flagsOf(chosen) : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
-        <RemoteDiagnosis address={chosen} known={chosen !== null ? capsOf(chosen) : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
+        {!negative && <DiagnosisLine address={chosen} known={chosen !== null ? flagsOf(chosen) : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />}
+        {!negative && <RemoteDiagnosis address={chosen} known={chosen !== null ? capsOf(chosen) : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />}
         <SerialLine address={chosen} usable={offers("write-serials")} locked={section("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={offers("write-name")} locked={section("name")} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />

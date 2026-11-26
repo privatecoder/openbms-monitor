@@ -290,7 +290,9 @@ export interface FirmwareProgress { stage: FirmwareStage; block: number | null; 
  *  pack may hang in its bootloader and its record stays. */
 export interface FirmwareDone { ok: boolean; error: string | null; stage: FirmwareStage | null; written: boolean; before: DeviceInfo | null; after: DeviceInfo | null; log: string; pending: boolean; log_error?: string | null; comparison?: FlashComparison | null;
   /** a recovery: the address the restarted application answered at (null: did not show, transfer confirmed) */
-  recovered_at?: number | null; recovery?: boolean }
+  recovered_at?: number | null; recovery?: boolean;
+  /** the board reports another identity than the image written (its version, "?" for an unknown format) */
+  mismatch?: string | null }
 /** SOC, remaining and learned full capacity, cycles (backend `flash_check::Charge`). */
 export interface Charge { soc: number; remaining_ah: number; full_ah: number; cycles: number }
 /** One side of the comparison before/after a flash (backend `flash_check::Side`); null: not read or not supported. */

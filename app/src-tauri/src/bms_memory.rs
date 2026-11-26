@@ -384,6 +384,9 @@ struct AsciiIo<'a> {
     state: &'a AppState,
     link: &'a Link,
     address: u8,
+    /// the real String 2 the write's own check read (None: none of its own, e.g. the placeholder): its snapshots carry
+    /// this one, never the serial registered at the place
+    seen: Option<String>,
 }
 
 impl ParamIo for AsciiIo<'_> {
@@ -411,7 +414,7 @@ impl ParamIo for AsciiIo<'_> {
     fn snapshot(&mut self, kind: SnapshotKind, block: &[u8]) {
         // the proof this connection has for the pack goes with the block, so a stored column of it keeps the meaning of
         // its Group0 bits (as the parameter read's own snapshot does)
-        let id = snapshot(self.state, self.link, self.address, kind, block);
+        let id = snapshot_seen(self.state, self.link, self.address, kind, block, self.seen.as_deref());
         let patch = crate::profile::pack_patch(self.state, self.link, self.address, None);
         snapshot_patch(self.state, self.link, id, patch.as_ref());
     }
@@ -485,9 +488,12 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
         ParamPath::Ascii => (|| {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
             let checked = check_target(&state, &link, address)?;
-            // the pack's own proof of this connection decides which Group0 bits it may get (`group0_rule`)
-            let patch = crate::profile::pack_patch(&state, &link, address, None);
-            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore, crate::profile::group0_rule(false, patch.as_ref()))?;
+            let seen = crate::maint_store::real(&checked.read).map(String::from);
+            // another board than read here before drops the finding of that one; a board without a serial of its own
+            // cannot be matched to a finding at all: its write goes without a proof (bits as edited, bit 5 kept)
+            crate::bank::board_read(&state, link.gen, address, seen.as_deref());
+            let patch = if checked.unchecked { None } else { crate::profile::pack_patch(&state, &link, address, None) };
+            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address, seen }, address, base, edited, restore, crate::profile::group0_rule(false, patch.as_ref()))?;
             Ok(Written { value, unchecked: checked.unchecked })
         })(),
         ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore),
@@ -523,7 +529,9 @@ pub async fn write_name(state: State<'_, AppState>, address: u8, installation: O
     let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "name")?;
     on_bus(Action::WriteName, bus)?;
     let checked = check_target(&state, &link, address)?;
-    let value = name_checked(&mut AsciiIo { state: &state, link: &link, address }, address, &expected, &name)?;
+    let seen = crate::maint_store::real(&checked.read).map(String::from);
+    crate::bank::board_read(&state, link.gen, address, seen.as_deref());
+    let value = name_checked(&mut AsciiIo { state: &state, link: &link, address, seen }, address, &expected, &name)?;
     Ok(Written { value, unchecked: checked.unchecked })
 }
 

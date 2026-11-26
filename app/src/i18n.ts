@@ -309,6 +309,7 @@ const resources = {
               incomplete: "geflasht (Pack meldet {{v}}), aber der Vergleich danach ist unvollständig (nicht alles lesbar): von Hand prüfen.",
               differs: "geflasht (Pack meldet {{v}}), aber der Vergleich danach zeigt Unterschiede (siehe Ergebnis oben).",
               version: "geflasht, aber das Pack meldet {{v}}, nicht die Version des Images.",
+              noSerial: "geflasht (Pack meldet {{v}}), aber ohne eigene BMS-Seriennummer lässt sich nicht bestätigen, dass dieselbe Platine zurück ist: die Serie hält hier an.",
             },
           },
           why: {
@@ -436,6 +437,7 @@ const resources = {
         allowCustom: "Eigene Firmware zulassen", customName: "eigene Firmware", maintName: "{{release}}", maintKnown: "{{release}} (bekannte Prüfsumme)",
         maintWarning: "Gepatchte Firmware dieses Projekts (bekannte Prüfsumme), keine Original-Firmware des Herstellers.",
         customWarning: "Dieser App-Version unbekannte Firmware: Diese Prüfsumme gehört weder zu einer bekannten Original-Version noch zu einem EMU1101-EXT-Build, den diese App-Version kennt; ein neuerer Build braucht womöglich eine neuere App-Version. Die App prüft nur Format und Kopfdaten, nicht den Inhalt. Antwortet die neue Firmware am RS485-1/2-Bus nicht mit 19200 Baud, schlägt die Kontrolle danach fehl.",
+        mismatch: "Übertragen, aber das Pack meldet danach {{v}} statt {{image}}: Es läuft nicht das gewählte Image. Kein Firmwarenachweis gespeichert; Image und Pack prüfen und erneut flashen.",
         chooseImage: ".ehex-Datei wählen", imageInfo: "{{release}} · {{blocks}} Blöcke · {{bytes}} Byte", sha: "SHA-256 {{sha}}",
         inspect: "Pack prüfen", inspecting: "Prüfe (Bus still? Pack antwortet?) …", target: "Pack antwortet: {{name}}, Firmware {{version}}",
         summary: "Pack {{address}}: Firmware {{from}} → {{to}}",
@@ -1657,6 +1659,7 @@ const resources = {
               incomplete: "flashed (pack reports {{v}}), but the comparison afterwards is incomplete (not everything readable): check by hand.",
               differs: "flashed (pack reports {{v}}), but the comparison afterwards shows differences (see the result above).",
               version: "flashed, but the pack reports {{v}}, not the image's version.",
+              noSerial: "flashed (pack reports {{v}}), but without a BMS serial of its own the app cannot confirm the same board is back: the series stops here.",
             },
           },
           why: {
@@ -1784,6 +1787,7 @@ const resources = {
         allowCustom: "Allow custom firmware", customName: "custom firmware", maintName: "{{release}}", maintKnown: "{{release}} (known checksum)",
         maintWarning: "The project's patched firmware (known checksum), not the vendor's original firmware.",
         customWarning: "Firmware not known to this app version: this checksum belongs neither to a known original version nor to an EMU1101-EXT build this app version knows; a newer build may need a newer app version. The app checks only format and header, not the content. If the new firmware does not answer on the RS485-1/2 bus at 19200 baud, the check afterwards fails.",
+        mismatch: "Transferred, but the pack then reports {{v}} instead of {{image}}: it does not run the image chosen. No firmware proof kept; check image and pack and flash again.",
         chooseImage: "Choose .ehex file", imageInfo: "{{release}} · {{blocks}} blocks · {{bytes}} bytes", sha: "SHA-256 {{sha}}",
         inspect: "Check pack", inspecting: "Checking (bus quiet? pack answers?) …", target: "Pack answers: {{name}}, firmware {{version}}",
         summary: "Pack {{address}}: firmware {{from}} → {{to}}",

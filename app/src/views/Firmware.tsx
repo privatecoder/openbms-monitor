@@ -354,6 +354,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           )}
           {done && (
             <div className="space-y-2">
+              {/* transferred, but the board reports another build than the image written: said before any success line */}
+              {done.ok && done.mismatch && <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.mismatch", { v: done.mismatch, image: flashed ? imageLabel(flashed.image, t) : "?" })}</p>}
               {done.ok && done.recovery ? (
                 <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />
                   {done.recovered_at !== null && done.recovered_at !== undefined

@@ -199,6 +199,13 @@ pub(crate) fn known_serial(state: &AppState, link: &Link, bus: Bus, address: u8)
 pub(crate) fn serial_numbers(state: &AppState, link: &Link, bus: Bus, address: u8) -> Result<(openbms_proto::SerialNumbers, Option<bank::IdentityView>), String> {
     let mut s = with_conn(&state.conn, &state.flashing, |c| Ok(read_serials(&mut Conn { c, bus }, address)))??;
     bank::set_uart1(state, link.gen, address, offered(&s.bms));
+    // the board seen at this address on this connection (`bank::board_read`): another one later drops this one's
+    // firmware finding; at the master also its profile
+    if bank::board_read(state, link.gen, address, s.canonical.as_deref()) && address == 0 {
+        if let Some(p) = bank::profile(state, link.gen) {
+            bank::set_profile(state, link.gen, crate::profile::of(&p.endpoint, p.bus, None));
+        }
+    }
     // the master's String 1 as before when the binary one is missing
     if address == 0 && !matches!(s.battery, SerialValue::Set { .. }) {
         if let Ok(b) = with_conn(&state.conn, &state.flashing, |c| c.master_battery_serial()) {

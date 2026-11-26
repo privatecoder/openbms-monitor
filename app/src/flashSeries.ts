@@ -18,7 +18,7 @@ export type PackEnd =
   | { kind: "refused"; error: unknown }
   | { kind: "failed"; done: FirmwareDone }
   | { kind: "pending"; done: FirmwareDone }
-  | { kind: "deviates"; done: FirmwareDone; why: "missing" | "incomplete" | "differs" | "version" }
+  | { kind: "deviates"; done: FirmwareDone; why: "missing" | "incomplete" | "differs" | "version" | "noSerial" }
   | { kind: "notReached" };
 
 /** A finished flash's end event as the series sees it: only a pack that answers cleanly with the new image lets the
@@ -49,6 +49,9 @@ export interface SeriesRun {
   judge: (done: FirmwareDone) => PackEnd;
   report: (address: number, end: PackEnd) => void;
   start?: (address: number) => void;
+  /** packs without a String 2 of their own (none, a placeholder, or shared with another pack): their board cannot be
+   *  confirmed after the flash, so the series stops after them even when everything else matched */
+  stopAfter?: number[];
 }
 
 /** Flashes `order` one pack after another. Right before each pack, also after the wait for the bootloader records,
@@ -66,7 +69,11 @@ export async function runFlashSeries(order: number[], o: SeriesRun & { begun: st
     if (stop) { rest(n); return stop; }
     o.start?.(a);
     let end: PackEnd;
-    try { end = o.judge(await o.flash(a)); } catch (error) { end = { kind: "refused", error }; }
+    try {
+      const done = await o.flash(a);
+      end = o.judge(done);
+      if (end.kind === "flashed" && o.stopAfter?.includes(a)) end = { kind: "deviates", done, why: "noSerial" };
+    } catch (error) { end = { kind: "refused", error }; }
     o.report(a, end);
     if (end.kind !== "flashed") { rest(n + 1); return "stopped"; }
   }

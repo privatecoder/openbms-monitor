@@ -314,6 +314,12 @@ pub fn master_view(m: &Master) -> MasterView {
     }
 }
 
+/// `read_master` without keeping anything: for a decision that first has to know the answer belongs to this bank.
+pub fn read_master_unkept(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {
+    with_control(state, inst, |c| dialog::read(c, &SystemClock::new(), Budgets::default()))?
+        .map_err(|e| MaintError::Connection { message: e.to_string() })
+}
+
 /// Read the master on the control adapter (`03`, and for a supported patch `02`) and keep what it showed for the banner.
 /// A read without a valid answer never replaces the last one: a set marker stays visible until a read shows it off.
 pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {

@@ -219,6 +219,8 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           pending: async () => ((await api.maintAlerts().catch(() => null))?.pending.length ?? 0) > 0,
           flash: (a) => series.flash(a, from.get(a) ?? null, chosenOrder, typedNow),
           judge: (d) => judge(d, img),
+          // the packs the search found without a String 2 of their own: the series ends after them
+          stopAfter: scan?.no_serial ?? [],
           report: (a, e) => setView((v) => withEnd(v, a, e)),
           start: (a) => { setCurrent(a); setTarget(a); },
         });

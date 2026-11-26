@@ -172,3 +172,16 @@ describe("flash series: the run", () => {
       .toEqual({ flashed: 1, failed: 1, notReached: 1 });
   });
 });
+
+describe("flash series: a pack without its own serial", () => {
+  it("ends the series after it, even when everything else matched", async () => {
+    const reports: [number, string][] = [];
+    const end = await runFlashSeries([1, 2, 0], {
+      begun: "L", link: () => "L", cancelled: () => false, pending: async () => false,
+      flash: async () => done({ after: info("16.06") }), judge: (d) => judge(d, image),
+      report: (a, e) => reports.push([a, e.kind === "deviates" ? `deviates:${e.why}` : e.kind]), stopAfter: [2],
+    });
+    expect(end).toBe("stopped");
+    expect(reports).toEqual([[1, "flashed"], [2, "deviates:noSerial"], [0, "notReached"]]);
+  });
+});

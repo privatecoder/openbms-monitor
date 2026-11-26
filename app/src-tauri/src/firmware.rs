@@ -67,6 +67,9 @@ struct FirmwareDone {
     recovered_at: Option<u8>,
     /// true for the result of a recovery
     recovery: bool,
+    /// the board reported another identity than the image written (the version it reports, or "?" for a format the app
+    /// does not decode): the transfer finished, but it does not run what was chosen
+    mismatch: Option<String>,
 }
 
 /// What `firmware_start` checked before it began: the right-bank check ("match" | "stored" | "unchecked" |
@@ -332,10 +335,12 @@ pub fn firmware_series_end_idle() -> Result<(), String> {
 /// (`build`: its build ID, and whether it answers 64/03 there at all) only by that build ID (another build on the same
 /// OEM base is not it; silence proves nothing, except for a build that never answers there), an original image by no
 /// identity, an unknown custom image by anything.
-pub fn image_answered(kind: &str, build: Option<(&str, bool)>, after: Option<&openbms_proto::ExtInfo>) -> bool {
+/// `other`: an explicit identity in a format the app does not decode (not silence): never the image of a listed build or
+/// an original.
+pub fn image_answered(kind: &str, build: Option<(&str, bool)>, after: Option<&openbms_proto::ExtInfo>, other: bool) -> bool {
     match build {
-        Some((b, uart0)) => after.map_or(!uart0, |i| i.build_id_hex() == b),
-        None if kind == "original" => after.is_none(),
+        Some((b, uart0)) => after.map_or(!uart0 && !other, |i| i.build_id_hex() == b),
+        None if kind == "original" => after.is_none() && !other,
         None => true,
     }
 }
@@ -625,7 +630,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // (`u0_marker`). Decided once the port is open.
     let mut master_pending: Option<(bool, Option<Master>)> = None;
     if let (Some(owner), 0) = (&inst, address) {
-        let fresh = if owner.control.is_some() { maint::read_master(&state, owner).ok() } else { None };
+        // not kept yet: the CAN socket's adapter may reach another bank (`can_decides` below)
+        let fresh = if owner.control.is_some() { maint::read_master_unkept(&state, owner).ok() } else { None };
         let last_on = maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
         master_pending = Some((last_on, fresh));
     }
@@ -662,7 +668,14 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             let marker = match master_pending {
                 Some((last_on, fresh)) => {
                     let u0_decides = found.trusted && matches!(found.state.map(|s| s.marker()), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off));
-                    let can_decides = fresh.as_ref().is_some_and(|m| matches!(m, Master::No0x64) || (m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off))));
+                    // the CAN socket's answer counts only for a bank this flash matched by its master's String 2 (the
+                    // other adapter may reach another bank); only then is it kept for the banner
+                    let can_decides = bank == "match" && fresh.as_ref().is_some_and(|m| matches!(m, Master::No0x64) || (m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off))));
+                    if can_decides {
+                        if let Some(m) = &fresh {
+                            maint::keep_master_read(&state, &i.id, m).map_err(to_text)?;
+                        }
+                    }
                     if u0_decides {
                         // seen on: kept before anything is sent, so a failed clear still protects the next attempt
                         maint::keep_master_read(&state, &i.id, &found.master).map_err(to_text)?;
@@ -710,7 +723,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // where the app knows this board: its place in the installation, else every place where it is the current board
     let places: Vec<(String, u8)> = match (&inst, target.as_deref()) {
         (Some(i), _) => vec![(i.id.clone(), address)],
-        (None, Some(serial)) => maint::with_store(&state, |s| crate::bench::places_of(s, serial)).map_err(to_text)?,
+        // only an unambiguous place: the same String 2 at several places says nothing about which board this is
+        (None, Some(serial)) => {
+            let all = maint::with_store(&state, |s| crate::bench::places_of(s, serial)).map_err(to_text)?;
+            if all.len() == 1 { all } else { vec![] }
+        }
         (None, None) => vec![],
     };
     let (mut log, log_path, log_id) = new_log(&app, &state, installation.as_deref(), address, "flash", Some(&info.release))?;
@@ -755,10 +772,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let mut comparison = None;
         // the identity it reports afterwards is the image flashed (a listed build by its build ID, an original none)
         let mut answered = false;
+        let mut mismatch: Option<String> = None;
         if let Ok(Ok(r)) = &result {
             let serial_after = maint::string2(&mut link, address);
             let found_after = crate::bench::rs485_marker(&mut link, address);
-            answered = image_answered(info.kind, known::patch_by_code(&info.sha256).map(|b| (b.build_id, b.info().uart0)), found_after.info.as_ref());
+            answered = image_answered(info.kind, known::patch_by_code(&info.sha256).map(|b| (b.build_id, b.info().uart0)), found_after.info.as_ref(), found_after.info.is_none() && found_after.kind == "unknown-patch");
             let _ = writeln!(log, "IDENTITY after={} expected={} answered={answered}", found_after.info.map(|i| format!("{} {}", i.version(), i.build_id_hex())).unwrap_or_else(|| "-".into()), known::patch_by_code(&info.sha256).map_or("-", |b| b.build_id));
             if let Some(release) = patch_image.filter(|_| answered) {
                 if let Some(serial) = proof_serial(stored.as_deref(), serial_after.clone()) {
@@ -769,10 +787,14 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             }
             let before = flash_check::Side::new(stored.clone(), Some(&found_before), None, &r.state_before);
             let after = flash_check::Side::new(serial_after, Some(&found_after), positive_after, &r.state_after);
+            let other = found_after.info.is_some() || found_after.kind == "unknown-patch";
+            if !answered && other {
+                mismatch = Some(found_after.info.map_or("?".into(), |i| i.version()));
+            }
             let mut c = flash_check::compare(before, after, &r.state_before, &r.state_after);
             // another identity than the image flashed is a difference; none where one was expected leaves it open
             if !answered && c.verdict != "differs" {
-                c.verdict = if found_after.info.is_some() { "differs" } else { "incomplete" };
+                c.verdict = if other { "differs" } else { "incomplete" };
             }
             let _ = writeln!(log, "{}", flash_check::summary(&c));
             comparison = Some(c);
@@ -780,9 +802,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison, recovered_at: None, recovery: false },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison, recovered_at: None, recovery: false, mismatch },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false, mismatch: None },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false, mismatch: None },
         };
         let state = app.state::<AppState>();
         maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?} compare={}", done.ok, done.stage, done.error, done.log_error, done.comparison.as_ref().map_or("-", |c| c.verdict)));
@@ -870,6 +892,7 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
             })
         }));
         // the application found: a pending record of exactly this board (by its String 2) at this address is settled
+        let mut rec_mismatch: Option<String> = None;
         if let Ok(Ok(r)) = &result {
             if let Some((address, _)) = &r.found {
                 let serial = maint::string2(&mut link, *address);
@@ -881,12 +904,22 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
                 // the board now runs the image just written: what the app kept about its image before (version proof,
                 // hard-stop sighting) ends at every place where it is the current board; a listed patched image that
                 // answers with its own build sets the proof again
+                let found = crate::bench::rs485_marker(&mut link, *address);
+                let build = known::patch_by_code(&image.code_sha256);
+                let other = found.info.is_some() || found.kind == "unknown-patch";
+                let answered = image_answered(if build.is_some() { "maintenance" } else { "custom" }, build.map(|b| (b.build_id, b.info().uart0)), found.info.as_ref(), found.info.is_none() && found.kind == "unknown-patch");
+                if !answered && other {
+                    rec_mismatch = Some(found.info.map_or("?".into(), |i| i.version()));
+                }
                 if let Some(serial) = serial.as_deref() {
-                    let found = crate::bench::rs485_marker(&mut link, *address);
-                    let build = known::patch_by_code(&image.code_sha256);
-                    let answered = image_answered(if build.is_some() { "maintenance" } else { "custom" }, build.map(|b| (b.build_id, b.info().uart0)), found.info.as_ref());
                     let _ = maint::with_store_arc(&store, |s| {
-                        for (inst, a) in crate::bench::places_of(s, serial)? {
+                        // only a board whose place is unambiguous: the same String 2 at several places (another
+                        // installation, a copy) says nothing about which of them came back here
+                        let places = crate::bench::places_of(s, serial)?;
+                        if places.len() != 1 {
+                            return Ok(());
+                        }
+                        for (inst, a) in places {
                             s.clear_patch_proof(&inst, a)?;
                             s.clear_hard_stop(&inst, a)?;
                             if let (Some(b), true) = (build, answered) {
@@ -907,9 +940,9 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: kept, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: kept, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true, mismatch: rec_mismatch },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true, mismatch: None },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true, mismatch: None },
         };
         let state = app.state::<AppState>();
         maint::event(&state, None, &format!("recovery done ok={} found={:?} stage={:?} error={:?}", done.ok, done.recovered_at, done.stage, done.error));
@@ -1270,15 +1303,18 @@ mod tests {
         let light = known::PATCH_BUILDS.iter().find(|b| b.name == "EMU1101-EXT Light 1.5.6").unwrap();
         let reported = |b: &known::PatchBuild| b.info();
         let id = |b: &known::PatchBuild| Some((b.build_id, b.info().uart0));
-        assert!(image_answered("maintenance", id(full), Some(&reported(full))));
-        assert!(!image_answered("maintenance", id(full), Some(&reported(light))));
-        assert!(!image_answered("maintenance", id(full), None), "silence proves no build");
+        assert!(image_answered("maintenance", id(full), Some(&reported(full)), false));
+        assert!(!image_answered("maintenance", id(full), Some(&reported(light)), false));
+        assert!(!image_answered("maintenance", id(full), None, false), "silence proves no build");
         // TEMP(maint-1.6): that build never answers 64/03 on RS485-1/2, so silence does not hold it back
         let temp = known::PATCH_BUILDS.iter().find(|b| b.name == "16.06.13 MAINT 1.6").unwrap();
-        assert!(image_answered("maintenance", id(temp), None));
-        assert!(image_answered("original", None, None));
-        assert!(!image_answered("original", None, Some(&reported(full))), "an original answers no EXT identity");
-        assert!(image_answered("custom", None, Some(&reported(light))));
+        assert!(image_answered("maintenance", id(temp), None, false));
+        // an explicit identity of an unknown format is not silence: neither that build nor an original
+        assert!(!image_answered("maintenance", id(temp), None, true));
+        assert!(!image_answered("original", None, None, true));
+        assert!(image_answered("original", None, None, false));
+        assert!(!image_answered("original", None, Some(&reported(full)), false), "an original answers no EXT identity");
+        assert!(image_answered("custom", None, Some(&reported(light)), false));
     }
 
     #[test]
