@@ -113,10 +113,14 @@ export function compareLines(c: FlashComparison, image: FirmwareImage | null, t:
     for (const w of c.switches) out.push({ key: "fw.cmp.switches.line", vars: { g: w.group, a: hex(w.before), b: hex(w.after) }, tone: "warn" });
   }
   const g0 = c.after.switches?.[0];
-  if (g0 !== undefined && image && c.after.positive !== null && (image.power_rtc || image.pack_cutoff)) {
+  // what the pack reports after the flash (its image flags, also of a build the app does not list), else the image's
+  const flags = c.after.build?.flags;
+  const power = flags !== undefined ? (flags & 2) !== 0 : !!image?.power_rtc;
+  const cutoff = flags !== undefined ? (flags & 4) !== 0 : !!image?.pack_cutoff;
+  if (g0 !== undefined && image && c.after.positive !== null && (power || cutoff)) {
     out.push({ key: "fw.cmp.meaning", vars: { v: hex(g0) }, tone: "muted" });
     // the bit-3 direction the pack reports after the flash, else the image's
-    for (const k of flashGateKeys(g0, image.power_rtc, image.pack_cutoff, c.after.positive ?? image.positive ?? true)) out.push({ key: k, tone: k === "fw.patch.lockKept" ? "warn" : "muted" });
+    for (const k of flashGateKeys(g0, power, cutoff, c.after.positive ?? image.positive ?? true)) out.push({ key: k, tone: k === "fw.patch.lockKept" ? "warn" : "muted" });
   }
   if (c.before.positive !== null && c.after.positive !== null && c.before.positive !== c.after.positive) out.push({ key: "fw.cmp.polarity", tone: "warn" });
   return out;

@@ -348,6 +348,8 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
                 })}
               </ol>
               <p className="text-muted">{t("maint.series.rules")}</p>
+              {/* a board without a String 2 of its own cannot be confirmed after its flash: the series stops after it */}
+              {(() => { const ns = order.filter((a) => scan?.no_serial?.includes(a)); return ns.length > 0 && <p className="text-discharge">{t("maint.series.noSerial", { list: ns.map(packName).join(", ") })}</p>; })()}
               <p className="text-alarm">{t("fw.risks")}</p>
               <label className="flex flex-wrap items-center gap-2">{t("maint.series.type", { phrase })}
                 <input value={typed} onChange={(e) => setTyped(e.target.value)} className="rounded border border-line bg-surface px-2 py-1 font-mono" aria-label={t("maint.series.type", { phrase })} />

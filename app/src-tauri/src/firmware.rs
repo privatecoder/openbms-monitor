@@ -320,6 +320,18 @@ pub fn firmware_series_end_idle() -> Result<(), String> {
     series_lock().end_idle().map_err(|k| serde_json::to_string(&maint::refused(k)).unwrap_or_default())
 }
 
+/// Whether the identity a board reports over RS485-1/2 after a flash is the image flashed: a listed EMU1101-EXT build
+/// (`build`: its build ID, and whether it answers 64/03 there at all) only by that build ID (another build on the same
+/// OEM base is not it; silence proves nothing, except for a build that never answers there), an original image by no
+/// identity, an unknown custom image by anything.
+pub fn image_answered(kind: &str, build: Option<(&str, bool)>, after: Option<&openbms_proto::ExtInfo>) -> bool {
+    match build {
+        Some((b, uart0)) => after.map_or(!uart0, |i| i.build_id_hex() == b),
+        None if kind == "original" => after.is_none(),
+        None => true,
+    }
+}
+
 /// A pack of a series answered cleanly with the new image: the flash finished, no pending record, the after-check
 /// compared everything and found nothing changed, and the version it reports fits the image (an unknown custom image
 /// has no known version: its answer is taken; a listed EMU1101-EXT build counts as custom but has its base).
@@ -735,10 +747,14 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         let pending = maint::settle_pending(&store, pending, address, stored.as_deref(), ok, last, &mut link);
         // after a finished flash: the board's String 2 and identity again, for the proof and the comparison
         let mut comparison = None;
+        // the identity it reports afterwards is the image flashed (a listed build by its build ID, an original none)
+        let mut answered = false;
         if let Ok(Ok(r)) = &result {
             let serial_after = maint::string2(&mut link, address);
             let found_after = crate::bench::rs485_marker(&mut link, address);
-            if let Some(release) = patch_image {
+            answered = image_answered(info.kind, known::patch_by_code(&info.sha256).map(|b| (b.build_id, b.info().uart0)), found_after.info.as_ref());
+            let _ = writeln!(log, "IDENTITY after={} expected={} answered={answered}", found_after.info.map(|i| format!("{} {}", i.version(), i.build_id_hex())).unwrap_or_else(|| "-".into()), known::patch_by_code(&info.sha256).map_or("-", |b| b.build_id));
+            if let Some(release) = patch_image.filter(|_| answered) {
                 if let Some(serial) = proof_serial(stored.as_deref(), serial_after.clone()) {
                     for (inst, a) in &places {
                         let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(inst, *a, &serial, release, "flash", crate::history::now_ms()));
@@ -747,7 +763,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             }
             let before = flash_check::Side::new(stored.clone(), Some(&found_before), None, &r.state_before);
             let after = flash_check::Side::new(serial_after, Some(&found_after), positive_after, &r.state_after);
-            let c = flash_check::compare(before, after, &r.state_before, &r.state_after);
+            let mut c = flash_check::compare(before, after, &r.state_before, &r.state_after);
+            // another identity than the image flashed is a difference; none where one was expected leaves it open
+            if !answered && c.verdict != "differs" {
+                c.verdict = if found_after.info.is_some() { "differs" } else { "incomplete" };
+            }
             let _ = writeln!(log, "{}", flash_check::summary(&c));
             comparison = Some(c);
         }
@@ -765,7 +785,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));
         }
         if let Some((run, info)) = &in_series {
-            let clean = series_clean(done.ok, done.pending, done.comparison.as_ref().map(|c| c.verdict), done.after.as_ref().map(|a| a.firmware_version.as_str()), info);
+            let clean = answered && series_clean(done.ok, done.pending, done.comparison.as_ref().map(|c| c.verdict), done.after.as_ref().map(|a| a.firmware_version.as_str()), info);
             let goes_on = series_lock().after(*run, address, clean);
             maint::event(&state, installation.as_deref(), &format!("flash series {run} pack={address} clean={clean} goes_on={goes_on}"));
         }
@@ -851,6 +871,24 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
                     for p in all.iter().filter(|p| maint::recovery_clears(p, &key, *address, serial.as_deref())) {
                         let _ = maint::with_store_arc(&store, |s| s.clear_pending(p.id, "recovered", crate::history::now_ms()));
                     }
+                }
+                // the board now runs the image just written: what the app kept about its image before (version proof,
+                // hard-stop sighting) ends at every place where it is the current board; a listed patched image that
+                // answers with its own build sets the proof again
+                if let Some(serial) = serial.as_deref() {
+                    let found = crate::bench::rs485_marker(&mut link, *address);
+                    let build = known::patch_by_code(&image.code_sha256);
+                    let answered = image_answered(if build.is_some() { "maintenance" } else { "custom" }, build.map(|b| (b.build_id, b.info().uart0)), found.info.as_ref());
+                    let _ = maint::with_store_arc(&store, |s| {
+                        for (inst, a) in crate::bench::places_of(s, serial)? {
+                            s.clear_patch_proof(&inst, a)?;
+                            s.clear_hard_stop(&inst, a)?;
+                            if let (Some(b), true) = (build, answered) {
+                                s.set_patch_proof(&inst, a, serial, b.name, "flash", crate::history::now_ms())?;
+                            }
+                        }
+                        Ok(())
+                    });
                 }
             }
         }
@@ -1221,6 +1259,20 @@ mod tests {
         assert!(!series_clean(true, false, Some("same"), Some("16.05"), &ext));
         // a custom image has no version to compare: its answer counts
         assert!(series_clean(true, false, Some("same"), Some("99.01"), &info("custom", "custom", None, true)));
+        // the identity afterwards: a listed build only by its own build ID (Light 1.5.6 is not Full 1.6.7 on the same base)
+        let full = known::PATCH_BUILDS.iter().find(|b| b.name == "EMU1101-EXT Full 1.6.7").unwrap();
+        let light = known::PATCH_BUILDS.iter().find(|b| b.name == "EMU1101-EXT Light 1.5.6").unwrap();
+        let reported = |b: &known::PatchBuild| b.info();
+        let id = |b: &known::PatchBuild| Some((b.build_id, b.info().uart0));
+        assert!(image_answered("maintenance", id(full), Some(&reported(full))));
+        assert!(!image_answered("maintenance", id(full), Some(&reported(light))));
+        assert!(!image_answered("maintenance", id(full), None), "silence proves no build");
+        // TEMP(maint-1.6): that build never answers 64/03 on RS485-1/2, so silence does not hold it back
+        let temp = known::PATCH_BUILDS.iter().find(|b| b.name == "16.06.13 MAINT 1.6").unwrap();
+        assert!(image_answered("maintenance", id(temp), None));
+        assert!(image_answered("original", None, None));
+        assert!(!image_answered("original", None, Some(&reported(full))), "an original answers no EXT identity");
+        assert!(image_answered("custom", None, Some(&reported(light))));
     }
 
     #[test]

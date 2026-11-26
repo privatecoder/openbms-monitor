@@ -282,6 +282,7 @@ const resources = {
           confirm: "{{count}} Packs nacheinander mit {{image}} flashen:",
           line: "{{name}}: {{from}} → {{to}}",
           rules: "Erst die Slaves nach Adresse, der Master zuletzt. Jedes Pack wird direkt davor wie beim einzelnen Flashen geprüft (ruhiger Bus, richtige Anlage, gespeicherte Platine, Marker) und danach verglichen. Das nächste Pack kommt erst, wenn das vorige sauber mit der neuen Firmware antwortet; jeder Fehler stoppt die Serie, ohne Wiederholung. „Abbrechen“ wirkt vor dem nächsten Pack, nie während eines Updates.",
+        noSerial: "Ohne eigene BMS-Seriennummer (leer, Platzhalter oder doppelt): {{list}}. Nach dem Flash eines solchen Packs lässt sich nicht bestätigen, dass dieselbe Platine zurück ist; die Serie hält danach an. Erst unter Parameter → Seriennummern eindeutige Nummern setzen oder diese Packs einzeln flashen.",
           type: "Zur Bestätigung eintippen: {{phrase}}",
           start: "Serie starten ({{count}} Packs)", back: "Zurück",
           running: "Serie läuft: {{n}} von {{of}} Packs fertig", cancel: "Abbrechen", cancelling: "Abbrechen: stoppt nach dem laufenden Pack",
@@ -323,7 +324,7 @@ const resources = {
           flash: { match: "Anlage geprüft.", stored: "BMS-Seriennummer des Masters gespeichert.", unchecked: "Anlage nicht geprüft." },
         },
         done: {
-          title: "Fertig", dip: "DIP 5–8 am Master zurückstellen.",
+          title: "Fertig", dip: "Falls du DIP 5–8 am Master für das Update auf OFF gestellt hast: jetzt zurückstellen. Sonst ist nichts zu tun.",
           dipOff: "DIP 5–8 am Master stehen auf OFF (C′: der Master bekommt danach ein Image ohne Wartungsfunktion). Die Freigabe endet dann bei 0 Slaves.",
           hint: "Danach zeigt die Statuszeile „Master fragt … Slaves ab“ als Bestätigung.",
           back: "Wartung abgeschlossen: Der Master fragt seine Slaves wieder ab.",
@@ -1628,6 +1629,7 @@ const resources = {
           confirm: "Flash {{count}} packs one after another with {{image}}:",
           line: "{{name}}: {{from}} → {{to}}",
           rules: "The slaves by address first, the master last. Each pack is checked right before like a single flash (quiet bus, right installation, stored board, marker) and compared afterwards. The next pack starts only once the previous one answers cleanly with the new firmware; any failure stops the series, without a retry. “Cancel” acts before the next pack, never during an update.",
+        noSerial: "Without a BMS serial of its own (empty, placeholder or shared): {{list}}. After such a pack's flash the app cannot confirm the same board is back; the series stops after it. Set unique numbers under Parameters → Serial numbers first, or flash these packs one by one.",
           type: "Type to confirm: {{phrase}}",
           start: "Start series ({{count}} packs)", back: "Back",
           running: "Series running: {{n}} of {{of}} packs done", cancel: "Cancel", cancelling: "Cancel: stops after the pack running",
@@ -1669,7 +1671,7 @@ const resources = {
           flash: { match: "Installation checked.", stored: "BMS serial number of the master stored.", unchecked: "Installation not checked." },
         },
         done: {
-          title: "Done", dip: "Set DIP 5–8 of the master back.",
+          title: "Done", dip: "If you set DIP 5–8 of the master OFF for the update, set them back now. Otherwise nothing is to be done.",
           dipOff: "DIP 5–8 of the master are OFF (C′: the master gets an image without maintenance functions next). The release then ends at 0 slaves.",
           hint: "The status line then shows “Master polls … slaves” as confirmation.",
           back: "Maintenance finished: the master polls its slaves again.",

@@ -147,6 +147,10 @@ describe("the comparison before/after a flash", () => {
     expect(keys(cmp({ after: side({ positive: true, switches: [0xff, 0, 0, 0, 0, 0, 0, 0] }) }), { ...img, pack_cutoff: false })).toContain("fw.patch.powerOpen");
     // the original image: no meaning shown
     expect(keys(cmp({ after: side({ positive: null }) }), image)).not.toContain("fw.cmp.meaning");
+    // an unlisted (custom) image whose pack reports Full flags afterwards: the stored lock is still named
+    const custom: FirmwareImage = { ...image, kind: "custom", custom: true, power_rtc: false, pack_cutoff: false };
+    const full = { version: "EMU1101-EXT Full 1.6.9", format: 5, build_id: "0123456789abcdef", flags: 0xfe };
+    expect(keys(cmp({ after: side({ positive: true, build: full, switches: [0x1d, 0, 0, 0, 0, 0, 0, 0] }) }), custom)).toEqual(expect.arrayContaining(["fw.cmp.meaning", "fw.patch.cutoffOn", "fw.patch.lockKept"]));
   });
   it("says when the same raw bit 3 means the opposite after the flash", () => {
     expect(keys(cmp({ before: side({ positive: false }), after: side({ positive: true }) }))).toContain("fw.cmp.polarity");

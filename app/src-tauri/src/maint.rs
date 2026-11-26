@@ -745,10 +745,13 @@ pub struct PackScan {
     cleared: Vec<u8>,
     /// stopped by „Abbrechen“: `packs` holds what answered until then
     cancelled: bool,
-    /// each pack's own 64/03 as far as known (the pack bus cannot give it: UART0 answers RTN 04): a fresh short read over
-    /// the installation's control channel, only for a pack whose String 2 read fresh on the pack bus equals the one read
-    /// fresh over the CAN socket; missing: not checked
+    /// each pack's own 64/03 as far as known: its answer at its address on this quiet pack bus (EMU1101-EXT), else a fresh
+    /// short read over the installation's control channel for a pack whose String 2 read fresh on the pack bus equals the
+    /// one read fresh over the CAN socket; missing: not checked
     identities: Vec<crate::profile::PackProbeView>,
+    /// found packs without a String 2 that identifies them alone (none, a placeholder, or shared): a flash series cannot
+    /// confirm such a board afterwards and stops after it; empty when the serials were not read
+    no_serial: Vec<u8>,
 }
 
 /// Addresses 0–15 until `cancel` is set: checked before each address, so a cancelled search ends after the one
@@ -771,7 +774,7 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     let _op = crate::control::reserve_bus_wait(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
     if state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true, identities: vec![] });
+        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true, identities: vec![], no_serial: vec![] });
     }
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &key)?;
@@ -794,7 +797,9 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     let mut bus_read = vec![];
     let mut stopped = inst.is_some() && !cancelled
         && probe_until_cancel::<_, ()>(&found, &state.scan_cancel, &mut bus_read, |a| Ok(canonical_string2(&mut link, a))).unwrap_or(false);
+    let read_all = bus_read.len() == found.len();
     let bus_serials = unique_serials(bus_read);
+    let no_serial: Vec<u8> = if read_all { found.iter().copied().filter(|a| !bus_serials.iter().any(|(b, _)| b == a)).collect() } else { vec![] };
     // each found pack's own 64/03 on this quiet pack bus (EMU1101-EXT answers at its address there, also right after a
     // flash): the answer comes from that address on this very connection, so it needs no board matching
     let mut own: Vec<(u8, openbms_flash::maint::policy::PackFinding)> = vec![];
@@ -819,7 +824,7 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
         }
     }
     let cancelled = cancelled || stopped;
-    Ok(PackScan { packs, bank, cleared, cancelled, identities })
+    Ok(PackScan { packs, bank, cleared, cancelled, identities, no_serial })
 }
 
 /// String 2 of a pack on the pack bus as a board identity (canonical raw bytes, a real value), or None.
