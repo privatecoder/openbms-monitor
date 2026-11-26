@@ -70,6 +70,20 @@ struct FirmwareDone {
     /// the board reported another identity than the image written (the version it reports, or "?" for a format the app
     /// does not decode): the transfer finished, but it does not run what was chosen
     mismatch: Option<String>,
+    evidence: ImageEvidence,
+}
+
+#[derive(Default, Serialize, Clone, Debug)]
+struct ImageEvidence {
+    ambiguous: bool,
+    error: Option<String>,
+}
+
+fn store_error(error: maint::MaintError) -> String {
+    match error {
+        maint::MaintError::Store { message } => message,
+        other => format!("{other:?}"),
+    }
 }
 
 /// What `firmware_start` checked before it began: the right-bank check ("match" | "stored" | "unchecked" |
@@ -168,6 +182,8 @@ pub struct Series {
     sha256: String,
     custom: bool,
     order: Vec<u8>,
+    /// All answering boards in the confirmed scan, including boards outside the selected list.
+    serials: Vec<(u8, Option<String>)>,
     /// the index in `order` of the next pack
     next: usize,
     /// the pack admitted now (from its admission, through its checks and flash, to its end)
@@ -195,26 +211,48 @@ pub struct SeriesBegun {
 pub struct SeriesSlot {
     current: Option<Series>,
     last_run: u64,
+    scan_id: u64,
+    discovery: Option<SeriesDiscovery>,
     /// a single flash or a recovery is admitted (from its series check to its end)
     single: bool,
 }
 
+#[derive(Debug)]
+struct SeriesDiscovery {
+    installation: String,
+    key: String,
+    serials: Vec<(u8, Option<String>)>,
+}
+
 impl SeriesSlot {
     pub const fn new() -> Self {
-        Self { current: None, last_run: 0, single: false }
+        Self { current: None, last_run: 0, scan_id: 0, discovery: None, single: false }
+    }
+
+    fn start_scan(&mut self) -> u64 {
+        self.discovery = None;
+        self.scan_id += 1;
+        self.scan_id
+    }
+
+    fn complete_scan(&mut self, installation: &str, key: &str, serials: Vec<(u8, Option<String>)>) {
+        self.discovery = Some(SeriesDiscovery { installation: installation.into(), key: key.into(), serials });
     }
 
     /// A new series replaces an idle one; while a pack of the current one is admitted or flashing, or a single flash or
     /// recovery is admitted, it is refused.
-    pub fn begin(&mut self, installation: &str, key: &str, sha256: &str, custom: bool, order: Vec<u8>) -> Result<u64, &'static str> {
+    pub fn begin(&mut self, installation: &str, key: &str, sha256: &str, custom: bool, order: Vec<u8>, scan_id: u64) -> Result<u64, &'static str> {
         if self.current.as_ref().is_some_and(|s| s.running.is_some()) {
             return Err("series-busy");
         }
         if self.single {
             return Err("flash-admitted");
         }
+        let scan = self.discovery.as_ref().filter(|s| scan_id == self.scan_id && s.installation == installation && s.key == key
+            && order.iter().all(|a| s.serials.iter().any(|(b, _)| b == a))).ok_or("series-needs-scan")?;
         self.last_run += 1;
-        self.current = Some(Series { run: self.last_run, installation: installation.into(), key: key.into(), sha256: sha256.into(), custom, order, next: 0, running: None });
+        self.current = Some(Series { run: self.last_run, installation: installation.into(), key: key.into(), sha256: sha256.into(), custom, order,
+            serials: scan.serials.clone(), next: 0, running: None });
         Ok(self.last_run)
     }
 
@@ -277,13 +315,20 @@ impl SeriesSlot {
     pub fn after(&mut self, run: u64, address: u8, clean: bool) -> bool {
         let Some(s) = self.current.as_mut().filter(|s| s.run == run) else { return false };
         let in_turn = s.running == Some(address) && s.order.get(s.next) == Some(&address);
-        if clean && in_turn && s.next + 1 < s.order.len() {
+        let unique = s.serials.iter().find(|(a, _)| *a == address).and_then(|(_, sn)| sn.as_ref())
+            .is_some_and(|sn| s.serials.iter().filter(|(_, other)| other.as_ref() == Some(sn)).count() == 1);
+        if clean && in_turn && unique && s.next + 1 < s.order.len() {
             s.running = None;
             s.next += 1;
             return true;
         }
         self.current = None;
         false
+    }
+
+    fn target_matches(&self, run: u64, address: u8, serial: Option<&str>) -> bool {
+        self.current.as_ref().filter(|s| s.run == run && s.running == Some(address))
+            .and_then(|s| s.serials.iter().find(|(a, _)| *a == address)).is_some_and(|(_, sn)| sn.as_deref() == serial)
     }
 
     /// Ends run `run` (a later one stays).
@@ -299,6 +344,15 @@ static SERIES: std::sync::Mutex<SeriesSlot> = std::sync::Mutex::new(SeriesSlot::
 
 fn series_lock() -> std::sync::MutexGuard<'static, SeriesSlot> {
     SERIES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+// Called under the pack scan's bus reservation, which serializes the start and completion of discoveries.
+pub(crate) fn start_series_scan() -> u64 {
+    series_lock().start_scan()
+}
+
+pub(crate) fn complete_series_scan(installation: &str, key: &str, serials: Vec<(u8, Option<String>)>) {
+    series_lock().complete_scan(installation, key, serials);
 }
 
 /// Ends its run unless disarmed: every refusal of a series pack's start (any early return) ends that series.
@@ -347,6 +401,32 @@ pub fn image_answered(kind: &str, build: Option<(&str, bool)>, after: Option<&op
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum ImageResult {
+    Match,
+    Unchecked,
+    Mismatch(String),
+}
+
+/// Evaluate the actual selected image for both normal flashes and recovery.
+fn image_result(info: &ImageInfo, reported: &str, found: &crate::marker::Found) -> ImageResult {
+    let build = known::patch_by_code(&info.sha256).map(|b| (b.build_id, b.info().uart0));
+    let other = found.info.is_none() && found.kind == "unknown-patch";
+    let answered = image_answered(info.kind, build, found.info.as_ref(), other);
+    if !answered {
+        if let Some(i) = found.info {
+            return ImageResult::Mismatch(format!("{} ({})", i.version(), i.build_id_hex()));
+        }
+        if other {
+            return ImageResult::Mismatch("?".into());
+        }
+    }
+    if info.kind != "custom" && !version_fits(reported, info) {
+        return ImageResult::Mismatch(reported.to_owned());
+    }
+    if answered { ImageResult::Match } else { ImageResult::Unchecked }
+}
+
 /// A pack of a series answered cleanly with the new image: the flash finished, no pending record, the after-check
 /// compared everything and found nothing changed, and the version it reports fits the image (an unknown custom image
 /// has no known version: its answer is taken; a listed EMU1101-EXT build counts as custom but has its base).
@@ -367,7 +447,7 @@ fn version_fits(reported: &str, info: &ImageInfo) -> bool {
 /// `firmware_start` and `series` = this list, with every check of a single flash.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // each argument is one value from the UI
-pub async fn firmware_series_begin(state: State<'_, AppState>, port: String, installation: String, addresses: Vec<u8>, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<SeriesBegun, String> {
+pub async fn firmware_series_begin(state: State<'_, AppState>, port: String, installation: String, addresses: Vec<u8>, scan_id: u64, path: String, allow_custom: bool, expected_sha256: String, confirmation: String, lang: String) -> Result<SeriesBegun, String> {
     let l = self::lang(&lang);
     let to_text = |e: maint::MaintError| serde_json::to_string(&e).unwrap_or_default();
     let order = series_order(&addresses).ok_or_else(|| to_text(maint::refused("series-not-confirmed")))?;
@@ -382,7 +462,7 @@ pub async fn firmware_series_begin(state: State<'_, AppState>, port: String, ins
     let key = maint::pack_key(&port).map_err(to_text)?;
     maint::installation(&state, &installation).map_err(to_text)?;
     series_pending(&state).map_err(to_text)?;
-    let run = series_lock().begin(&installation, &key, &info.sha256, info.custom, order.clone()).map_err(|k| to_text(maint::refused(k)))?;
+    let run = series_lock().begin(&installation, &key, &info.sha256, info.custom, order.clone(), scan_id).map_err(|k| to_text(maint::refused(k)))?;
     maint::event(&state, Some(&installation), &format!("flash series {run} confirmed order={order:?} release={} custom={}", info.release, info.custom));
     Ok(SeriesBegun { run, order })
 }
@@ -630,7 +710,7 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     // C' belongs to the installation's master. Its own trusted RS485-1/2 status on the port being flashed decides first
     // (the CAN socket's adapter may reach another bank); else a read over the CAN socket, else the marker last seen
     // (`u0_marker`). Decided once the port is open.
-    let mut master_pending: Option<(bool, Option<Master>)> = None;
+    let mut master_pending = None;
     if let (Some(owner), 0) = (&inst, address) {
         // not kept yet: the CAN socket's adapter may reach another bank (`can_decides` below)
         let fresh = if owner.control.is_some() { maint::read_master_unkept(&state, owner).ok() } else { None };
@@ -662,7 +742,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             };
             // another board than the one stored for its address is not flashed. Its String 2 goes with the pending
             // record: only that board's answer clears it.
-            let target = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
+            let (target, canonical) = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
+            let board = target.as_deref().filter(|_| canonical);
+            if series.as_ref().is_some_and(|sr| !series_lock().target_matches(sr.run, address, board)) {
+                return Err(to_text(maint::refused("series-target-changed")));
+            }
             // a pending pack only as the same board, before anything is changed on it (a refused flash clears no marker)
             let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
             maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
@@ -670,14 +754,11 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             let marker = match master_pending {
                 Some((last_on, fresh)) => {
                     let u0_decides = found.trusted && matches!(found.state.map(|s| s.marker()), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off));
-                    // the CAN socket's answer counts only for a bank this flash matched by its master's String 2 (the
-                    // other adapter may reach another bank); only then is it kept for the banner
-                    let can_decides = bank == "match" && fresh.as_ref().is_some_and(|m| matches!(m, Master::No0x64) || (m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off))));
-                    if can_decides {
-                        if let Some(m) = &fresh {
-                            maint::keep_master_read(&state, &i.id, m).map_err(to_text)?;
-                        }
-                    }
+                    let can = fresh.as_ref().filter(|_| !u0_decides).and_then(|o| o.for_board(board, || {
+                        let (battery, canonical) = link.serial_canonical(0, openbms_proto::serial::Which::Battery).ok()?;
+                        crate::maint_store::real(&battery).filter(|_| canonical).map(String::from)
+                    })).filter(|m| matches!(m, Master::No0x64)
+                        || (m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off))));
                     if u0_decides {
                         // seen on: kept before anything is sent, so a failed clear still protects the next attempt
                         maint::keep_master_read(&state, &i.id, &found.master).map_err(to_text)?;
@@ -700,8 +781,9 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
                             maint::with_store(&state, |s| s.clear_expected_slaves(&i.id)).map_err(to_text)?;
                         }
                         Some(m)
-                    } else if can_decides {
-                        master_marker_check(address, kind, fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?
+                    } else if let Some(m) = can {
+                        maint::keep_master_read(&state, &i.id, m).map_err(to_text)?;
+                        master_marker_check(address, kind, Some(m), last_on).map_err(|k| to_text(maint::refused(k)))?
                     } else {
                         // nothing trusted on either side (a foreign word counts as nothing): the marker last seen decides
                         Some(u0_marker("unchecked", last_on, kind).map_err(|k| to_text(maint::refused(k)))?)
@@ -726,30 +808,22 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             ("none", target, marker, found)
         }
     };
-    // where the app knows this board: its place in the installation, else every place where it is the current board
-    let places: Vec<(String, u8)> = match (&inst, target.as_deref()) {
-        (Some(i), _) => vec![(i.id.clone(), address)],
-        // only an unambiguous place: the same String 2 at several places says nothing about which board this is
-        (None, Some(serial)) => {
-            let all = maint::with_store(&state, |s| crate::bench::places_of(s, serial)).map_err(to_text)?;
-            if all.len() == 1 { all } else { vec![] }
-        }
-        (None, None) => vec![],
-    };
     let (mut log, log_path, log_id) = new_log(&app, &state, installation.as_deref(), address, "flash", Some(&info.release))?;
     writeln!(log, "CONFIRMED target={address} code_sha256={} release={} custom={} source=app bank={bank} string2={}", info.sha256, info.release, info.custom, target.as_deref().unwrap_or("-")).map_err(|e| e.to_string())?;
     // written before the restart, so a crash or power loss leaves it behind; in the same transaction the version proof
     // and the hard-stop observation of its places end (also for a flash that breaks off): all or nothing, so a failed
     // step leaves no pending record. Only a finished flash of an image with the patch functions sets the proof again,
     // for the String 2 read back.
-    let pending = maint::with_store(&state, |s| s.add_pending_with(&key, address, &info.release, target.as_deref(), crate::history::now_ms(), |s| {
-        for (inst, a) in &places {
-            s.clear_patch_proof(inst, *a)?;
-            // what the old image showed about the hard stop no longer holds
-            s.clear_hard_stop(inst, *a)?;
-        }
-        Ok(())
-    })).map_err(to_text)?;
+    let (pending, places) = maint::with_store(&state, |s| {
+        let places = match (&inst, target.as_deref()) {
+            (Some(i), _) => vec![(i.id.clone(), address)],
+            (None, Some(serial)) => crate::bench::places_of(s, serial)?,
+            (None, None) => vec![],
+        };
+        let now = crate::history::now_ms();
+        let pending = s.add_pending_with(&key, address, &info.release, target.as_deref(), now, |s| s.replace_image_evidence(&places, None, now))?;
+        Ok((pending, places))
+    }).map_err(to_text)?;
     maint::event(&state, installation.as_deref(), &format!("flash start address={address} release={} custom={} bank={bank} marker={} places={} log={}", info.release, info.custom, marker.unwrap_or("-"), places.len(), log_path.display()));
     let patch_image = known::patch_image(&info.sha256);
     // the bit-3 direction of the image flashed (None: no patch functions)
@@ -773,53 +847,69 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         // a panic inside the flash counts as a failure at the last reported stage
         let ok = matches!(result, Ok(Ok(_)));
         // before the port is closed: a failed flash asks the pack for 0x51/0x47 on this link
-        let pending = maint::settle_pending(&store, pending, address, stored.as_deref(), ok, last, &mut link);
+        let pending_after = maint::pending_after_flash(address, stored.as_deref(), ok, last, &mut link);
         // after a finished flash: the board's String 2 and identity again, for the proof and the comparison
         let mut comparison = None;
         // the identity it reports afterwards is the image flashed (a listed build by its build ID, an original none)
         let mut answered = false;
         let mut mismatch: Option<String> = None;
+        let mut evidence = ImageEvidence { ambiguous: places.len() > 1, error: None };
+        let mut board = None;
         if let Ok(Ok(r)) = &result {
-            let serial_after = maint::string2(&mut link, address);
+            let serial_after = if in_series.is_some() { maint::canonical_string2(&mut link, address) } else { maint::string2(&mut link, address) };
             let found_after = crate::bench::rs485_marker(&mut link, address);
-            answered = image_answered(info.kind, known::patch_by_code(&info.sha256).map(|b| (b.build_id, b.info().uart0)), found_after.info.as_ref(), found_after.info.is_none() && found_after.kind == "unknown-patch");
-            let _ = writeln!(log, "IDENTITY after={} expected={} answered={answered}", found_after.info.map(|i| format!("{} {}", i.version(), i.build_id_hex())).unwrap_or_else(|| "-".into()), known::patch_by_code(&info.sha256).map_or("-", |b| b.build_id));
-            if let Some(release) = patch_image.filter(|_| answered) {
-                if let Some(serial) = proof_serial(stored.as_deref(), serial_after.clone()) {
-                    for (inst, a) in &places {
-                        let _ = maint::with_store_arc(&store, |s| s.set_patch_proof(inst, *a, &serial, release, "flash", crate::history::now_ms()));
-                    }
-                }
+            let checked = image_result(&info, &r.after.firmware_version, &found_after);
+            answered = checked == ImageResult::Match;
+            if let ImageResult::Mismatch(reported) = checked {
+                mismatch = Some(reported);
             }
+            let _ = writeln!(log, "IDENTITY after={} expected={} answered={answered}", found_after.info.map(|i| format!("{} {}", i.version(), i.build_id_hex())).unwrap_or_else(|| "-".into()), known::patch_by_code(&info.sha256).map_or("-", |b| b.build_id));
+            board = proof_serial(stored.as_deref(), serial_after.clone());
             let before = flash_check::Side::new(stored.clone(), Some(&found_before), None, &r.state_before);
             let after = flash_check::Side::new(serial_after, Some(&found_after), positive_after, &r.state_after);
-            let other = found_after.info.is_some() || found_after.kind == "unknown-patch";
-            if !answered && other {
-                mismatch = Some(found_after.info.map_or("?".into(), |i| i.version()));
-            }
             let mut c = flash_check::compare(before, after, &r.state_before, &r.state_after);
             // another identity than the image flashed is a difference; none where one was expected leaves it open
             if !answered && c.verdict != "differs" {
-                c.verdict = if other { "differs" } else { "incomplete" };
+                c.verdict = if mismatch.is_some() { "differs" } else { "incomplete" };
             }
             let _ = writeln!(log, "{}", flash_check::summary(&c));
             comparison = Some(c);
         }
+        let mut kept = true;
+        if let maint::AfterFlash::Clear(how) = pending_after {
+            let update = maint::with_store_arc(&store, |s| s.atomic(|s| {
+                let now = crate::history::now_ms();
+                s.clear_pending(pending, how, now)?;
+                let Some(serial) = board.as_deref() else { return Ok(false) };
+                let current = match &installation {
+                    Some(_) => places.clone(),
+                    None => crate::bench::places_of(s, serial)?,
+                };
+                let proof = patch_image.filter(|_| answered && !evidence.ambiguous).map(|r| (serial, r));
+                s.replace_image_evidence(&current, proof, now)?;
+                Ok(current.len() > 1)
+            }));
+            match update {
+                Ok(ambiguous) => { evidence.ambiguous |= ambiguous; kept = false; }
+                Err(e) => evidence.error = Some(store_error(e)),
+            }
+        }
+        let pending = kept;
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison, recovered_at: None, recovery: false, mismatch },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false, mismatch: None },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false, mismatch: None },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: Some(r.before), after: Some(r.after), log, pending, log_error: r.log_error, comparison, recovered_at: None, recovery: false, mismatch, evidence },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false, mismatch: None, evidence },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending, log_error: None, comparison: None, recovered_at: None, recovery: false, mismatch: None, evidence },
         };
         let state = app.state::<AppState>();
-        maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?} compare={}", done.ok, done.stage, done.error, done.log_error, done.comparison.as_ref().map_or("-", |c| c.verdict)));
+        maint::event(&state, installation.as_deref(), &format!("flash done address={address} ok={} stage={:?} error={:?} log_error={:?} compare={} mismatch={:?} evidence={:?}", done.ok, done.stage, done.error, done.log_error, done.comparison.as_ref().map_or("-", |c| c.verdict), done.mismatch, done.evidence));
         if let Some(id) = log_id {
             let result = if done.ok { "ok" } else if done.pending { "pending" } else { "failed" };
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, result));
         }
         if let Some((run, info)) = &in_series {
-            let clean = answered && series_clean(done.ok, done.pending, done.comparison.as_ref().map(|c| c.verdict), done.after.as_ref().map(|a| a.firmware_version.as_str()), info);
+            let clean = answered && done.evidence.error.is_none() && series_clean(done.ok, done.pending, done.comparison.as_ref().map(|c| c.verdict), done.after.as_ref().map(|a| a.firmware_version.as_str()), info);
             let goes_on = series_lock().after(*run, address, clean);
             maint::event(&state, installation.as_deref(), &format!("flash series {run} pack={address} clean={clean} goes_on={goes_on}"));
         }
@@ -897,61 +987,45 @@ pub async fn firmware_recovery_start(app: AppHandle, state: State<'_, AppState>,
                 let _ = app.emit("firmware-progress", progress_event(p));
             })
         }));
-        // the application found: a pending record of exactly this board (by its String 2) at this address is settled
-        let mut rec_mismatch: Option<String> = None;
+        let mut rec_mismatch = None;
+        let mut board = None;
         if let Ok(Ok(r)) = &result {
-            if let Some((address, _)) = &r.found {
+            if let Some((address, app_info)) = &r.found {
                 let serial = maint::string2(&mut link, *address);
-                if let Ok(all) = maint::with_store_arc(&store, |s| s.all_pending()) {
-                    for p in all.iter().filter(|p| maint::recovery_clears(p, &key, *address, serial.as_deref())) {
-                        let _ = maint::with_store_arc(&store, |s| s.clear_pending(p.id, "recovered", crate::history::now_ms()));
-                    }
-                }
-                // the board now runs the image just written: what the app kept about its image before (version proof,
-                // hard-stop sighting) ends at every place where it is the current board; a listed patched image that
-                // answers with its own build sets the proof again
                 let found = crate::bench::rs485_marker(&mut link, *address);
-                let build = known::patch_by_code(&image.code_sha256);
-                let other = found.info.is_some() || found.kind == "unknown-patch";
-                let answered = image_answered(if build.is_some() { "maintenance" } else { "custom" }, build.map(|b| (b.build_id, b.info().uart0)), found.info.as_ref(), found.info.is_none() && found.kind == "unknown-patch");
-                if !answered && other {
-                    rec_mismatch = Some(found.info.map_or("?".into(), |i| i.version()));
-                }
-                if let Some(serial) = serial.as_deref() {
-                    let _ = maint::with_store_arc(&store, |s| {
-                        // only a board whose place is unambiguous: the same String 2 at several places (another
-                        // installation, a copy) says nothing about which of them came back here
-                        let places = crate::bench::places_of(s, serial)?;
-                        if places.len() != 1 {
-                            return Ok(());
-                        }
-                        for (inst, a) in places {
-                            s.clear_patch_proof(&inst, a)?;
-                            s.clear_hard_stop(&inst, a)?;
-                            if let (Some(b), true) = (build, answered) {
-                                s.set_patch_proof(&inst, a, serial, b.name, "flash", crate::history::now_ms())?;
-                            }
-                        }
-                        Ok(())
-                    });
-                }
+                let release = match image_result(&info, &app_info.firmware_version, &found) {
+                    ImageResult::Match => known::patch_image(&info.sha256),
+                    ImageResult::Unchecked => None,
+                    ImageResult::Mismatch(reported) => {
+                        rec_mismatch = Some(reported);
+                        None
+                    }
+                };
+                board = serial.map(|s| (*address, s, release));
             }
         }
-        // the recovery's own record
         let ok = matches!(result, Ok(Ok(_)));
-        let kept = match maint::recovery_record_after(ok, last) {
-            Some(how) => maint::with_store_arc(&store, |s| s.clear_pending(record, how, crate::history::now_ms())).is_err(),
-            None => true,
-        };
+        let mut evidence = ImageEvidence::default();
+        let mut kept = true;
+        if let Some(how) = maint::recovery_record_after(ok, last) {
+            let board = board.as_ref().map(|(address, serial, release)| (*address, serial.as_str(), *release));
+            match maint::with_store_arc(&store, |s| s.finish_recovery(record, &key, board, how, crate::history::now_ms())) {
+                Ok(ambiguous) => {
+                    evidence.ambiguous = ambiguous;
+                    kept = false;
+                }
+                Err(e) => evidence.error = Some(store_error(e)),
+            }
+        }
         drop(link);
         let log = log_path.display().to_string();
         let done = match result {
-            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: kept, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true, mismatch: rec_mismatch },
-            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true, mismatch: None },
-            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true, mismatch: None },
+            Ok(Ok(r)) => FirmwareDone { ok: true, error: None, stage: None, written: true, before: None, after: r.found.as_ref().map(|(_, i)| i.clone()), log, pending: kept, log_error: r.log_error, comparison: None, recovered_at: r.found.map(|(a, _)| a), recovery: true, mismatch: rec_mismatch, evidence },
+            Ok(Err(e)) => FirmwareDone { ok: false, error: Some(e.text(l)), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true, mismatch: None, evidence },
+            Err(_) => FirmwareDone { ok: false, error: Some(l.pick("Interner Fehler", "internal error").into()), stage: last.map(stage_name), written: written(last), before: None, after: None, log, pending: kept, log_error: None, comparison: None, recovered_at: None, recovery: true, mismatch: None, evidence },
         };
         let state = app.state::<AppState>();
-        maint::event(&state, None, &format!("recovery done ok={} found={:?} stage={:?} error={:?}", done.ok, done.recovered_at, done.stage, done.error));
+        maint::event(&state, None, &format!("recovery done ok={} found={:?} stage={:?} error={:?} mismatch={:?} evidence={:?}", done.ok, done.recovered_at, done.stage, done.error, done.mismatch, done.evidence));
         if let Some(id) = log_id {
             let _ = maint::with_store_arc(&store, |s| s.set_log_result(id, if done.ok { "ok" } else { "failed" }));
         }
@@ -1141,9 +1215,40 @@ mod tests {
     }
 
     const SHA: &str = "aaaa";
-    fn slot_with(order: &[u8]) -> (SeriesSlot, u64) {
+    #[test]
+    fn a_series_binds_the_completed_discovery_and_stops_after_a_shared_serial() {
         let mut slot = SeriesSlot::new();
-        let run = slot.begin("inst-1", "serial:/dev/p", SHA, false, series_order(order).unwrap()).unwrap();
+        let id = slot.start_scan();
+        let begin = |slot: &mut SeriesSlot, id, key: &str, order| slot.begin("inst-1", key, SHA, false, order, id);
+        assert_eq!(begin(&mut slot, id, "serial:/dev/p", vec![1, 2]), Err("series-needs-scan"));
+        slot.complete_scan("inst-1", "serial:/dev/p", vec![(1, Some("SYN-C".into())), (2, Some("SYN-B".into())), (3, Some("SYN-C".into()))]);
+        assert_eq!(begin(&mut slot, id, "serial:/dev/q", vec![1, 2]), Err("series-needs-scan"));
+        assert_eq!(begin(&mut slot, id, "serial:/dev/p", vec![1, 4]), Err("series-needs-scan"));
+        let run = begin(&mut slot, id, "serial:/dev/p", vec![1, 2]).unwrap();
+        assert!(admit(&mut slot, run, &[1, 2], 1));
+        assert!(!slot.target_matches(run, 1, Some("SYN-B")));
+        assert!(!slot.target_matches(run, 1, None));
+        assert!(slot.target_matches(run, 1, Some("SYN-C")));
+        assert!(!slot.after(run, 1, true));
+        assert!(!admit(&mut slot, run, &[1, 2], 2));
+        slot.start_scan();
+        assert_eq!(begin(&mut slot, id, "serial:/dev/p", vec![1, 2]), Err("series-needs-scan"));
+        slot.complete_scan("inst-1", "serial:/dev/p", vec![(1, None), (2, Some("SYN-B".into()))]);
+        let next_scan = slot.scan_id;
+        let run = begin(&mut slot, next_scan, "serial:/dev/p", vec![1, 2]).unwrap();
+        assert!(admit(&mut slot, run, &[1, 2], 1));
+        assert!(slot.target_matches(run, 1, None));
+        assert!(!slot.after(run, 1, true));
+    }
+    fn discovered_slot() -> SeriesSlot {
+        let mut slot = SeriesSlot::new();
+        slot.start_scan();
+        slot.complete_scan("inst-1", "serial:/dev/p", (0..=4).map(|a| (a, Some(format!("SYN-{a}")))).collect());
+        slot
+    }
+    fn slot_with(order: &[u8]) -> (SeriesSlot, u64) {
+        let mut slot = discovered_slot();
+        let run = slot.begin("inst-1", "serial:/dev/p", SHA, false, series_order(order).unwrap(), slot.scan_id).unwrap();
         (slot, run)
     }
     fn admit(slot: &mut SeriesSlot, run: u64, listed: &[u8], a: u8) -> bool {
@@ -1182,12 +1287,12 @@ mod tests {
         let (mut slot, a) = slot_with(&[1, 2, 0]);
         // A's pack 1 admitted, its pre-checks running: a second begin is refused, A is kept
         assert!(admit(&mut slot, a, &[1, 2, 0], 1));
-        assert_eq!(slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4, 0]), Err("series-busy"));
+        assert_eq!(slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4, 0], slot.scan_id), Err("series-busy"));
         assert!(slot.after(a, 1, true));
         assert!(admit(&mut slot, a, &[1, 2, 0], 2));
         // an idle series is replaced by a new one; the old run's starts and completion touch nothing of the new one
         let (mut slot, a) = slot_with(&[1, 2, 0]);
-        let b = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4, 0]).unwrap();
+        let b = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4, 0], slot.scan_id).unwrap();
         assert_ne!(a, b);
         assert!(!admit(&mut slot, a, &[1, 2, 0], 1));
         assert!(!slot.after(a, 1, true));
@@ -1200,7 +1305,7 @@ mod tests {
     #[test]
     fn a_late_end_or_drop_of_an_old_run_leaves_the_new_one() {
         let (mut slot, a) = slot_with(&[1, 2]);
-        let b = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4]).unwrap();
+        let b = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![3, 4], slot.scan_id).unwrap();
         // `firmware_series_end` and the drop guard both end by run id
         slot.end(a);
         assert!(slot.open());
@@ -1241,16 +1346,16 @@ mod tests {
 
     #[test]
     fn a_begin_cannot_slip_in_while_a_single_flash_or_recovery_is_admitted() {
-        let mut slot = SeriesSlot::new();
+        let mut slot = discovered_slot();
         // the single flash (or recovery) passed its series check and is admitted, its flashing mark not yet set: the
         // check and the admission are one step, so a begin now is refused
         slot.admit_single().unwrap();
-        assert_eq!(slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![1, 2]), Err("flash-admitted"));
+        assert_eq!(slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![1, 2], slot.scan_id), Err("flash-admitted"));
         // a second single one waits too
         assert_eq!(slot.admit_single(), Err("flash-admitted"));
         // its end (or refusal) frees the slot
         slot.end_single();
-        let run = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![1, 2]).unwrap();
+        let run = slot.begin("inst-1", "serial:/dev/p", SHA, false, vec![1, 2], slot.scan_id).unwrap();
         // and the other way round: with the series open no single flash or recovery is admitted
         assert_eq!(slot.admit_single(), Err("series-open"));
         assert!(admit(&mut slot, run, &[1, 2], 1));
@@ -1321,6 +1426,11 @@ mod tests {
         assert!(image_answered("original", None, None, false));
         assert!(!image_answered("original", None, Some(&reported(full)), false), "an original answers no EXT identity");
         assert!(image_answered("custom", None, Some(&reported(light)), false));
+        let silent = crate::marker::of_master(&Master::Unknown);
+        let found = crate::marker::Found { info: Some(full.info()), ..silent };
+        assert_eq!(image_result(&orig, "16.06", &found), ImageResult::Mismatch(format!("{} ({})", full.name, full.build_id)));
+        assert_eq!(image_result(&orig, "16.05", &silent), ImageResult::Mismatch("16.05".into()));
+        assert_eq!(image_result(&orig, "16.06", &silent), ImageResult::Match);
     }
 
     #[test]

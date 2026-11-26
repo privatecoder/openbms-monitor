@@ -292,7 +292,8 @@ export interface FirmwareDone { ok: boolean; error: string | null; stage: Firmwa
   /** a recovery: the address the restarted application answered at (null: did not show, transfer confirmed) */
   recovered_at?: number | null; recovery?: boolean;
   /** the board reports another identity than the image written (its version, "?" for an unknown format) */
-  mismatch?: string | null }
+  mismatch?: string | null;
+  evidence?: { ambiguous: boolean; error: string | null } }
 /** SOC, remaining and learned full capacity, cycles (backend `flash_check::Charge`). */
 export interface Charge { soc: number; remaining_ah: number; full_ah: number; cycles: number }
 /** One side of the comparison before/after a flash (backend `flash_check::Side`); null: not read or not supported. */
@@ -379,7 +380,7 @@ export interface InstallationOverview {
   recorded: number; recorded_from: number | null; recorded_to: number | null; log_dir: string | null;
 }
 /** The newest stored parameter block of a place, parsed (null: not readable). */
-export interface SnapshotParams { address: number; at: number; kind: StoredSnapshot["kind"]; board: StoredSnapshot["board"]; bms_serial: string | null; parameters: Parameters | null;
+export interface SnapshotParams { id: number; address: number; at: number; kind: StoredSnapshot["kind"]; board: StoredSnapshot["board"]; bms_serial: string | null; parameters: Parameters | null;
   /** a read after a refused write whose switches differ from the stored ones then: maybe live in RAM only */
   switches_unconfirmed?: boolean;
   /** the patch the read was taken under (the proof of that connection); null: none proven then */
@@ -476,7 +477,7 @@ export interface LiveStatus { bus: "quiet" | "polling" | "traffic" | "no-port" |
 export interface BankView { state: "match" | "stored" | "mismatch" | "unchecked" | "absent" | "none"; serial: string | null }
 /** `cancelled`: stopped by „Abbrechen“, `packs` holds what answered until then */
 /** `identities`: each pack's own 64/03 as far as known (the pack bus cannot give it); missing: not checked */
-export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean; identities?: PackProbeView[]; no_serial?: number[] }
+export interface PackScan { packs: [number, DeviceInfo][]; bank: BankView; cleared: number[]; cancelled: boolean; identities?: PackProbeView[]; no_serial?: number[]; series_scan: number | null }
 /** A pack that may hang in its bootloader after an interrupted flash, per pack bus endpoint. */
 export interface Pending { id: number; endpoint: string; pack: number; release: string; since: number; bms_serial?: string | null }
 /** `latent`: the marker was last seen on and the master now runs an image without 0x64 (the marker word stays in flash). */
@@ -663,7 +664,7 @@ const tauriApi = {
   /** RS485-1/2 only: reads 0x47 again, writes `edited` (changes against `base`) on top of it and reads back;
    *  `restore` sends `edited` as it is (the stored block after a refusal) */
   /** `serial`: the String 2 read with the edited column (CAN socket); the write checks the pack still has it. */
-  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean, serial?: string | null) => written(address, invoke<{ value: ParamWrite; unchecked: boolean }>("write_parameters", { address, base, edited, restore, serial: serial ?? null, installation: chosen })),
+  writeParameters: (address: number, base: Wire, edited: Wire, restore: boolean, serial?: string | null, hardStop = false) => written(address, invoke<{ value: ParamWrite; unchecked: boolean }>("write_parameters", { address, base, edited, restore, serial: serial ?? null, hardStop, installation: chosen })),
   /** After the user confirmed it: the board row at `address` a CAN socket write found still listed is no longer there. */
   bankMarkGone: (address: number, board: number, at: number | null, gen: number) => invoke<boolean>("bank_mark_gone", { installation: chosen, address, board, at, gen }),
   paramHistory: (address: number) => invoke<ParamHistory>("param_history", { address }),
@@ -716,8 +717,8 @@ const tauriApi = {
     invoke<FlashStarted>("firmware_start", { port, address, path, allowCustom, expectedSha256, confirmation, lang, installation, expected, series }),
   /** a flash series: one confirmation (`seriesPhrase`) for exactly `addresses`; its run id and the order it flashes in
    *  (slaves, master last) */
-  firmwareSeriesBegin: (port: string, installation: string, addresses: number[], path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
-    invoke<{ run: number; order: number[] }>("firmware_series_begin", { port, installation, addresses, path, allowCustom, expectedSha256, confirmation, lang }),
+  firmwareSeriesBegin: (port: string, installation: string, addresses: number[], scanId: number, path: string, allowCustom: boolean, expectedSha256: string, confirmation: string, lang: string) =>
+    invoke<{ run: number; order: number[] }>("firmware_series_begin", { port, installation, addresses, scanId, path, allowCustom, expectedSha256, confirmation, lang }),
   /** ends the series `run`: no further pack of it is admitted (a later series stays) */
   firmwareSeriesEnd: (run: number) => invoke<void>("firmware_series_end", { run }),
   /** ends a series left open with none of its packs admitted (no run id needed); refused while one of its packs runs */

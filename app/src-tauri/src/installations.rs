@@ -324,6 +324,7 @@ pub async fn installation_delete(state: State<'_, AppState>, installation: Strin
 /// The newest stored parameter block of every place (offline Parameters view).
 #[derive(Serialize)]
 pub struct SnapshotView {
+    id: i64,
     address: u8,
     at: i64,
     kind: String,
@@ -340,7 +341,7 @@ pub async fn installation_snapshots(state: State<'_, AppState>, installation: St
     let rows = with_store(&state, |s| s.latest_snapshots(&installation))?;
     Ok(rows
         .into_iter()
-        .map(|x| SnapshotView { address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok(), switches_unconfirmed: x.switches_unconfirmed,
+        .map(|x| SnapshotView { id: x.id, address: x.address, at: x.at, kind: x.kind, board: x.board, bms_serial: x.bms_serial, parameters: Parameters::parse(&x.block).ok(), switches_unconfirmed: x.switches_unconfirmed,
             patch: x.patch.as_deref().and_then(|p| serde_json::from_str(p).ok()) })
         .collect())
 }

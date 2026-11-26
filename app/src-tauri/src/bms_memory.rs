@@ -378,6 +378,37 @@ struct AsciiIo<'a> {
     /// the real String 2 the write's own check read (None: none of its own, e.g. the placeholder): its snapshots carry
     /// this one, never the serial registered at the place
     seen: Option<String>,
+    patch: Option<crate::profile::PackPatch>,
+}
+
+impl<'a> AsciiIo<'a> {
+    fn for_target(state: &'a AppState, link: &'a Link, address: u8, checked: &crate::bank::Checked) -> Self {
+        let seen = crate::maint_store::real(&checked.read).map(String::from);
+        let patch = match seen.as_deref() {
+            Some(serial) => {
+                crate::profile::reask_identity(state, link, address);
+                crate::profile::pack_patch(state, link, address, Some(serial))
+            }
+            // no serial of its own (e.g. the factory placeholder): no earlier finding can be tied to this board, so its
+            // own 64/03 is asked now, right before the write; only that fresh answer counts (none: no proof)
+            None => {
+                crate::bank::clear_live(state, link.gen, address);
+                crate::profile::reask_identity(state, link, address);
+                crate::profile::pack_patch(state, link, address, None).filter(|p| p.source == "live")
+            }
+        };
+        Self { state, link, address, seen, patch }
+    }
+
+    fn write_rule(&self, hard_stop: bool) -> Result<crate::profile::Group0, String> {
+        let mut rule = crate::profile::write_group0(false, self.patch.as_ref(), hard_stop)?;
+        if self.seen.is_none() && self.patch.is_none() {
+            // an unidentified board without a fresh proof: bit 1 is the only OEM setting; every image-specific bit and
+            // the lock state stay as the pack has them
+            rule.keep = !(1 << 1);
+        }
+        Ok(rule)
+    }
 }
 
 impl ParamIo for AsciiIo<'_> {
@@ -406,8 +437,7 @@ impl ParamIo for AsciiIo<'_> {
         // the proof this connection has for the pack goes with the block, so a stored column of it keeps the meaning of
         // its Group0 bits (as the parameter read's own snapshot does)
         let id = snapshot_seen(self.state, self.link, self.address, kind, block, self.seen.as_deref());
-        let patch = crate::profile::pack_patch(self.state, self.link, self.address, None);
-        snapshot_patch(self.state, self.link, id, patch.as_ref());
+        snapshot_patch(self.state, self.link, id, self.patch.as_ref());
     }
 
     fn uart1(&self) -> bool {
@@ -471,7 +501,7 @@ pub enum ParamWrite {
 /// edited column). Host polling pauses from the identity read to the read-back.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool, serial: Option<String>) -> Result<Written<ParamWrite>, String> {
+pub async fn write_parameters(state: State<'_, AppState>, address: u8, installation: Option<String>, base: Values, edited: Values, restore: bool, serial: Option<String>, hard_stop: Option<bool>) -> Result<Written<ParamWrite>, String> {
     // fresh read, write and read-back belong together: no restart or other control of this pack in between
     // the path by the bus of this very link, so a reconnect meanwhile cannot send ASCII over the CAN socket
     let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "params")?;
@@ -479,15 +509,12 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
         ParamPath::Ascii => (|| {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
             let checked = check_target(&state, &link, address)?;
-            let seen = crate::maint_store::real(&checked.read).map(String::from);
-            // another board than read here before drops the finding of that one; a board without a serial of its own
-            // cannot be matched to a finding at all: its write goes without a proof (bits as edited, bit 5 kept)
-            crate::bank::board_read(&state, link.gen, address, seen.as_deref());
-            let patch = if checked.unchecked { None } else { crate::profile::pack_patch(&state, &link, address, None) };
-            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address, seen }, address, base, edited, restore, crate::profile::group0_rule(false, patch.as_ref()))?;
+            let mut io = AsciiIo::for_target(&state, &link, address, &checked);
+            let rule = io.write_rule(hard_stop.unwrap_or(false))?;
+            let value = write_checked(&mut io, address, base, edited, restore, rule)?;
             Ok(Written { value, unchecked: checked.unchecked })
         })(),
-        ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore),
+        ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore, hard_stop.unwrap_or(false)),
     };
     // a write to the master: the release bits the profile shows follow it (on both paths)
     crate::profile::after_master_write(&state, &link, address, r.as_ref().ok().map(|w| &w.value));
@@ -520,9 +547,8 @@ pub async fn write_name(state: State<'_, AppState>, address: u8, installation: O
     let PackAction { guard: _guard, link, bus } = PackAction::write(&state, installation.as_deref(), address, "name")?;
     on_bus(Action::WriteName, bus)?;
     let checked = check_target(&state, &link, address)?;
-    let seen = crate::maint_store::real(&checked.read).map(String::from);
-    crate::bank::board_read(&state, link.gen, address, seen.as_deref());
-    let value = name_checked(&mut AsciiIo { state: &state, link: &link, address, seen }, address, &expected, &name)?;
+    let mut io = AsciiIo::for_target(&state, &link, address, &checked);
+    let value = name_checked(&mut io, address, &expected, &name)?;
     Ok(Written { value, unchecked: checked.unchecked })
 }
 
@@ -1060,6 +1086,38 @@ mod tests {
         let mut out = b.to_vec();
         out[2..4].copy_from_slice(&p0.to_be_bytes());
         out
+    }
+
+    #[test]
+    fn an_unchecked_restore_changes_only_the_oem_switch_of_group0() {
+        let state = AppState::default();
+        let dir = std::env::temp_dir().join(format!("openbms-unchecked-write-{}", std::process::id()));
+        let store = crate::maint_store::Store::open(&dir.join("maintenance.sqlite")).unwrap();
+        let inst = store.create_installation("A", None, vec![]).unwrap();
+        *state.maint.lock().unwrap() = Some(store);
+        crate::new_link(&state, Some(inst.id.clone()));
+        let link = link_now(&state);
+        crate::bank::begin(&state, link.gen, true, None);
+        let info = openbms_proto::ExtInfo { format: 5, base: [16, 6, 13], patch: [1, 6], build_id: [8; 8], hard_stop: None, power_rtc: true,
+            pack_cutoff: true, reserved_flags: 0xC8, read_caps: 0, patch_rev: 7, uart0: true };
+        crate::bank::set_live(&state, link.gen, 3, openbms_flash::maint::policy::PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(info)));
+        assert!(crate::profile::pack_patch(&state, &link, 3, None).is_some());
+        let mut b = block(3);
+        b[crate::profile::GROUP0] = 0xC9;
+        let (base, mut edited) = edit(&b, 100);
+        edited.switches[0] = !b[crate::profile::GROUP0];
+        let checked = crate::bank::Checked { unchecked: true, read: SerialValue::Empty };
+        let mut io = AsciiIo::for_target(&state, &link, 3, &checked);
+        assert!(io.patch.is_none());
+        let plan = io.write_rule(false).unwrap();
+        assert!(io.write_rule(true).is_err());
+        io.snapshot(SnapshotKind::Written, &b);
+        let rows = crate::maint::with_store(&state, |s| s.latest_snapshots(&inst.id)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((&rows[0].bms_serial, &rows[0].patch), (&None, &None));
+        let mut device = Fake::new(false, vec![Ok(b.clone()), Ok(b)], Sent::Ack);
+        write_checked(&mut device, 3, base, edited, true, plan).unwrap();
+        assert_eq!(device.blocks[0][crate::profile::GROUP0], 0xCB);
     }
 
     #[test]

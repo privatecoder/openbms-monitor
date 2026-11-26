@@ -40,6 +40,7 @@ describe("flash series: one pack's end", () => {
     expect(judge(done({ after: null }), image)).toMatchObject({ kind: "deviates", why: "missing" });
     expect(judge(done({ comparison: cmp("incomplete") }), image)).toMatchObject({ kind: "deviates", why: "incomplete" });
     expect(judge(done({ comparison: cmp("differs") }), image)).toMatchObject({ kind: "deviates", why: "differs" });
+    expect(judge(done({ pending: true, evidence: { ambiguous: false, error: "database full" } }), image)).toMatchObject({ kind: "deviates", why: "evidence" });
     expect(judge(done({ ok: false, error: "x" }), image).kind).toBe("failed");
     expect(judge(done({ ok: false, pending: true }), image).kind).toBe("pending");
     expect(judge(done({ pending: true }), image).kind).toBe("pending");

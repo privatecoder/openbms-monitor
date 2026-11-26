@@ -6,7 +6,7 @@ import type { SnapshotParams } from "./api";
 
 /** A synthetic stored block: parameter 8 and 62 as given, switches group 6 as given. */
 const block = (address: number, at: number, p8: number, p62: number, g6: number, board: SnapshotParams["board"] = "current"): SnapshotParams => ({
-  address, at, kind: "read", board, bms_serial: null,
+  id: address, address, at, kind: "read", board, bms_serial: null,
   parameters: { address, device_name: "SYN", function_switches: [0, 0, 0, 0, 0, 0, g6, 0],
     parameters: KEYS.map((key, index) => ({ index, key, raw: 0, value: index === 8 ? p8 : index === 62 ? p62 : 0, unit: UNITS[index] })) },
 });

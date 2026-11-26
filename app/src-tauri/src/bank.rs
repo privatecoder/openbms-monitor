@@ -347,20 +347,40 @@ pub(crate) fn set_live(state: &AppState, gen: u64, address: u8, finding: openbms
     }
 }
 
-/// The real String 2 a parameter read of `address` showed on connection `gen` (None: a placeholder or none, which says
-/// nothing): when it is another one than the last read there, another board answers at that address now, and the live
-/// finding (of the board before) is dropped, so the read asks the new board's 64/03 (true).
+/// A real String 2 binds subsequent findings at this address. A finding made before the first serial, or for a
+/// different serial, cannot describe the newly identified board. The CAN master's profile follows the same rule.
 pub(crate) fn board_read(state: &AppState, gen: u64, address: u8, serial: Option<&str>) -> bool {
     let (Ok(mut b), Some(s)) = (state.bank.lock(), serial) else { return false };
     if b.gen != gen {
         return false;
     }
-    let changed = b.boards_read.get(&address).is_some_and(|prev| prev != s);
-    b.boards_read.insert(address, s.to_string());
-    if changed {
-        b.live.remove(&address);
+    let previous = b.boards_read.insert(address, s.to_string());
+    if previous.as_deref() == Some(s) {
+        return false;
     }
-    changed
+    let had_live = b.live.remove(&address).is_some();
+    let reset = b.profile.as_ref()
+        .filter(|p| address == 0 && p.bus == openbms_transport::Bus::CanSocketBus && !matches!(p.master, openbms_flash::maint::policy::Master::Unknown))
+        .map(|p| crate::profile::of(&p.endpoint, p.bus, None));
+    if let Some(p) = &reset {
+        b.profile = Some(p.clone());
+    }
+    drop(b);
+    // A failed probe can leave the replacement unidentified. Remove the previous board's flags from the UI as well.
+    if let Some(app) = state.app.get() {
+        if had_live {
+            let unknown = openbms_flash::maint::policy::PackFinding::Undecided;
+            let _ = app.emit("pack-probe", crate::profile::probe_view(gen, address, &unknown));
+        }
+        if let Some(p) = &reset {
+            let _ = app.emit("firmware-profile", crate::profile::view(gen, p));
+        }
+    }
+    previous.is_some() || had_live || reset.is_some()
+}
+
+pub(crate) fn board_matches(state: &AppState, gen: u64, address: u8, serial: &str) -> bool {
+    state.bank.lock().is_ok_and(|b| b.current(gen).and_then(|b| b.boards_read.get(&address)).is_some_and(|s| s == serial))
 }
 
 /// A flash of the pack begins: its live finding of this connection no longer holds.
@@ -587,6 +607,7 @@ pub(crate) fn check(state: &AppState, link: &Link, address: u8) -> Result<(Ident
             return Err(failed(address, "connection"));
         }
     };
+    crate::profile::observe_board(state, link, address, real(&read));
     let id = crate::maint::with_store(state, |s| identity(s, inst, address, &read)).map_err(|e| {
         eprintln!("bank check {address}: {e:?}");
         failed(address, "store")

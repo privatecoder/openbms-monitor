@@ -823,6 +823,19 @@ impl Store {
         Ok(())
     }
 
+    /// A flash invalidates both kinds of evidence. An unambiguous board that answered with the
+    /// expected build can receive a new proof. The caller owns the surrounding transaction.
+    pub fn replace_image_evidence(&self, places: &[(String, u8)], proof: Option<(&str, &str)>, now: i64) -> Result<(), String> {
+        for (inst, address) in places {
+            self.clear_patch_proof(inst, *address)?;
+            self.clear_hard_stop(inst, *address)?;
+        }
+        if let ([(inst, address)], Some((serial, release))) = (places, proof) {
+            self.set_patch_proof(inst, *address, serial, release, "flash", now)?;
+        }
+        Ok(())
+    }
+
     /// The hard-stop observations of the installation that hold for the board now current at their place (the same
     /// board row, or the same canonical String 2).
     pub fn hard_stops(&self, inst: &str) -> Result<Vec<HardStopSeen>, String> {
@@ -892,6 +905,26 @@ impl Store {
     pub fn clear_pending(&self, id: i64, how: &str, now: i64) -> Result<(), String> {
         self.db.execute("UPDATE bootloader_pending SET cleared = ?2, how = ?3 WHERE id = ?1 AND cleared IS NULL", params![id, now, how]).map_err(e)?;
         Ok(())
+    }
+
+    /// Settle the recovery record together with the returning board's proofs and matching
+    /// pending records. A shared serial identifies candidates for invalidation only.
+    pub fn finish_recovery(&self, record: i64, key: &str, board: Option<(u8, &str, Option<&str>)>, how: &str, now: i64) -> Result<bool, String> {
+        self.atomic(|s| {
+            let mut ambiguous = false;
+            if let Some((address, serial, release)) = board {
+                let places = crate::bench::places_of(s, serial)?;
+                ambiguous = places.len() > 1;
+                s.replace_image_evidence(&places, release.map(|r| (serial, r)), now)?;
+                if !ambiguous {
+                    for p in s.pending_on(key)?.iter().filter(|p| crate::maint::recovery_clears(p, key, address, Some(serial))) {
+                        s.clear_pending(p.id, "recovered", now)?;
+                    }
+                }
+            }
+            s.clear_pending(record, how, now)?;
+            Ok(ambiguous)
+        })
     }
 
     /// Clear the records of packs on the endpoint that answered 0x51 (`answered`: address and the String 2 read now, if
@@ -1950,6 +1983,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("maintenance.sqlite")
+    }
+
+    #[test]
+    fn recovery_retires_all_ambiguous_image_evidence_atomically() {
+        let s = Store::open(&temp("recovery-evidence")).unwrap();
+        let serial = "SYN-SHARED";
+        let value = SerialValue::Set { value: serial.into(), truncated: false };
+        let (a, b) = (s.create_installation("A", None, vec![]).unwrap(), s.create_installation("B", None, vec![]).unwrap());
+        for inst in [&a.id, &b.id] {
+            s.board_seen(inst, 2, &value, &SerialValue::NoAnswer, 1).unwrap();
+            s.set_patch_proof(inst, 2, serial, "old", "flash", 1).unwrap();
+            s.note_hard_stop(inst, 2, 1).unwrap();
+        }
+        let key = "serial:/dev/example";
+        let record = s.add_pending(key, crate::maint::RECOVERY_PACK, "new", None, 2).unwrap();
+        s.db.execute_batch("CREATE TRIGGER fail_evidence BEFORE DELETE ON hard_stop_seen BEGIN SELECT RAISE(ABORT, 'evidence write failed'); END;").unwrap();
+        let finish = || s.finish_recovery(record, key, Some((2, serial, Some("new"))), "recovered", 3);
+        assert!(finish().unwrap_err().contains("evidence write failed"));
+        assert!(s.patch_proof(&a.id, 2).unwrap().is_some());
+        assert_eq!(s.all_pending().unwrap().len(), 1);
+        s.db.execute_batch("DROP TRIGGER fail_evidence").unwrap();
+        assert!(finish().unwrap(), "both places must be reported as ambiguous");
+        for inst in [&a.id, &b.id] {
+            assert!(s.patch_proof(inst, 2).unwrap().is_none());
+            assert!(s.hard_stops(inst).unwrap().is_empty());
+        }
+        assert!(s.all_pending().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_replaces_the_identified_boards_proof_and_settles_its_pending_record() {
+        let s = Store::open(&temp("recovery-proof")).unwrap();
+        let inst = s.create_installation("A", None, vec![]).unwrap();
+        let serial = "SYN-ONE";
+        let key = "serial:/dev/example";
+        s.board_seen(&inst.id, 3, &SerialValue::Set { value: serial.into(), truncated: false }, &SerialValue::NoAnswer, 1).unwrap();
+        for release in [Some("verified build"), None] {
+            s.set_patch_proof(&inst.id, 3, serial, "old", "user", 1).unwrap();
+            s.note_hard_stop(&inst.id, 3, 1).unwrap();
+            s.add_pending(key, 3, "old", Some(serial), 2).unwrap();
+            let record = s.add_pending(key, crate::maint::RECOVERY_PACK, "new", None, 2).unwrap();
+            assert!(!s.finish_recovery(record, key, Some((3, serial, release)), "recovered", 3).unwrap());
+            assert_eq!(s.patch_proof(&inst.id, 3).unwrap().map(|p| p.release), release.map(String::from));
+            assert!(s.hard_stops(&inst.id).unwrap().is_empty());
+            assert!(s.all_pending().unwrap().is_empty());
+        }
     }
 
     #[test]

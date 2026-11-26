@@ -274,7 +274,7 @@ pub(crate) fn run(state: &AppState, link: &Link, channel: Channel, value: u8, ex
         return Err(e);
     }
     let stored = expected_board(state, inst, expected)?;
-    let (inst, facts) = crate::uart1_id::prepare(state, link, MASTER, Some(&stored))?;
+    let (inst, facts) = crate::uart1_id::prepare(state, link, MASTER, Expected::Board(&stored))?;
     let session = crate::uart1_id::run_session(state, link, MASTER, |c| write_session(&mut Conn { c, bus: Bus::CanSocketBus }, &inst, &stored, &facts, value))?;
     session.result.unwrap_or_else(|| Err("no result".into()))
 }
@@ -287,9 +287,11 @@ pub async fn ccl_step_read(state: tauri::State<'_, AppState>) -> Result<CclRead,
     crate::bms_io_allowed(&state)?;
     let PackAction { guard: _guard, link, bus } = PackAction::read(&state, MASTER, "ccl_read")?;
     let channel = on_bus(Action::ReadCclStep, bus)?;
-    with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
+    let read = with_link(&state.conn, &state.flashing, &state.link, &link, |c| {
         Ok(if channel == Channel::Uart0 { read_session(&mut Ascii { c }) } else { read_session(&mut Conn { c, bus: Bus::CanSocketBus }) })
-    })?
+    })??;
+    crate::profile::observe_board(&state, &link, MASTER, read.serial.as_deref());
+    Ok(read)
 }
 
 /// „Speichern“: one explicit set of the master's setting (`value` 1..=20, an integer), read back separately.

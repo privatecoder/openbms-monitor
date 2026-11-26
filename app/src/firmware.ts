@@ -62,6 +62,13 @@ export function resultVersions(done: Pick<FirmwareDone, "before" | "after">, che
   return { from, to: fits ? image.release : `${image.release} (${t("fw.reports", { v: after })})` };
 }
 
+/** One headline for a completed transfer. A contradictory identity wins even when the application restarted. */
+export function transferSummary(done: Pick<FirmwareDone, "before" | "after" | "mismatch" | "recovery" | "recovered_at">, image: FirmwareImage | null, checked: string | null, t: T) {
+  if (done.mismatch) return { warning: true, text: t("fw.mismatch", { image: image ? imageLabel(image, t) : "?", v: done.mismatch }) };
+  if (done.recovery) return { warning: false, text: done.recovered_at == null ? t("fw.rec.okUnchecked") : t("fw.rec.okFound", { address: done.recovered_at, version: done.after?.firmware_version ?? "?" }) };
+  return { warning: false, text: `${t("fw.okTitle")}: ${t("fw.okText", resultVersions(done, checked, image, t))}` };
+}
+
 /** Whether a 0x51 answer ("16.06", major.minor) fits the image flashed: "16.06" fits "16.06.13" but not "16.06.1x" of
  *  another minor (whole parts compared). An EMU1101-EXT name carries no OEM base: the listed build's base (`image.base`)
  *  stands for it; without one it never fits. A custom image has no known version: never fits (the caller decides). */
@@ -128,3 +135,6 @@ export function compareLines(c: FlashComparison, image: FirmwareImage | null, t:
 
 /** The phrase a recovery is confirmed with (backend `recovery_confirmation_ok`): no pack address, the bootloader has none. */
 export const recoveryPhrase = (custom: boolean | undefined): string => (custom ? "RECOVER CUSTOM" : "RECOVER");
+
+/** Both notes can be siblings for one bench target. Distinct keys let React remove both on a new search. */
+export const firmwareNoteKeys = (target: string) => ({ patch: `patch|${target}`, soc: `soc|${target}` });

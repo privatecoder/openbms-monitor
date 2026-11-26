@@ -19,13 +19,15 @@ export interface BmsBalancing {
   at: number;
 }
 
-const value = (s: SnapshotParams, i: number): number | null => {
+type BalancingBlock = Pick<SnapshotParams, "address" | "at" | "parameters" | "board">;
+
+const value = (s: BalancingBlock, i: number): number | null => {
   const v = s.parameters?.parameters.find((x) => x.index === i)?.value;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 };
 
 /** The thresholds of `address` from the stored blocks; none without a readable block of the current board. */
-export function bmsBalancing(rows: SnapshotParams[], address: number): BmsBalancing | null {
+export function bmsBalancing(rows: BalancingBlock[], address: number): BmsBalancing | null {
   const s = rows.filter((r) => r.address === address && r.parameters && r.board !== "previous").sort((a, b) => b.at - a.at)[0];
   if (!s) return null;
   const start = value(s, 8), spread = value(s, 62);
@@ -62,9 +64,9 @@ export function extNow(v: BalancerValues, hi: number, lo: number, current: numbe
 
 /** The blocks the line explains with: the stored ones over the monitor's own bus; over the add-on's feed (MQTT) only
  *  the feed's blocks of this connection, since the feed cannot tell which board a stored block came from. */
-export function balancingBlocks(source: Source | null, stored: SnapshotParams[], feed: FeedState | null): SnapshotParams[] {
+export function balancingBlocks(source: Source | null, stored: SnapshotParams[], feed: FeedState | null): BalancingBlock[] {
   if (source !== "mqtt") return stored;
   return (feed?.packs ?? []).filter((p) => p.parameters && p.parameters_at !== null).map((p) => ({
-    address: p.address, at: p.parameters_at!, kind: "read" as const, board: "current" as const, bms_serial: null, parameters: p.parameters,
+    address: p.address, at: p.parameters_at!, board: "current" as const, parameters: p.parameters,
   }));
 }

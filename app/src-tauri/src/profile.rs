@@ -514,6 +514,13 @@ pub fn reask_identity(state: &AppState, link: &Link, address: u8) {
     }
 }
 
+/// Serial discovery can replace a finding shown in the UI. Publish the new board's own probe on the same reservation.
+pub(crate) fn observe_board(state: &AppState, link: &Link, address: u8, serial: Option<&str>) {
+    if bank::board_read(state, link.gen, address, serial) {
+        reask_identity(state, link, address);
+    }
+}
+
 /// The live finding of a slave on `link`, asking it once per connection (CAN socket only; the master has its profile).
 pub fn live_or_probe(state: &AppState, link: &Link, address: u8) -> Option<PackFinding> {
     if address == 0 || bank::profile(state, link.gen).is_none_or(|p| p.bus != Bus::CanSocketBus) {
@@ -606,6 +613,18 @@ pub fn group0_rule(uart1: bool, patch: Option<&PackPatch>) -> Group0 {
     access::group0_plan(if uart1 { Channel::Uart1 } else { Channel::Uart0 }, patch.map(proof_of))
 }
 
+/// Evaluated under the target's write reservation. A stored proof has no flags and cannot authorize a hard-stop change.
+pub fn write_group0(uart1: bool, patch: Option<&PackPatch>, hard_stop: bool) -> Result<Group0, String> {
+    let mut rule = group0_rule(uart1, patch);
+    if !patch.and_then(|p| p.caps.flags).is_some_and(|flags| flags & (1 << access::FLAG_HARD_STOP) != 0) {
+        if hard_stop {
+            return Err(uart1_refusal("hard-stop-unsupported"));
+        }
+        rule.keep |= (1 << access::G0_HARD_STOP) | (1 << access::G0_HARD_STOP_INHERIT);
+    }
+    Ok(rule)
+}
+
 /// Apply `rule` to `block` (built on the fresh read `fresh`) before it is sent; Err: refused here, nothing sent.
 pub fn apply_group0(rule: Group0, fresh: &[u8], block: &mut [u8]) -> Result<(), String> {
     access::apply_group0(rule, fresh[GROUP0], &mut block[GROUP0]).map_err(|r| {
@@ -652,6 +671,7 @@ pub async fn patch_proof_confirm(state: tauri::State<'_, AppState>, installation
             },
         })
     })?;
+    observe_board(&state, &link, address, read.as_deref());
     if read.as_deref() != Some(serial.as_str()) {
         return Err(uart1_refusal("changed"));
     }
@@ -1111,8 +1131,10 @@ mod tests {
         let link = crate::link_now(&state);
         bank::begin(&state, link.gen, true, None);
         bank::set_live(&state, link.gen, 2, live([1, 6], Some(false)));
-        // the same board, or a read without a real String 2: the finding stays
-        assert!(!bank::board_read(&state, link.gen, 2, Some("SYN-A")));
+        // A finding made before any real serial cannot be attributed to the board that first identifies itself.
+        assert!(bank::board_read(&state, link.gen, 2, Some("SYN-A")));
+        assert!(bank::live(&state, link.gen, 2).is_none());
+        bank::set_live(&state, link.gen, 2, live([1, 6], Some(false)));
         assert!(!bank::board_read(&state, link.gen, 2, Some("SYN-A")));
         assert!(!bank::board_read(&state, link.gen, 2, None));
         assert!(bank::live(&state, link.gen, 2).is_some());
@@ -1120,6 +1142,39 @@ mod tests {
         assert!(bank::board_read(&state, link.gen, 2, Some("SYN-B")));
         assert!(bank::live(&state, link.gen, 2).is_none());
         assert!(ask_again(2, Bus::PackBus, false, bank::live(&state, link.gen, 2).as_ref()));
+    }
+
+    #[test]
+    fn the_first_master_serial_invalidates_an_ownerless_can_profile() {
+        let state = AppState::default();
+        crate::new_link(&state, None);
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, false, None);
+        bank::set_profile(&state, link.gen, profile(patched([1, 6], LISTED), Bus::CanSocketBus));
+        assert!(bank::board_read(&state, link.gen, 0, Some("SYN-M")));
+        assert!(matches!(bank::profile(&state, link.gen).unwrap().master, Master::Unknown));
+        bank::set_profile(&state, link.gen, profile(patched([1, 5], LISTED), Bus::CanSocketBus));
+        assert!(!bank::board_read(&state, link.gen, 0, Some("SYN-M")));
+        assert!(bank::profile(&state, link.gen).unwrap().caps().is_some());
+    }
+
+    #[test]
+    fn a_negative_recheck_revokes_a_hard_stop_write_on_both_buses() {
+        let state = AppState::default();
+        crate::new_link(&state, None);
+        let link = crate::link_now(&state);
+        bank::begin(&state, link.gen, true, None);
+        let PackFinding::Proven { mut info, .. } = live([1, 6], None) else { unreachable!() };
+        info.reserved_flags |= 1 << access::FLAG_HARD_STOP;
+        bank::set_live(&state, link.gen, 3, PackFinding::of(openbms_flash::maint::dialog::PackAnswer::Info(info)));
+        for uart1 in [false, true] {
+            assert!(write_group0(uart1, pack_patch(&state, &link, 3, None).as_ref(), true).is_ok());
+        }
+        bank::set_live(&state, link.gen, 3, PackFinding::Negative(None));
+        for uart1 in [false, true] {
+            let patch = pack_patch(&state, &link, 3, None);
+            assert!(write_group0(uart1, patch.as_ref(), true).is_err());
+        }
     }
 
     #[test]

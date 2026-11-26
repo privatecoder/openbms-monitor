@@ -18,12 +18,13 @@ export type PackEnd =
   | { kind: "refused"; error: unknown }
   | { kind: "failed"; done: FirmwareDone }
   | { kind: "pending"; done: FirmwareDone }
-  | { kind: "deviates"; done: FirmwareDone; why: "missing" | "incomplete" | "differs" | "version" | "noSerial" }
+  | { kind: "deviates"; done: FirmwareDone; why: "missing" | "incomplete" | "differs" | "version" | "noSerial" | "evidence" }
   | { kind: "notReached" };
 
 /** A finished flash's end event as the series sees it: only a pack that answers cleanly with the new image lets the
  *  next one start (the backend applies the same rule before it admits the next pack). */
 export function judge(done: FirmwareDone, image: FirmwareImage): PackEnd {
+  if (done.ok && done.evidence?.error) return { kind: "deviates", done, why: "evidence" };
   if (done.pending) return { kind: "pending", done };
   if (!done.ok) return { kind: "failed", done };
   const to = done.after?.firmware_version ?? null;

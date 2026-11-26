@@ -9,7 +9,7 @@ import { Panel } from "../components/ui/card";
 import { InfoIcon, helpTitle, useHelpEntry } from "../help";
 import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
-import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, fromStored, parseExport, refreshedStored, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
+import { BM_NAMES, GROUPS, KEYS, SWITCH_BITS, UNITS, decimals, deviating, exportName, fmtParam, fromPack, parseExport, refreshedStored, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "../params";
 import { afterUart1Write, capacityResets, blockers, keepProof, capacityEffects, changeOf, changes, fromRaw, fullRequests, notTaken, planTarget, rawsOf, sameBlock, switchDiff, takeOver, toWire, RATED_INDEX, SERIES_INDEX, type Raws, type TargetPlan, type Wire } from "../paramWrite";
 import { attemptAgain, failure, outcomeOf, runSeries, unclearWrites, RETRY_PAUSE_MS, type Outcome, type PackResult, type SeriesEnd } from "../multiWrite";
 import { EditBar, EditCell, EditSwitch, RefusedPanel, badInput, type Edit, type Full, type Note, type Refused } from "../components/ParamEdit";
@@ -185,11 +185,8 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     try {
       const rows = await api.installationSnapshots(id);
       if (!current()) return;
-      if (refresh) {
-        setSources((s) => refreshedStored(s, rows));
-        return;
-      }
-      setSources((s) => [...s.filter((x) => x.kind !== "stored"), ...rows.map(fromStored)]);
+      setSources((s) => refreshedStored(s, rows, !refresh));
+      if (refresh) return;
       // said also when the columns were there already, so a click visibly did something
       const newest = rows.reduce((m, r) => Math.max(m, r.at), 0);
       setStoredNote(rows.length
@@ -373,11 +370,11 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   /** One block to one pack (`base`: what the change was made against), then the pack's column as after every
    *  write: the current state when stale, the pending refusal, the read-back with what was not taken. A column of
    *  another link is left alone. */
-  const send = async (a: number, base: Wire, raws: Raws, switches: number[], restore: boolean, l: string): Promise<{ r?: ParamWrite; error?: unknown; out: Outcome }> => {
+  const send = async (a: number, base: Wire, raws: Raws, switches: number[], restore: boolean, l: string, hardStop = false): Promise<{ r?: ParamWrite; error?: unknown; out: Outcome }> => {
     let r: ParamWrite;
     // the board the column was read from: a write over the CAN socket must find the same one
     const serial = sources.find((x) => x.id === `pack-${a}`)?.read?.bms_serial ?? null;
-    try { r = await api.writeParameters(a, base, toWire(raws, switches), restore, serial); }
+    try { r = await api.writeParameters(a, base, toWire(raws, switches), restore, serial, hardStop); }
     catch (error) { return { error, out: failure(error) }; }
     // the pending refusal is kept per site and pack and holds whatever the link: the switches are live on that pack
     if (r.kind === "refused") {
@@ -418,7 +415,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
       if (linkNow() !== l) return { text: t("hs.linkChanged"), error: true };
     }
     const next = sw.map((v, g) => (g === 0 ? withHardStop(v, enabled) : v));
-    const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, l);
+    const { r, error, out } = await send(a, toWire(raws, sw), raws, next, false, l, true);
     refreshStored();
     if (!r) return { text: writeError(error, t, (err) => t("pw.error", { err })), error: true };
     if (r.kind === "written" && out.kind === "written") return { text: t(enabled ? "hs.doneOn" : "hs.doneOff"), error: false };

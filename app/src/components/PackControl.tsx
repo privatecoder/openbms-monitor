@@ -77,7 +77,9 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   const [fullText, setFullText] = useState("");
   // Group0 and the patch of this section's own fresh 0x47 (before „Aus“, after ein/aus): newer than the column; `g0`
   // undefined: the read after an action failed, so neither it nor the column's older value says anything now
-  const [fresh47, setFresh47] = useState<{ g0: number | undefined; patch: PackPatch | null } | null>(null);
+  const [last47, setFresh47] = useState<{ address: number; link: string; g0: number | undefined; patch: PackPatch | null } | null>(null);
+  const fresh47 = last47 && last47.address === address && last47.link === linkKey ? last47 : null;
+  const request47 = useRef(0);
   const gen = useRef(0);
   const current = useCurrent(address);
   const linkNow = useCurrent(linkKey);
@@ -106,6 +108,21 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
     } catch (e) { if (gen.current === mine && same(a, lk)) setLive({ error: errorText(e, t) }); return null; }
     finally { if (gen.current === mine) setReading(false); }
   };
+  // a fresh 0x47 of this pack (Group0 and the patch proof it names); undefined when not readable
+  const read47 = async (a: number, lk: string) => {
+    const ticket = ++request47.current;
+    try {
+      const p = await api.parameters(a);
+      if (ticket !== request47.current || !same(a, lk)) return undefined;
+      setP79(p.parameters[P79]?.value ?? null);
+      const f = { address: a, link: lk, g0: p.function_switches[0], patch: p.patch ?? null };
+      setFresh47(f);
+      return f;
+    } catch {
+      if (ticket === request47.current && same(a, lk)) setFresh47({ address: a, link: lk, g0: undefined, patch: null });
+      return undefined;
+    }
+  };
   useEffect(() => {
     setLive(null); setNote(null); setAh(""); setFullText(""); setP79(null); setAsk(null); setFresh47(null); p79Asked.current.clear();
     if (!open || !usable || address === null) return;
@@ -113,6 +130,13 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   }, [open, usable, address, linkKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // a newer read of the column replaces this section's Group0 (also one marked unreadable)
   useEffect(() => setFresh47((f) => (f ? { ...f, g0: group0 } : f)), [group0]);
+  // Full can retain a cutoff even when its status says on. Read the missing switch byte before offering a direction.
+  useEffect(() => {
+    if (!open || !usable || address === null || !cutoff || group0 !== undefined) return;
+    p79Asked.current.add(address);
+    void read47(address, linkKey);
+    return () => { request47.current += 1; };
+  }, [open, usable, address, linkKey, cutoff, group0]); // eslint-disable-line react-hooks/exhaustive-deps
   // P79 only when no column shows it and the field is used: one 0x47 per pack; a pack that does not answer gets the
   // general hint
   const p79 = p79Shown ?? p79Read;
@@ -179,19 +203,6 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
       : { text: t("ctl.restart.notReachable"), tone: "error" };
   });
 
-  // a fresh 0x47 of this pack (Group0 and the patch proof it names); undefined when not readable
-  const read47 = async (a: number, lk: string) => {
-    try {
-      const p = await api.parameters(a);
-      if (!same(a, lk)) return undefined;
-      const f = { g0: p.function_switches[0], patch: p.patch ?? null };
-      setFresh47(f);
-      return f;
-    } catch {
-      if (same(a, lk)) setFresh47((f) => ({ g0: undefined, patch: f?.patch ?? null }));
-      return undefined;
-    }
-  };
   // the pack cutoff matters here: proven over the CAN socket; on RS485-1/2 any pack may be a Full build, so every ein/aus
   // reads Group0 there (a polling master does not answer RS485-1/2 anyway)
   const aware = can ? cutoff : true;
@@ -368,6 +379,8 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   const disabled = actLocked(busy !== null, !!locked);
   // over the CAN socket a lock seen in the last state holds restart and on/off back (Group0 bit 3)
   const powerHeld = can && powerLocked === true;
+  const directionKnown = !cutoff || g0 !== undefined;
+  const switchAction = decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld, available: !!st, loaded: directionKnown });
   const yesNo = (free: boolean) => <span className={free ? "text-ok" : "text-discharge"}>{t(free ? "ctl.state.free" : "ctl.state.blocked")}</span>;
   const blockers = st && !dischargeFree(st) ? blockingAlarms(st, "discharge") : [];
   const chargeBlockers = st && !chargeFree(st) ? blockingAlarms(st, "charge") : [];
@@ -377,14 +390,17 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   return (
     <div className="space-y-3 border-t border-line pt-3 text-sm">
       <SectionHead icon={Power} title={t("ctl.title")} help="topic.control" open={open} onToggle={() => setOpen(!open)} closedHint={t(can ? "ctl.closedCan" : "ctl.closed")}
-        onReload={open ? () => void reload(address) : undefined} reloading={reading} reloadDisabled={disabled} reloadLabel={t("ctl.reload")} readAt={readAt} />
+        onReload={open ? () => {
+          void reload(address);
+          if (!directionKnown) void read47(address, linkKey);
+        } : undefined} reloading={reading} reloadDisabled={disabled} reloadLabel={t("ctl.reload")} readAt={readAt} />
       {open && (
         <div className="space-y-3">
           <div className="space-y-1 tabular-nums">
             {live === null ? <StatusLine>{t("ctl.reading")}</StatusLine>
               : "error" in live ? <StatusLine tone="error">{t("ctl.readError", { err: live.error })}</StatusLine>
               : <>
-                <div>{t("ctl.state.command")} <span className={off ? "text-discharge" : "text-ok"}>{t(off ? "ctl.state.off" : "ctl.state.on")}</span>{!off && offReasons(live.status).length > 0 && <span className="text-discharge"> ({t("ctl.state.offSoon")})</span>}</div>
+                <div>{t("ctl.state.command")} <span className={!directionKnown ? "text-muted" : off ? "text-discharge" : "text-ok"}>{t(!directionKnown ? "ctl.onOff.unknown" : off ? "ctl.state.off" : "ctl.state.on")}</span>{directionKnown && !off && offReasons(live.status).length > 0 && <span className="text-discharge"> ({t("ctl.state.offSoon")})</span>}</div>
                 <div>{t("ctl.state.discharge")} {yesNo(dischargeFree(live.status))}{!dischargeFree(live.status) && (off || blockers.length > 0) && <span className="text-discharge"> ({[...(off ? [t("ctl.state.offCommand")] : []), ...(blockers.length ? [names(blockers)] : [])].join(", ")})</span>}</div>
                 <div>{t("ctl.state.charge")} {yesNo(chargeFree(live.status))}{chargeBlockers.length > 0 && <span className="text-discharge"> ({names(chargeBlockers)})</span>}</div>
                 <div>{t("ctl.state.heater")} {t(heaterOn(live.status) ? "ctl.state.on" : "ctl.state.off")}{heaterOn(live.status) && heaterEnd && <span className="text-muted"> ({t("ctl.state.heaterUntil", { time: heaterEnd })})</span>}</div>
@@ -396,9 +412,9 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
 
           <div className="flex flex-wrap items-center gap-2">
             {offers("restart") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>}
-            {offers("power-on-off") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld, available: !!st }).locked} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
-              title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : masterBroadcast(mode, address) ? "ctl.tip.onMaster" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
-              {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
+            {offers("power-on-off") && <Button size="sm" disabled={switchAction.locked} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
+              title={t(switchAction.reason?.key ?? (off ? (lock === "active" ? "ctl.cutoff.tipOn" : masterBroadcast(mode, address) ? "ctl.tip.onMaster" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off"))}>
+              {busy === "on" || busy === "off" ? t("ctl.running") : t(!directionKnown ? "ctl.onOff.neutral" : off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>}
             {relock && offers("power-on-off") && (
               <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld, available: !!st }).locked} onClick={() => void askOff(address, true)} title={t("ctl.cutoff.tipRelock")}>

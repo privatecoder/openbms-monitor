@@ -148,6 +148,8 @@ describe("firmware and maintenance", () => {
     // the picker: shown with two packs, fixed while anything runs
     expect(s("maintenance.seriesPick", { available: false })).toBe("hidden");
     expect(s("maintenance.seriesPick", { available: true })).toBe("open");
+    expect(s("maintenance.seriesPick", { available: true, serialDiscoveryIncomplete: true })).toBe("locked:maint.err.refused.series-needs-scan");
+    expect(s("maintenance.seriesStart", { ready: true, serialDiscoveryIncomplete: true })).toBe("locked:maint.err.refused.series-needs-scan");
     expect(s("maintenance.seriesPick", { available: true, busy: true })).toBe("locked:lock.busy");
     expect(s("maintenance.seriesPick", { available: true, flashRunning: true })).toBe("locked:lock.flashRunning");
   });
@@ -322,6 +324,8 @@ describe("the rest, all of it: navigation, offers, broker fields, parameter writ
     expect(s("params.write", {})).toBe("open");
     expect(s("params.write", { refused: true })).toBe("locked:lock.refused");
     expect(s("params.write", { held: true })).toBe("locked:lock.writeRunning");
+    expect(s("pack.power", { loaded: false, available: true })).toBe("locked:lock.cutoffUnread");
+    expect(s("pack.power", { loaded: true, available: true })).toBe("open");
     expect(s("pack.power", { available: false })).toBe("locked:lock.noStatus");
     expect(s("pack.power", { available: true })).toBe("open");
   });

@@ -11,7 +11,7 @@ import { InfoIcon } from "../help";
 import { GuideButton } from "../guides";
 import { cn } from "../lib/utils";
 import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
-import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, flashGateKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "../firmware";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, flashGateKeys, firmwareNoteKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, transferSummary } from "../firmware";
 import { chargeLine } from "../control";
 import { useWriteTexts } from "../components/ParamEdit";
 import { errorKey, packPortOf, portKey, seriesOpen, type PortKind } from "../maint";
@@ -154,10 +154,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
 
   // the flash series of the pack bus panel: confirmed once in the backend, then each pack through `startFlash`
   const series = inst && path && image ? {
-    begin: async (addresses: number[], phrase: string) => {
+    begin: async (addresses: number[], phrase: string, scanId: number) => {
       // held from the request on: nothing else starts while the backend confirms; undone by `seriesEnd`
       seriesOn.current = true; setInSeries(true); onRunning(true);
-      const r = await api.firmwareSeriesBegin(port, inst.id, addresses, path, allowCustom, image.sha256, phrase, lang);
+      const r = await api.firmwareSeriesBegin(port, inst.id, addresses, scanId, path, allowCustom, image.sha256, phrase, lang);
       seriesRun.current = r.run;
       return r.order;
     },
@@ -227,10 +227,11 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   };
 
   const reset = () => { setDone(null); setProgress(null); setError(null); setFlashed(null); };
-  const versions = done && flashed ? resultVersions(done, flashed.checked, flashed.image, t) : null;
+  const summary = done?.ok ? transferSummary(done, flashed?.image ?? null, flashed?.checked ?? null, t) : null;
 
   if (isDemo) return <div className="view-in mx-auto max-w-7xl space-y-3"><h1 className="flex items-center gap-2 font-display text-4xl font-semibold tracking-tight"><Cpu className="h-8 w-8" strokeWidth={1.75} aria-hidden />{t("fw.title")}</h1><p className="text-muted">{t("fw.demo")}</p></div>;
 
+  const noteKeys = firmwareNoteKeys(tab === "bus" ? `bus|${port}|${busAddress}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`);
   const imagePicker = (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-4">
@@ -248,10 +249,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
         : <p className="flex gap-2 rounded-md border border-discharge p-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-discharge" />{t("fw.needsCustom", { release: imageLabel(pending.info, t, true) })}</p>)}
       {imageError && <p className="text-sm text-alarm">{imageError}</p>}
       {/* bound to the port and board it reads: another one starts without a fresh value */}
-      {image?.kind === "maintenance" && (tab === "bus" || chosen) && <PatchImageNotes key={tab === "bus" ? `bus|${port}|${busAddress}` : `bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={tab === "bus" ? busAddress : address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} positive={!!image.positive} locked={inputsLocked}
+      {image?.kind === "maintenance" && (tab === "bus" || chosen) && <PatchImageNotes key={noteKeys.patch} inst={tab === "bus" ? inst?.id ?? null : null} port={tab === "bus" ? port : bPort} address={tab === "bus" ? busAddress : address} release={image.release} powerRtc={!!image.power_rtc} packCutoff={!!image.pack_cutoff} positive={!!image.positive} locked={inputsLocked}
         latent={tab === "bus" && !!inst && maint.alerts.markers.some((m) => m.installation === inst.id && m.latent)} />}
       {/* the bench target; on the pack bus each pack row reads its own (`PackBusPanel`) */}
-      {image && tab === "bench" && chosen && <FlashSocNote key={`bench|${searchGen}|${bPort}|${address}|${chosen?.serial ?? ""}`} port={bPort} address={address} locked={inputsLocked} />}
+      {image && tab === "bench" && chosen && <FlashSocNote key={noteKeys.soc} port={bPort} address={address} locked={inputsLocked} />}
     </div>
   );
 
@@ -356,15 +357,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
           )}
           {done && (
             <div className="space-y-2">
-              {/* transferred, but the board reports another build than the image written: said before any success line */}
-              {done.ok && done.mismatch && <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.mismatch", { v: done.mismatch, image: flashed ? imageLabel(flashed.image, t) : "?" })}</p>}
-              {done.ok && done.recovery ? (
-                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />
-                  {done.recovered_at !== null && done.recovered_at !== undefined
-                    ? t("fw.rec.okFound", { address: done.recovered_at, version: done.after?.firmware_version ?? "?" })
-                    : t("fw.rec.okUnchecked")}</p>
-              ) : done.ok ? (
-                <p className="flex items-center gap-2 font-medium text-ok"><CircleCheck className="h-5 w-5" />{t("fw.okTitle")}: {t("fw.okText", versions ?? { from: "?", to: "?" })}</p>
+              {summary ? (
+                <p className={cn("flex items-center gap-2 font-medium", summary.warning ? "text-alarm" : "text-ok")}>
+                  {summary.warning ? <TriangleAlert className="h-5 w-5" /> : <CircleCheck className="h-5 w-5" />}{summary.text}</p>
               ) : (
                 <>
                   <p className="flex items-center gap-2 font-medium text-alarm"><TriangleAlert className="h-5 w-5" />{t("fw.failTitle")}</p>
@@ -375,8 +370,10 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
               )}
               {/* the image this run flashed, not the one chosen since */}
               {done.comparison && <FlashCompare c={done.comparison} image={flashed?.image ?? null} />}
-              {done.pending && flashed && <p className="text-sm text-alarm">{t("fw.pendingAfter", { pack: flashed.address })}</p>}
+              {done.pending && flashed && <p className="text-sm text-alarm">{done.ok && done.evidence?.error ? t("fw.pendingStore") : t("fw.pendingAfter", { pack: done.recovered_at ?? flashed.address })}</p>}
               {done.log_error && <p className="text-sm text-alarm">{t("fw.logError", { err: done.log_error })}</p>}
+              {done.evidence?.ambiguous && <p className="text-sm text-discharge">{t("fw.evidenceAmbiguous")}</p>}
+              {done.evidence?.error && <p className="text-sm text-alarm">{t("fw.evidenceError", { err: done.evidence.error })}</p>}
               <p className="break-all text-sm text-muted">{t("fw.log")}: {done.log}</p>
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={() => api.revealFirmwareLogs(done.log)}><FolderOpen className="h-4 w-4" />{t("fw.showLog")}</Button>

@@ -723,6 +723,9 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8, binary: Option<
         Bus::PackBus => c.serial_numbers_pack_bus_canonical(address),
         Bus::CanSocketBus => c.serial_numbers(bus, address).map(|s| (s, false)),
     })?;
+    if bus == Bus::PackBus {
+        profile::observe_board(&state, &before, address, maint_store::real(&serials.bms));
+    }
     let Some(inst) = before.installation.clone() else { return Ok(SerialRead { serials, board: None, identity: None, uart1: None }) };
     if link_now(&state).gen != before.gen {
         return Err(LINK_CHANGED.into());
@@ -740,9 +743,6 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8, binary: Option<
     }
     let id = maint::with_store(&state, |s| bank::identity(s, &inst, address, &serials.bms)).unwrap_or(bank::Identity::Failed);
     bank::after_read_canonical(&state, &before, address, &id, &serials.bms, &serials.battery, canonical);
-    // the board read at this address on this connection: a later read showing another one drops the firmware finding
-    // of this one (`bank::board_read`), also when that later read is the first parameter read
-    bank::board_read(&state, before.gen, address, maint_store::real(&serials.bms));
     let board = match id {
         bank::Identity::Known | bank::Identity::Unchecked => {
             for_link(&state, &before, "board", |s, inst| s.board_seen_canonical(inst, address, &serials.bms, &serials.battery, canonical, history::now_ms()))
@@ -789,8 +789,6 @@ fn read_parameters_ascii(state: &AppState, before: &Link, address: u8) -> Result
     let p = with_link(&state.conn, &state.flashing, &state.link, before, |c| c.parameters(address))?;
     // a version proof counts for the board whose String 2 the check read just now
     let serial = checked.as_ref().ok().and_then(|(_, read)| maint_store::real(read).map(String::from));
-    // another board than at the last read here: the finding of the board before does not count for this one
-    bank::board_read(state, before.gen, address, serial.as_deref());
     // the pack's own 64/03 at its address (asked again where this connection has no finding yet), so EMU1101-EXT is
     // proven on RS485-1/2 for this very read, the master too
     profile::reask_identity(state, before, address);

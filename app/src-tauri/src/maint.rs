@@ -314,19 +314,51 @@ pub fn master_view(m: &Master) -> MasterView {
     }
 }
 
-/// `read_master` without keeping anything: for a decision that first has to know the answer belongs to this bank.
-pub fn read_master_unkept(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {
-    with_control(state, inst, |c| dialog::read(c, &SystemClock::new(), Budgets::default()))?
+/// Both replies come from address zero on the same control connection.
+pub struct ControlMaster {
+    master: Master,
+    serial: Option<String>,
+    battery: Option<String>,
+}
+
+impl ControlMaster {
+    pub fn for_board(&self, expected: Option<&str>, battery: impl FnOnce() -> Option<String>) -> Option<&Master> {
+        let matches = match self.serial.as_deref() {
+            Some(serial) => expected == Some(serial),
+            None => self.battery.as_ref().is_some_and(|s| battery().as_ref() == Some(s)),
+        };
+        matches.then_some(&self.master)
+    }
+}
+
+pub fn read_master_unkept(state: &AppState, inst: &Installation) -> Result<ControlMaster, MaintError> {
+    with_control(state, inst, |c| {
+        let master = dialog::read(c, &SystemClock::new(), Budgets::default())?;
+        let serial = c.uart1_serial(Bus::CanSocketBus, 0, openbms_proto::uart1::CMD_STRING2)
+            .ok().and_then(|raw| openbms_proto::serial::canonical(&raw));
+        // OEM can expose the battery serial through Modbus. A truncated prefix cannot identify the target.
+        let battery = if serial.is_none() {
+            c.master_battery_serial().ok().as_ref().and_then(real).map(String::from)
+        } else { None };
+        Ok::<_, openbms_flash::Error>(ControlMaster { master, serial, battery })
+    })?
         .map_err(|e| MaintError::Connection { message: e.to_string() })
 }
 
-/// Read the master on the control adapter (`03`, and for a supported patch `02`) and keep what it showed for the banner.
-/// A read without a valid answer never replaces the last one: a set marker stays visible until a read shows it off.
-pub fn read_master(state: &AppState, inst: &Installation) -> Result<Master, MaintError> {
-    let m = with_control(state, inst, |c| dialog::read(c, &SystemClock::new(), Budgets::default()))?
-        .map_err(|e| MaintError::Connection { message: e.to_string() })?;
-    keep_master_read(state, &inst.id, &m)?;
-    Ok(m)
+/// A control-port read can show manual maintenance on an unassigned master. Only an attributed one updates
+/// the installation history or constrains a flash. A positively different board is never offered for maintenance.
+pub fn read_master(state: &AppState, inst: &Installation) -> Result<(Master, bool), MaintError> {
+    let observed = read_master_unkept(state, inst)?;
+    let board = with_store(state, |s| s.current_board(&inst.id, 0))?;
+    let serial = inst.master_serial.as_deref().or_else(|| board.as_ref().map(|b| b.bms_serial.as_str()));
+    let battery = board.as_ref().filter(|b| Some(b.bms_serial.as_str()) == serial).and_then(|b| b.battery_serial.as_ref());
+    let attributed = observed.for_board(serial, || battery.cloned()).is_some();
+    if attributed {
+        keep_master_read(state, &inst.id, &observed.master)?;
+    } else if observed.serial.as_deref().zip(serial).is_some() || observed.battery.as_ref().zip(battery).is_some() {
+        return Err(refused("control-master-unverified"));
+    }
+    Ok((observed.master, attributed))
 }
 
 /// Keep what a read of installation `inst`'s master showed, for the banner (also „Wartungs-Marker“ under Parameters).
@@ -489,15 +521,15 @@ pub fn target_check(current: Option<&Board>, read: &SerialValue) -> Result<(), M
 
 /// Read String 2 of the flash target on the open pack bus link and check it (`target_check`). Returns the serial read,
 /// if real (kept with the pending record).
-pub fn check_target_board(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, address: u8, link: &mut Connection) -> Result<Option<String>, MaintError> {
-    let read = match link.bms_serial(address) {
+pub fn check_target_board(store: &Arc<Mutex<Option<Store>>>, inst: &Installation, address: u8, link: &mut Connection) -> Result<(Option<String>, bool), MaintError> {
+    let (read, canonical) = match link.bms_serial_canonical(address) {
         Ok(v) => v,
         Err(e) if link_dead(&e.to_string()) => return Err(MaintError::Connection { message: e.to_string() }),
-        Err(_) => return Ok(None),
+        Err(_) => return Ok((None, false)),
     };
     let current = with_store_arc(store, |s| s.current_board(&inst.id, address))?;
     target_check(current.as_ref(), &read)?;
-    Ok(real(&read).map(String::from))
+    Ok((real(&read).map(String::from), canonical))
 }
 
 /// String 2 of a pack on the open pack bus link, if read as a real serial.
@@ -593,17 +625,12 @@ pub fn answered_same(answers: bool, stored: Option<&str>, read: impl FnOnce() ->
     answers && stored.is_some_and(|s| read().as_deref() == Some(s))
 }
 
-/// After the flash returned, before the pack port is closed: settle the pending record (`stored`: its String 2).
-/// Returns whether it stays (a record that cannot be cleared stays too).
-pub fn settle_pending(store: &Arc<Mutex<Option<Store>>>, pending: i64, address: u8, stored: Option<&str>, ok: bool, last: Option<Progress>, link: &mut Connection) -> bool {
-    let answers = || {
+/// Probe a failed flash before closing its port. The caller commits the decision with the board evidence.
+pub fn pending_after_flash(address: u8, stored: Option<&str>, ok: bool, last: Option<Progress>, link: &mut Connection) -> AfterFlash {
+    after_flash(ok, last, || {
         let a = bus::app_answers(link, &mut std::io::sink(), address, openbms_transport::timing::RECOVERY);
         answered_same(a, stored, || string2(link, address))
-    };
-    match after_flash(ok, last, answers) {
-        AfterFlash::Clear(how) => with_store_arc(store, |s| s.clear_pending(pending, how, crate::history::now_ms())).is_err(),
-        AfterFlash::Keep => true,
-    }
+    })
 }
 
 // --- commands ---
@@ -724,7 +751,7 @@ pub async fn maint_live(app: AppHandle, state: State<'_, AppState>, installation
     };
     let (master, master_error) = match &inst {
         Some(i) if i.control.is_some() => match read_master(&state, i) {
-            Ok(m) => (Some(master_view(&m)), None),
+            Ok((m, attributed)) => (Some(master_view(&m)), (!attributed).then(|| refused("control-master-unverified"))),
             Err(e) => (Some(master_view(&Master::Unknown)), Some(e)),
         },
         _ => (None, None),
@@ -758,6 +785,8 @@ pub struct PackScan {
     /// found packs without a String 2 that identifies them alone (none, a placeholder, or shared): a flash series cannot
     /// confirm such a board afterwards and stops after it; empty when the serials were not read
     no_serial: Vec<u8>,
+    /// Identifies the complete address and serial discovery kept by the backend for a series.
+    series_scan: Option<u64>,
 }
 
 /// Addresses 0–15 until `cancel` is set: checked before each address, so a cancelled search ends after the one
@@ -779,8 +808,9 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     state.scan_cancel.store(false, std::sync::atomic::Ordering::SeqCst);
     let _op = crate::control::reserve_bus_wait(&state).ok_or(MaintError::Busy)?;
     let _a = begin_action(&state, "scan");
+    let scan_id = crate::firmware::start_series_scan();
     if state.scan_cancel.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true, identities: vec![], no_serial: vec![] });
+        return Ok(PackScan { packs: vec![], bank: BankView { state: "none", serial: None }, cleared: vec![], cancelled: true, identities: vec![], no_serial: vec![], series_scan: None });
     }
     let inst = installation.as_deref().map(|id| self::installation(&state, id)).transpose()?;
     let mut link = open_pack_for(&state, &app, &key)?;
@@ -801,10 +831,15 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
     // a CAN version belongs to a pack only by its board: String 2 read fresh on the pack bus (canonical, unique among the
     // found) equals the one read fresh over the CAN socket; „Abbrechen“ is checked before every read
     let mut bus_read = vec![];
+    let mut serials_answered = true;
     let mut stopped = inst.is_some() && !cancelled
-        && probe_until_cancel::<_, ()>(&found, &state.scan_cancel, &mut bus_read, |a| Ok(canonical_string2(&mut link, a))).unwrap_or(false);
-    let read_all = bus_read.len() == found.len();
-    let bus_serials = unique_serials(bus_read);
+        && probe_until_cancel::<_, ()>(&found, &state.scan_cancel, &mut bus_read, |a| {
+            let (answered, serial) = discovered_serial(link.bms_serial_canonical(a).ok());
+            serials_answered &= answered;
+            Ok(serial)
+        }).unwrap_or(false);
+    let read_all = !cancelled && !stopped && serials_answered && bus_read.len() == found.len();
+    let bus_serials = unique_serials(bus_read.clone());
     let no_serial: Vec<u8> = if read_all { found.iter().copied().filter(|a| !bus_serials.iter().any(|(b, _)| b == a)).collect() } else { vec![] };
     // each found pack's own 64/03 on this quiet pack bus (EMU1101-EXT answers at its address there, also right after a
     // flash): the answer comes from that address on this very connection, so it needs no board matching
@@ -830,14 +865,24 @@ pub async fn maint_scan_packs(app: AppHandle, state: State<'_, AppState>, instal
         }
     }
     let cancelled = cancelled || stopped;
-    Ok(PackScan { packs, bank, cleared, cancelled, identities, no_serial })
+    let series_scan = inst.filter(|_| read_all).map(|i| {
+        crate::firmware::complete_series_scan(&i.id, &key, bus_read);
+        scan_id
+    });
+    Ok(PackScan { packs, bank, cleared, cancelled, identities, no_serial, series_scan })
 }
 
 /// String 2 of a pack on the pack bus as a board identity (canonical raw bytes, a real value), or None.
 pub fn canonical_string2(link: &mut Connection, address: u8) -> Option<String> {
-    match link.bms_serial_canonical(address) {
-        Ok((SerialValue::Set { value, truncated: false }, true)) => Some(value),
-        _ => None,
+    discovered_serial(link.bms_serial_canonical(address).ok()).1
+}
+
+/// A definite answer without a usable serial is different from a missed read: the latter could hide a duplicate.
+fn discovered_serial(read: Option<(SerialValue, bool)>) -> (bool, Option<String>) {
+    match read {
+        Some((SerialValue::Set { value, truncated: false }, true)) => (true, Some(value)),
+        Some((SerialValue::Empty | SerialValue::Placeholder { .. } | SerialValue::Unavailable, _)) => (true, None),
+        _ => (false, None),
     }
 }
 
@@ -1004,7 +1049,7 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action, rel
     let inst = self::installation(state, installation)?;
     same_master(state, &inst)?;
     // a fresh exact identity and state on the very adapter the action goes to
-    let m = read_master(state, &inst)?;
+    let (m, _) = read_master(state, &inst)?;
     let allowed = if action == Action::Start { m.may_halt() } else { m.may_release() };
     if !allowed {
         return Err(refused(if action == Action::Start { "halt-not-offered" } else { "release-not-offered" }));
@@ -1032,7 +1077,7 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action, rel
     // the read after the dialog decides what is shown, also after a failed one
     let after = read_master(state, &inst);
     r?;
-    let mut v = master_view(&after?);
+    let mut v = master_view(&after?.0);
     if let Action::Stop { expected } = action {
         with_store(state, |s| s.clear_expected_slaves(&inst.id))?;
         v.polling = Some(polling_after_release(expected));
@@ -1043,6 +1088,28 @@ fn marker_action_inner(state: &AppState, installation: &str, action: Action, rel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missed_serial_cannot_establish_that_the_other_boards_are_unique() {
+        assert_eq!(discovered_serial(None), (false, None));
+        assert_eq!(discovered_serial(Some((SerialValue::NoAnswer, false))), (false, None));
+        assert_eq!(discovered_serial(Some((SerialValue::Empty, false))), (true, None));
+        let sn = SerialValue::Set { value: "SYN-A".into(), truncated: false };
+        assert_eq!(discovered_serial(Some((sn.clone(), false))), (false, None));
+        assert_eq!(discovered_serial(Some((sn, true))), (true, Some("SYN-A".into())));
+    }
+
+    #[test]
+    fn a_control_observation_belongs_only_to_its_canonical_master_serial() {
+        let observation = ControlMaster { master: Master::No0x64, serial: Some("SYN-B".into()), battery: Some("SYN-BAT".into()) };
+        assert_eq!(observation.for_board(Some("SYN-A"), || panic!("different board")), None);
+        assert_eq!(observation.for_board(None, || None), None);
+        assert_eq!(observation.for_board(Some("SYN-B"), || None), Some(&Master::No0x64));
+        let absent = ControlMaster { serial: None, ..observation };
+        assert_eq!(absent.for_board(None, || None), None);
+        assert_eq!(absent.for_board(Some("SYN-A"), || Some("SYN-OTHER".into())), None);
+        assert_eq!(absent.for_board(Some("SYN-A"), || Some("SYN-BAT".into())), Some(&Master::No0x64));
+    }
     use openbms_flash::maint::policy::Patch;
     use openbms_proto::ExtInfo;
 

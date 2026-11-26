@@ -112,11 +112,7 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
     // for this very read and the read kept with it
     // another board than at the last read here: its finding is dropped; at the master also the profile, so the
     // identity is asked again for this read (a replaced master never keeps its predecessor's flags)
-    if bank::board_read(state, link.gen, address, bms_serial.as_deref()) && address == 0 {
-        if let Some(p) = bank::profile(state, link.gen) {
-            bank::set_profile(state, link.gen, crate::profile::of(&p.endpoint, p.bus, None));
-        }
-    }
+    bank::board_read(state, link.gen, address, bms_serial.as_deref());
     crate::profile::reask_identity(state, &link, address);
     let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
     if let (Some(s), Some(serial)) = (&serials, &bms_serial) {
@@ -179,6 +175,7 @@ pub(crate) fn known_serial(state: &AppState, link: &Link, bus: Bus, address: u8)
     let s = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(read_serials(&mut Conn { c, bus }, address))).ok()?.ok()?;
     bank::set_uart1(state, link.gen, address, offered(&s.bms));
     let serial = s.canonical.clone()?;
+    crate::profile::observe_board(state, link, address, Some(&serial));
     let (refs, places) = crate::maint::with_store(state, |st| Ok((st.current_refs(inst)?, st.serial_places(&serial)?))).ok()?;
     match verdict(inst, address, &serial, &refs, &places) {
         Verdict::Known => {
@@ -201,11 +198,7 @@ pub(crate) fn serial_numbers(state: &AppState, link: &Link, bus: Bus, address: u
     bank::set_uart1(state, link.gen, address, offered(&s.bms));
     // the board seen at this address on this connection (`bank::board_read`): another one later drops this one's
     // firmware finding; at the master also its profile
-    if bank::board_read(state, link.gen, address, s.canonical.as_deref()) && address == 0 {
-        if let Some(p) = bank::profile(state, link.gen) {
-            bank::set_profile(state, link.gen, crate::profile::of(&p.endpoint, p.bus, None));
-        }
-    }
+    crate::profile::observe_board(state, link, address, s.canonical.as_deref());
     // the master's String 1 as before when the binary one is missing
     if address == 0 && !matches!(s.battery, SerialValue::Set { .. }) {
         if let Ok(b) = with_conn(&state.conn, &state.flashing, |c| c.master_battery_serial()) {
@@ -309,6 +302,28 @@ pub(crate) enum Expected<'a> {
     Board(&'a str),
 }
 
+impl<'a> Expected<'a> {
+    fn serial(self) -> Option<&'a str> {
+        match self { Self::Column(s) => s, Self::Board(s) => Some(s) }
+    }
+
+    fn check(self, serial: &str) -> Result<(), String> {
+        if self.serial() == Some(serial) {
+            return Ok(());
+        }
+        Err(uart1_refusal(match self { Self::Column(_) => "changed", Self::Board(_) => "board-changed" }))
+    }
+}
+
+fn target_serial(dev: &mut impl Dev, address: u8) -> Result<String, String> {
+    match dev.serial(address, uart1::CMD_STRING2) {
+        Ok(raw) => serial::canonical(&raw).ok_or_else(|| uart1_refusal("unchecked")),
+        Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0x81))) => Err(uart1_refusal("no-identity")),
+        Err(e) if broken(&e) => Err(crate::error_text(e)),
+        Err(_) => Err(uart1_refusal("no-answer")),
+    }
+}
+
 /// What the identity check found: the target's checked String 2, or the refusal (nothing went to the target); either
 /// way the places shown to be gone on the way and an unconfirmed target for „Übernehmen“.
 #[derive(Debug)]
@@ -332,18 +347,13 @@ pub(crate) fn identity(dev: &mut impl Dev, inst: &str, address: u8, expected: Ex
         Err(e) if broken(&e) => return refuse(out, crate::error_text(e)),
         _ => {}
     }
-    let raw = match dev.serial(address, uart1::CMD_STRING2) {
-        Ok(raw) => raw,
-        Err(openbms_transport::Error::Proto(openbms_proto::Error::Uart1(0x81))) => return refuse(out, uart1_refusal("no-identity")),
-        Err(e) if broken(&e) => return refuse(out, crate::error_text(e)),
-        Err(_) => return refuse(out, uart1_refusal("no-answer")),
+    let serial = match target_serial(dev, address) {
+        Ok(serial) => serial,
+        Err(e) => return refuse(out, e),
     };
-    let Some(serial) = serial::canonical(&raw) else { return refuse(out, uart1_refusal("unchecked")) };
     // (b): the board the edited column was read from, or the one the installation has here
-    match expected {
-        Expected::Column(e) if e != Some(serial.as_str()) => return refuse(out, uart1_refusal("changed")),
-        Expected::Board(e) if e != serial => return refuse(out, uart1_refusal("board-changed")),
-        _ => {}
+    if let Err(e) = expected.check(&serial) {
+        return refuse(out, e);
     }
     let s = bank::strict(&serial, address, &facts.refs);
     match s.here {
@@ -397,14 +407,22 @@ pub(crate) fn write_session(dev: &mut impl Dev, inst: &str, address: u8, expecte
 /// What every strict write over the CAN socket starts from (parameters, power and clock): the link's installation, no
 /// open interrupted update at the address (`uart1_pending`), and the store's facts for the identity check of the board
 /// `expected` there. Which String 2 is expected, the checks before it and the Group0 rule stay with the caller.
-pub(crate) fn prepare(state: &AppState, link: &Link, address: u8, expected: Option<&str>) -> Result<(String, Facts), String> {
+pub(crate) fn prepare(state: &AppState, link: &Link, address: u8, expected: Expected<'_>) -> Result<(String, Facts), String> {
     let inst = link.installation.clone().ok_or("view only: writing to a pack needs a connection with an installation")?;
     uart1_pending(state, link, address)?;
+    // A write may be the first action to see a real String 2. Bind the firmware before deriving any write rules.
+    // The strict session still checks its target again immediately before the write.
+    if expected.serial().is_some_and(|s| !bank::board_matches(state, link.gen, address, s)) {
+        let serial = with_link(&state.conn, &state.flashing, &state.link, link, |c| Ok(target_serial(&mut Conn { c, bus: Bus::CanSocketBus }, address)))??;
+        bank::board_read(state, link.gen, address, Some(&serial));
+        crate::profile::reask_identity(state, link, address);
+        expected.check(&serial)?;
+    }
     let facts = crate::maint::with_store(state, |s| {
         Ok(Facts {
             refs: s.current_refs(&inst)?,
             master: s.current_board(&inst, 0)?.and_then(|b| b.battery_serial),
-            places: match expected {
+            places: match expected.serial() {
                 Some(e) => s.serial_places(e)?,
                 None => vec![],
             },
@@ -429,15 +447,16 @@ pub(crate) fn run_session<T>(state: &AppState, link: &Link, address: u8, f: impl
 /// A parameter write over the CAN socket (`write_parameters`): an open interrupted update of this address refuses it;
 /// the store's facts first, then the port session with polling held, then what the store keeps.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expected: Option<&str>, base: Values, edited: Values, restore: bool) -> Result<bank::Written<ParamWrite>, String> {
-    let (inst, facts) = prepare(state, link, address, expected)?;
+pub(crate) fn write(state: &AppState, link: &Link, bus: Bus, address: u8, expected: Option<&str>, base: Values, edited: Values, restore: bool, hard_stop: bool) -> Result<bank::Written<ParamWrite>, String> {
+    let (inst, facts) = prepare(state, link, address, Expected::Column(expected))?;
     // a pack whose own 64/03 on this link shows a build the app does not support (an older patch): its binary service
     // may still answer, but its rules are not the app's; written over RS485-1/2 only
     if crate::profile::unsupported_here(state, link, address) {
         return Err(uart1_refusal("unsupported"));
     }
     // the proof is bound to the expected String 2; the session writes only when the fresh one equals it
-    let facts = Facts { group0: crate::profile::group0_rule(true, crate::profile::pack_patch(state, link, address, expected).as_ref()), ..facts };
+    let patch = crate::profile::pack_patch(state, link, address, expected);
+    let facts = Facts { group0: crate::profile::write_group0(true, patch.as_ref(), hard_stop)?, ..facts };
     let session = run_session(state, link, address, |c| write_session(&mut Conn { c, bus }, &inst, address, expected, &facts, base, edited, restore))?;
     match session.result {
         Some(r) => r.map(|value| bank::Written { value, unchecked: false }).map_err(|e| with_gen(e, link.gen)),

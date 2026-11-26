@@ -43,7 +43,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   onMaster: (m: MasterView | null) => void;
   onUserAction: () => void;
   /** the flash series (null without an image): its one confirmation in the backend, then each pack's flash until its end */
-  series: { begin: (addresses: number[], phrase: string) => Promise<number[]>; flash: (address: number, from: string | null, listed: number[], phrase: string) => Promise<FirmwareDone> } | null;
+  series: { begin: (addresses: number[], phrase: string, scanId: number) => Promise<number[]>; flash: (address: number, from: string | null, listed: number[], phrase: string) => Promise<FirmwareDone> } | null;
   /** the series ended (after its last flash): the backend admits no further pack */
   onSeriesEnd: () => void;
 }) {
@@ -83,6 +83,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
 
   const doScan = async (installation: string | null, p: string) => {
     setScanning(true);
+    setScan((previous) => previous && { ...previous, series_scan: null });
     try {
       const r = await api.maintScanPacks(installation, p);
       if (args.current.port === p && args.current.installation === installation) setScan(r);
@@ -129,7 +130,8 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   useEffect(() => { if (flashed && !running && live?.bus === "polling") { setFlashed(false); setBack(true); } }, [flashed, running, live?.bus]);
 
   const master: MasterView | null = live?.master ?? null;
-  const cPrime = releaseFirst(master, 0, image?.kind ?? null);
+  const flashMaster = live?.master_error ? null : master;
+  const cPrime = releaseFirst(flashMaster, 0, image?.kind ?? null);
   useEffect(() => { onMaster(master); }, [master]); // eslint-disable-line react-hooks/exhaustive-deps
   const quiet = live?.bus === "quiet";
   const busy = !!action || scanning;
@@ -195,12 +197,13 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
   const chosen = picked.filter((a) => answering.some(([x]) => x === a));
   const order = seriesOrder(chosen);
   const phrase = seriesPhrase(order.length, image?.custom);
-  const seriesFacts: UiFacts = { ...facts, picked: chosen, available: answering.length >= 2, flash: { image, quiet, busy, running, address: 0, master, pending: maint.alerts.pending, port } };
+  const seriesFacts: UiFacts = { ...facts, picked: chosen, available: answering.length >= 2, serialDiscoveryIncomplete: scan?.series_scan == null, flash: { image, quiet, busy, running, address: 0, master: flashMaster, pending: maint.alerts.pending, port } };
   const pick = decideUi("maintenance.seriesPick", seriesFacts);
   const packName = (a: number) => (a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a }));
   const toggle = (a: number) => { setAsk(false); setPicked((p) => (p.includes(a) ? p.filter((x) => x !== a) : [...p, a])); };
   const startSeries = () => {
-    if (!series || !image || !inst) return;
+    if (!series || !image || !inst || scan?.series_scan == null) return;
+    const scanId = scan.series_scan;
     const img = image, typedNow = typed.trim(), chosenOrder = order;
     const from = new Map(answering.map(([a, d]) => [a, versionOf(a, d)]));
     setAsk(false); setTyped(""); setCancelling(false); cancelled.current = false;
@@ -210,7 +213,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
         // the link is taken before the backend is asked: a change meanwhile ends the series before its first pack
         const end = await startFlashSeries({
           link: () => `${args.current.installation}|${args.current.port}`,
-          begin: () => series.begin(chosen, typedNow),
+          begin: () => series.begin(chosen, typedNow, scanId),
           onOrder: (listed) => { setView(seriesView(listed, from, label)); setSeriesEnd(null); },
           end: onSeriesEnd,
           cancelled: () => cancelled.current,
@@ -265,7 +268,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
       {port && <div role="status" className="space-y-1 rounded-md bg-sunken p-3">
         <p className={cn("font-medium", toneClass[line.tone])}>{line.text}</p>
         {mLine && <p className={toneClass[mLine.tone]} title={master?.build_id ? t("maint.live.buildId", { id: master.build_id }) : undefined}>{t("maint.live.master", { text: mLine.text })}</p>}
-        {notOnBus(live?.bus, master) && !running && <p className="text-discharge">{t("maint.live.notOnBus")}</p>}
+        {notOnBus(live?.bus, flashMaster) && !running && <p className="text-discharge">{t("maint.live.notOnBus")}</p>}
         {back && <p className="text-ok">{t("maint.done.back")}</p>}
         {live?.master_error && <p className="text-muted">{t(errorKey(live.master_error).key, errorKey(live.master_error).params)}</p>}
         {inst && !inst.control && <p className="text-muted">{t("maint.live.noControl")}</p>}
@@ -309,7 +312,7 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
           <ul className="space-y-2">
             {packs.map(([a, d]) => {
               const pending = pendingHere.find((p) => p.pack === a);
-              const row = decideUi("maintenance.flash", { ...facts, flash: { image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port } });
+              const row = decideUi("maintenance.flash", { ...facts, flash: { image, quiet, busy, running, address: a, master: flashMaster, pending: maint.alerts.pending, port } });
               const blocked = row.locked ? row.reason ?? null : null;
               const name = a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a });
               const version = d ? d.firmware_version : null;

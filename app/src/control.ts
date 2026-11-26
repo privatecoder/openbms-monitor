@@ -213,7 +213,7 @@ export function bankText(b: BankRefusal, t: (k: string, o?: Record<string, unkno
 /** An error of the CAN socket's parameter service (backend `uart1_refusal`); null for any other error. */
 export type Uart1Error = { error: "no-answer" | "protocol" | "pending" | "other-master" | "no-identity" | "readback" | "unchecked" | "changed" | "duplicate" | "elsewhere"
   | "board-changed" | "no-board" | "power-unsupported" | "power-locked" | "rtc-failed" | "restart-not-saved" | "power-no-answer" | "power-lost" | "cutoff-off-failed" | "cutoff-on-failed" | "cutoff-changed"
-  | "unsupported" | "bit-blocked" | "not-ready"
+  | "unsupported" | "hard-stop-unsupported" | "bit-blocked" | "not-ready"
   | "ccl-bad-value" | "ccl-no-cap" | "ccl-no-answer" | "ccl-silent" | "ccl-malformed" | "ccl-read-refused" | "ccl-invalid" | "ccl-denied" | "ccl-persist" | "ccl-unknown"
   | "ccl-readback-differs" | "ccl-readback-failed";
   code?: number; address?: number; board?: number; at?: number | null; gen?: number; group?: number; bit?: number;

@@ -1,5 +1,5 @@
 /** BMS parameters (0x47): order, grouping, the parameter file (TOML) import/export and the comparison between sources. */
-import type { PackPatch } from "./api";
+import type { PackPatch, SnapshotParams } from "./api";
 import CATALOG from "./generated/access.json";
 import PARAM_FILE from "./generated/param_file.json";
 import { parse as parseToml } from "smol-toml";
@@ -106,30 +106,30 @@ export interface Source {
   /** pack columns: an ein/aus changed the pack and its re-read failed; bit 5 (the lock state) is shown unclear until a read */
   lockUnclear?: boolean;
   /** stored columns: when and how the block was kept, and whether it is of the place's current board */
-  stored?: { at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null; unconfirmed?: boolean };
+  stored?: { id: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; serial: string | null; unconfirmed?: boolean };
 }
 
-/** The stored state of a place as a column (compare, datasheet check and file save; never edited). */
-/** A stored block as a column; a read keeps the patch it was taken under (`patch`), so its release bits read as then. */
-export const fromStored = (s: { address: number; at: number; kind: "read" | "written" | "refused"; board: "current" | "previous" | "unclear"; bms_serial: string | null; parameters: Parameters | null; switches_unconfirmed?: boolean; patch?: PackPatch | null }): Source => ({
+/** A stored block keeps the firmware proof that gives its release bits their meaning. */
+export const fromStored = (s: SnapshotParams): Source => ({
   id: `stored-${s.address}`, kind: "stored", address: s.address, label: String(s.address).padStart(2, "0"),
   device: s.parameters?.device_name, values: s.parameters?.parameters.map((x) => x.value), switches: s.parameters?.function_switches,
   read: s.parameters ? { ...s.parameters, patch: s.patch ?? undefined } : undefined, error: s.parameters ? undefined : "unreadable",
-  stored: { at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial, unconfirmed: !!s.switches_unconfirmed },
+  stored: { id: s.id, at: s.at, kind: s.kind, board: s.board, serial: s.bms_serial, unconfirmed: !!s.switches_unconfirmed },
 });
 
-/** The stored columns shown, each with its place's newest block (`rows`, as `installationSnapshots` gives them); other
- *  columns and a stored column without a row stay as they are, and no place is added. A column never goes back to an
- *  older block (a late answer of an earlier refresh). */
-export const refreshedStored = (cols: Source[], rows: StoredRow[]): Source[] => {
-  const fresh = new Map(rows.map((r) => [`stored-${r.address}`, fromStored(r)]));
-  return cols.map((x) => {
-    const f = x.kind === "stored" ? fresh.get(x.id) : undefined;
-    return f && (f.stored?.at ?? 0) >= (x.stored?.at ?? 0) ? f : x;
+/** Merge by the database's snapshot order. Only an explicit load opens columns for additional addresses. */
+export const refreshedStored = (cols: Source[], rows: SnapshotParams[], add = false): Source[] => {
+  const fresh = new Map(rows.map((r) => [`stored-${r.address}`, r]));
+  const next = cols.map((col) => {
+    const row = col.kind === "stored" ? fresh.get(col.id) : undefined;
+    if (!row) return col;
+    fresh.delete(col.id);
+    const old = col.stored;
+    if (old && (old.at > row.at || (old.at === row.at && old.id > row.id))) return col;
+    return fromStored(row);
   });
+  return add ? [...next, ...Array.from(fresh.values(), fromStored)] : next;
 };
-/** One stored block as the backend gives it (`fromStored`'s input). */
-type StoredRow = typeof fromStored extends (s: infer S) => Source ? S : never;
 
 /** A pack column; `address` is the address asked, not byte 0 of the answer, so a write goes where the column says. */
 export const fromPack = (p: Parameters, address = p.address): Source => ({

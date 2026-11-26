@@ -250,8 +250,10 @@ pub(crate) fn run(state: &AppState, link: &Link, address: u8, act: Act) -> Resul
     }
     // the installation's current board at the address is the one expected (no parameter block goes out here)
     let expected = crate::maint::with_store(state, |s| Ok(s.current_board(inst, address)?.map(|b| b.bms_serial))).map_err(|e| format!("{e:?}"))?;
-    let (inst, facts) = crate::uart1_id::prepare(state, link, address, expected.as_deref())?;
     let expected = expected.ok_or_else(|| uart1_refusal("no-board"))?;
+    let (inst, facts) = crate::uart1_id::prepare(state, link, address, Expected::Board(&expected))?;
+    // The first serial in prepare may have replaced an ownerless firmware finding.
+    let fw = crate::profile::access_facts(crate::profile::pack_patch(state, link, address, None).as_ref(), None, None, address);
     let session = crate::uart1_id::run_session(state, link, address, |c| session(&mut Conn { c, bus: Bus::CanSocketBus }, &inst, address, &expected, &facts, &fw, act))?;
     session.result.unwrap_or_else(|| Err("no result".into()))
 }

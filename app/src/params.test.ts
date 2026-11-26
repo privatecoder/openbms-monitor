@@ -140,7 +140,7 @@ describe("a stored read", () => {
   it("keeps the patch it was taken under, so its release bits read as then", () => {
     const parameters: Parameters = { address: 0, parameters: [], function_switches: [0xff, 0, 0, 0, 0, 0, 0, 0], device_name: "SYN" };
     const patch = { source: "master" as const, release: "16.06.13 MAINT 1.6", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true }, at: 1 };
-    const row = { address: 0, at: 1, kind: "read" as const, board: "current" as const, bms_serial: "SYN-0", parameters };
+    const row = { id: 1, address: 0, at: 1, kind: "read" as const, board: "current" as const, bms_serial: "SYN-0", parameters };
     expect(fromStored({ ...row, patch }).read?.patch).toEqual(patch);
     expect(fromStored(row).read?.patch).toBeUndefined();
     expect(fromStored({ ...row, parameters: null }).read).toBeUndefined();
@@ -150,11 +150,16 @@ describe("a stored read", () => {
 describe("refreshedStored", () => {
   it("gives the stored columns shown their place's newest block, leaves the rest and adds no place", () => {
     const row = (address: number, at: number, board: "current" | "unclear") =>
-      ({ address, at, kind: "read" as const, board, bms_serial: board === "current" ? `SYN-${address}` : null, parameters: null });
+      ({ id: at, address, at, kind: "read" as const, board, bms_serial: board === "current" ? `SYN-${address}` : null, parameters: null });
     const cols = [fromStored(row(1, 1, "current")), fromStored(row(2, 1, "unclear")), { id: "pack-2", kind: "pack" as const, label: "02" }];
     const next = refreshedStored(cols, [row(1, 5, "current"), row(2, 5, "current"), row(3, 5, "current")]);
     expect(next.map((c) => [c.id, c.stored?.at, c.stored?.board])).toEqual([["stored-1", 5, "current"], ["stored-2", 5, "current"], ["pack-2", undefined, undefined]]);
     expect(refreshedStored(cols, [])).toEqual(cols);
+    // An earlier explicit request finishes after refresh. It may still add a column.
+    const sameTime = { ...row(1, 5, "current"), id: 4 };
+    const loaded = refreshedStored(next, [sameTime, row(2, 4, "current"), row(3, 1, "current")], true);
+    expect(loaded.map((c) => c.stored?.id)).toEqual([5, 5, undefined, 1]);
+    expect(refreshedStored(loaded, [{ ...sameTime, id: 6 }])[0].stored?.id).toBe(6);
     // a late answer of an earlier refresh does not take a column back to an older block
     expect(refreshedStored(next, [row(1, 3, "current")])[0].stored?.at).toBe(5);
   });

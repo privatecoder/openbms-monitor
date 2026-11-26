@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, firmwareNoteKeys, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions, transferSummary } from "./firmware";
 import type { BenchPack, FirmwareImage, FlashComparison, FlashSide } from "./api";
 import i18n from "./i18n";
 
@@ -90,6 +90,13 @@ describe("flash result", () => {
     expect(resultVersions(done, "16.06", image, tr("de"))).toEqual({ from: "16.06", to: "16.06.13" });
     expect(resultVersions({ before: info("16.04"), after: info("16.06") }, null, image, tr("de"))).toEqual({ from: "16.04", to: "16.06.13" });
   });
+  it("reports a completed transfer with a different build for both a flash and a recovery", () => {
+    for (const recovery of [false, true]) {
+      const result = { recovery, recovered_at: 0, mismatch: "EMU1101-EXT Full 1.6.7", before: null, after: info("16.06") };
+      const summary = transferSummary(result, image, null, tr("en"));
+      expect(summary).toEqual({ warning: true, text: tr("en")("fw.mismatch", { image: image.release, v: result.mismatch }) });
+    }
+  });
   it("without a 0x51 answer before the flash the pack check's version is used", () => {
     expect(resultVersions({ before: null, after: info("16.06") }, "16.05", image, tr("de")).from).toBe("16.05");
   });
@@ -171,4 +178,19 @@ describe("recovery phrase", () => {
     expect(recoveryPhrase(false)).toBe("RECOVER");
     expect(recoveryPhrase(true)).toBe("RECOVER CUSTOM");
   });
+});
+
+it("keeps the patch and SOC notes distinct across bench target changes", () => {
+  const first = firmwareNoteKeys("bench|1|SYN|0");
+  const second = firmwareNoteKeys("bench|2|SYN|0");
+  expect(new Set([first.patch, first.soc, second.patch, second.soc]).size).toBe(4);
+});
+
+it("explains unchecked marker state without asserting a previous observation", () => {
+  for (const [lng, halted, previous] of [["de", "angehalten", "zuletzt"], ["en", "halted", "last seen"]]) {
+    const unchecked = i18n.t("fw.markerUnchecked", { lng }).toLowerCase();
+    expect(unchecked).toContain(halted);
+    expect(unchecked).not.toContain(previous);
+    expect(i18n.t("fw.markerUncheckedOn", { lng }).toLowerCase()).toContain(previous);
+  }
 });

@@ -208,6 +208,7 @@ export interface UiFacts {
   flash?: Parameters<typeof flashBlocked>[0];
   /** maintenance: the packs picked for a flash series */
   picked?: number[];
+  serialDiscoveryIncomplete?: boolean;
   /** Parameters: the writes running now */
   writes?: Partial<Record<WriteKind, boolean>>;
   /** Parameters: a read of the parameters runs */
@@ -336,12 +337,14 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
     }
     case "maintenance.seriesPick":
       if (!f.available) return hide;
+      if (f.serialDiscoveryIncomplete) return lock("maint.err.refused.series-needs-scan");
       return inputsLock(f) ?? show();
     case "maintenance.seriesEndIdle":
       if (!f.available) return hide;
       return inputsLock(f) ?? show();
     case "maintenance.flashSeries":
     case "maintenance.seriesStart": {
+      if (f.serialDiscoveryIncomplete) return lock("maint.err.refused.series-needs-scan");
       if (!f.flash) return lock("lock.loading");
       if (f.flashRunning || f.flash.running) return lock("maint.packs.why.running");
       if (f.busy || f.flash.busy) return lock("maint.packs.why.busy");
@@ -483,6 +486,7 @@ export function decideUi(action: UiAction, f: UiFacts): UiDecision {
       if (f.busy) return lock("lock.busy");
       if (f.held) return lock("lock.writeRunning");
       if (f.powerHeld) return lock("lock.powerLocked");
+      if (f.loaded === false) return lock("lock.cutoffUnread");
       return f.available === false ? lock("lock.noStatus") : show();
     case "params.write":
       if (f.busy) return lock("lock.busy");
