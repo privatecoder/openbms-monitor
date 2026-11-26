@@ -740,6 +740,9 @@ async fn serial_numbers(state: State<'_, AppState>, address: u8, binary: Option<
     }
     let id = maint::with_store(&state, |s| bank::identity(s, &inst, address, &serials.bms)).unwrap_or(bank::Identity::Failed);
     bank::after_read_canonical(&state, &before, address, &id, &serials.bms, &serials.battery, canonical);
+    // the board read at this address on this connection: a later read showing another one drops the firmware finding
+    // of this one (`bank::board_read`), also when that later read is the first parameter read
+    bank::board_read(&state, before.gen, address, maint_store::real(&serials.bms));
     let board = match id {
         bank::Identity::Known | bank::Identity::Unchecked => {
             for_link(&state, &before, "board", |s, inst| s.board_seen_canonical(inst, address, &serials.bms, &serials.battery, canonical, history::now_ms()))

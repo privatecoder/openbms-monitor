@@ -110,7 +110,13 @@ pub(crate) fn read(state: &AppState, link: &Link, bus: Bus, address: u8) -> Resu
     let bms_serial = serials.as_ref().and_then(|s| s.canonical.clone());
     // a slave's own 64/03 first (asked again where this connection has no finding yet), so the proof it gives counts
     // for this very read and the read kept with it
-    bank::board_read(state, link.gen, address, bms_serial.as_deref());
+    // another board than at the last read here: its finding is dropped; at the master also the profile, so the
+    // identity is asked again for this read (a replaced master never keeps its predecessor's flags)
+    if bank::board_read(state, link.gen, address, bms_serial.as_deref()) && address == 0 {
+        if let Some(p) = bank::profile(state, link.gen) {
+            bank::set_profile(state, link.gen, crate::profile::of(&p.endpoint, p.bus, None));
+        }
+    }
     crate::profile::reask_identity(state, &link, address);
     let patch = crate::profile::pack_patch(state, &link, address, bms_serial.as_deref());
     if let (Some(s), Some(serial)) = (&serials, &bms_serial) {

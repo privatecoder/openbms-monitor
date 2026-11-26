@@ -104,6 +104,14 @@ pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&
     }
 }
 
+/// The master as after a confirmed release: its marker word off (the slave count it polls then is not known here).
+fn released(m: &Master) -> Master {
+    match *m {
+        Master::Patched { patch, state: Some(s) } => Master::Patched { patch, state: Some(openbms_proto::MaintState { marker_word: u32::MAX, ..s }) },
+        other => other,
+    }
+}
+
 /// The installation master's marker decided over RS485-1/2 (`bench_marker`'s result `m`): its own trusted status wins;
 /// where it shows none (`unchecked`: silence, an error RTN, an original or an older build all look alike there), a
 /// marker last seen on still refuses an image without the maintenance functions, as without any read.
@@ -612,24 +620,16 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
     maint::pending_check(&state.maint, &key, address).map_err(to_text)?;
     let inst = installation.as_deref().map(|id| maint::installation(&state, id)).transpose().map_err(to_text)?;
     let kind = maint_kind(info.kind);
-    // C' belongs to the installation's master. Without a valid marker read over the CAN socket (no control channel, or no
-    // answer) the master's own RS485-1/2 status decides once the port is open (`u0_marker`), not the history alone
-    let mut u0_pending: Option<bool> = None;
-    let marker = match &inst {
-        Some(owner) => {
-            let fresh = if address == 0 && owner.control.is_some() { maint::read_master(&state, owner).ok() } else { None };
-            let last_on = address == 0 && maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
-            // only a valid on/off decides here; a foreign word or none leaves it to the RS485-1/2 status
-            let fresh_known = fresh.as_ref().is_some_and(|m| m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off)));
-            if address == 0 && !fresh_known && !matches!(fresh, Some(Master::No0x64)) {
-                u0_pending = Some(last_on);
-                None
-            } else {
-                master_marker_check(address, kind, fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?
-            }
-        }
-        None => None,
-    };
+    // C' belongs to the installation's master. Its own trusted RS485-1/2 status on the port being flashed decides first
+    // (the CAN socket's adapter may reach another bank); else a read over the CAN socket, else the marker last seen
+    // (`u0_marker`). Decided once the port is open.
+    let mut master_pending: Option<(bool, Option<Master>)> = None;
+    if let (Some(owner), 0) = (&inst, address) {
+        let fresh = if owner.control.is_some() { maint::read_master(&state, owner).ok() } else { None };
+        let last_on = maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
+        master_pending = Some((last_on, fresh));
+    }
+    let marker: Option<&'static str> = None;
     if !try_begin(&state.flashing) {
         return Err(l.pick("Ein Firmware-Update läuft bereits", "a firmware update is already running").into());
     }
@@ -659,28 +659,34 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
             maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
             let found = crate::bench::rs485_marker(&mut link, address);
-            let marker = match u0_pending {
-                Some(last_on) => {
-                    // a history „on“ with no trusted status here refuses before anything is sent
-                    u0_marker("unchecked", last_on && !(found.trusted && found.state.is_some()), kind).map_err(|k| to_text(maint::refused(k)))?;
-                    let m = match crate::bench::bench_marker(&mut link, &found, address, kind) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            // cleared, but the master polls its slaves again: the flash is refused, the marker is off
-                            if matches!(&e, maint::MaintError::Refused { reason } if reason == "bench-dip-on") {
-                                let _ = maint::keep_master_released(&state, &i.id, &found.master);
-                            }
-                            return Err(to_text(e));
-                        }
-                    };
-                    // what the master showed here is kept for its banner, like a read over the CAN socket
-                    if m == "released" {
-                        maint::event(&state, Some(&i.id), &format!("flash: marker of pack {address} cleared over RS485-1/2"));
-                        maint::keep_master_released(&state, &i.id, &found.master).map_err(to_text)?;
-                    } else if found.trusted && found.state.is_some() {
+            let marker = match master_pending {
+                Some((last_on, fresh)) => {
+                    let u0_decides = found.trusted && matches!(found.state.map(|s| s.marker()), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off));
+                    let can_decides = fresh.as_ref().is_some_and(|m| matches!(m, Master::No0x64) || (m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off))));
+                    if u0_decides {
+                        // seen on: kept before anything is sent, so a failed clear still protects the next attempt
                         maint::keep_master_read(&state, &i.id, &found.master).map_err(to_text)?;
+                        let m = match crate::bench::bench_marker(&mut link, &found, address, kind) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                // cleared, but the master polls its slaves again: the flash is refused, the marker is off
+                                if matches!(&e, maint::MaintError::Refused { reason } if reason == "bench-dip-on") {
+                                    let _ = maint::keep_master_released(&state, &i.id, &released(&found.master));
+                                }
+                                return Err(to_text(e));
+                            }
+                        };
+                        if m == "released" {
+                            maint::event(&state, Some(&i.id), &format!("flash: marker of pack {address} cleared over RS485-1/2"));
+                            maint::keep_master_released(&state, &i.id, &released(&found.master)).map_err(to_text)?;
+                        }
+                        Some(m)
+                    } else if can_decides {
+                        master_marker_check(address, kind, fresh.as_ref(), last_on).map_err(|k| to_text(maint::refused(k)))?
+                    } else {
+                        // nothing trusted on either side (a foreign word counts as nothing): the marker last seen decides
+                        Some(u0_marker("unchecked", last_on, kind).map_err(|k| to_text(maint::refused(k)))?)
                     }
-                    Some(m)
                 }
                 None => marker,
             };

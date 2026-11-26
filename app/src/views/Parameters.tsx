@@ -113,6 +113,10 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
   const profile = useProfile();
   const [probes] = usePackProbes();
   const fwOf = (a: number) => packFirmware(a, profile, probes[a]);
+  // image flags and read capabilities: this connection's own finding first; a negative one (no supported patch now)
+  // outweighs what an older column was read under, so no feature of the earlier build stays offered
+  const flagsOf = (a: number) => { const f = fwOf(a); return f.patch.kind === "none" ? null : f.flags ?? targetRead(a)?.patch?.caps.flags; };
+  const capsOf = (a: number) => { const f = fwOf(a); return f.patch.kind === "none" ? null : f.caps ?? targetRead(a)?.patch?.caps.read_caps; };
   // Group0 bit 3 at 1 allows power in the pack's proven build (this connection's identity, else its column's proof)
   const posOf = (a: number) => positiveBuild(fwOf(a).patch, fwOf(a).flags) || positivePatch(targetRead(a)?.patch);
   const lockOf = (a: number) => powerLocked(a, inverseG0(targetRead(a)?.function_switches[0], posOf(a)), profile);
@@ -687,14 +691,14 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
         <ClockLine connected={connected} bus={bus} packs={packs} address={chosen} setAddress={setChosen} locked={section("clock")} onBusy={busyFor("clock")}
           installation={!!installation} firmware={fwOf} powerLock={lockOf} />
         <CanProtocolLine address={chosen} usable={offers("set-can-protocol")} locked={section("can")} onBusy={busyFor("can")} />
-        <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined}
+        <HardStopLine address={chosen} read={chosen !== null ? targetRead(chosen) : undefined} known={chosen !== null ? flagsOf(chosen) : undefined}
           connected={connected && !!installation && !isDemo} linkKey={link} locked={section("hs")} onBusy={busyFor("hs")} write={writeHardStop} />
         {/* the master's own EXT setting, whichever pack is chosen; apart from the parameter table and its bulk paths */}
         <CclStepSection connected={connected && !isDemo} bus={bus} installation={installation?.id ?? null} packs={packs.length} linkKey={link}
           locked={section("ccl")} onBusy={busyFor("ccl")} />
         <CclFeedSection packs={packs.length} />
-        <DiagnosisLine address={chosen} known={chosen !== null ? fwOf(chosen).flags ?? targetRead(chosen)?.patch?.caps.flags : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
-        <RemoteDiagnosis address={chosen} known={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
+        <DiagnosisLine address={chosen} known={chosen !== null ? flagsOf(chosen) : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
+        <RemoteDiagnosis address={chosen} known={chosen !== null ? capsOf(chosen) : undefined} connected={connected && !isDemo} linkKey={link} locked={section()} />
         <SerialLine address={chosen} usable={offers("write-serials")} locked={section("serial")} onBusy={busyFor("serial")} linkKey={link} />
         <NameLine address={chosen} usable={offers("write-name")} locked={section("name")} onBusy={busyFor("name")} linkKey={link}
           read={chosen !== null ? targetRead(chosen) : undefined} pending={chosen !== null && !!refusedOf(chosen)} onRead={nameRead} />
@@ -703,7 +707,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
           cutoff={chosen !== null && packCutoff(chosen, profile, probes[chosen])} positive={chosen !== null && posOf(chosen)} group0={chosen !== null ? targetRead(chosen)?.function_switches[0] : undefined}
           locked={section("ctl")} onBusy={busyFor("ctl")} onChanged={rereadPack}
           p79={p79Of(chosen)} rated={valueOf(chosen, RATED_INDEX)} linkKey={link}
-          readCaps={chosen !== null ? fwOf(chosen).caps ?? targetRead(chosen)?.patch?.caps.read_caps : undefined} />
+          readCaps={chosen !== null ? capsOf(chosen) : undefined} />
         <MarkerSection address={chosen} bus={connected && !isDemo ? bus : null} locked={section("marker")} onBusy={busyFor("marker")} onChanged={onMarkerChanged} linkKey={link} />
         {chosen !== null && controlHint(where) && (
           <div className="border-t border-line pt-3 text-sm"><StatusLine>{accessHint(t, "ctl.canUnsupported")}</StatusLine></div>

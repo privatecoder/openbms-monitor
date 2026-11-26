@@ -156,13 +156,15 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
   };
 
   const restart = (a: number) => run("restart", a, async (lk) => {
+    const gen0 = getProfile()?.gen;
     const r: RestartResult = await api.packRestart(a);
     if (!same(a, lk)) return null;
     await reload(a);
     if (r.kind !== "not_reachable") {
       forced.delete(`${lk}|${a}`);
-      // RS485-1/2: the pack's own 64/03 again before its column is reread, so a pack silent before is proven for that read
-      if (!can) { const g = getProfile()?.gen; if (g !== undefined) await api.packProbe(a, g).catch(() => null); }
+      // RS485-1/2: the pack's own 64/03 again before its column is reread, so a pack silent before is proven for that read;
+      // only once it is back, and only on the connection the restart was sent on
+      if (!can && (r.kind === "back" || r.kind === "no_interruption") && gen0 !== undefined && getProfile()?.gen === gen0 && same(a, lk)) await api.packProbe(a, gen0).catch(() => null);
       if (same(a, lk)) onChanged?.(a);
       if (can) void recheck(a);
     }
@@ -395,7 +397,7 @@ export function PackControlSection({ address, usable, mode = "full", offers = ()
           <div className="flex flex-wrap items-center gap-2">
             {offers("restart") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld }).locked} onClick={() => setAsk({ kind: "restart" })} title={t("ctl.tip.restart")}>{busy === "restart" ? t("ctl.restart.running") : t("ctl.restart.button")}</Button>}
             {offers("power-on-off") && <Button size="sm" disabled={decideUi("pack.power", { source: null, chosen: null, busy: busy !== null, held: !!locked, powerHeld, available: !!st }).locked} onClick={() => (off ? void onOff(address, true) : void askOff(address))}
-              title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
+              title={t(off ? (lock === "active" ? "ctl.cutoff.tipOn" : masterBroadcast(mode, address) ? "ctl.tip.onMaster" : "ctl.tip.on") : extendedOff ? "ctl.cutoff.tipOff" : masterBroadcast(mode, address) ? "ctl.tip.offMaster" : "ctl.tip.off")}>
               {busy === "on" || busy === "off" ? t("ctl.running") : t(off ? "ctl.onOff.on" : "ctl.onOff.off")}
             </Button>}
             {relock && offers("power-on-off") && (
