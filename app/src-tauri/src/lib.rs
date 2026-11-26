@@ -793,7 +793,7 @@ fn read_parameters_ascii(state: &AppState, before: &Link, address: u8) -> Result
     profile::reask_identity(state, before, address);
     let patch = profile::pack_patch(state, before, address, serial.as_deref());
     if bank::snapshot_allowed(&checked) {
-        let id = bms_memory::snapshot(state, before, address, history::SnapshotKind::Read, &p.block);
+        let id = bms_memory::snapshot_seen(state, before, address, history::SnapshotKind::Read, &p.block, serial.as_deref());
         bms_memory::snapshot_patch(state, before, id, patch.as_ref());
     }
     Ok(uart1_id::ParamRead { parameters: p, bms_serial: None, patch })

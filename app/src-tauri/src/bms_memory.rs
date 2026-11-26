@@ -303,6 +303,15 @@ pub fn snapshot(state: &AppState, before: &Link, address: u8, kind: SnapshotKind
     for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot(inst, address, kind, block, now_ms()))
 }
 
+/// `snapshot` with the String 2 this very read showed (`seen`: None for none of its own), not the one registered at the
+/// place: a replaced board with a placeholder never gets its predecessor's serial.
+pub fn snapshot_seen(state: &AppState, before: &Link, address: u8, kind: SnapshotKind, block: &[u8], seen: Option<&str>) -> Option<i64> {
+    if crate::bank::unconfirmed(state, before.gen, address) {
+        return None;
+    }
+    for_link(state, before, "parameter snapshot", |s, inst| s.add_param_snapshot_seen(inst, address, seen, kind, block, now_ms()))
+}
+
 /// Keep with a kept read the patch it was taken under (`maint_store::set_snapshot_patch`); a failure only loses that.
 pub fn snapshot_patch(state: &AppState, before: &Link, id: Option<i64>, patch: Option<&crate::profile::PackPatch>) {
     let (Some(id), Some(p)) = (id, patch) else { return };
@@ -381,7 +390,7 @@ impl ParamIo for AsciiIo<'_> {
     fn read(&mut self, keep: bool) -> Result<Parameters, String> {
         let p = with_link(&self.state.conn, &self.state.flashing, &self.state.link, self.link, |c| c.parameters(self.address))?;
         if keep {
-            let _ = snapshot(self.state, self.link, self.address, SnapshotKind::Read, &p.block);
+            self.snapshot(SnapshotKind::Read, &p.block);
         }
         Ok(p)
     }
@@ -400,7 +409,11 @@ impl ParamIo for AsciiIo<'_> {
     }
 
     fn snapshot(&mut self, kind: SnapshotKind, block: &[u8]) {
-        let _ = snapshot(self.state, self.link, self.address, kind, block);
+        // the proof this connection has for the pack goes with the block, so a stored column of it keeps the meaning of
+        // its Group0 bits (as the parameter read's own snapshot does)
+        let id = snapshot(self.state, self.link, self.address, kind, block);
+        let patch = crate::profile::pack_patch(self.state, self.link, self.address, None);
+        snapshot_patch(self.state, self.link, id, patch.as_ref());
     }
 
     fn uart1(&self) -> bool {
@@ -472,7 +485,9 @@ pub async fn write_parameters(state: State<'_, AppState>, address: u8, installat
         ParamPath::Ascii => (|| {
             // the right bank before anything else, also before the fresh 0x47 and its snapshot
             let checked = check_target(&state, &link, address)?;
-            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore, crate::profile::group0_rule(false, None))?;
+            // the pack's own proof of this connection decides which Group0 bits it may get (`group0_rule`)
+            let patch = crate::profile::pack_patch(&state, &link, address, None);
+            let value = write_checked(&mut AsciiIo { state: &state, link: &link, address }, address, base, edited, restore, crate::profile::group0_rule(false, patch.as_ref()))?;
             Ok(Written { value, unchecked: checked.unchecked })
         })(),
         ParamPath::Uart1(bus) => crate::uart1_id::write(&state, &link, bus, address, serial.as_deref(), base, edited, restore),

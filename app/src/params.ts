@@ -119,10 +119,14 @@ export const fromStored = (s: { address: number; at: number; kind: "read" | "wri
 });
 
 /** The stored columns shown, each with its place's newest block (`rows`, as `installationSnapshots` gives them); other
- *  columns and a stored column without a row stay as they are, and no place is added. */
+ *  columns and a stored column without a row stay as they are, and no place is added. A column never goes back to an
+ *  older block (a late answer of an earlier refresh). */
 export const refreshedStored = (cols: Source[], rows: StoredRow[]): Source[] => {
   const fresh = new Map(rows.map((r) => [`stored-${r.address}`, fromStored(r)]));
-  return cols.map((x) => (x.kind === "stored" ? fresh.get(x.id) ?? x : x));
+  return cols.map((x) => {
+    const f = x.kind === "stored" ? fresh.get(x.id) : undefined;
+    return f && (f.stored?.at ?? 0) >= (x.stored?.at ?? 0) ? f : x;
+  });
 };
 /** One stored block as the backend gives it (`fromStored`'s input). */
 type StoredRow = typeof fromStored extends (s: infer S) => Source ? S : never;

@@ -275,7 +275,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     if (!sources.some((x) => x.id === `pack-${address}`)) return;
     const l = linkNow();
     // an open edit of this pack moves onto the state now (bit 5 after ein/aus), the user's changes stay on top of it
-    api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p); } },
+    api.parameters(address).then((p) => { if (linkNow() === l) { replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p); refreshStored(); } },
       (e) => {
         // the column (and an open edit of it) shows the lock state before the action: marked unclear until a read
         if (linkNow() === l) setSources((s) => s.map((x) => (x.id === `pack-${address}` ? { ...x, lockUnclear: true } : x)));
@@ -289,6 +289,7 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     if (p) { replace(packCol(p, address, l, path)); seen(address, p); rebaseEdit(address, p); }
     // the name's A1 is the pack's newest write: „Vorheriger Stand“ and „zuletzt geschrieben“ follow it
     if (written) void loadHistory(address);
+    if (p || written) refreshStored();
   };
   // P79 (SOC protection) of the chosen pack, from its read or stored column, for the remaining capacity
   const valueOf = (a: number | null, i: number) => {
@@ -498,7 +499,10 @@ export function ParametersView({ connected, bus, packs, installation, onMarkerCh
     for (const a of targets) {
       const read = targetRead(a);
       if (!read) continue;
-      const p = planTarget(c, a, rawsOf(read), read.function_switches, e.seriesUnlocked);
+      // the Group0 bits this target keeps by its own proof (e.g. bit 4 of a Light pack, the hard stop) are not carried over
+      const keep = keepMask(read.patch, path === "uart1", read.function_switches[0]);
+      const own = { ...c, mask: c.mask.map((m, g) => (g === 0 ? m & ~keep : m)), bits: c.bits.map((b, g) => (g === 0 ? b & ~keep : b)) };
+      const p = planTarget(own, a, rawsOf(read), read.function_switches, e.seriesUnlocked);
       if (refusedOf(a)) skipped.push({ address: a, out: { kind: "skipped", why: "pending" } });
       else if (p.blockers.length) skipped.push({ address: a, out: { kind: "skipped", why: "blocked", blockers: p.blockers } });
       else if (!p.changes.length) skipped.push({ address: a, out: { kind: "skipped", why: "same" } });

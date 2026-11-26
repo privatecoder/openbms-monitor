@@ -1396,6 +1396,18 @@ impl Store {
     }
 
     /// Keep a parameter block of a place with exactly this String 2 (the CAN socket's checked identity of the block).
+    /// A kept block with the String 2 read with it (None: the board showed none of its own, e.g. the factory placeholder):
+    /// never the serial of the board registered there before, which may be another one.
+    pub fn add_param_snapshot_seen(&self, inst: &str, address: u8, serial: Option<&str>, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
+        self.db
+            .execute(
+                "INSERT INTO param_snapshots(installation, address, bms_serial, at, kind, block) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![inst, address, serial, now, kind.as_str(), block],
+            )
+            .map_err(e)?;
+        Ok(self.db.last_insert_rowid())
+    }
+
     pub fn add_param_snapshot_serial(&self, inst: &str, address: u8, serial: &str, kind: SnapshotKind, block: &[u8], now: i64) -> Result<i64, String> {
         self.db
             .execute(
@@ -2340,6 +2352,12 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(rows, vec![(None, "read".into(), vec![1, 2]), (Some("SYN-A".into()), "written".into(), vec![3])]);
+        // a read whose board showed no serial of its own (a replacement with the placeholder) does not take SYN-A's
+        s.add_param_snapshot_seen(&a.id, 1, None, SnapshotKind::Read, &[4], 7).unwrap();
+        s.add_param_snapshot_seen(&a.id, 1, Some("SYN-A"), SnapshotKind::Read, &[5], 7).unwrap();
+        let seen: Vec<Option<String>> = s.db.prepare("SELECT bms_serial FROM param_snapshots WHERE block IN (x'04', x'05') ORDER BY id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(seen, vec![None, Some("SYN-A".into())]);
         s.board_written(&a.id, 1, &set("SYN-A"), &set("SYN-A2"), 8).unwrap();
         s.set_cell_type(&a.id, 1, Some("{}")).unwrap();
         let b = s.create_installation("B", None, vec![]).unwrap();

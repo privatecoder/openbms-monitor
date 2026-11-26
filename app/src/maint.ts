@@ -46,7 +46,7 @@ export type PortKind = "tcp" | "serial";
  *  backend, the pending records and every comparison. */
 export function portKey(kind: PortKind, target: string): string {
   if (!target.trim()) return "";
-  return kind === "tcp" ? endpointKey({ kind, addr: target, bus: "pack" }) : endpointKey({ kind, path: target, bus: "pack" });
+  return kind === "tcp" ? endpointKey({ kind, addr: target.trim(), bus: "pack" }) : endpointKey({ kind, path: target, bus: "pack" });
 }
 
 /** An endpoint key split into kind and address/port; null for anything else. */

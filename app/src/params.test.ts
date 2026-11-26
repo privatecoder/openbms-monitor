@@ -155,5 +155,7 @@ describe("refreshedStored", () => {
     const next = refreshedStored(cols, [row(1, 5, "current"), row(2, 5, "current"), row(3, 5, "current")]);
     expect(next.map((c) => [c.id, c.stored?.at, c.stored?.board])).toEqual([["stored-1", 5, "current"], ["stored-2", 5, "current"], ["pack-2", undefined, undefined]]);
     expect(refreshedStored(cols, [])).toEqual(cols);
+    // a late answer of an earlier refresh does not take a column back to an older block
+    expect(refreshedStored(next, [row(1, 3, "current")])[0].stored?.at).toBe(5);
   });
 });

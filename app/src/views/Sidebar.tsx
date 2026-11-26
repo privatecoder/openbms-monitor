@@ -295,7 +295,8 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
       if (connectedForOther(connInst.current, maintRef.current.chosen())) throw new ConnectCancelled();
       localStorage.setItem("conn.kind", kind); localStorage.setItem(`conn.${kind}`, target); localStorage.setItem("conn.bus", bus);
       if (!connInst.current) localStorage.setItem("conn.packs", selText(sel));
-      const ep: Endpoint = kind === "tcp" ? { kind, addr: target, bus } : { kind, path: target, bus };
+      // the address as checked (`tcpPortMissing` trims): a pasted space never reaches the backend
+      const ep: Endpoint = kind === "tcp" ? { kind, addr: target.trim(), bus } : { kind, path: target, bus };
       const range = (n: number) => Array.from({ length: n }, (_, i) => i);
       // the check asks the addresses to be polled first, then the rest of 0..15: one answer is enough
       const { linked, answered, gen: linkGen, profile } = await connectWhenFree(ep, retry, connInst.current, addrsFixed);
@@ -790,7 +791,7 @@ export function Sidebar({ userActions, connected, paused, lastUpdate, onConnecte
         )}
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" {...lockProps(decideUi("connection.connect", { ...facts,
-            ready: src === "mqtt" ? !!mq.host && !!mq.base && !!mq.port : !!target, tcpNoPort: src !== "mqtt" && kind === "tcp" && tcpPortMissing(target), loaded: src === "mqtt" ? !mqLoading : !packsLoading }), t)} onClick={() => connect()}>
+            ready: src === "mqtt" ? !!mq.host && !!mq.base && !!mq.port : !!target.trim(), tcpNoPort: src !== "mqtt" && kind === "tcp" && tcpPortMissing(target), loaded: src === "mqtt" ? !mqLoading : !packsLoading }), t)} onClick={() => connect()}>
             {busy ? t("conn.checking") : connected ? t("conn.reconnect") : t("conn.connect")}
           </Button>
           {decideUi("connection.cancel", { ...facts, waiting }).visible && <Button variant="ghost" onClick={waiting ? stopWaiting : cancelConnect}>{t("conn.cancel")}</Button>}

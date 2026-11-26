@@ -599,14 +599,11 @@ pub fn proof_of(p: &PackPatch) -> access::Proof {
     access::Proof { write_gate: p.caps.write_gate, start_gate: p.caps.start_gate, power: p.caps.power_rtc.into(), cutoff: p.caps.pack_cutoff.into() }
 }
 
-/// The Group0 plan of a parameter write the backend sends: over the CAN socket by the pack's proof on this connection;
-/// over RS485-1/2 without one (the bits go as edited there; the UI keeps the bits without function by the proof).
+/// The Group0 plan of a parameter write the backend sends, by the pack's proof on this connection (CAN socket or
+/// RS485-1/2: a bit the proven build has no function for, e.g. bit 4 of a Light pack, stays the pack's own, also when a
+/// write to several packs carries it from another one); without a proof over RS485-1/2 the bits go as edited.
 pub fn group0_rule(uart1: bool, patch: Option<&PackPatch>) -> Group0 {
-    if uart1 {
-        access::group0_plan(Channel::Uart1, patch.map(proof_of))
-    } else {
-        access::group0_plan(Channel::Uart0, None)
-    }
+    access::group0_plan(if uart1 { Channel::Uart1 } else { Channel::Uart0 }, patch.map(proof_of))
 }
 
 /// Apply `rule` to `block` (built on the fresh read `fresh`) before it is sent; Err: refused here, nothing sent.
@@ -797,9 +794,13 @@ mod tests {
         let mut b = block(0xFF, 0);
         apply_group0(rule, &block(0xF7, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xF7);
-        // RS485-1/2 changes it
+        // RS485-1/2 with this proof (power and clock not proven for the build): bit 3 stays the pack's own too
         let mut b = block(0xF7, 0);
         apply_group0(group0_rule(false, p.as_ref()), &block(0xFF, 0), &mut b).unwrap();
+        assert_eq!(b[GROUP0], 0xFF);
+        // without a proof RS485-1/2 sends it as edited
+        let mut b = block(0xF7, 0);
+        apply_group0(group0_rule(false, None), &block(0xFF, 0), &mut b).unwrap();
         assert_eq!(b[GROUP0], 0xF7);
     }
 

@@ -318,7 +318,7 @@ describe("when the sidebar reads the broker again", () => {
 
 describe("tcpPortMissing", () => {
   it("wants host:port for a network gateway, an empty field is not this error", () => {
-    for (const ok of ["192.0.2.10:4196", "gw.local:8899", " 192.0.2.10:502 ", "[2001:db8::1]:4196", "::1:4196", "localhost:004196", "localhost:+4196", ""]) expect(tcpPortMissing(ok), ok).toBe(false);
-    for (const bad of ["192.0.2.10", "gw.local", "192.0.2.10:", ":4196", "192.0.2.10:0", "192.0.2.10:70000", "192.0.2.10:41a6"]) expect(tcpPortMissing(bad), bad).toBe(true);
+    for (const ok of ["192.0.2.10:4196", "gw.local:8899", " 192.0.2.10:502 ", "[2001:db8::1]:4196", "[::1]:4196", "localhost:004196", "localhost:+4196", ""]) expect(tcpPortMissing(ok), ok).toBe(false);
+    for (const bad of ["192.0.2.10", "gw.local", "192.0.2.10:", ":4196", "192.0.2.10:0", "192.0.2.10:70000", "192.0.2.10:41a6", "2001:db8::1", "::1:4196"]) expect(tcpPortMissing(bad), bad).toBe(true);
   });
 });
