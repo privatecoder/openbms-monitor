@@ -5,7 +5,7 @@ import { judge, runFlashSeries, seriesOrder, seriesRowText, seriesView, startFla
 import { confirmationPhrase, seriesPhrase } from "./firmware";
 
 const image = { release: "16.06.13", device: "EMU1101", bytes: 1, blocks: 1, sha256: "a", kind: "original", custom: false } as FirmwareImage;
-const ext = { ...image, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance", custom: true, base: "16.06.13" } as FirmwareImage;
+const ext = { ...image, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance", custom: false, base: "16.06.13" } as FirmwareImage;
 const custom = { ...image, release: "custom", kind: "custom", custom: true } as FirmwareImage;
 const cmp = (verdict: string) => ({ verdict } as FlashComparison);
 const info = (v: string) => ({ device_name: "SYN", firmware_version: v, can_protocol: "" });

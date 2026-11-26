@@ -100,8 +100,9 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
   const may = (a: UiAction, more: Partial<UiFacts> = {}) => lockProps(decideUi(a, { ...fw, ...more }), t);
   const inputsLocked = decideUi("firmware.inputs", fw).locked;
   const phrase = confirmationPhrase(address, image?.custom);
-  // the RS485-1/2 tab shares this state; a search on „Platine flashen“ may have cleared it (the notes then take pack 0, as before)
-  const busAddress = address === NO_PACK ? 0 : address;
+  // the RS485-1/2 tab: the notes on the image's Group0 are about the installation's master (pack 0), never the board
+  // chosen on „Platine flashen“
+  const busAddress = 0;
   const owner = inst && bPort && bPort === port ? inst : null;
 
   const chooseImage = async () => {
@@ -186,7 +187,8 @@ export function Firmware({ connected, maint, onMonitorStopped, onRunning, onBack
       const r = await api.benchScan(bPort);
       setScan(r);
       const one = benchPick(r.packs);
-      if (one !== null) setAddress(one);
+      // a cancelled search may have stopped after the first board: no choice is made for the user then
+      if (one !== null && !r.cancelled) setAddress(one);
       void maint.loadLists();
     } catch (e) { const k = errorKey(e); setError(t(k.key, k.params)); }
     finally { setScanning(false); }

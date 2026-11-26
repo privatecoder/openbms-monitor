@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
+import { benchMarkerKey, benchPick, compareLines, confirmationPhrase, recoveryPhrase, imageLabel, imageWarning, imageWarningIsAlarm, progressFraction, resultVersions } from "./firmware";
 import type { BenchPack, FirmwareImage, FlashComparison, FlashSide } from "./api";
 import i18n from "./i18n";
 
@@ -42,7 +42,7 @@ describe("progress", () => {
 });
 
 describe("image naming", () => {
-  const maint = { ...image!, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance" as const, custom: true };
+  const maint = { ...image!, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance" as const, custom: false };
   const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
   const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
   it("names the maintenance build as known, not as custom firmware", () => {
@@ -61,15 +61,18 @@ describe("image naming", () => {
     expect(i18n.t("fw.maintWarning", { lng: "de" })).not.toMatch(/keiner bekannten/);
     expect(i18n.t("fw.maintWarning", { lng: "de" })).toMatch(/^Gepatchte Firmware/);
     expect(i18n.t("fw.maintWarning", { lng: "en" })).toMatch(/patched firmware/);
-    // still behind the custom opt-in and its own phrase
-    expect(confirmationPhrase(0, maint.custom)).toBe("FLASH CUSTOM 0");
+    // a listed build (custom: false from the backend) takes the ordinary phrases, only an unknown image the CUSTOM ones
+    expect(confirmationPhrase(0, maint.custom)).toBe("FLASH 0");
+    expect(confirmationPhrase(0, custom.custom)).toBe("FLASH CUSTOM 0");
+    expect(recoveryPhrase(maint.custom)).toBe("RECOVER");
+    expect(recoveryPhrase(custom.custom)).toBe("RECOVER CUSTOM");
   });
 });
 
 describe("flash result", () => {
   const tr = (lng: string) => (key: string, params?: Record<string, unknown>) => i18n.t(key, { ...params, lng });
   const info = (v: string) => ({ device_name: "X", firmware_version: v, can_protocol: "CAN" });
-  const maint = { ...image!, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance" as const, custom: true };
+  const maint = { ...image!, release: "EMU1101-EXT Full 1.6.5", kind: "maintenance" as const, custom: false };
   const custom = { ...image!, release: "custom", kind: "custom" as const, custom: true };
 
   it("the version line names the image in full, an EMU1101-EXT build by its name", () => {

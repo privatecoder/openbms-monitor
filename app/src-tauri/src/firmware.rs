@@ -104,11 +104,11 @@ pub fn master_marker_check(address: u8, image: known::ImageKind, fresh: Option<&
     }
 }
 
-/// The installation master's marker decided over RS485-1/2 (`bench_marker`'s result `m`): its own fresh status wins; only
-/// where the build shows none there (`unchecked`) and the master is a patched one (`ext`: it answered 64/03) does a
-/// marker last seen on still refuse an image without the maintenance functions, as without any read.
-pub fn u0_marker(m: &'static str, last_on: bool, image: known::ImageKind, ext: bool) -> Result<&'static str, &'static str> {
-    if m == "unchecked" && ext && last_on && image != known::ImageKind::Maintenance {
+/// The installation master's marker decided over RS485-1/2 (`bench_marker`'s result `m`): its own trusted status wins;
+/// where it shows none (`unchecked`: silence, an error RTN, an original or an older build all look alike there), a
+/// marker last seen on still refuses an image without the maintenance functions, as without any read.
+pub fn u0_marker(m: &'static str, last_on: bool, image: known::ImageKind) -> Result<&'static str, &'static str> {
+    if m == "unchecked" && last_on && image != known::ImageKind::Maintenance {
         return Err("release-master-first-unread");
     }
     Ok(m)
@@ -607,7 +607,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
         Some(owner) => {
             let fresh = if address == 0 && owner.control.is_some() { maint::read_master(&state, owner).ok() } else { None };
             let last_on = address == 0 && maint::with_store(&state, |s| s.marker_last_on(&owner.id)).map_err(to_text)?;
-            let fresh_known = fresh.as_ref().is_some_and(|m| m.caps().is_some() && m.marker().is_some());
+            // only a valid on/off decides here; a foreign word or none leaves it to the RS485-1/2 status
+            let fresh_known = fresh.as_ref().is_some_and(|m| m.caps().is_some() && matches!(m.marker(), Some(openbms_proto::MarkerWord::On | openbms_proto::MarkerWord::Off)));
             if address == 0 && !fresh_known && !matches!(fresh, Some(Master::No0x64)) {
                 u0_pending = Some(last_on);
                 None
@@ -642,13 +643,30 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             // another board than the one stored for its address is not flashed. Its String 2 goes with the pending
             // record: only that board's answer clears it.
             let target = maint::check_target_board(&state.maint, i, address, &mut link).map_err(to_text)?;
+            // a pending pack only as the same board, before anything is changed on it (a refused flash clears no marker)
+            let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
+            maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
             let found = crate::bench::rs485_marker(&mut link, address);
             let marker = match u0_pending {
                 Some(last_on) => {
-                    let m = crate::bench::bench_marker(&mut link, &found, address, kind).map_err(to_text)?;
-                    let m = u0_marker(m, last_on, kind, found.info.is_some()).map_err(|k| to_text(maint::refused(k)))?;
+                    // a history „on“ with no trusted status here refuses before anything is sent
+                    u0_marker("unchecked", last_on && !(found.trusted && found.state.is_some()), kind).map_err(|k| to_text(maint::refused(k)))?;
+                    let m = match crate::bench::bench_marker(&mut link, &found, address, kind) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            // cleared, but the master polls its slaves again: the flash is refused, the marker is off
+                            if matches!(&e, maint::MaintError::Refused { reason } if reason == "bench-dip-on") {
+                                let _ = maint::keep_master_released(&state, &i.id, &found.master);
+                            }
+                            return Err(to_text(e));
+                        }
+                    };
+                    // what the master showed here is kept for its banner, like a read over the CAN socket
                     if m == "released" {
                         maint::event(&state, Some(&i.id), &format!("flash: marker of pack {address} cleared over RS485-1/2"));
+                        maint::keep_master_released(&state, &i.id, &found.master).map_err(to_text)?;
+                    } else if found.trusted && found.state.is_some() {
+                        maint::keep_master_read(&state, &i.id, &found.master).map_err(to_text)?;
                     }
                     Some(m)
                 }
@@ -660,6 +678,8 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             // the board shown at the search, before anything changes on it
             let target = maint::string2(&mut link, address);
             crate::bench::chosen_board(expected.as_deref(), target.as_deref()).map_err(to_text)?;
+            let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
+            maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
             let found = crate::bench::rs485_marker(&mut link, address);
             let m = crate::bench::bench_marker(&mut link, &found, address, kind).map_err(to_text)?;
             if m == "released" {
@@ -669,9 +689,6 @@ pub async fn firmware_start(app: AppHandle, state: State<'_, AppState>, port: St
             ("none", target, marker, found)
         }
     };
-    // the pending pack again: only as the same board
-    let pending_now = maint::with_store(&state, |s| s.all_pending()).map_err(to_text)?;
-    maint::pending_same_board(&pending_now, &key, address, target.as_deref()).map_err(to_text)?;
     // where the app knows this board: its place in the installation, else every place where it is the current board
     let places: Vec<(String, u8)> = match (&inst, target.as_deref()) {
         (Some(i), _) => vec![(i.id.clone(), address)],
@@ -959,13 +976,14 @@ mod tests {
         assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), true), Ok(Some("unchecked")));
         assert_eq!(master_marker_check(0, orig, Some(&Master::No0x64), false), Ok(Some("unchecked")));
         // without a CAN read the master's own RS485-1/2 status decides, in both directions of a stale history
-        assert_eq!(u0_marker("checked", true, orig, true), Ok("checked"));
-        assert_eq!(u0_marker("released", false, orig, true), Ok("released"));
-        // the build shows nothing there: a patched master last seen on still refuses an image without maintenance
-        assert_eq!(u0_marker("unchecked", true, orig, true), Err("release-master-first-unread"));
-        assert_eq!(u0_marker("unchecked", true, maint, true), Ok("unchecked"));
-        // an original master (no 64/03 there) ignores the marker
-        assert_eq!(u0_marker("unchecked", true, orig, false), Ok("unchecked"));
+        assert_eq!(u0_marker("checked", true, orig), Ok("checked"));
+        assert_eq!(u0_marker("released", false, orig), Ok("released"));
+        // nothing shown there (silence looks like an original): a marker last seen on refuses an image without
+        // maintenance functions, whatever the master is
+        assert_eq!(u0_marker("unchecked", true, orig), Err("release-master-first-unread"));
+        assert_eq!(u0_marker("unchecked", true, known::ImageKind::Custom), Err("release-master-first-unread"));
+        assert_eq!(u0_marker("unchecked", true, maint), Ok("unchecked"));
+        assert_eq!(u0_marker("unchecked", false, orig), Ok("unchecked"));
         // another address: no marker question
         assert_eq!(master_marker_check(3, orig, Some(&on), true), Ok(None));
     }

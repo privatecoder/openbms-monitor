@@ -5,7 +5,7 @@ import { api, type DeviceInfo, type FirmwareDone, type FirmwareImage, type LiveS
 import { imageLabel, seriesPhrase } from "../firmware";
 import { judge, seriesOrder, seriesRowText, seriesView, startFlashSeries, summarizeSeries, withEnd, type FlashSeriesEnd, type PackEnd, type SeriesView } from "../flashSeries";
 import { decideUi, lockProps, type UiAction, type UiFacts } from "../locks";
-import { seriesOpen, busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersion, packVersionText, releaseFirst, dipOffTick, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
+import { seriesOpen, busLine, keyParts, packIsCanAdapter, errorKey, masterLine, notOnBus, otherBank, packVersionText, releaseFirst, dipOffTick, RECOVERY_PACK, showDone, storedPort, type Tone } from "../maint";
 import type { Maint } from "../maintStore";
 import { Button } from "../components/ui/button";
 import { InfoIcon } from "../help";
@@ -188,7 +188,9 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
     ...pendingHere.filter((p) => p.pack !== RECOVERY_PACK && !scan?.packs.some(([a]) => a === p.pack)).map((p) => [p.pack, null] as [number, DeviceInfo | null]),
   ].sort((x, y) => x[0] - y[0]);
   // the series: packs that answer can be picked; each is weighed like its single flash (`locks.ts`)
-  const versionOf = (a: number, d: DeviceInfo | null) => (d ? packVersion(a, d.firmware_version, master) : null);
+  // a pack's version as its row shows it: its own 0x51, with the build where this search proved one for exactly this pack
+  // (its 64/03 on RS485-1/2, or over the CAN socket for the same board); never another bank's master profile
+  const versionOf = (a: number, d: DeviceInfo | null) => (d ? packVersionText(d.firmware_version, scan?.identities?.find((x) => x.address === a), t) : null);
   const answering = packs.filter(([, d]) => d);
   const chosen = picked.filter((a) => answering.some(([x]) => x === a));
   const order = seriesOrder(chosen);
@@ -308,14 +310,14 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
               const row = decideUi("maintenance.flash", { ...facts, flash: { image, quiet, busy, running, address: a, master, pending: maint.alerts.pending, port } });
               const blocked = row.locked ? row.reason ?? null : null;
               const name = a === 0 ? t("maint.packs.master") : t("maint.packs.pack", { address: a });
-              const version = d ? packVersion(a, d.firmware_version, master) : null;
+              const version = d ? d.firmware_version : null;
               return (
                 <li key={a} className="space-y-1 rounded-md border border-line p-2">
                   <div className="flex flex-wrap items-center gap-3">
                     {d && pick.visible && <input type="checkbox" className="h-4 w-4 accent-[var(--charge)]" checked={chosen.includes(a)} {...lockProps(pick, t)}
                       aria-label={t("maint.series.pickPack", { name })} onChange={() => toggle(a)} />}
                     <span className="font-medium">{name}</span>
-                    <span className="text-muted">{version ? packVersionText(version, scan?.identities?.find((x) => x.address === a), t) : t("maint.packs.silent")}</span>
+                    <span className="text-muted">{versionOf(a, d) ?? t("maint.packs.silent")}</span>
                     {/* one button in a fixed place: the backend checks quiet bus, target and installation, then flashes */}
                     {d && <ActButton variant="secondary" size="sm" className="ml-auto" spinning={(action === "flash" || running) && target === a} disabled={!!blocked} title={blocked ? t(blocked.key, blocked.params) : undefined} onClick={() => flash(a, version)}>{t("maint.packs.flash")}</ActButton>}
                   </div>
@@ -340,9 +342,9 @@ export function PackBusPanel({ maint, port, ports, onEditPorts, imagePicker, ima
               <p className="font-medium">{t("maint.series.confirm", { count: order.length, image: imageLabel(image, t) })}</p>
               <ol className="list-decimal pl-5 tabular-nums">
                 {order.map((a) => {
-                  // the same version text as the pack's row: its own 64/03 where the search got one, else 0x51
+                  // the same version text as the pack's row (kept for the running series too)
                   const v = versionOf(a, answering.find(([x]) => x === a)?.[1] ?? null);
-                  return <li key={a}>{t("maint.series.line", { name: packName(a), from: v ? packVersionText(v, scan?.identities?.find((x) => x.address === a), t) : "?", to: imageLabel(image, t) })}</li>;
+                  return <li key={a}>{t("maint.series.line", { name: packName(a), from: v ?? "?", to: imageLabel(image, t) })}</li>;
                 })}
               </ol>
               <p className="text-muted">{t("maint.series.rules")}</p>

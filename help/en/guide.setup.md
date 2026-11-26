@@ -7,7 +7,7 @@ Everything the app stores about a bank belongs to an installation. The steps lea
 
 1. Create an installation: in Installations (or in the sidebar under “Installation”) “New installation …”, enter a name and “Create”. Expected: the new installation is chosen in the sidebar. → [Installations](#topic.installations)
 2. Enter its ports: in Installations open the card, at “Ports” press “Change”, then the CAN socket (RS485) and, if packs are to be flashed, the RS485-1/2 bus, each over the network (gateway `host:port`) or USB; “Save”. Without an entry the app links the port at the first connection. → [The two RS485 buses](#topic.buses)
-3. On the same card choose “Inverter connected via”. Without it the app sends nothing for this installation. → [Inverter connection](#topic.wiring)
+3. On the same card choose “Inverter connected via”. Without it the app works for this installation over RS485-1/2 only on a quiet bus and not at all over the CAN socket's RS485 pair. → [Inverter connection](#topic.wiring)
 4. At “Packs polled over RS485” keep “search” or set a count or a fixed address; it applies from the next connection. → [Connection](#topic.connection)
 5. Connect: in the sidebar under “Connection” the installation is chosen; choose the bus (the app fills in the stored port), then “Connect”. Expected: “Connected” and the packs found. If nothing answers, the app says what it heard. → [Connection](#topic.connection)
 6. Confirm the bank, depending on the line in the sidebar: → [Installations](#topic.installations)

@@ -7,7 +7,7 @@ Alles, was die App über eine Bank speichert, gehört zu einer Anlage. Die Schri
 
 1. Eine Anlage anlegen: in Anlagen (oder in der Seitenleiste unter „Anlage“) „Neue Anlage …“, einen Namen eingeben und „Anlegen“. Erwartet: Die neue Anlage ist in der Seitenleiste gewählt. → [Anlagen](#topic.installations)
 2. Ihre Anschlüsse eintragen: in Anlagen die Karte öffnen, bei „Anschlüsse“ „Ändern“, dann die CAN-Buchse (RS485) und, wenn geflasht werden soll, den RS485-1/2-Bus, jeweils Netzwerk (Gateway `Host:Port`) oder USB; „Speichern“. Ohne Eintrag ordnet die App den Anschluss beim ersten Verbinden zu. → [Die zwei RS485-Busse](#topic.buses)
-3. Auf derselben Karte „Wechselrichter angeschlossen über“ wählen. Ohne die Angabe sendet die App für diese Anlage nichts. → [Wechselrichter-Anschluss](#topic.wiring)
+3. Auf derselben Karte „Wechselrichter angeschlossen über“ wählen. Ohne die Angabe arbeitet die App für diese Anlage über RS485-1/2 nur bei ruhigem Bus und über die RS485-Adern der CAN-Buchse gar nicht. → [Wechselrichter-Anschluss](#topic.wiring)
 4. Bei „Pack-Abfrage über RS485“ „suchen“ lassen oder Anzahl bzw. feste Adresse setzen; das gilt ab der nächsten Verbindung. → [Verbindung](#topic.connection)
 5. Verbinden: In der Seitenleiste unter „Verbindung“ ist die Anlage gewählt; Bus wählen (die App füllt den gespeicherten Anschluss ein), dann „Verbinden“. Erwartet: „Verbunden“ und die gefundenen Packs. Antwortet nichts, sagt die App, was sie gehört hat. → [Verbindung](#topic.connection)
 6. Die Bank bestätigen, je nach Zeile in der Seitenleiste: → [Anlagen](#topic.installations)
