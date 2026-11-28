@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, nameInputOk, parseExport, refreshedStored, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
+import { FILE_NAMES, KEYS, UNITS, deviating, exportName, fromStored, group0Name, nameInputOk, parseExport, refreshedStored, toExport, withHistory, withPlaceholders, type Parameters, type Source } from "./params";
 
 // a typical configuration (16S, 280 Ah)
 const VALUES = [3.45, 3.35, 2.9, 3.1, 3.65, 3.45, 2.7, 3.1, 3.4, 1.5, 55.2, 53.6, 46.4, 48, 56, 53.6, 43.2, 48, 63, 61,
@@ -162,5 +162,21 @@ describe("refreshedStored", () => {
     expect(refreshedStored(loaded, [{ ...sameTime, id: 6 }])[0].stored?.id).toBe(6);
     // a late answer of an earlier refresh does not take a column back to an older block
     expect(refreshedStored(next, [row(1, 3, "current")])[0].stored?.at).toBe(5);
+  });
+});
+
+describe("group0Name", () => {
+  const patch = (version: [number, number], flags: number, cutoff: boolean) =>
+    ({ source: "live", release: "x", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, power_rtc: true, pack_cutoff: cutoff, version, flags }, at: null }) as never;
+  it("names Group0 bits by the firmware the block was read under", () => {
+    const full = patch([1, 6], 0xfe, true), light = patch([1, 5], 0x3a, false), first16 = patch([1, 6], 0x06, true);
+    expect(group0Name(3, full)).toBe("Allow on/off, restart and clock setting via the CAN socket");
+    expect(group0Name(3, first16)).toMatch(/^Block on\/off/);
+    expect(group0Name(3, null)).toMatch(/^Bit 3 \(firmware-dependent/);
+    expect(group0Name(4, light)).toBe("Reserved on this firmware");
+    expect(group0Name(6, light)).toBe("Reserved on this firmware");
+    expect(group0Name(4, full)).toMatch(/^Switching off blocks/);
+    expect(group0Name(7, full)).toMatch(/^Hard stop/);
+    expect(group0Name(1, light)).toBe("Temperature sensor check");
   });
 });

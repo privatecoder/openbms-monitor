@@ -3,6 +3,7 @@ import type { PackPatch, SnapshotParams } from "./api";
 import CATALOG from "./generated/access.json";
 import PARAM_FILE from "./generated/param_file.json";
 import { parse as parseToml } from "smol-toml";
+import { hardStopConfigurable, positiveBuild } from "./access";
 
 export interface Parameter { index: number; key: string; raw: number; value: number; unit: string }
 /** `bms_serial`: over the CAN socket the String 2 read with the block, when it identifies the board; a
@@ -199,6 +200,21 @@ const HEADER = [
   "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware EMU1101-EXT also uses bits 0 and 2-7 (releases, pack lock, hard stop). Taking a file over sets only bit 1 of group 0; the other bits stay as the target pack has them, so a file fits original firmware and EMU1101-EXT alike.",
 ];
 
+/** A Group0 bit's name in a file, by the firmware the block was read under (`patch`): bit 3 by its polarity (allow in
+ *  EMU1101-EXT, block in the first MAINT 1.6, firmware-dependent when not known), bits 4–7 only where the build has the
+ *  pack lock or the configurable hard stop (Light: reserved). Without a proven patch the generic names stay. */
+export function group0Name(bit: number, patch: PackPatch | null | undefined): string | undefined {
+  const sw = (k: string) => TEXT.switches[k]?.name;
+  if (bit === 3) {
+    if (!patch) return "Bit 3 (firmware-dependent: allows on/off, restart and clock setting via the CAN socket in EMU1101-EXT, blocks them in the first MAINT 1.6)";
+    const positive = positiveBuild(patch.caps.version ? { kind: "version", version: patch.caps.version } : { kind: "unknown" }, patch.caps.flags);
+    return sw(positive ? "0.3p" : "0.3");
+  }
+  if (patch && (bit === 4 || bit === 5) && patch.caps.pack_cutoff === false) return "Reserved on this firmware";
+  if (patch && (bit === 6 || bit === 7) && patch.caps.flags != null && !hardStopConfigurable(patch.caps.flags)) return "Reserved on this firmware";
+  return sw(`0.${bit}`);
+}
+
 /** The app's parameter file (TOML, UTF-8, LF): head (format, version, device; the proven firmware as a comment), then
  *  every parameter by its technical key with name, number, unit and explanation as comments, then the eight switch bytes
  *  with the meaning of each bit. `parseExport` reads it back. */
@@ -216,8 +232,8 @@ export function toExport(p: Parameters): string {
   p.function_switches.forEach((b, g) => {
     l.push("", `# Group ${g}`, ...comment(TEXT.groups[String(g)] ?? ""));
     for (let bit = 0; bit < 8; bit++) {
-      const sw = TEXT.switches[`${g}.${bit}`];
-      l.push(`#   bit ${bit} = ${(b >> bit) & 1}: ${sw ? sw.name : "no function"}`);
+      const name = g === 0 ? group0Name(bit, p.patch) : TEXT.switches[`${g}.${bit}`]?.name;
+      l.push(`#   bit ${bit} = ${(b >> bit) & 1}: ${name ?? "no function"}`);
     }
     l.push(`group${g} = 0x${b.toString(16).toUpperCase().padStart(2, "0")}`);
   });
