@@ -1,6 +1,6 @@
 ---
 title: Prüfung der Temperaturfühler
-short: An: Ein Temperaturfühler mit unmöglichem Wert (unter −45 °C, ab 100 °C oder 20 K Abstand zu den anderen) meldet einen Fühlerfehler, und die Heizung schaltet ab. Aus: keine Prüfung. Empfohlen: an. Das einzige Bit dieser Gruppe, das auch die Original-Firmware nutzt.
+short: An: Das BMS meldet einen Fühlerfehler und sperrt die Heizung bei Werten unter −45 °C, ab 100 °C (Leistungsteil: ab 130 °C) oder bei mindestens 20 °C Unterschied zwischen den verglichenen Fühlern. Aus: Diese Prüfung entfällt. Empfohlen: an. Das einzige Bit dieser Gruppe, das auch die Original-Firmware nutzt.
 related: topic.switches
 ---
 

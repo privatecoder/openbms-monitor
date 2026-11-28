@@ -1,6 +1,6 @@
 ---
-title: Pack released (status only)
-short: Status only, not settable. On: the pack is not locked. Off: the pack is locked permanently (see bit 4); charging and discharging stay closed until you switch it on directly under “Control”. A parameter import changes nothing about it.
+title: No pack lock active (status only)
+short: Display only, not settable. On (1): no pack lock is active; other protections can still block charging or discharging. Off (0): the pack lock is active (see bit 4). To release it, select this pack under “Control” and switch it on. A parameter import leaves this status unchanged.
 related: topic.switches
 ---
 

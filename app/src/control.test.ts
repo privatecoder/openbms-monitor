@@ -202,7 +202,7 @@ describe("„Aus“ of a pack that may store a cutoff, round 1", () => {
       expect(i18n.exists(k, { lng }), `${lng} ${k}`).toBe(true);
       expect(i18n.t(k, { lng, pack: "03" })).not.toMatch(/Laden möglich|charging possible/);
     }
-    expect(errorText(JSON.stringify({ kind: "uart1", error: "cutoff-changed" }), (k, o) => i18n.t(k, { ...o, lng: "de" }))).toMatch(/^„Ausschalten sperrt dauerhaft“ hat sich geändert: bitte neu bestätigen/);
+    expect(errorText(JSON.stringify({ kind: "uart1", error: "cutoff-changed" }), (k, o) => i18n.t(k, { ...o, lng: "de" }))).toMatch(/^Die Einstellung für die Packsperre beim Ausschalten hat sich geändert: bitte neu bestätigen/);
   });
 });
 

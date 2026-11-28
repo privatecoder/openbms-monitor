@@ -449,39 +449,39 @@
  "switches": {
   "0.0": {
    "name": "Allow writing via the CAN socket",
-   "short": "On: writing is allowed; this applies to “Write parameters and switches”, “Set the hard stop at a recharge pause” and “Save the master's CCL decrease step” via the CAN socket. Off: locked there, reading still works. It can be switched back on only via the RS485-1/2 bus or on the display."
+   "short": "On: write permission applies to “Write parameters and switches”, “Set the hard stop at a recharge pause” and “Save the master's CCL decrease step” via the CAN socket, where supported by this pack. Off: these writes are blocked, reading still works. It can be switched back on only via the RS485-1/2 bus or through this pack's enabled display port."
   },
   "0.2": {
    "name": "Allow maintenance start via the CAN socket",
-   "short": "On: allowed is “Start maintenance” via the CAN socket. The master then stops polling its slaves and the RS485-1/2 bus becomes free, e.g. for flashing. Off: refused. Releasing always works. Change only via the RS485-1/2 bus or on the display."
+   "short": "On: the master (address 0) allows “Start maintenance” via the CAN socket when automatic addressing is off. Only a successful start stops polling the slaves and frees the RS485-1/2 bus, e.g. for flashing. Off: the start is blocked. This bit has no effect on ending maintenance. Change only via the RS485-1/2 bus or through this pack's enabled display port."
   },
   "0.3": {
-   "name": "Allow on/off, restart and clock via the CAN socket",
-   "short": "On: allowed are “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket. Off: locked there; it still works via the RS485-1/2 bus. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round (0 allows)."
+   "name": "Block on/off, restart and clock setting via the CAN socket (MAINT 1.6)",
+   "short": "On the first MAINT 1.6 build, On (1) blocks these commands: “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket. Off (0) allows them. Change only via the RS485-1/2 bus or through this pack's enabled display port."
   },
   "0.6": {
    "name": "Hard stop at recharge pause",
-   "short": "Effective only while bit 7 is off. On: while the pack waits for the recharge threshold after a full charge, it blocks charging itself (charge MOSFET off). Off: only the master lowers the charge limit, the pack itself stays open. Set only via the “Hard stop” line, never via “Edit” or a file."
+   "short": "Effective only while bit 7 is off and recharge waiting is enabled (function switch 5, bit 1). On: while the pack waits for the recharge threshold after a full charge, it blocks charging itself (charge MOSFET off). Off: the recharge pause alone does not block charging at this pack; the master takes it into account in the bank's charge limit. Set only via the “Hard stop” line, never via “Edit” or a file."
   },
   "0.7": {
    "name": "Hard stop: the build's default",
-   "short": "On: the firmware's default applies (with the listed Full builds: no hard stop); bit 6 does not matter then. Off: bit 6 decides. Set only via the “Hard stop” line."
+   "short": "On: the firmware's default applies (with the listed Full builds: no hard stop); bit 6 does not matter then. Off: bit 6 decides. Choosing On or Off under “Hard stop” clears bit 7 and saves your choice in bit 6; that control cannot restore the default."
   },
   "0.4": {
-   "name": "Switching off locks charge and discharge path permanently",
-   "short": "On: “Switch off” of a single pack locks its charging and discharging (also current limiter and precharge) permanently, also across restarts; this applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket. Only a direct “On” at exactly this pack releases it, not the master or a parameter import. Off: “Switch off” is a soft off that charging or the master can lift again. The help texts call this function the “extended off”."
+   "name": "Switching off blocks charging and discharging until this pack is switched on directly",
+   "short": "On: “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket blocks charging and discharging on this pack (also current limiter and precharge), even after a restart. Only a direct “Switch on” at exactly this pack releases it; the master's switch-on broadcast and a parameter import do not. Off: switching off is a soft off that charging or the master can lift again. A lock that already exists stays even then until the pack is switched on directly. The help texts call this function the “extended off”."
   },
   "0.3p": {
-   "name": "Allow on/off, restart and clock via the CAN socket",
-   "short": "On: allowed are “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket. Off: locked there; it still works via the RS485-1/2 bus. Change only via the RS485-1/2 bus or on the display."
+   "name": "Allow on/off, restart and clock setting via the CAN socket",
+   "short": "On (1) allows the commands this pack supports: “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket. Off (0) blocks those commands on this socket; they still work via the RS485-1/2 bus. Change only via the RS485-1/2 bus or through this pack's enabled display port."
   },
   "0.5": {
-   "name": "Pack released (status only)",
-   "short": "Status only, not settable. On: the pack is not locked. Off: the pack is locked permanently (see bit 4); charging and discharging stay closed until you switch it on directly under “Control”. A parameter import changes nothing about it."
+   "name": "No pack lock active (status only)",
+   "short": "Display only, not settable. On (1): no pack lock is active; other protections can still block charging or discharging. Off (0): the pack lock is active (see bit 4). To release it, select this pack under “Control” and switch it on. A parameter import leaves this status unchanged."
   },
   "0.1": {
    "name": "Temperature sensor check",
-   "short": "On: a temperature sensor with an impossible value (below −45 °C, from 100 °C or 20 K apart from the others) reports a sensor fault, and heating switches off. Off: no check. Recommended: on. The only bit of this group the original firmware uses too."
+   "short": "On: the BMS reports a sensor fault and disables heating for readings below −45 °C, at or above 100 °C (power stage: 130 °C), or a difference of at least 20 °C between the sensors it compares. Off: this check is skipped. Recommended: on. The only bit of this group the original firmware uses too."
   },
   "1.0": {
    "name": "Cell high-voltage warning",

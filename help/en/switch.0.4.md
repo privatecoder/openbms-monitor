@@ -1,6 +1,6 @@
 ---
-title: Switching off locks charge and discharge path permanently
-short: On: “Switch off” of a single pack locks its charging and discharging (also current limiter and precharge) permanently, also across restarts; this applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket. Only a direct “On” at exactly this pack releases it, not the master or a parameter import. Off: “Switch off” is a soft off that charging or the master can lift again. The help texts call this function the “extended off”.
+title: Switching off blocks charging and discharging until this pack is switched on directly
+short: On: “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket blocks charging and discharging on this pack (also current limiter and precharge), even after a restart. Only a direct “Switch on” at exactly this pack releases it; the master's switch-on broadcast and a parameter import do not. Off: switching off is a soft off that charging or the master can lift again. A lock that already exists stays even then until the pack is switched on directly. The help texts call this function the “extended off”.
 related: topic.switches
 ---
 
