@@ -2,9 +2,9 @@
 
 All notable changes of OpenBMS Monitor. Newest first; the app shows this file in its About view.
 
-## Unreleased
+## 0.4.5-beta — 2026-11-28
 
-- Function switch 0: clearer names and help. Bit 3 reads “Allow on/off, restart and clock setting via the CAN socket” (like bit 2; on the first MAINT 1.6, whose polarity is reversed, “Block … (MAINT 1.6)”), bit 4 “Switching off blocks charging and discharging until this pack is switched on directly”, bit 5 “No pack lock active (status only)”; every bit's help says in plain words what on and off do, and the control messages name the lock on switch-off instead of “extended off”. Parameter files name the Group0 bits by the firmware they were read under (bit 3 allow or block by its polarity, bits 4–7 “reserved” on Light).
+- Function switch 0: clearer names and help. Bit 3 reads “Allow on/off, restart and clock setting via the CAN socket” (like bit 2; on the first MAINT 1.6, whose polarity is reversed, “Block … (MAINT 1.6)”), bit 4 “Switching off blocks charging and discharging until this pack is switched on directly”, bit 5 “No pack lock active (status only)”; every bit's help says in plain words what on and off do, and the control messages name the lock on switch-off instead of “extended off”. Parameter files name the Group0 bits by the firmware they were read under: by the flags the pack reported or the exact listed build of a stored proof (bit 3 allow or block by its polarity, the pack lock from patch 1.6 on, bits a build lacks “reserved”); an unlisted build without flags reads “firmware-dependent”.
 - Firmware update of the master: an automatic release clears the slave count the halt kept (as a release from the panel does); a result without a fresh marker read says when the marker was last seen on (a maintenance image then starts halted). The CCL decrease step over RS485-1/2 uses the master's identity proven anywhere on the connection (e.g. “Check again” in its pack view) at once.
 - Firmware results distinguish an explicit, unrecognized identity from a silent board. A negative identity check removes the pack’s EXT feature controls.
 - Firmware preview keeps a single release-bit note when the bench search or selected board changes.
