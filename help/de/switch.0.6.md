@@ -1,6 +1,6 @@
 ---
 title: Hard-Stop bei Nachladepause
-short: EMU1101-EXT Full: die Wahl des Hard-Stops, wenn Bit 7 auf 0 steht (1 an, 0 aus). Gesetzt nur über den eigenen Schalter unter Parameter, nie durch eine Bearbeitung oder Datei.
+short: Nur wirksam, wenn Bit 7 aus ist. An: Wartet das Pack nach dem Vollladen auf die Nachladeschwelle, sperrt es selbst das Laden (Lade-MOSFET aus). Aus: nur der Master senkt die Ladegrenze, das Pack selbst bleibt offen. Einstellen nur über die Zeile „Hard-Stop“, nie über „Bearbeiten“ oder eine Datei.
 related: topic.switches
 ---
 

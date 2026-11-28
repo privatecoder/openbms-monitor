@@ -1,6 +1,6 @@
 ---
-title: Extended off
-short: Patched firmware with the pack cutoff (EMU1101-EXT Full), applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it.
+title: Switching off locks charge and discharge path permanently
+short: On: “Switch off” of a single pack locks its charging and discharging (also current limiter and precharge) permanently, also across restarts; this applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket. Only a direct “On” at exactly this pack releases it, not the master or a parameter import. Off: “Switch off” is a soft off that charging or the master can lift again. The help texts call this function the “extended off”.
 related: topic.switches
 ---
 

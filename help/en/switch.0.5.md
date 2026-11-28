@@ -1,6 +1,6 @@
 ---
-title: No individual pack cutoff
-short: Patched firmware with the pack cutoff (EMU1101-EXT Full), status only: 1 (on) while no stored lock exists; 0 (off) while the pack is locked, also with the extended off switched off. Never editable; switching this pack on directly releases the lock, parameter imports do not.
+title: Pack released (status only)
+short: Status only, not settable. On: the pack is not locked. Off: the pack is locked permanently (see bit 4); charging and discharging stay closed until you switch it on directly under “Control”. A parameter import changes nothing about it.
 related: topic.switches
 ---
 

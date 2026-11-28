@@ -449,39 +449,39 @@
  "switches": {
   "0.0": {
    "name": "Allow writing via the CAN socket",
-   "short": "With patched firmware, applies to “Write parameters and switches”, “Set the hard stop at a recharge pause” and “Save the master's CCL decrease step” via the CAN socket: 1 allows, 0 locks. Unlock only via the RS485-1/2 bus or on the display."
+   "short": "On: writing is allowed; this applies to “Write parameters and switches”, “Set the hard stop at a recharge pause” and “Save the master's CCL decrease step” via the CAN socket. Off: locked there, reading still works. It can be switched back on only via the RS485-1/2 bus or on the display."
   },
   "0.2": {
    "name": "Allow maintenance start via the CAN socket",
-   "short": "With patched firmware, applies to “Start maintenance” via the CAN socket (“Halt master”): 1 allows, 0 refuses; releasing does not depend on it. Change only via the RS485-1/2 bus or on the display."
+   "short": "On: allowed is “Start maintenance” via the CAN socket. The master then stops polling its slaves and the RS485-1/2 bus becomes free, e.g. for flashing. Off: refused. Releasing always works. Change only via the RS485-1/2 bus or on the display."
   },
   "0.3": {
    "name": "Allow on/off, restart and clock via the CAN socket",
-   "short": "EMU1101-EXT, applies together to “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket: 1 (on) allows, 0 (off) locks. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round."
+   "short": "On: allowed are “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket. Off: locked there; it still works via the RS485-1/2 bus. Change only via the RS485-1/2 bus or on the display. Only the first MAINT 1.6, supported for now, works the other way round (0 allows)."
   },
   "0.6": {
    "name": "Hard stop at recharge pause",
-   "short": "EMU1101-EXT Full: the hard stop choice while bit 7 is 0 (1 on, 0 off). Set only by its own switch under Parameters, never by an edit or a file."
+   "short": "Effective only while bit 7 is off. On: while the pack waits for the recharge threshold after a full charge, it blocks charging itself (charge MOSFET off). Off: only the master lowers the charge limit, the pack itself stays open. Set only via the “Hard stop” line, never via “Edit” or a file."
   },
   "0.7": {
    "name": "Hard stop: the build's default",
-   "short": "EMU1101-EXT Full: 1 takes the image's default (as with the old value FF), 0 applies bit 6."
+   "short": "On: the firmware's default applies (with the listed Full builds: no hard stop); bit 6 does not matter then. Off: bit 6 decides. Set only via the “Hard stop” line."
   },
   "0.4": {
-   "name": "Extended off",
-   "short": "Patched firmware with the pack cutoff (EMU1101-EXT Full), applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket: 1 (on, as with the old value FF) switches the extended off on: a direct off then locks the charge and discharge path including the current limiter and precharge, and the lock survives restarts. 0 (off): a direct off stays the previous soft off. On broadcasts of the master and parameter imports do not release the lock; switch this pack on directly to release it."
+   "name": "Switching off locks charge and discharge path permanently",
+   "short": "On: “Switch off” of a single pack locks its charging and discharging (also current limiter and precharge) permanently, also across restarts; this applies to “Set pack lock (addressed off)” via the RS485-1/2 bus or the CAN socket. Only a direct “On” at exactly this pack releases it, not the master or a parameter import. Off: “Switch off” is a soft off that charging or the master can lift again. The help texts call this function the “extended off”."
   },
   "0.3p": {
-   "name": "Release of on/off, restart and clock via the CAN socket",
-   "short": "EMU1101-EXT with power/RTC in the build (image flag bit 1), applies together to “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket: 1 (on, as with the old value FF) allows, 0 (off) locks. Change only via the RS485-1/2 bus or on the display."
+   "name": "Allow on/off, restart and clock via the CAN socket",
+   "short": "On: allowed are “Set clock”, “On/off”, “Set pack lock (addressed off)”, “Release pack lock (addressed on)” and “Restart” via the CAN socket. Off: locked there; it still works via the RS485-1/2 bus. Change only via the RS485-1/2 bus or on the display."
   },
   "0.5": {
-   "name": "No individual pack cutoff",
-   "short": "Patched firmware with the pack cutoff (EMU1101-EXT Full), status only: 1 (on) while no stored lock exists; 0 (off) while the pack is locked, also with the extended off switched off. Never editable; switching this pack on directly releases the lock, parameter imports do not."
+   "name": "Pack released (status only)",
+   "short": "Status only, not settable. On: the pack is not locked. Off: the pack is locked permanently (see bit 4); charging and discharging stay closed until you switch it on directly under “Control”. A parameter import changes nothing about it."
   },
   "0.1": {
    "name": "Temperature sensor check",
-   "short": "Sensors below −45 °C, from 100 °C or 20 K apart report a sensor fault; heating then switches off."
+   "short": "On: a temperature sensor with an impossible value (below −45 °C, from 100 °C or 20 K apart from the others) reports a sensor fault, and heating switches off. Off: no check. Recommended: on. The only bit of this group the original firmware uses too."
   },
   "1.0": {
    "name": "Cell high-voltage warning",

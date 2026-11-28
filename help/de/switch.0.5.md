@@ -1,6 +1,6 @@
 ---
-title: Keine individuelle Packsperre
-short: Patch-Firmware mit Packsperre (EMU1101-EXT Full), nur Status: 1 (an), solange keine gespeicherte Sperre besteht; 0 (aus), solange das Pack gesperrt ist, auch bei ausgeschaltetem erweitertem Aus. Nie bearbeitbar; gezieltes Einschalten dieses Packs löst die Sperre, Parameterimporte nicht.
+title: Pack freigegeben (nur Status)
+short: Nur Status, nicht einstellbar. An: Das Pack ist nicht gesperrt. Aus: Das Pack ist dauerhaft gesperrt (siehe Bit 4); Laden und Entladen bleiben zu, bis du es unter „Steuern“ gezielt einschaltest. Ein Parameterimport ändert daran nichts.
 related: topic.switches
 ---
 
