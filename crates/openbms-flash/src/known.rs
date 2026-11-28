@@ -449,4 +449,18 @@ mod tests {
             assert!(RELEASES.iter().all(|v| v.code_sha256 != m.code_sha256));
         }
     }
+
+    /// The app's parameter files name Group0 bits by the flags of a stored proof's exact release
+    /// (`app/src/params.ts`, `RELEASE_FLAGS`): that list must be exactly `PATCH_BUILDS`.
+    #[test]
+    fn the_export_names_every_listed_build() {
+        let ts = include_str!("../../../app/src/params.ts");
+        let start = ts.find("const RELEASE_FLAGS").unwrap();
+        let list = &ts[start..start + ts[start..].find("];").unwrap()];
+        for b in PATCH_BUILDS {
+            let entry = format!("[\"{}\", 0x{:02x}, [{}, {}]]", b.name, b.flags, b.patch[0], b.patch[1]);
+            assert!(list.contains(&entry), "{entry} missing in params.ts RELEASE_FLAGS");
+        }
+        assert_eq!(list.matches("[\"").count(), PATCH_BUILDS.len(), "params.ts lists a build known.rs does not");
+    }
 }

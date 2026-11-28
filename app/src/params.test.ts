@@ -185,6 +185,11 @@ describe("group0Name", () => {
     for (const b of [4, 5, 6, 7]) expect(group0Name(b, stored("EMU1101-EXT Light 1.5.6"))).toBe("Reserved on this firmware");
     expect(group0Name(4, stored("EMU1101-EXT Full 1.6.7"))).toMatch(/^Switching off blocks/);
     expect(group0Name(5, stored("EMU1101-EXT ≥ 1.5.4"))).toBe("Firmware-dependent (capability unverified)");
+    // an unlisted later build inherits nothing from its name
+    expect(group0Name(4, stored("EMU1101-EXT Full 1.6.9"))).toBe("Firmware-dependent (capability unverified)");
+    // a 1.5 identity with flag bit 2: no pack lock (it needs 1.6), as the backend decodes it
+    expect(group0Name(4, patch([1, 5], 0x3e, false))).toBe("Reserved on this firmware");
+    expect(group0Name(5, { ...(patch([1, 5], 0x3e, false) as object), caps: { version: [1, 5], flags: 0x3e } } as never)).toBe("Reserved on this firmware");
     // a live identity without power and clock: bit 3 has no function there
     expect(group0Name(3, patch([1, 6], 0xfc, true))).toBe("Reserved on this firmware");
   });

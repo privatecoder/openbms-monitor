@@ -200,9 +200,14 @@ const HEADER = [
   "Function switches: a bit at 1 is on. Group 0 differs between firmwares: the original firmware uses only bit 1; the patched firmware EMU1101-EXT also uses bits 0 and 2-7 (releases, pack lock, hard stop). Taking a file over sets only bit 1 of group 0; the other bits stay as the target pack has them, so a file fits original firmware and EMU1101-EXT alike.",
 ];
 
-/** Image flags of the builds a stored proof can name by its release (a stored proof carries none): Light, Full and the
- *  first MAINT 1.6 as listed in `known.rs`. */
-const RELEASE_FLAGS: [RegExp, number][] = [[/^EMU1101-EXT Light /, 0x3a], [/^EMU1101-EXT Full /, 0xfe], [/^16\.06\.13 MAINT 1\.6$/, 0x06]];
+/** Image flags and patch version of exactly the builds `known.rs` lists (`PATCH_BUILDS`), for a stored proof that names
+ *  its release but carries no flags; any other release (a later build, a generic name) stays unverified. A Rust test
+ *  (`the_export_names_every_listed_build`) keeps this list equal to `PATCH_BUILDS`. */
+const RELEASE_FLAGS: [string, number, [number, number]][] = [
+  ["EMU1101-EXT Light 1.5.4", 0x3a, [1, 5]], ["EMU1101-EXT Light 1.5.5", 0x3a, [1, 5]], ["EMU1101-EXT Light 1.5.6", 0x3a, [1, 5]],
+  ["EMU1101-EXT Full 1.6.4", 0xfe, [1, 6]], ["EMU1101-EXT Full 1.6.5", 0xfe, [1, 6]], ["EMU1101-EXT Full 1.6.6", 0xfe, [1, 6]],
+  ["EMU1101-EXT Full 1.6.7", 0xfe, [1, 6]], ["16.06.13 MAINT 1.6", 0x06, [1, 6]],
+];
 const DEPENDENT = "Firmware-dependent (capability unverified)";
 const RESERVED = "Reserved on this firmware";
 
@@ -213,11 +218,17 @@ const RESERVED = "Reserved on this firmware";
 export function group0Name(bit: number, patch: PackPatch | null | undefined): string | undefined {
   const sw = (k: string) => TEXT.switches[k]?.name;
   if (bit < 3) return sw(`0.${bit}`);
-  const flags = patch ? patch.caps.flags ?? RELEASE_FLAGS.find(([r]) => r.test(patch.release))?.[1] ?? null : null;
+  const listed = patch && patch.caps.flags == null ? RELEASE_FLAGS.find(([name]) => name === patch.release) : undefined;
+  const flags = patch ? patch.caps.flags ?? listed?.[1] ?? null : null;
+  const version = patch?.caps.version ?? listed?.[2] ?? null;
   if (flags === null) return bit === 3 ? "Bit 3 (firmware-dependent: allows on/off, restart and clock setting via the CAN socket in EMU1101-EXT, blocks them in the first MAINT 1.6)" : DEPENDENT;
   const on = (b: number) => (flags & (1 << b)) !== 0;
   if (bit === 3) return !on(1) ? RESERVED : sw(on(3) ? "0.3p" : "0.3");
-  if (bit === 4 || bit === 5) return on(2) ? sw(`0.${bit}`) : RESERVED;
+  // the pack lock needs image flag bit 2 and patch 1.6 or later (`access::pack_cutoff`); the decoded capability wins
+  if (bit === 4 || bit === 5) {
+    const cutoff = patch?.caps.pack_cutoff ?? (on(2) && version !== null && (version[0] > 1 || (version[0] === 1 && version[1] >= 6)));
+    return cutoff ? sw(`0.${bit}`) : RESERVED;
+  }
   return hardStopConfigurable(flags) ? sw(`0.${bit}`) : RESERVED;
 }
 
