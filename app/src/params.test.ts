@@ -178,5 +178,14 @@ describe("group0Name", () => {
     expect(group0Name(4, full)).toMatch(/^Switching off blocks/);
     expect(group0Name(7, full)).toMatch(/^Hard stop/);
     expect(group0Name(1, light)).toBe("Temperature sensor check");
+    // a stored proof has no flags: its exact release tells, a bare version does not
+    const stored = (release: string) => ({ source: "flash", release, caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, version: [1, 6], flags: null }, at: 1 }) as never;
+    expect(group0Name(3, stored("16.06.13 MAINT 1.6"))).toMatch(/^Block on\/off/);
+    expect(group0Name(6, stored("16.06.13 MAINT 1.6"))).toBe("Reserved on this firmware");
+    for (const b of [4, 5, 6, 7]) expect(group0Name(b, stored("EMU1101-EXT Light 1.5.6"))).toBe("Reserved on this firmware");
+    expect(group0Name(4, stored("EMU1101-EXT Full 1.6.7"))).toMatch(/^Switching off blocks/);
+    expect(group0Name(5, stored("EMU1101-EXT ≥ 1.5.4"))).toBe("Firmware-dependent (capability unverified)");
+    // a live identity without power and clock: bit 3 has no function there
+    expect(group0Name(3, patch([1, 6], 0xfc, true))).toBe("Reserved on this firmware");
   });
 });
