@@ -215,18 +215,21 @@ const RESERVED = "Reserved on this firmware";
  *  those of the exact release a stored proof names. Bit 3 by its support and polarity (allow in EMU1101-EXT, block in the
  *  first MAINT 1.6), bits 4/5 only with the pack lock, bits 6/7 only with the configurable hard stop, else reserved; when
  *  neither flags nor release tell, firmware-dependent. Bits 0–2 keep their names. */
-export function group0Name(bit: number, patch: PackPatch | null | undefined): string | undefined {
+export function group0Name(bit: number, patch: { release: string; caps?: Partial<PackPatch["caps"]> } | null | undefined): string | undefined {
   const sw = (k: string) => TEXT.switches[k]?.name;
   if (bit < 3) return sw(`0.${bit}`);
-  const listed = patch && patch.caps.flags == null ? RELEASE_FLAGS.find(([name]) => name === patch.release) : undefined;
-  const flags = patch ? patch.caps.flags ?? listed?.[1] ?? null : null;
-  const version = patch?.caps.version ?? listed?.[2] ?? null;
+  const caps = patch?.caps;
+  const lockBit = bit === 4 || bit === 5;
+  if (lockBit && caps?.pack_cutoff != null) return caps.pack_cutoff ? sw(`0.${bit}`) : RESERVED;
+  const listed = patch && caps?.flags == null ? RELEASE_FLAGS.find(([name]) => name === patch.release) : undefined;
+  const flags = caps?.flags ?? listed?.[1] ?? null;
   if (flags === null) return bit === 3 ? "Bit 3 (firmware-dependent: allows on/off, restart and clock setting via the CAN socket in EMU1101-EXT, blocks them in the first MAINT 1.6)" : DEPENDENT;
   const on = (b: number) => (flags & (1 << b)) !== 0;
   if (bit === 3) return !on(1) ? RESERVED : sw(on(3) ? "0.3p" : "0.3");
-  // the pack lock needs image flag bit 2 and patch 1.6 or later (`access::pack_cutoff`); the decoded capability wins
-  if (bit === 4 || bit === 5) {
-    const cutoff = patch?.caps.pack_cutoff ?? (on(2) && version !== null && (version[0] > 1 || (version[0] === 1 && version[1] >= 6)));
+  // Without a decoded capability the pack lock needs image flag bit 2 and patch 1.6 or later.
+  if (lockBit) {
+    const version = caps?.version ?? listed?.[2];
+    const cutoff = on(2) && version != null && (version[0] > 1 || (version[0] === 1 && version[1] >= 6));
     return cutoff ? sw(`0.${bit}`) : RESERVED;
   }
   return hardStopConfigurable(flags) ? sw(`0.${bit}`) : RESERVED;

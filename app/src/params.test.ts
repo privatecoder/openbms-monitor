@@ -166,6 +166,16 @@ describe("refreshedStored", () => {
 });
 
 describe("group0Name", () => {
+  it("uses the exact MAINT release when an imported proof contains only its name", () => {
+    expect(group0Name(3, { release: "16.06.13 MAINT 1.6" })).toBe("Block on/off, restart and clock setting via the CAN socket (MAINT 1.6)");
+  });
+
+  it.each([true, false])("uses decoded pack_cutoff=%s for both lock bits without image flags", (pack_cutoff) => {
+    const proof = { release: "EMU1101-EXT Full 1.6.9", caps: { pack_cutoff } };
+    expect(group0Name(4, proof)).toBe(pack_cutoff ? "Switching off blocks charging and discharging until this pack is switched on directly" : "Reserved on this firmware");
+    expect(group0Name(5, proof)).toBe(pack_cutoff ? "No pack lock active (status only)" : "Reserved on this firmware");
+  });
+
   const patch = (version: [number, number], flags: number, cutoff: boolean) =>
     ({ source: "live", release: "x", caps: { status_split: true, uart1_params: true, uart1_identity: true, write_gate: true, start_gate: true, power_rtc: true, pack_cutoff: cutoff, version, flags }, at: null }) as never;
   it("names Group0 bits by the firmware the block was read under", () => {
